@@ -51,6 +51,23 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if h.available else 1
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    try:
+        from somm_service.cli import main as serve_main
+    except ImportError:
+        print(
+            "somm serve requires somm-service.\n"
+            "  uv add somm-service    # or: pip install somm-service",
+            file=sys.stderr,
+        )
+        return 2
+    forwarded = []
+    if args.project:
+        forwarded += ["--project", args.project]
+    forwarded += ["--host", args.host, "--port", str(args.port)]
+    return serve_main(forwarded)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="somm", description="somm — self-hosted LLM telemetry")
     p.add_argument("--version", action="version", version=f"somm {VERSION}")
@@ -64,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
     pd = sub.add_parser("doctor", help="check config + ollama + db health")
     pd.add_argument("--project", default=None)
     pd.set_defaults(func=_cmd_doctor)
+
+    psr = sub.add_parser("serve", help="run the web admin + HTTP API (localhost:7878)")
+    psr.add_argument("--project", default=None)
+    psr.add_argument("--host", default="127.0.0.1")
+    psr.add_argument("--port", type=int, default=7878)
+    psr.set_defaults(func=_cmd_serve)
 
     return p
 

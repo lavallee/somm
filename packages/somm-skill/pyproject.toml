@@ -1,0 +1,13 @@
+[project]
+name = "somm-skill"
+version = "0.1.0.dev0"
+description = "somm onboarding skill templates for coding agents (Claude, Codex, Cursor, Windsurf)"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/somm_skill"]
