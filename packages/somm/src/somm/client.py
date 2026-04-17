@@ -417,6 +417,49 @@ class SommLLM:
         wl = self._require_workload(workload)
         return get_prompt(self.repo, wl.id, version=version)
 
+    def enable_shadow(
+        self,
+        workload: str,
+        gold_provider: str,
+        gold_model: str,
+        sample_rate: float = 0.02,
+        budget_usd_daily: float = 1.0,
+        max_grades_per_run: int = 20,
+    ) -> None:
+        """Opt a workload in to shadow-eval.
+
+        Off by default per sovereignty + privacy. Private workloads
+        (privacy_class=PRIVATE) cannot be shadow-graded — the schema view
+        enforces this + the worker defense-in-depth checks again.
+        """
+        wl = self._require_workload(workload)
+        from somm_core.models import PrivacyClass
+
+        if wl.privacy_class == PrivacyClass.PRIVATE:
+            from somm.errors import SommPrivacyViolation
+
+            raise SommPrivacyViolation(
+                f"SOMM_PRIVACY_VIOLATION\n\n"
+                f"Problem: workload {workload!r} is privacy_class=private; shadow-eval forbidden.\n"
+                f"Cause: shadow-eval re-sends prompt/response to gold-model provider.\n"
+                f"Fix: downgrade privacy_class OR keep shadow off for this workload.\n"
+                f"Docs: docs/errors/SOMM_PRIVACY_VIOLATION.md"
+            )
+        self.repo.set_shadow_config(
+            wl.id,
+            {
+                "gold_provider": gold_provider,
+                "gold_model": gold_model,
+                "sample_rate": sample_rate,
+                "budget_usd_daily": budget_usd_daily,
+                "max_grades_per_run": max_grades_per_run,
+            },
+        )
+
+    def disable_shadow(self, workload: str) -> None:
+        wl = self._require_workload(workload)
+        self.repo.set_shadow_config(wl.id, None)
+
     def _require_workload(self, name: str):
         wl = self.repo.workload_by_name(name, self.config.project)
         if wl is None:

@@ -114,6 +114,31 @@ class Repository:
             privacy_class=PrivacyClass(row[7]),
         )
 
+    # Shadow-eval config ------------------------------------------------------
+
+    def set_shadow_config(self, workload_id: str, config: dict | None) -> None:
+        """Attach (or clear) shadow-eval config for a workload.
+
+        config = None → shadow disabled.
+        config = {"gold_provider": ..., "gold_model": ..., "sample_rate": ...,
+                  "budget_usd_daily": ...} → enabled.
+        """
+        with self._open() as conn:
+            conn.execute(
+                "UPDATE workloads SET shadow_config_json = ? WHERE id = ?",
+                (json.dumps(config) if config else None, workload_id),
+            )
+
+    def get_shadow_config(self, workload_id: str) -> dict | None:
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT shadow_config_json FROM workloads WHERE id = ?",
+                (workload_id,),
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        return json.loads(row[0])
+
     # Prompts -----------------------------------------------------------------
 
     def register_prompt(self, workload_id: str, body: str, version: str = "v1") -> Prompt:
