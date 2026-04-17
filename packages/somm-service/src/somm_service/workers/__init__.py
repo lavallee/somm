@@ -5,7 +5,14 @@ in `_runner.py` polls the `jobs` table and invokes due workers atomically
 (lease-based, crash-safe).
 """
 
+from somm_service.workers.agent import AgentWorker, Recommendation
 from somm_service.workers.model_intel import ModelIntelWorker
 from somm_service.workers.shadow_eval import ShadowConfig, ShadowEvalWorker
 
-__all__ = ["ModelIntelWorker", "ShadowEvalWorker", "ShadowConfig"]
+__all__ = [
+    "ModelIntelWorker",
+    "ShadowEvalWorker",
+    "ShadowConfig",
+    "AgentWorker",
+    "Recommendation",
+]

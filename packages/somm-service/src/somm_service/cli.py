@@ -37,6 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
     pil.add_argument("--provider", default=None)
     pil.set_defaults(func=_cmd_list_intel)
 
+    pag = admin_sub.add_parser("run-agent", help="run the agent analysis + emit recommendations")
+    pag.add_argument("--project", default=None)
+    pag.add_argument("--window-days", type=int, default=7)
+    pag.set_defaults(func=_cmd_run_agent)
+
+    prs = admin_sub.add_parser("run-shadow", help="run a shadow-eval grading pass")
+    prs.add_argument("--project", default=None)
+    prs.set_defaults(func=_cmd_run_shadow)
+
     return p
 
 
@@ -56,6 +65,66 @@ def _cmd_refresh_intel(args: argparse.Namespace) -> int:
         for e in summary["errors"]:
             print(f"    {e}")
     return 0 if not summary["errors"] else 1
+
+
+def _cmd_run_agent(args: argparse.Namespace) -> int:
+    from somm_service.workers.agent import AgentWorker
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    worker = AgentWorker(repo, window_days=args.window_days)
+    summary = worker.run_once()
+    print(f"agent: considered {summary['considered']}, wrote {summary['written']} rec(s)")
+    for action, count in summary["by_action"].items():
+        print(f"  {action}: {count}")
+    return 0
+
+
+def _cmd_run_shadow(args: argparse.Namespace) -> int:
+    from somm.providers.anthropic import AnthropicProvider
+    from somm.providers.minimax import MinimaxProvider
+    from somm.providers.ollama import OllamaProvider
+    from somm.providers.openai import OpenAIProvider
+    from somm.providers.openrouter import OpenRouterProvider
+
+    from somm_service.workers.shadow_eval import ShadowEvalWorker
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    providers = [OllamaProvider(base_url=cfg.ollama_url, default_model=cfg.ollama_model)]
+    if cfg.openrouter_api_key:
+        providers.append(
+            OpenRouterProvider(api_key=cfg.openrouter_api_key, roster=cfg.openrouter_roster)
+        )
+    if cfg.anthropic_api_key:
+        providers.append(
+            AnthropicProvider(api_key=cfg.anthropic_api_key, default_model=cfg.anthropic_model)
+        )
+    if cfg.openai_api_key:
+        providers.append(
+            OpenAIProvider(
+                api_key=cfg.openai_api_key,
+                base_url=cfg.openai_base_url,
+                default_model=cfg.openai_model,
+            )
+        )
+    if cfg.minimax_api_key:
+        providers.append(
+            MinimaxProvider(api_key=cfg.minimax_api_key, default_model=cfg.minimax_model)
+        )
+
+    worker = ShadowEvalWorker(repo, providers=providers)
+    summary = worker.run_once()
+    print(f"shadow-eval: graded {summary['calls_graded']} call(s)")
+    for k, v in summary.items():
+        if k == "errors":
+            continue
+        print(f"  {k}: {v}")
+    if summary["errors"]:
+        print("  errors:")
+        for e in summary["errors"]:
+            print(f"    {e}")
+    return 0
 
 
 def _cmd_list_intel(args: argparse.Namespace) -> int:
