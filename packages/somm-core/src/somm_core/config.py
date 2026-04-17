@@ -19,6 +19,8 @@ class Config:
     spool_dir: Path = field(default_factory=lambda: Path("./.somm/spool"))
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:e4b"
+    openrouter_api_key: str | None = None
+    openrouter_roster: list[str] | None = None
     busy_timeout_ms: int = 5000
 
     @property
@@ -52,6 +54,12 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     for env_var, attr in env_map.items():
         if env_var in os.environ:
             setattr(cfg, attr, os.environ[env_var])
+    if "OPENROUTER_API_KEY" in os.environ:
+        cfg.openrouter_api_key = os.environ["OPENROUTER_API_KEY"]
+    if "SOMM_OPENROUTER_ROSTER" in os.environ:
+        cfg.openrouter_roster = [
+            m.strip() for m in os.environ["SOMM_OPENROUTER_ROSTER"].split(",") if m.strip()
+        ]
 
     if project is not None:
         cfg.project = project

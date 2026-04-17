@@ -17,13 +17,14 @@ from somm_core.models import Call
 from somm_core.parse import stable_hash
 from somm_core.repository import Repository
 
+from somm.errors import SommStrictMode as _SommStrictMode
 from somm.providers.base import SommProvider, SommRequest
 from somm.providers.ollama import OllamaProvider
+from somm.providers.openrouter import OpenRouterProvider
+from somm.routing import ProviderHealthTracker, Router
 from somm.telemetry import WriterQueue
 
-
-class SommStrictMode(Exception):
-    """Raised in strict mode for unregistered workloads/prompts."""
+SommStrictMode = _SommStrictMode  # re-export; new canonical lives in somm.errors
 
 
 class SommLLM:
@@ -46,14 +47,32 @@ class SommLLM:
             self.config.mode = mode
 
         self.repo = Repository(self.config.db_path)
-        self.providers: list[SommProvider] = providers or [
+        self._tracker = ProviderHealthTracker(self.repo)
+        self.providers: list[SommProvider] = providers or self._default_providers()
+        self.router = Router(self.providers, self._tracker)
+        self._writer = WriterQueue(self.repo, self.config.spool_dir)
+        self._writer.start()
+
+    def _default_providers(self) -> list[SommProvider]:
+        """Build the default provider chain from config.
+
+        Order: ollama (local, sovereign) → openrouter (if key set) → others (D2b).
+        """
+        chain: list[SommProvider] = [
             OllamaProvider(
                 base_url=self.config.ollama_url,
                 default_model=self.config.ollama_model,
             )
         ]
-        self._writer = WriterQueue(self.repo, self.config.spool_dir)
-        self._writer.start()
+        if self.config.openrouter_api_key:
+            chain.append(
+                OpenRouterProvider(
+                    api_key=self.config.openrouter_api_key,
+                    roster=self.config.openrouter_roster,
+                    tracker=self._tracker,
+                )
+            )
+        return chain
 
     # ------------------------------------------------------------------
 
@@ -87,7 +106,6 @@ class SommLLM:
                 )
             wl = self.repo.register_workload(name=workload, project=self.config.project)
 
-        chosen = self._pick_provider(provider)
         req = SommRequest(
             prompt=prompt,
             system=system,
@@ -102,29 +120,53 @@ class SommLLM:
         error_kind: str | None = None
         tokens_in = tokens_out = latency_ms = 0
         actual_model = model or ""
+        actual_provider = ""
         text = ""
 
-        try:
-            resp = chosen.generate(req)
-            text = resp.text
-            actual_model = resp.model
-            tokens_in = resp.tokens_in
-            tokens_out = resp.tokens_out
-            latency_ms = resp.latency_ms
-            if not text.strip():
-                outcome = Outcome.EMPTY
-        except Exception as exc:
-            outcome = Outcome.UPSTREAM_ERROR
-            error_kind = type(exc).__name__
+        if provider is not None:
+            chosen = self._pick_provider(provider)
+            try:
+                resp = chosen.generate(req)
+                text = resp.text
+                actual_provider = chosen.name
+                actual_model = resp.model
+                tokens_in = resp.tokens_in
+                tokens_out = resp.tokens_out
+                latency_ms = resp.latency_ms
+                if not text.strip():
+                    outcome = Outcome.EMPTY
+            except Exception as exc:
+                outcome = Outcome.UPSTREAM_ERROR
+                error_kind = type(exc).__name__
+                actual_provider = chosen.name
+        else:
+            try:
+                router_result = self.router.dispatch(req)
+                resp = router_result.response
+                text = resp.text
+                actual_provider = router_result.provider
+                actual_model = resp.model
+                tokens_in = resp.tokens_in
+                tokens_out = resp.tokens_out
+                latency_ms = resp.latency_ms
+                if not text.strip():
+                    outcome = Outcome.EMPTY
+            except Exception as exc:
+                outcome = (
+                    Outcome.EXHAUSTED
+                    if type(exc).__name__ == "SommProvidersExhausted"
+                    else Outcome.UPSTREAM_ERROR
+                )
+                error_kind = type(exc).__name__
 
         result = SommResult(
             text=text,
-            provider=chosen.name,
+            provider=actual_provider,
             model=actual_model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=latency_ms,
-            cost_usd=0.0,  # D1: cost calc lands in D2 w/ model_intel
+            cost_usd=0.0,  # D3: cost calc lands with model_intel worker
             call_id=call_id,
             outcome=outcome,
             error_kind=error_kind,
@@ -135,8 +177,8 @@ class SommLLM:
             ts=ts,
             project=self.config.project,
             workload_id=wl.id,
-            prompt_id=None,  # D1: prompt versioning lands in D2
-            provider=chosen.name,
+            prompt_id=None,  # D2b: prompt versioning lands with register_prompt
+            provider=actual_provider,
             model=actual_model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
