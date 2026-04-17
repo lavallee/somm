@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>somm · self-hosted LLM telemetry, routing, and intelligence loop</title>
+<meta name="description" content="somm is a self-hosted LLM substrate for Python: telemetry, routing, shadow-eval, and agent-driven recommendations — all local. Zero commercial dependencies. Privacy-first.">
+<meta property="og:title" content="somm">
+<meta property="og:description" content="Self-hosted LLM telemetry, routing, and intelligence loop. Zero-config. Privacy-first. No commercial dependencies on the hot path.">
+<meta property="og:type" content="website">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="./">
+      <span class="mark">somm</span>
+      <span class="mark-sub">/ v0.1.0-dev</span>
+    </a>
+    <nav>
+      <a href="#why">why</a>
+      <a href="#install">install</a>
+      <a href="#graft">graft</a>
+      <a href="#privacy">privacy</a>
+      <a href="errors/" aria-label="Error codes">errors</a>
+      <a class="gh" href="https://github.com/marclavallee/somm" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <h1>Self-hosted LLM<br>telemetry, routing,<br>intelligence loop.</h1>
+      <p class="lede">
+        Wrap your LLM calls once. Get provider fallback, streaming,
+        cost tracking, shadow-eval, and agent-driven recommendations —
+        all running locally on your own SQLite. Zero phone-home. Zero
+        cloud account. Zero commercial dependencies on the hot path.
+      </p>
+
+<pre class="code"><span class="prompt">$</span> pip install somm
+<span class="prompt">$</span> python -c <span class="str">"
+import somm
+llm = somm.llm(project='my_app')
+r = llm.generate('Reply: pong', workload='ping')
+print(r.text, r.provider, r.cost_usd)
+"</span>
+<span class="c">→ pong ollama 0.0</span></pre>
+
+      <div class="hero-cta">
+        <a class="btn" href="#install">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/marclavallee/somm" rel="noopener">Read the code</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="why" class="section">
+    <div class="wrap">
+      <h2>Why somm</h2>
+      <p class="section-lede">
+        Every LLM-using Python project grows along the same axes. You
+        end up with tangled provider SDKs, inline retry loops, drifting
+        prompts, and no idea which model wrote what. somm is the shared
+        substrate you wish you'd started with.
+      </p>
+
+      <div class="row-list">
+        <div class="row">
+          <h3>Router across five providers</h3>
+          <p>
+            ollama, OpenRouter, Anthropic, OpenAI, Minimax — plus any
+            OpenAI-compatible gateway (Groq, Together, Fireworks, vLLM,
+            LM Studio, custom). Preference-ordered fallback, per-model
+            cooldowns persisted to SQLite, circuit breaker. Free-tier
+            rate limits stop being a problem.
+          </p>
+        </div>
+        <div class="row">
+          <h3>Builds its own eval dataset</h3>
+          <p>
+            Opt a workload in to shadow-eval and a background worker
+            samples N% of your calls, re-runs them through a gold model,
+            grades with structural + text-similarity scorers. No hand-
+            written evals. Budget-capped per workload. Skipped entirely
+            on private workloads.
+          </p>
+        </div>
+        <div class="row">
+          <h3>Agent that points at the wins</h3>
+          <p>
+            The agent worker analyzes calls + eval results + model intel
+            and emits concrete recommendations with evidence. Not "here
+            are some models" — specifically
+            <em>switch claim_extract to gemma3:27b: +45% quality, -80%
+            latency, same cost, 47 shadow calls.</em>
+          </p>
+        </div>
+        <div class="row">
+          <h3>MCP for your coding agent</h3>
+          <p>
+            Seven stdio tools. Your Claude Code / Cursor / Windsurf
+            session can query actual telemetry: "what did claim_extract
+            cost this week?" → real answer. "Compare gemma3 and llama3
+            on this prompt" → real side-by-side. "Replay call X against
+            a cheaper model" → real delta.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install" class="section section-alt">
+    <div class="wrap">
+      <h2>Install</h2>
+
+<pre class="code"><span class="c"># library only — fine for drop-in replacement:</span>
+<span class="prompt">$</span> pip install somm
+
+<span class="c"># + web admin, scheduler, background workers, MCP:</span>
+<span class="prompt">$</span> pip install somm somm-service somm-mcp</pre>
+
+      <p class="section-lede">
+        Python 3.12+. Requires no API keys out of the box — just point
+        somm at a local ollama and go. Every commercial provider is
+        opt-in via its own env var (<code>ANTHROPIC_API_KEY</code>,
+        <code>OPENAI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>,
+        <code>MINIMAX_API_KEY</code>).
+      </p>
+
+      <h3 class="sub">Spin up the dashboard</h3>
+
+<pre class="code"><span class="prompt">$</span> somm serve --project my_app
+<span class="c">→ listening on http://localhost:7878
+   scheduler started (poll=30.0s)
+   model_intel: refreshing (345 + 6 + 6 models cached)</span></pre>
+
+      <h3 class="sub">Compare models on a real prompt</h3>
+
+<pre class="code"><span class="prompt">$</span> somm compare <span class="str">"Summarize this article in one sentence"</span> \
+    --models ollama/gemma4:e4b,openrouter/llama-3.3-70b:free,openai/gpt-4o-mini
+<span class="c">provider    model                      lat_ms  tok_i  tok_o  cost     response
+ollama      gemma4:e4b                  2140     124      18  $0.0000  A research team ...
+openrouter  meta-llama/llama-3.3-70b:free 3820     124      22  $0.0000  Scientists at ...
+openai      gpt-4o-mini                  920     124      20  $0.0000  Researchers find ...</span></pre>
+    </div>
+  </section>
+
+  <section id="graft" class="section">
+    <div class="wrap">
+      <h2>Grafting into an existing project</h2>
+      <p class="section-lede">
+        If you already have an LLM wrapper class in your codebase, swap
+        it with <code>somm.compat.GenericLLMCompat</code>. One line
+        changes; call sites don't.
+      </p>
+
+<pre class="code"><span class="c"># before:</span>
+<span class="kw">from</span> myproject.llm <span class="kw">import</span> FooLLM
+
+<span class="c"># after:</span>
+<span class="kw">from</span> somm.compat <span class="kw">import</span> GenericLLMCompat <span class="kw">as</span> FooLLM
+
+llm = FooLLM(project=<span class="str">"my_app"</span>)
+result = llm.generate(prompt, system=sys, max_tokens=256)
+print(result.text, result.provider, result.model)  <span class="c"># legacy fields still work</span>
+print(result.call_id, result.cost_usd)             <span class="c"># somm extras</span></pre>
+
+      <p>If your project calls the raw OpenAI SDK directly, there's an
+      <code>openai_chat_completions</code> shim that mirrors
+      <code>openai.OpenAI().chat.completions.create()</code>. See the
+      <a href="https://github.com/marclavallee/somm/tree/main/examples">examples</a>
+      directory for runnable patterns:</p>
+
+      <ul class="file-list">
+        <li><code>drop_in_wrapper.py</code> — single-import swap for existing classes</li>
+        <li><code>openai_swap_in.py</code> — OpenAI SDK replacement</li>
+        <li><code>private_workload.py</code> — <code>privacy_class=PRIVATE</code> defense-in-depth</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="privacy" class="section section-alt">
+    <div class="wrap">
+      <h2>Privacy posture</h2>
+      <p class="section-lede">
+        somm is built for workloads you'd be uncomfortable egressing.
+        Every defense is enforced at more than one layer — not one thing
+        to remember, many things to forget.
+      </p>
+
+      <ul class="bulleted">
+        <li><strong>No body capture by default.</strong> Prompt and
+          response <em>hashes</em> go to SQLite; full text only lands
+          in a separate <code>samples</code> table if you opt in per
+          workload.</li>
+        <li><strong>Per-workload privacy class.</strong>
+          <code>PRIVATE</code> workloads never egress to any non-local
+          provider. Enforced in the router, in the shadow-eval worker,
+          <em>and</em> in the <code>shadow_candidates</code> SQL view.</li>
+        <li><strong>File perms.</strong> SQLite files created
+          <code>0600</code>; parent dir <code>0700</code>.
+          <code>somm doctor</code> warns on drift.</li>
+        <li><strong>Localhost-only web.</strong> The admin binds
+          <code>127.0.0.1</code> by default. Exposing via
+          <code>--bind 0.0.0.0</code> prints a loud warning.</li>
+        <li><strong>Zero beacon.</strong> The somm project learns
+          nothing about your install or usage. There is no upstream
+          service.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <h2>Architecture</h2>
+<pre class="code diagram">   library (sensor) ──► local store ◄── service (brain)
+       ▲                    ▲                  │
+       │                    │                  ├─► shadow-eval worker
+       │                    │                  ├─► model-intel worker
+       │                    │                  ├─► agent worker
+       │                    │                  └─► web admin
+       │                    │
+       └── skill (onboarding) ─── MCP (interface for coding agents)</pre>
+
+      <p>Five packages:</p>
+      <table class="pkg-tbl">
+        <tbody>
+          <tr><th>somm-core</th><td>schema v2, migrations, repository, config, parse helpers</td></tr>
+          <tr><th>somm</th><td>library — <code>SommLLM</code>, providers, routing, streaming, compat shims, CLI</td></tr>
+          <tr><th>somm-service</th><td>starlette web admin + HTTP API + scheduler + three workers</td></tr>
+          <tr><th>somm-mcp</th><td>stdio MCP server with seven tools</td></tr>
+          <tr><th>somm-skill</th><td>onboarding templates for Claude / Codex / Cursor / Windsurf</td></tr>
+        </tbody>
+      </table>
+
+      <p><a href="https://github.com/marclavallee/somm/blob/main/PLAN.md">PLAN.md</a>
+      has the full design doc and 48-row decision audit trail from the
+      CEO / Design / Eng / DX review pipeline.</p>
+    </div>
+  </section>
+
+  <section class="section section-alt">
+    <div class="wrap">
+      <h2>Status</h2>
+      <p class="section-lede">
+        v0.1.0-dev. Not yet published to PyPI. All 180 tests passing.
+        Plan milestones D1–D7 complete. MIT licensed.
+      </p>
+      <p><a class="btn" href="https://github.com/marclavallee/somm" rel="noopener">Star on GitHub →</a></p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      somm · <a href="https://github.com/marclavallee/somm" rel="noopener">source</a> ·
+      <a href="https://github.com/marclavallee/somm/blob/main/LICENSE">MIT license</a> ·
+      <a href="https://github.com/marclavallee/somm/blob/main/CHANGELOG.md">changelog</a> ·
+      <a href="errors/">error reference</a>
+    </p>
+    <p class="tiny">Built for sovereignty. No beacon, no cloud, no lock-in.</p>
+  </div>
+</footer>
+
+</body>
+</html>

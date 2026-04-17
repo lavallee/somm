@@ -3,6 +3,8 @@ name = "somm-core"
 version = "0.1.0.dev0"
 description = "somm shared core — schema, repository, config, parse, version"
 requires-python = ">=3.12"
+license = { text = "MIT" }
+readme = "../../README.md"
 dependencies = []
 
 [build-system]

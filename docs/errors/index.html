@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>somm · error reference</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../">
+      <span class="mark">somm</span>
+      <span class="mark-sub">/ error reference</span>
+    </a>
+    <nav>
+      <a href="../">home</a>
+      <a class="gh" href="https://github.com/marclavallee/somm" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="section">
+    <div class="wrap">
+      <h2>Error reference</h2>
+      <p class="section-lede">
+        Every somm error carries a canonical <code>SOMM_*</code> code
+        with a fixed problem / cause / fix / related shape. The pages
+        below mirror that format — copy-paste the fix into your shell
+        or code and the error should resolve.
+      </p>
+
+      <ul class="file-list">
+        <li><a href="https://github.com/marclavallee/somm/blob/main/docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"><code>SOMM_WORKLOAD_UNREGISTERED</code></a> — strict mode refused an unregistered workload</li>
+        <li><a href="https://github.com/marclavallee/somm/blob/main/docs/errors/SOMM_PORT_BUSY.md"><code>SOMM_PORT_BUSY</code></a> — <code>somm serve</code> port conflict</li>
+        <li><a href="https://github.com/marclavallee/somm/blob/main/docs/errors/SOMM_PROVIDERS_EXHAUSTED.md"><code>SOMM_PROVIDERS_EXHAUSTED</code></a> — every provider is cooled for longer than the retry cap</li>
+        <li><a href="https://github.com/marclavallee/somm/blob/main/docs/errors/SOMM_SCHEMA_STALE.md"><code>SOMM_SCHEMA_STALE</code></a> — DB schema older than the library expects</li>
+        <li><a href="https://github.com/marclavallee/somm/blob/main/docs/errors/SOMM_PRIVACY_VIOLATION.md"><code>SOMM_PRIVACY_VIOLATION</code></a> — attempted to egress a <code>privacy_class=PRIVATE</code> workload</li>
+      </ul>
+
+      <p>Links open the canonical markdown on GitHub for rich rendering.
+      The raw files live in
+      <a href="https://github.com/marclavallee/somm/tree/main/docs/errors"><code>docs/errors/</code></a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      somm · <a href="https://github.com/marclavallee/somm" rel="noopener">source</a> ·
+      <a href="https://github.com/marclavallee/somm/blob/main/LICENSE">MIT license</a> ·
+      <a href="../">home</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

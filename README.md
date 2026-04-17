@@ -1,178 +1,173 @@
 # somm
 
-> Self-hosted LLM telemetry, routing, and intelligence loop for individuals
-> and small teams. Zero-config. Privacy-first. No commercial dependencies
-> on the hot path.
+**Self-hosted LLM telemetry, routing, and intelligence loop.**
+Zero-config. Privacy-first. No commercial dependencies on the hot path.
 
-`somm` wraps your LLM calls with:
-- **Provider-agnostic routing** (ollama, openrouter, anthropic, openai,
-  minimax; any OpenAI-compatible gateway via plugin).
-- **Cooldown-aware fallback** — when the free-tier roster rate-limits,
-  roll to the next model; when a provider's circuit-breaks, skip it.
-- **Telemetry** — every call lands in local SQLite. Call ID, tokens,
-  latency, cost, outcome, prompt/response hashes, provenance.
-- **Shadow-eval (opt-in)** — sample N% of calls, re-run through a gold
-  model, grade via structural + text similarity. Build an eval dataset
-  from production traffic without writing any evals.
-- **Agent worker** — weekly analysis of calls + eval results + model
-  intel; emits `switch_model` / `new_model_landed` / `chronic_cooldown`
-  recommendations with evidence.
-- **MCP server** — 7 tools for coding agents (Claude Code, Cursor,
-  Windsurf) to query stats, compare models, replay calls, register
-  workloads + prompts.
-- **Web admin** at `localhost:7878` — one page, recommendations above
-  charts, no login needed.
+`somm` is the substrate you wish every LLM-using Python project had: one
+call wraps telemetry, provider routing, cooldowns, streaming, prompt
+versioning, provenance, cost tracking, shadow-eval, and agent-driven
+recommendations — all local, all yours.
 
-`somm` is built to be **self-hosted**. It works fully offline with just
-`ollama` running locally. Every commercial provider is opt-in, per its
-own env var. No hosted service, no cloud account, no phone-home
-telemetry — your prompts and traces stay on your disk.
+- 🟢 **Works offline** with just `ollama` running locally
+- 🟢 **No phone-home**, no cloud account, no hosted service
+- 🟢 **One-line drop-in** for codebases with an existing LLM wrapper
+- 🟢 **MCP** for Claude Code / Cursor / Windsurf to query your real telemetry
+
+---
 
 ## Install
 
 ```bash
-# Library only (hot-path integration):
-uv add somm
+# library only:
 pip install somm
 
-# Library + web admin + MCP server + scheduled workers:
-uv add somm somm-service somm-mcp
+# + web admin + scheduled workers + MCP server:
 pip install somm somm-service somm-mcp
 ```
 
-`somm` targets Python 3.12+ and uses [uv](https://docs.astral.sh/uv/) in
-development.
+Requires Python 3.12+. Uses [uv](https://docs.astral.sh/uv/) in development.
 
 ## Two-minute hello world
 
 ```python
 import somm
 
-llm = somm.llm(project="my_project")
+llm = somm.llm(project="my_app")
 result = llm.generate(
     prompt="Reply with exactly: pong",
     workload="ping",
 )
-print(result.text)                   # "pong"
-print(result.provider, result.model) # "ollama", "gemma4:e4b"
-print(f"${result.cost_usd:.6f}")     # cost (from model_intel cache)
+print(result.text)             # → "pong"
+print(result.provider)         # → "ollama"
+print(f"${result.cost_usd}")   # → from model_intel cache
 ```
 
-That call lands a row in `./.somm/calls.sqlite`. Ask for a rollup:
+That call just landed a row in `./.somm/calls.sqlite`. Inspect:
 
 ```bash
-somm status --project my_project --since 1
+somm status --project my_app --since 1
+somm serve --project my_app   # → dashboard at localhost:7878
 ```
 
-Stand up the dashboard:
+## Why somm
 
-```bash
-somm serve --project my_project
-# open http://localhost:7878
-```
+LLM-using Python projects all grow along the same axes. You end up with:
 
-## Grafting into an existing project
+- Multiple call sites across multiple providers (ollama, OpenRouter, Anthropic, OpenAI, …)
+- Retries + fallbacks + backoff sprinkled inline
+- Ad-hoc prompt management and silent drift when you edit a string
+- No idea what you spent, which model answered, or if quality regressed
+- The frontier agent pitching you models from its training data, not your real workload
 
-If your project already has an LLM wrapper, the `somm.compat` package
-gives you a one-line swap:
+`somm` is the shared substrate that replaces every one of those.
+
+### Grafts into an existing project — change one import
 
 ```python
-# before:
+# Before:
 from myproject.llm import FooLLM
-# after:
+# After:
 from somm.compat import GenericLLMCompat as FooLLM
 ```
 
-Call-site code doesn't need changes. For raw-OpenAI-SDK projects:
+Existing call sites don't change. Telemetry, provider fallback, and cost
+tracking land on every call. If your project uses the raw OpenAI SDK,
+there's a [`openai_chat_completions`](./examples/openai_swap_in.py) shim
+that mirrors `openai.OpenAI().chat.completions.create()`.
 
-```python
-from somm.compat import openai_chat_completions as create
-resp = create(
-    model="openai/gpt-4o-mini",
-    messages=[{"role": "user", "content": "hi"}],
-    project="my_project",
-)
-print(resp.choices[0].message.content)
+### Privacy-first by default
+
+- Prompt bodies are **not** stored unless you opt in per workload.
+- `privacy_class=PRIVATE` workloads never egress. Enforced in the router,
+  the shadow-eval worker, AND a SQL view (defense in depth).
+- SQLite files are `chmod 0600`; parent dir `0700`. `somm doctor` warns
+  on drift.
+- Web admin binds `localhost` only by default.
+- Zero beacon telemetry. The `somm` project receives nothing about you.
+
+### Builds its own eval dataset
+
+Opt a workload in to shadow-eval and a background worker samples N% of
+production calls, re-runs them through a gold-standard model of your
+choice, and grades both with structural + text-similarity scorers. The
+resulting data feeds the agent worker, which emits concrete
+recommendations:
+
+> **`switch_model`** — claim_extract currently on ollama/gemma4:e4b
+> (score 0.4, 500ms). Shadow evals show ollama/gemma3:27b scoring 0.85
+> at 100ms — +45% quality, -80% latency, same cost. Try it?
+
+Budget-capped per workload. Skipped entirely on private workloads.
+
+### MCP — talk to your telemetry from the agent's side
+
+`somm-mcp` ships seven stdio tools any MCP-capable agent can call:
+
+| tool | what it does |
+|---|---|
+| `somm_stats` | rollup by workload × provider × model |
+| `somm_search_calls` | filter calls by workload / provider / model / outcome |
+| `somm_recommend` | open recs + shadow-ranked models per workload |
+| `somm_register_workload` | commit a workload with privacy class |
+| `somm_register_prompt` | commit prompt versions (minor/major/explicit) |
+| `somm_compare` | run a prompt through N models side-by-side |
+| `somm_replay` | replay a stored call against a different model |
+
+Add to Claude Code / Cursor / Windsurf:
+
+```json
+{
+  "command": "somm-mcp",
+  "env": { "SOMM_PROJECT": "my_app" }
+}
 ```
-
-See [`examples/`](./examples/) for runnable patterns
-(`drop_in_wrapper.py`, `openai_swap_in.py`, `private_workload.py`).
-
-## Configuration (env vars)
-
-All optional; `somm` works with just ollama running locally.
-
-| Variable                    | Default                    | Meaning |
-|-----------------------------|----------------------------|---------|
-| `SOMM_PROJECT`              | `default`                  | project name (tag on every call) |
-| `SOMM_MODE`                 | `observe`                  | `observe` or `strict` |
-| `SOMM_OLLAMA_URL`           | `http://localhost:11434`   | local ollama endpoint |
-| `SOMM_OLLAMA_MODEL`         | `gemma4:e4b`               | default ollama model |
-| `OPENROUTER_API_KEY`        |                            | enables openrouter in chain |
-| `SOMM_OPENROUTER_ROSTER`    | *built-in free roster*     | comma-sep list of openrouter model ids |
-| `ANTHROPIC_API_KEY`         |                            | enables anthropic |
-| `SOMM_ANTHROPIC_MODEL`      | `claude-haiku-4-5-20251001` | |
-| `OPENAI_API_KEY`            |                            | enables openai |
-| `SOMM_OPENAI_MODEL`         | `gpt-4o-mini`              | |
-| `SOMM_OPENAI_BASE_URL`      | `https://api.openai.com/v1` | for openai-compatible gateways |
-| `MINIMAX_API_KEY`           |                            | enables minimax |
-| `SOMM_MINIMAX_MODEL`        | `MiniMax-M2`               | |
-| `SOMM_CROSS_PROJECT`        | `0`                        | set `1` to mirror telemetry to `~/.somm/global.sqlite` |
-| `SOMM_GLOBAL_PATH`          | `~/.somm/global.sqlite`    | mirror file location |
 
 ## CLI
 
 ```bash
-somm status [--since N] [--global]   # rollup (per-project or cross-project)
-somm tail [--workload NAME]          # live call stream
-somm compare <prompt> --models p/m,p/m  # side-by-side N-model comparison
-somm doctor                          # health: config, ollama, db, intel, workers, cooldowns
-somm serve                           # run the web admin + HTTP API + worker scheduler
-
-# with somm-service installed:
-somm-serve admin refresh-intel       # refresh model pricing
-somm-serve admin list-intel          # show cached prices
-somm-serve admin run-agent           # one-shot agent analysis
-somm-serve admin run-shadow          # one-shot shadow-eval pass
+somm status [--since N] [--global]    # rollup (per-project / cross-project)
+somm tail [--workload NAME]           # live call stream
+somm compare <prompt> --models p/m,p/m   # side-by-side N-model comparison
+somm doctor                           # config, ollama, db, intel, workers, cooldowns
+somm serve                            # web admin + scheduler + workers
 ```
 
-## MCP
-
-`somm-mcp` ships seven tools for coding agents:
-
-- `somm_stats` — rolled-up call counts
-- `somm_search_calls` — query calls by filters
-- `somm_recommend` — open recommendations + shadow-eval rankings per workload
-- `somm_register_workload` — commit a workload (with optional privacy_class)
-- `somm_register_prompt` — commit prompt versions (minor/major/explicit)
-- `somm_compare` — run a prompt through N models side-by-side
-- `somm_replay` — replay a stored call against a different model
-
-Install into Claude Code / Cursor / Windsurf:
+With `somm-service` installed:
 
 ```bash
-# stdio MCP entry point — configure in your client:
-command: somm-mcp
-args:    []
-env:     SOMM_PROJECT=my_project
+somm-serve admin refresh-intel    # refresh model pricing + context windows
+somm-serve admin list-intel       # inspect the cache
+somm-serve admin run-agent        # one-shot analysis pass
+somm-serve admin run-shadow       # one-shot shadow-eval grading pass
 ```
 
-## Privacy
+## Configuration
 
-`somm` is designed for workloads you'd be uncomfortable egressing.
+Everything works offline with just ollama running. Every commercial
+provider is opt-in via its own env var:
 
-- **`privacy_class=private`** workloads are banned from shadow-eval and
-  from any upstream provider — enforced in the router AND in the
-  `shadow_candidates` SQL view (defense in depth).
-- **Prompt/response bodies** are NOT stored by default. The library
-  keeps only hashes; full bodies land in a separate `samples` table
-  only when you opt in per workload.
-- **SQLite files** are created with perms `0600` and parent dir `0700`.
-  `somm doctor` warns if the perms drift.
-- **Web admin** binds to `localhost` only by default. Exposing via
-  `--bind 0.0.0.0` prints a loud warning.
-- **No beacon telemetry.** The `somm` project receives zero data
-  about your installation or usage.
+<details>
+<summary>Env var reference</summary>
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SOMM_PROJECT` | `default` | project name tagged on every call |
+| `SOMM_MODE` | `observe` | `observe` (auto-registers workloads) or `strict` |
+| `SOMM_OLLAMA_URL` | `http://localhost:11434` | local ollama endpoint |
+| `SOMM_OLLAMA_MODEL` | `gemma4:e4b` | default ollama model |
+| `OPENROUTER_API_KEY` | — | enables OpenRouter |
+| `SOMM_OPENROUTER_ROSTER` | built-in free roster | comma-sep model ids |
+| `ANTHROPIC_API_KEY` | — | enables Anthropic |
+| `SOMM_ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | |
+| `OPENAI_API_KEY` | — | enables OpenAI |
+| `SOMM_OPENAI_MODEL` | `gpt-4o-mini` | |
+| `SOMM_OPENAI_BASE_URL` | `https://api.openai.com/v1` | for OpenAI-compatible gateways |
+| `MINIMAX_API_KEY` | — | enables Minimax |
+| `SOMM_MINIMAX_MODEL` | `MiniMax-M2` | |
+| `SOMM_CROSS_PROJECT` | `0` | `1` mirrors telemetry to `~/.somm/global.sqlite` |
+| `SOMM_GLOBAL_PATH` | `~/.somm/global.sqlite` | mirror file location |
+
+</details>
 
 ## Architecture
 
@@ -187,40 +182,39 @@ env:     SOMM_PROJECT=my_project
        └── skill (onboarding) ─── MCP (interface for coding agents)
 ```
 
-- `somm-core`: schema v2 + migrations + repository + config + parse helpers.
-- `somm`: Python library (SommLLM, providers, routing, compat).
-- `somm-service`: starlette web admin + HTTP API + scheduler + 3 workers.
-- `somm-mcp`: stdio MCP server.
-- `somm-skill`: onboarding markdown templates for coding agents.
+Five packages:
 
-See [`PLAN.md`](./PLAN.md) for the full design doc including CEO /
-Design / Eng / DX review findings + 48-row decision audit trail.
+- **`somm-core`** — schema v2, migrations, repository, config, parse helpers
+- **`somm`** — `SommLLM`, providers, routing, streaming, compat shims, CLI
+- **`somm-service`** — starlette web admin + HTTP API + scheduler + 3 workers
+- **`somm-mcp`** — stdio MCP server
+- **`somm-skill`** — onboarding markdown templates for coding agents
+
+## Docs
+
+- 📘 [**PLAN.md**](./PLAN.md) — full design doc + 48-row decision audit trail
+- 📜 [**CHANGELOG.md**](./CHANGELOG.md) — D1–D7 milestone log
+- 🔥 [**Error reference**](./docs/errors/) — canonical `SOMM_*` codes
+- 🧪 [**Examples**](./examples/) — drop-in, OpenAI swap, private workloads
 
 ## Contributing
 
-Run tests:
-
 ```bash
 uv sync --all-packages
-uv run pytest packages/
+uv run pytest packages/ tests/     # 180 tests pass
 ```
 
-Live-provider tests (ollama) are auto-skipped when unavailable. VCR-style
-fixtures cover provider-specific parsing quirks.
-
-Before opening a PR that touches provider adapters, run the privacy +
-XSS + migration suites:
-
-```bash
-uv run pytest packages/ -k "privacy or xss or migration or spool"
-```
+Live-provider tests (ollama) auto-skip when unavailable. VCR-style
+fixtures cover provider-specific parsing quirks. The top-level
+`tests/test_blocklist.py` guard fails builds that leak internal names
+or personal paths.
 
 ## License
 
-TBD. Until a license file is added, no license is granted. If you'd
-like to use this code beyond reading, please open an issue.
+[MIT](./LICENSE) · © 2026 Marc Lavallee and contributors.
 
 ## Status
 
-v0.1.0-dev — all core functionality working; not yet published to PyPI.
-See [`CHANGELOG.md`](./CHANGELOG.md) for milestones.
+**v0.1.0-dev.** Not yet published to PyPI. See
+[CHANGELOG](./CHANGELOG.md) for the milestone log and
+[PLAN.md](./PLAN.md) for where things are headed.
