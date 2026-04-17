@@ -21,6 +21,13 @@ class Config:
     ollama_model: str = "gemma4:e4b"
     openrouter_api_key: str | None = None
     openrouter_roster: list[str] | None = None
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-haiku-4-5-20251001"
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+    minimax_api_key: str | None = None
+    minimax_model: str = "MiniMax-M2"
     busy_timeout_ms: int = 5000
 
     @property
@@ -60,6 +67,17 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         cfg.openrouter_roster = [
             m.strip() for m in os.environ["SOMM_OPENROUTER_ROSTER"].split(",") if m.strip()
         ]
+    for env_var, attr in (
+        ("ANTHROPIC_API_KEY", "anthropic_api_key"),
+        ("SOMM_ANTHROPIC_MODEL", "anthropic_model"),
+        ("OPENAI_API_KEY", "openai_api_key"),
+        ("SOMM_OPENAI_MODEL", "openai_model"),
+        ("SOMM_OPENAI_BASE_URL", "openai_base_url"),
+        ("MINIMAX_API_KEY", "minimax_api_key"),
+        ("SOMM_MINIMAX_MODEL", "minimax_model"),
+    ):
+        if env_var in os.environ:
+            setattr(cfg, attr, os.environ[env_var])
 
     if project is not None:
         cfg.project = project

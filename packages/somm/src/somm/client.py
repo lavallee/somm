@@ -18,8 +18,11 @@ from somm_core.parse import stable_hash
 from somm_core.repository import Repository
 
 from somm.errors import SommStrictMode as _SommStrictMode
+from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import SommProvider, SommRequest
+from somm.providers.minimax import MinimaxProvider
 from somm.providers.ollama import OllamaProvider
+from somm.providers.openai import OpenAIProvider
 from somm.providers.openrouter import OpenRouterProvider
 from somm.routing import ProviderHealthTracker, Router
 from somm.telemetry import WriterQueue
@@ -56,7 +59,15 @@ class SommLLM:
     def _default_providers(self) -> list[SommProvider]:
         """Build the default provider chain from config.
 
-        Order: ollama (local, sovereign) → openrouter (if key set) → others (D2b).
+        Order (sovereign-first):
+          1. ollama (local; no network)
+          2. openrouter (free roster + cooldowns)
+          3. minimax (if key)
+          4. anthropic (if key)
+          5. openai / openai-compatible (if key)
+
+        Every commercial-API provider is opt-in via its env var. Library
+        works offline with just ollama.
         """
         chain: list[SommProvider] = [
             OllamaProvider(
@@ -70,6 +81,28 @@ class SommLLM:
                     api_key=self.config.openrouter_api_key,
                     roster=self.config.openrouter_roster,
                     tracker=self._tracker,
+                )
+            )
+        if self.config.minimax_api_key:
+            chain.append(
+                MinimaxProvider(
+                    api_key=self.config.minimax_api_key,
+                    default_model=self.config.minimax_model,
+                )
+            )
+        if self.config.anthropic_api_key:
+            chain.append(
+                AnthropicProvider(
+                    api_key=self.config.anthropic_api_key,
+                    default_model=self.config.anthropic_model,
+                )
+            )
+        if self.config.openai_api_key:
+            chain.append(
+                OpenAIProvider(
+                    api_key=self.config.openai_api_key,
+                    base_url=self.config.openai_base_url,
+                    default_model=self.config.openai_model,
                 )
             )
         return chain
