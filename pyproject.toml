@@ -30,6 +30,6 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 ignore = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["packages"]
+testpaths = ["packages", "tests"]
 python_files = ["test_*.py"]
 addopts = "-ra --import-mode=importlib"

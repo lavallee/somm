@@ -193,7 +193,7 @@ schema_version   (version, applied_at)
 Not "the library drops in and everything else comes later." Project A is the first project that gets **the whole loop**:
 
 1. `uv add somm somm-service somm-mcp` + install `somm-skill` at project level.
-2. Replace `the target's existing LLM wrapper` with `somm.compat.ScoutLLMCompat` (drop-in). Every existing call site unchanged.
+2. Replace `the target's existing LLM wrapper` with `somm.compat.GenericLLMCompat` (drop-in). Every existing call site unchanged.
 3. Register workloads: `claim_extract`, `topic_gate`, `relevance_score`, `query_generate`, `enrich`, `artifact_mine`.
 4. Commit the current inline prompts as `v1` prompt objects for each workload.
 5. Run `somm serve` in a background terminal.
