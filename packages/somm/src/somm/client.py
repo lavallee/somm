@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from somm_core import Outcome, SommResult
+from somm_core import Outcome, SommResult, cost_for_call
 from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.models import Call, Prompt
@@ -203,7 +203,7 @@ class SommLLM:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=latency_ms,
-            cost_usd=0.0,  # D3: cost calc lands with model_intel worker
+            cost_usd=cost_for_call(self.repo, actual_provider, actual_model, tokens_in, tokens_out),
             call_id=call_id,
             outcome=outcome,
             error_kind=error_kind,
@@ -220,7 +220,7 @@ class SommLLM:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=latency_ms,
-            cost_usd=0.0,
+            cost_usd=result.cost_usd,
             outcome=outcome,
             error_kind=error_kind,
             prompt_hash=stable_hash(prompt),
@@ -327,7 +327,13 @@ class SommLLM:
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_ms=latency_ms,
-                cost_usd=0.0,
+                cost_usd=cost_for_call(
+                    self.repo,
+                    chosen.name,
+                    actual_model or chosen.name,
+                    tokens_in,
+                    tokens_out,
+                ),
                 outcome=outcome,
                 error_kind=error_kind,
                 prompt_hash=stable_hash(prompt),

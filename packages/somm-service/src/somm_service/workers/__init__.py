@@ -1,0 +1,10 @@
+"""Scheduled workers: model_intel (v0.3a), shadow_eval (v0.3b), agent (v0.3c).
+
+All workers are callable classes with `.run_once()`. A lightweight scheduler
+in `_runner.py` polls the `jobs` table and invokes due workers atomically
+(lease-based, crash-safe).
+"""
+
+from somm_service.workers.model_intel import ModelIntelWorker
+
+__all__ = ["ModelIntelWorker"]
