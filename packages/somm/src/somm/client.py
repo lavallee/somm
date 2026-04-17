@@ -13,11 +13,12 @@ from datetime import UTC, datetime
 from somm_core import Outcome, SommResult
 from somm_core.config import Config
 from somm_core.config import load as load_config
-from somm_core.models import Call
-from somm_core.parse import stable_hash
+from somm_core.models import Call, Prompt
+from somm_core.parse import extract_json, stable_hash
 from somm_core.repository import Repository
 
 from somm.errors import SommStrictMode as _SommStrictMode
+from somm.prompts import get_prompt, register_prompt
 from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import SommProvider, SommRequest
 from somm.providers.minimax import MinimaxProvider
@@ -25,6 +26,7 @@ from somm.providers.ollama import OllamaProvider
 from somm.providers.openai import OpenAIProvider
 from somm.providers.openrouter import OpenRouterProvider
 from somm.routing import ProviderHealthTracker, Router
+from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
 
 SommStrictMode = _SommStrictMode  # re-export; new canonical lives in somm.errors
@@ -234,6 +236,105 @@ class SommLLM:
                     return p
             raise ValueError(f"provider {name!r} not configured")
         return self.providers[0]
+
+    # ------------------------------------------------------------------
+    # Structured output
+
+    def extract_structured(
+        self,
+        prompt: str,
+        system: str = "",
+        workload: str = "default",
+        max_tokens: int = 512,
+        temperature: float = 0.1,
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> dict | list:
+        """Call the LLM and extract JSON from the response.
+
+        Handles markdown fences, bracket-balanced extraction, qwen2.5 double-
+        quote quirk, and `<think>` blocks (already stripped by adapters).
+
+        Returns the parsed dict or list. On parse failure, returns
+        `{"raw": <text>, "_somm_parse_err": True}` so the caller can distinguish
+        between "LLM said nothing parseable" and "LLM said something parseable".
+        """
+        result = self.generate(
+            prompt=prompt,
+            system=system,
+            workload=workload,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=model,
+            provider=provider,
+        )
+        parsed = extract_json(result.text)
+        if parsed is None:
+            result.mark(Outcome.BAD_JSON)
+            return {"raw": result.text, "_somm_parse_err": True}
+        return parsed
+
+    # ------------------------------------------------------------------
+    # Prompt versioning
+
+    def register_prompt(
+        self,
+        workload: str,
+        body: str,
+        bump: str = "minor",
+    ) -> Prompt:
+        """Commit a prompt body for a named workload. Idempotent on hash match.
+
+        Args:
+            workload: workload name (must exist, or be auto-registered in observe mode).
+            body: the prompt body.
+            bump: "minor" (default), "major", or an explicit version "vN".
+        """
+        wl = self._require_workload(workload)
+        return register_prompt(self.repo, wl.id, body, bump=bump)
+
+    def prompt(self, workload: str, version: str = "latest") -> Prompt:
+        """Fetch a prompt by workload + version.
+
+        Use in calling code:
+            body = llm.prompt("claim_extract", version="latest").body
+            result = llm.generate(body, workload="claim_extract")
+        """
+        wl = self._require_workload(workload)
+        return get_prompt(self.repo, wl.id, version=version)
+
+    def _require_workload(self, name: str):
+        wl = self.repo.workload_by_name(name, self.config.project)
+        if wl is None:
+            if self.config.mode == "strict":
+                raise _SommStrictMode(
+                    f"SOMM_WORKLOAD_UNREGISTERED\n\n"
+                    f"Problem: Workload {name!r} is not registered.\n"
+                    f"Cause: strict mode requires workload metadata first.\n"
+                    f"Fix:\n"
+                    f"  somm.llm().repo.register_workload(name={name!r}, project=...)\n"
+                    f"Docs: docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"
+                )
+            wl = self.repo.register_workload(name=name, project=self.config.project)
+        return wl
+
+    # ------------------------------------------------------------------
+    # Parallel-worker slot assignment
+
+    def parallel_slots(self, n: int) -> list[str]:
+        """Return a striped assignment of provider names for n parallel workers.
+
+        Preserves sovereignty-first ordering and avoids stampeding one
+        provider. Cooled providers are excluded. Use:
+
+            assignments = llm.parallel_slots(4)
+            # e.g. ['ollama', 'openrouter', 'ollama', 'openrouter']
+            for i, provider_name in enumerate(assignments):
+                spawn_worker(i, provider=provider_name)
+        """
+        return _parallel_slots(self.providers, n, tracker=self._tracker)
+
+    # ------------------------------------------------------------------
 
     def close(self) -> None:
         """Drain the writer queue and stop the thread. Optional for short-lived processes."""
