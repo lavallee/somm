@@ -1,0 +1,169 @@
+"""Per-process writer queue + JSONL spool fallback.
+
+Design (Eng-E1 / Codex refinement): threads enqueue Call objects; one writer
+thread drains in short batched transactions. On repeated SQLITE_BUSY or disk
+pressure, rows spill to JSONL under `.somm/spool/`. `somm admin drain-spool`
+replays the spool back into SQLite when pressure clears.
+
+Preserves zero-service hot path: library works without somm serve running.
+"""
+
+from __future__ import annotations
+
+import json
+import queue
+import sqlite3
+import threading
+import time
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
+
+from somm_core import Call
+from somm_core.repository import Repository
+
+_BATCH_MAX = 100
+_BATCH_MS = 100
+_MAX_BUSY_RETRIES = 3
+
+
+class WriterQueue:
+    """Per-process async writer. One queue, one draining thread, one DB connection."""
+
+    _STOP = object()
+
+    def __init__(self, repo: Repository, spool_dir: Path) -> None:
+        self._repo = repo
+        self._spool_dir = Path(spool_dir)
+        self._spool_dir.mkdir(parents=True, exist_ok=True)
+        self._spool_dir.chmod(0o700)
+        self._q: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(target=self._run, name="somm-writer", daemon=True)
+        self._started = False
+        self._stopping = False
+
+    def start(self) -> None:
+        if not self._started:
+            self._thread.start()
+            self._started = True
+
+    def submit(self, call: Call) -> None:
+        if not self._started:
+            self.start()
+        self._q.put(call)
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """Block until the queue is drained (best-effort)."""
+        deadline = time.monotonic() + timeout
+        while not self._q.empty() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        if not self._started:
+            return
+        self._stopping = True
+        self._q.put(self._STOP)
+        self._thread.join(timeout=timeout)
+
+    # ------------------------------------------------------------------
+
+    def _run(self) -> None:
+        batch: list[Call] = []
+        last_flush = time.monotonic()
+        while True:
+            timeout = max(0.0, _BATCH_MS / 1000 - (time.monotonic() - last_flush))
+            try:
+                item = self._q.get(timeout=timeout) if timeout > 0 else self._q.get_nowait()
+            except queue.Empty:
+                item = None
+
+            if item is self._STOP:
+                if batch:
+                    self._drain(batch)
+                return
+
+            if item is not None:
+                batch.append(item)
+
+            if len(batch) >= _BATCH_MAX or (
+                batch and (time.monotonic() - last_flush) * 1000 >= _BATCH_MS
+            ):
+                self._drain(batch)
+                batch = []
+                last_flush = time.monotonic()
+
+    def _drain(self, batch: list[Call]) -> None:
+        for attempt in range(_MAX_BUSY_RETRIES):
+            try:
+                self._repo.write_calls_batch(batch)
+                return
+            except sqlite3.OperationalError as e:
+                if "busy" in str(e).lower() or "locked" in str(e).lower():
+                    time.sleep(0.05 * (2**attempt))
+                    continue
+                self._spill(batch, reason=str(e))
+                return
+            except OSError as e:
+                self._spill(batch, reason=f"disk: {e}")
+                return
+        self._spill(batch, reason="sqlite_busy_retries_exhausted")
+
+    def _spill(self, batch: list[Call], reason: str) -> None:
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        path = self._spool_dir / f"{ts}.jsonl"
+        with path.open("w", encoding="utf-8") as f:
+            for call in batch:
+                row = asdict(call)
+                row["ts"] = call.ts.isoformat()
+                row["outcome"] = call.outcome.value
+                row["_spill_reason"] = reason
+                f.write(json.dumps(row))
+                f.write("\n")
+        path.chmod(0o600)
+
+
+def drain_spool(repo: Repository, spool_dir: Path) -> int:
+    """Replay every .jsonl in the spool into the DB. Returns rows drained.
+
+    Called by `somm admin drain-spool` (or on service startup).
+    Each file is processed atomically; success deletes it.
+    """
+    spool_dir = Path(spool_dir)
+    if not spool_dir.exists():
+        return 0
+    total = 0
+    for path in sorted(spool_dir.glob("*.jsonl")):
+        calls: list[Call] = []
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                row.pop("_spill_reason", None)
+                from somm_core.models import Outcome
+
+                calls.append(
+                    Call(
+                        id=row["id"],
+                        ts=datetime.fromisoformat(row["ts"]),
+                        project=row["project"],
+                        workload_id=row["workload_id"],
+                        prompt_id=row["prompt_id"],
+                        provider=row["provider"],
+                        model=row["model"],
+                        tokens_in=row["tokens_in"],
+                        tokens_out=row["tokens_out"],
+                        latency_ms=row["latency_ms"],
+                        cost_usd=row["cost_usd"],
+                        outcome=Outcome(row["outcome"]),
+                        error_kind=row["error_kind"],
+                        prompt_hash=row["prompt_hash"],
+                        response_hash=row["response_hash"],
+                    )
+                )
+        try:
+            repo.write_calls_batch(calls)
+        except Exception:
+            # Leave spool file in place; try again later.
+            continue
+        total += len(calls)
+        path.unlink()
+    return total

@@ -1,0 +1,33 @@
+[project]
+name = "somm-workspace"
+version = "0.1.0.dev0"
+description = "somm — self-hosted LLM telemetry, routing, and intelligence loop (workspace root)"
+requires-python = ">=3.12"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+somm = { workspace = true }
+somm-core = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
+python_files = ["test_*.py"]
+addopts = "-ra"

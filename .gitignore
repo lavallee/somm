@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Environments
+.venv/
+.env
+.env.*
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local data (never commit telemetry)
+.somm/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Author-local notes not for open source
+CHARTER.md
+.claude/
+
+# Editor
+.vscode/
+.idea/
+*.swp
