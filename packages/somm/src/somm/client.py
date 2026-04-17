@@ -7,14 +7,16 @@ warning), call_id in result for provenance.
 
 from __future__ import annotations
 
+import time
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from somm_core import Outcome, SommResult
 from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.models import Call, Prompt
-from somm_core.parse import extract_json, stable_hash
+from somm_core.parse import ThinkStreamStripper, extract_json, stable_hash
 from somm_core.repository import Repository
 
 from somm.errors import SommStrictMode as _SommStrictMode
@@ -235,6 +237,112 @@ class SommLLM:
                 if p.name == name:
                     return p
             raise ValueError(f"provider {name!r} not configured")
+        return self.providers[0]
+
+    # ------------------------------------------------------------------
+    # Streaming
+
+    def stream(
+        self,
+        prompt: str,
+        system: str = "",
+        workload: str = "default",
+        max_tokens: int = 256,
+        temperature: float = 0.2,
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> Iterator[str]:
+        """Stream text deltas from the LLM. Yields user-visible text chunks
+        (with `<think>` blocks stripped across chunk boundaries).
+
+        Telemetry is written after the stream completes. No mid-stream
+        router fallback in v0.1 — first non-cooled provider handles the
+        whole stream or errors out.
+
+        Usage:
+            for piece in llm.stream("tell a story", workload="story"):
+                print(piece, end="", flush=True)
+        """
+        from somm.providers.base import SommRequest
+
+        wl = self._require_workload(workload)
+        req = SommRequest(
+            prompt=prompt,
+            system=system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=model,
+        )
+
+        chosen = self._pick_stream_provider(provider)
+        call_id = str(uuid.uuid4())
+        ts = datetime.now(UTC)
+        stripper = ThinkStreamStripper()
+
+        t0 = time.monotonic()
+        collected = []
+        outcome = Outcome.OK
+        error_kind: str | None = None
+        tokens_in = tokens_out = 0
+        actual_model = model or ""
+
+        try:
+            for chunk in chosen.stream(req):
+                if chunk.text:
+                    visible = stripper.feed(chunk.text)
+                    if visible:
+                        collected.append(visible)
+                        yield visible
+                if chunk.done:
+                    tail = stripper.flush()
+                    if tail:
+                        collected.append(tail)
+                        yield tail
+                    break
+            # Streaming providers don't always give token counts — estimate
+            # from length as a fallback.
+            text = "".join(collected)
+            if not actual_model:
+                actual_model = chosen.name
+            tokens_in = chosen.estimate_tokens(prompt + system, actual_model)
+            tokens_out = chosen.estimate_tokens(text, actual_model)
+            if not text.strip():
+                outcome = Outcome.EMPTY
+        except Exception as exc:
+            outcome = Outcome.UPSTREAM_ERROR
+            error_kind = type(exc).__name__
+            text = "".join(collected)
+            raise
+        finally:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            full_text = "".join(collected)
+            call = Call(
+                id=call_id,
+                ts=ts,
+                project=self.config.project,
+                workload_id=wl.id,
+                prompt_id=None,
+                provider=chosen.name,
+                model=actual_model or chosen.name,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                latency_ms=latency_ms,
+                cost_usd=0.0,
+                outcome=outcome,
+                error_kind=error_kind,
+                prompt_hash=stable_hash(prompt),
+                response_hash=stable_hash(full_text),
+            )
+            self._writer.submit(call)
+
+    def _pick_stream_provider(self, name: str | None):
+        if name:
+            return self._pick_provider(name)
+        # First non-cooled provider for streams (no mid-stream fallback).
+        for p in self.providers:
+            if not self._tracker.get(p.name).is_cooling():
+                return p
+        # If all cooled, use the first and let it raise.
         return self.providers[0]
 
     # ------------------------------------------------------------------

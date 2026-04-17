@@ -182,10 +182,61 @@ class OpenAICompatProvider:
 
     # ------------------------------------------------------------------
 
-    def stream(self, request: SommRequest) -> Iterator[SommChunk]:  # pragma: no cover
-        # D3 delivers real streaming.
-        resp = self.generate(request)
-        yield SommChunk(text=resp.text, done=True)
+    def stream(self, request: SommRequest) -> Iterator[SommChunk]:
+        """SSE-based streaming for OpenAI-compatible endpoints.
+
+        Parses `data: {...}\\n\\ndata: [DONE]\\n\\n` frames. `<think>` stripping
+        is the library's concern (see SommLLM.stream).
+        """
+        import json
+
+        model = request.model or self.default_model
+        if not model:
+            raise SommBadRequest(f"{self.name}: no model configured or requested")
+
+        payload = self._build_payload(request, model)
+        payload["stream"] = True
+
+        with (
+            httpx.Client(timeout=self.timeout) as client,
+            client.stream(
+                "POST",
+                self._chat_url(),
+                headers=self._headers(),
+                json=payload,
+            ) as resp,
+        ):
+            if resp.status_code != 200:
+                try:
+                    text = resp.read().decode("utf-8", errors="replace")[:200]
+                except Exception:
+                    text = ""
+                fake = httpx.Response(resp.status_code, text=text)
+                self._classify_status(fake, model)
+                return
+
+            for raw_line in resp.iter_lines():
+                line = raw_line.strip() if isinstance(raw_line, str) else raw_line
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:") :].strip()
+                if data_str == "[DONE]":
+                    yield SommChunk(text="", done=True)
+                    return
+                try:
+                    event = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                choices = event.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                piece = delta.get("content") or ""
+                if piece:
+                    yield SommChunk(text=piece, done=False)
+            yield SommChunk(text="", done=True)
 
     def health(self) -> ProviderHealth:
         try:

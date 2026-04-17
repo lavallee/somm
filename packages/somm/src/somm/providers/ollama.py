@@ -76,10 +76,45 @@ class OllamaProvider:
             raw=data,
         )
 
-    def stream(self, request: SommRequest) -> Iterator[SommChunk]:  # pragma: no cover
-        # Stub for D1 — D2 delivers full streaming with <think> buffered strip.
-        resp = self.generate(request)
-        yield SommChunk(text=resp.text, done=True)
+    def stream(self, request: SommRequest) -> Iterator[SommChunk]:
+        """Native ollama streaming. Emits SommChunk per line of JSONL output.
+
+        Each chunk is a text delta; `done=True` fires when ollama signals end.
+        `<think>` stripping is the library's concern (see SommLLM.stream).
+        """
+        import json
+
+        model = request.model or self.default_model
+        payload = {
+            "model": model,
+            "messages": [],
+            "stream": True,
+            "options": {
+                "temperature": request.temperature,
+                "num_predict": request.max_tokens,
+            },
+        }
+        if request.system:
+            payload["messages"].append({"role": "system", "content": request.system})
+        payload["messages"].append({"role": "user", "content": request.prompt})
+
+        with httpx.Client(timeout=self.timeout) as client:
+            with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    text = data.get("message", {}).get("content", "") or ""
+                    done = bool(data.get("done"))
+                    if text:
+                        yield SommChunk(text=text, done=False)
+                    if done:
+                        yield SommChunk(text="", done=True)
+                        return
 
     def health(self) -> ProviderHealth:
         try:

@@ -90,3 +90,107 @@ def workload_id(name: str, input_schema: Any = None, output_schema: Any = None) 
 
 def prompt_id(body: str) -> str:
     return stable_hash(body)
+
+
+# ---------------------------------------------------------------------------
+# Streaming: <think>...</think> buffered strip across chunks
+# ---------------------------------------------------------------------------
+
+
+class ThinkStreamStripper:
+    """Stateful filter that strips <think>...</think> across arbitrary chunk
+    boundaries.
+
+    Usage:
+        stripper = ThinkStreamStripper(lookahead_bytes=2048)
+        for chunk_text in provider.stream():
+            for out in stripper.feed(chunk_text):
+                yield out
+        tail = stripper.flush()
+        if tail:
+            yield tail
+
+    Guarantees:
+    - Never emits partial think content mid-stream (even if chunk boundary
+      falls inside a <think> block).
+    - If a <think> block exceeds `lookahead_bytes`, the buffer is flushed
+      AS-IS (with the tag visible) to avoid unbounded memory — caller can
+      detect this via `capped` on the next feed()'s result.
+    - Tolerates think-blocks spanning multiple chunks.
+    """
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self, lookahead_bytes: int = 2048) -> None:
+        self.lookahead_bytes = lookahead_bytes
+        self._buf = ""
+        self._in_think = False
+        self.capped = False
+
+    def feed(self, chunk: str) -> str:
+        """Feed a new chunk. Return the strip-safe prefix that can be emitted."""
+        if not chunk:
+            return ""
+        self._buf += chunk
+        out_parts: list[str] = []
+
+        while self._buf:
+            if self._in_think:
+                # Looking for </think>
+                idx = self._buf.find(self._CLOSE)
+                if idx < 0:
+                    # No close yet — keep buffering, but guard against runaway
+                    if len(self._buf) > self.lookahead_bytes:
+                        self.capped = True
+                        # Emit as-is and exit think mode (best-effort escape).
+                        out_parts.append(self._buf)
+                        self._buf = ""
+                        self._in_think = False
+                    return "".join(out_parts)
+                # Drop the think content + close tag, then continue
+                self._buf = self._buf[idx + len(self._CLOSE) :]
+                self._in_think = False
+                continue
+
+            # Not in think: emit up to the next "<think>" or the last safe byte
+            idx = self._buf.find(self._OPEN)
+            if idx >= 0:
+                if idx > 0:
+                    out_parts.append(self._buf[:idx])
+                self._buf = self._buf[idx + len(self._OPEN) :]
+                self._in_think = True
+                continue
+
+            # No "<think>" found. Hold back only the longest suffix of the
+            # buffer that is a prefix of "<think>" — everything before is
+            # safe to emit.
+            max_k = min(len(self._buf), len(self._OPEN) - 1)
+            hold = 0
+            for k in range(max_k, 0, -1):
+                if self._buf.endswith(self._OPEN[:k]):
+                    hold = k
+                    break
+            if hold == 0:
+                out_parts.append(self._buf)
+                self._buf = ""
+            else:
+                out_parts.append(self._buf[:-hold])
+                self._buf = self._buf[-hold:]
+            return "".join(out_parts)
+
+        return "".join(out_parts)
+
+    def flush(self) -> str:
+        """End of stream. Emit whatever remains in the buffer.
+
+        If we ended mid-think (no close tag ever seen), emit the contents
+        visibly — better to leak the think block than silently drop data.
+        """
+        tail = self._buf
+        self._buf = ""
+        if self._in_think:
+            # Mid-think at end of stream: mark capped and emit.
+            self.capped = True
+            self._in_think = False
+        return tail
