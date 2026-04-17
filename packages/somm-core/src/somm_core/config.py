@@ -29,10 +29,18 @@ class Config:
     minimax_api_key: str | None = None
     minimax_model: str = "MiniMax-M2"
     busy_timeout_ms: int = 5000
+    cross_project_enabled: bool = False
+    cross_project_path: Path | None = None  # defaults to ~/.somm/global.sqlite
 
     @property
     def db_path(self) -> Path:
         return self.db_dir / "calls.sqlite"
+
+    @property
+    def global_db_path(self) -> Path:
+        if self.cross_project_path is not None:
+            return Path(self.cross_project_path)
+        return Path.home() / ".somm" / "global.sqlite"
 
 
 def load(project: str | None = None, cwd: Path | None = None) -> Config:
@@ -67,6 +75,11 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         cfg.openrouter_roster = [
             m.strip() for m in os.environ["SOMM_OPENROUTER_ROSTER"].split(",") if m.strip()
         ]
+    if "SOMM_CROSS_PROJECT" in os.environ:
+        val = os.environ["SOMM_CROSS_PROJECT"].strip().lower()
+        cfg.cross_project_enabled = val in ("1", "true", "yes", "on")
+    if "SOMM_GLOBAL_PATH" in os.environ:
+        cfg.cross_project_path = Path(os.environ["SOMM_GLOBAL_PATH"])
     for env_var, attr in (
         ("ANTHROPIC_API_KEY", "anthropic_api_key"),
         ("SOMM_ANTHROPIC_MODEL", "anthropic_model"),

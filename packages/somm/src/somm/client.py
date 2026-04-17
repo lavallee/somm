@@ -57,8 +57,27 @@ class SommLLM:
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
         self.router = Router(self.providers, self._tracker)
-        self._writer = WriterQueue(self.repo, self.config.spool_dir)
+
+        mirror_repo: Repository | None = None
+        if self.config.cross_project_enabled:
+            mirror_repo = Repository(self.config.global_db_path)
+            # Mirror workload registrations as well so global rollups can
+            # resolve names rather than showing "(unregistered)".
+            _mirror_workloads(self.repo, mirror_repo)
+
+        self._writer = WriterQueue(self.repo, self.config.spool_dir, mirror_repo=mirror_repo)
         self._writer.start()
+        self._mirror_repo = mirror_repo
+
+    def register_workload(self, **kwargs):
+        """Register a workload in the project repo AND mirror-if-enabled."""
+        wl = self.repo.register_workload(project=self.config.project, **kwargs)
+        if self._mirror_repo is not None:
+            try:
+                self._mirror_repo.register_workload(project=self.config.project, **kwargs)
+            except Exception:  # noqa: BLE001
+                pass
+        return wl
 
     def _default_providers(self) -> list[SommProvider]:
         """Build the default provider chain from config.
@@ -508,3 +527,30 @@ class SommLLM:
 def llm(**kwargs) -> SommLLM:
     """Factory matching the plan's `somm.llm(project=...)` signature."""
     return SommLLM(**kwargs)
+
+
+def _mirror_workloads(src: Repository, dst: Repository) -> None:
+    """Copy workloads rows from src to dst (idempotent on id). Called once
+    on SommLLM init when cross_project_enabled is set."""
+    try:
+        with src._open() as s_conn:
+            rows = s_conn.execute(
+                "SELECT id, name, project, description, input_schema_json, "
+                "output_schema_json, quality_criteria_json, budget_cap_usd_daily, "
+                "privacy_class, created_at, shadow_config_json FROM workloads"
+            ).fetchall()
+        if not rows:
+            return
+        with dst._open() as d_conn:
+            d_conn.executemany(
+                """
+                INSERT OR IGNORE INTO workloads
+                    (id, name, project, description,
+                     input_schema_json, output_schema_json, quality_criteria_json,
+                     budget_cap_usd_daily, privacy_class, created_at, shadow_config_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+    except Exception:  # noqa: BLE001 — best-effort mirror
+        pass

@@ -27,6 +27,33 @@ from somm.providers.ollama import OllamaProvider
 
 def _cmd_status(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
+    if getattr(args, "global_view", False):
+        db_path = cfg.global_db_path
+        if not db_path.exists():
+            print(f"No global mirror at {db_path}.")
+            print("Enable via SOMM_CROSS_PROJECT=1 and run a project with somm.")
+            return 0
+        repo = Repository(db_path)
+        # Global status sums across projects; call with project=None semantics
+        # via a single-table query.
+        stats = _stats_global(repo, since_days=args.since)
+        if not stats:
+            print(f"Global mirror at {db_path} has no rows in the last {args.since} days.")
+            return 0
+        print(f"GLOBAL ({db_path})  ({args.since}d window)")
+        print(
+            f"{'project':<18} {'workload':<20} {'provider':<10} {'model':<16} "
+            f"{'n':>6} {'tok_in':>8} {'tok_out':>8} {'cost':>10} {'fail':>6}"
+        )
+        for s in stats:
+            cost_s = f"${(s['cost_usd'] or 0):.4f}"
+            print(
+                f"{s['project'][:17]:<18} {s['workload'][:19]:<20} {s['provider'][:9]:<10} "
+                f"{s['model'][:15]:<16} {s['n_calls']:>6} {(s['tokens_in'] or 0):>8} "
+                f"{(s['tokens_out'] or 0):>8} {cost_s:>10} {s['n_failed']:>6}"
+            )
+        return 0
+
     repo = Repository(cfg.db_path)
     stats = repo.stats_by_workload(cfg.project, since_days=args.since)
     if not stats:
@@ -46,6 +73,47 @@ def _cmd_status(args: argparse.Namespace) -> int:
             f"{cost_s:>10} {s['n_failed']:>6}"
         )
     return 0
+
+
+def _stats_global(repo, since_days: int) -> list[dict]:
+    """Cross-project roll-up from the global mirror. Same shape as
+    stats_by_workload but with `project` column."""
+    with repo._open() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                c.project,
+                COALESCE(w.name, '(unregistered)') AS workload,
+                c.provider, c.model,
+                COUNT(*) AS n_calls,
+                SUM(c.tokens_in) AS tokens_in,
+                SUM(c.tokens_out) AS tokens_out,
+                SUM(c.cost_usd) AS cost_usd,
+                AVG(c.latency_ms) AS latency_ms_avg,
+                SUM(CASE WHEN c.outcome != 'ok' THEN 1 ELSE 0 END) AS n_failed
+            FROM calls c
+            LEFT JOIN workloads w ON w.id = c.workload_id
+            WHERE c.ts >= datetime('now', ?)
+            GROUP BY c.project, workload, c.provider, c.model
+            ORDER BY cost_usd DESC NULLS LAST
+            """,
+            (f"-{since_days} days",),
+        ).fetchall()
+    return [
+        {
+            "project": r[0],
+            "workload": r[1],
+            "provider": r[2],
+            "model": r[3],
+            "n_calls": r[4],
+            "tokens_in": r[5],
+            "tokens_out": r[6],
+            "cost_usd": r[7],
+            "latency_ms_avg": r[8],
+            "n_failed": r[9],
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +462,12 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("status", help="show call roll-up for the current project")
     ps.add_argument("--project", default=None)
     ps.add_argument("--since", type=int, default=7, help="window in days (default 7)")
+    ps.add_argument(
+        "--global",
+        dest="global_view",
+        action="store_true",
+        help="read from ~/.somm/global.sqlite (requires SOMM_CROSS_PROJECT)",
+    )
     ps.set_defaults(func=_cmd_status)
 
     pt = sub.add_parser("tail", help="stream new calls as they land")

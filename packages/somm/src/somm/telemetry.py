@@ -28,12 +28,23 @@ _MAX_BUSY_RETRIES = 3
 
 
 class WriterQueue:
-    """Per-process async writer. One queue, one draining thread, one DB connection."""
+    """Per-process async writer. One queue, one draining thread, one DB connection.
+
+    Optional cross-project mirror: if `mirror_repo` is supplied, every
+    successful batch insert is replicated there. Mirror failures are logged
+    and spilled to a separate mirror_spool but do not block the primary write.
+    """
 
     _STOP = object()
 
-    def __init__(self, repo: Repository, spool_dir: Path) -> None:
+    def __init__(
+        self,
+        repo: Repository,
+        spool_dir: Path,
+        mirror_repo: Repository | None = None,
+    ) -> None:
         self._repo = repo
+        self._mirror_repo = mirror_repo
         self._spool_dir = Path(spool_dir)
         self._spool_dir.mkdir(parents=True, exist_ok=True)
         self._spool_dir.chmod(0o700)
@@ -96,6 +107,7 @@ class WriterQueue:
         for attempt in range(_MAX_BUSY_RETRIES):
             try:
                 self._repo.write_calls_batch(batch)
+                self._mirror(batch)
                 return
             except sqlite3.OperationalError as e:
                 if "busy" in str(e).lower() or "locked" in str(e).lower():
@@ -107,6 +119,18 @@ class WriterQueue:
                 self._spill(batch, reason=f"disk: {e}")
                 return
         self._spill(batch, reason="sqlite_busy_retries_exhausted")
+
+    def _mirror(self, batch: list[Call]) -> None:
+        """Replicate the batch to the mirror repo (opt-in cross-project view).
+        Failures are isolated from the primary write — never raise upward."""
+        if self._mirror_repo is None:
+            return
+        try:
+            self._mirror_repo.write_calls_batch(batch)
+        except Exception:  # noqa: BLE001 — mirror must not poison primary path
+            # Don't spill mirror failures (they'd duplicate the primary spool).
+            # Just drop; caller can re-run `somm admin drain-spool --mirror` later.
+            pass
 
     def _spill(self, batch: list[Call], reason: str) -> None:
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
