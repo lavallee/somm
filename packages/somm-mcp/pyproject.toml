@@ -5,6 +5,7 @@ description = "somm MCP server — exposes telemetry + recommendations to coding
 requires-python = ">=3.12"
 dependencies = [
     "somm-core",
+    "somm",
     "mcp>=1.2",
 ]
 

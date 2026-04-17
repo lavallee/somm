@@ -1773,12 +1773,14 @@ version = "0.1.0.dev0"
 source = { editable = "packages/somm-mcp" }
 dependencies = [
     { name = "mcp" },
+    { name = "somm" },
     { name = "somm-core" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "mcp", specifier = ">=1.2" },
+    { name = "somm", editable = "packages/somm" },
     { name = "somm-core", editable = "packages/somm-core" },
 ]
 
