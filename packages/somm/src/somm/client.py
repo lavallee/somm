@@ -127,13 +127,11 @@ class SommLLM:
             )
 
         if self.config.provider_order:
-            # User-specified order; skip providers not available
+            # Exclusive: ONLY providers in the list, in the listed order.
+            # If you set SOMM_PROVIDER_ORDER=openrouter,minimax,ollama
+            # then anthropic is NOT in the chain, even if its key is set.
             chain = [available[p] for p in self.config.provider_order if p in available]
-            # Append any remaining providers not in the explicit order
-            for name, prov in available.items():
-                if name not in self.config.provider_order:
-                    chain.append(prov)
-            return chain
+            return chain if chain else list(available.values())
 
         # Default: ollama → openrouter → minimax → anthropic → openai
         default_order = ["ollama", "openrouter", "minimax", "anthropic", "openai"]
