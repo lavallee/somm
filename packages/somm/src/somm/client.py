@@ -199,12 +199,33 @@ class SommLLM:
                 if not text.strip():
                     outcome = Outcome.EMPTY
             except Exception as exc:
-                outcome = Outcome.UPSTREAM_ERROR
-                error_kind = type(exc).__name__
-                actual_provider = chosen.name
-                # Capture model from the exception when available
-                if hasattr(exc, "model") and exc.model:
-                    actual_model = exc.model
+                # Preferred provider failed — fall through to the full
+                # router chain instead of giving up. "provider=X" means
+                # "try X first", not "only X". This is critical for
+                # parallel workers: if one provider goes down mid-batch,
+                # those workers recover via fallthrough instead of
+                # producing empty results.
+                from somm.errors import SommFatalError
+                if isinstance(exc, SommFatalError):
+                    # Auth errors etc. — don't retry, but still try router
+                    pass
+                try:
+                    router_result = self.router.dispatch(req)
+                    resp = router_result.response
+                    text = resp.text
+                    actual_provider = router_result.provider
+                    actual_model = resp.model
+                    tokens_in = resp.tokens_in
+                    tokens_out = resp.tokens_out
+                    latency_ms = resp.latency_ms
+                    if not text.strip():
+                        outcome = Outcome.EMPTY
+                except Exception as fallback_exc:
+                    outcome = Outcome.UPSTREAM_ERROR
+                    error_kind = type(exc).__name__
+                    actual_provider = chosen.name
+                    if hasattr(exc, "model") and exc.model:
+                        actual_model = exc.model
         else:
             try:
                 router_result = self.router.dispatch(req)
