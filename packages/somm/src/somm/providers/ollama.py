@@ -46,7 +46,11 @@ class OllamaProvider:
             "stream": False,
             "options": {
                 "temperature": request.temperature,
-                "num_predict": request.max_tokens,
+                # Thinking models (gemma4, etc.) wrap reasoning in
+                # <think>...</think> blocks that consume budget before
+                # the actual response. 3x headroom with a 1024 floor
+                # prevents empty responses after think-block stripping.
+                "num_predict": max(request.max_tokens * 3, 1024),
             },
         }
         if request.system:
@@ -91,7 +95,7 @@ class OllamaProvider:
             "stream": True,
             "options": {
                 "temperature": request.temperature,
-                "num_predict": request.max_tokens,
+                "num_predict": max(request.max_tokens * 3, 1024),
             },
         }
         if request.system:
