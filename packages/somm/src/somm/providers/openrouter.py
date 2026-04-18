@@ -42,15 +42,15 @@ if TYPE_CHECKING:
     from somm.routing import ProviderHealthTracker
 
 
-# Reasonable free-tier roster as of Jan 2026. Model-intel worker (D3)
-# will refresh this from OpenRouter's /models endpoint. Keep this short —
-# it's a seed, not the source of truth.
+# Free-tier roster as of Apr 2026. Tested live — 404'd models removed.
+# Model-intel worker (D3) will refresh this from OpenRouter's /models
+# endpoint. Keep this short — it's a seed, not the source of truth.
 DEFAULT_FREE_ROSTER: list[str] = [
+    "openrouter/elephant-alpha",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
     "google/gemma-3-27b-it:free",
     "meta-llama/llama-3.3-70b-instruct:free",
-    "nvidia/llama-3.1-nemotron-70b-instruct:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free",
-    "qwen/qwq-32b-preview:free",
 ]
 
 
