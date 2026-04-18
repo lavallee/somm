@@ -22,9 +22,11 @@ class SommProviderError(SommError):
 class SommTransientError(SommProviderError):
     """Transient — router should cool (provider, model) and try next."""
 
-    def __init__(self, detail: str = "", cooldown_s: float = 60.0) -> None:
+    def __init__(self, detail: str = "", cooldown_s: float = 60.0,
+                 model: str = "") -> None:
         super().__init__(detail)
         self.cooldown_s = cooldown_s
+        self.model = model  # which model failed; "" if provider-level
 
 
 class SommTimeout(SommTransientError):

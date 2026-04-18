@@ -195,6 +195,9 @@ class SommLLM:
                 outcome = Outcome.UPSTREAM_ERROR
                 error_kind = type(exc).__name__
                 actual_provider = chosen.name
+                # Capture model from the exception when available
+                if hasattr(exc, "model") and exc.model:
+                    actual_model = exc.model
         else:
             try:
                 router_result = self.router.dispatch(req)
@@ -208,6 +211,8 @@ class SommLLM:
                 if not text.strip():
                     outcome = Outcome.EMPTY
             except Exception as exc:
+                if hasattr(exc, "model") and exc.model:
+                    actual_model = exc.model
                 outcome = (
                     Outcome.EXHAUSTED
                     if type(exc).__name__ == "SommProvidersExhausted"

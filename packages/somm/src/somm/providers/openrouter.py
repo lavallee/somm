@@ -127,10 +127,12 @@ class OpenRouterProvider:
             raise SommTransientError(
                 "all openrouter roster models in cooldown",
                 cooldown_s=_estimated_roster_cooldown(self, default=120.0),
+                model="*all_cooled",
             )
         raise SommTransientError(
             f"all openrouter roster models failed this round (last: {last_exc})",
             cooldown_s=120.0,
+            model="*roster_exhausted",
         )
 
     def _call_single(self, request: SommRequest, model: str) -> SommResponse:
@@ -143,9 +145,9 @@ class OpenRouterProvider:
                     json=self._build_payload(request, model),
                 )
         except httpx.TimeoutException as e:
-            raise SommTimeout(f"openrouter timeout on {model}: {e}", cooldown_s=60.0) from e
+            raise SommTimeout(f"openrouter timeout on {model}: {e}", cooldown_s=60.0, model=model) from e
         except httpx.RequestError as e:
-            raise SommTransientError(f"network error on {model}: {e}", cooldown_s=30.0) from e
+            raise SommTransientError(f"network error on {model}: {e}", cooldown_s=30.0, model=model) from e
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         if resp.status_code == 401 or resp.status_code == 403:
@@ -158,11 +160,11 @@ class OpenRouterProvider:
             retry = _retry_after(resp) or 120.0
             raise SommRateLimited(f"openrouter 429 on {model}", retry_after_s=retry)
         if 500 <= resp.status_code < 600:
-            raise SommUpstream5xx(f"openrouter {resp.status_code} on {model}", cooldown_s=30.0)
+            raise SommUpstream5xx(f"openrouter {resp.status_code} on {model}", cooldown_s=30.0, model=model)
         if resp.status_code != 200:
             raise SommTransientError(
                 f"openrouter unexpected {resp.status_code} on {model}: {resp.text[:200]}",
-                cooldown_s=30.0,
+                cooldown_s=30.0, model=model,
             )
 
         data = resp.json()
@@ -173,7 +175,7 @@ class OpenRouterProvider:
             code = err.get("code") if isinstance(err, dict) else None
             if code == 429 or "rate" in msg.lower():
                 raise SommRateLimited(f"openrouter body-error: {msg}", retry_after_s=120.0)
-            raise SommTransientError(f"openrouter body-error on {model}: {msg}", cooldown_s=60.0)
+            raise SommTransientError(f"openrouter body-error on {model}: {msg}", cooldown_s=60.0, model=model)
 
         choices = data.get("choices") or []
         if not choices:
