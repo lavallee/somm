@@ -7,12 +7,14 @@ warning), call_id in result for provenance.
 
 from __future__ import annotations
 
+import sys
 import time
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from somm_core import Outcome, SommResult, cost_for_call
+from somm_core.pricing import seed_known_pricing
 from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.models import Call, Prompt
@@ -32,6 +34,10 @@ from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
 
 SommStrictMode = _SommStrictMode  # re-export; new canonical lives in somm.errors
+
+# Track which (workload, date) pairs have already emitted a budget-exceeded
+# warning so we only warn once per workload per day per process.
+_warned_budget_exceeded: set[tuple[str, date]] = set()
 
 
 class SommLLM:
@@ -68,6 +74,9 @@ class SommLLM:
         self._writer = WriterQueue(self.repo, self.config.spool_dir, mirror_repo=mirror_repo)
         self._writer.start()
         self._mirror_repo = mirror_repo
+
+        # Seed pricing on first use so cost tracking works out of the box.
+        seed_known_pricing(self.repo)
 
     def register_workload(self, **kwargs):
         """Register a workload in the project repo AND mirror-if-enabled."""
@@ -251,6 +260,28 @@ class SommLLM:
             response_hash=stable_hash(text),
         )
         self._writer.submit(call)
+
+        # Feature 3: warn if daily budget cap is exceeded.
+        if wl.budget_cap_usd_daily is not None and result.cost_usd > 0:
+            today = date.today()
+            budget_key = (wl.name, today)
+            if budget_key not in _warned_budget_exceeded:
+                with self.repo._open() as conn:
+                    row = conn.execute(
+                        "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
+                        "WHERE workload_id = ? AND date(ts) = date('now')",
+                        (wl.id,),
+                    ).fetchone()
+                daily_cost = row[0] if row else 0.0
+                if daily_cost > wl.budget_cap_usd_daily:
+                    _warned_budget_exceeded.add(budget_key)
+                    print(
+                        f"[somm] WARNING: workload {wl.name!r} daily cost "
+                        f"${daily_cost:.4f} exceeds budget cap "
+                        f"${wl.budget_cap_usd_daily:.4f}.",
+                        file=sys.stderr,
+                    )
+
         return result
 
     # ------------------------------------------------------------------
