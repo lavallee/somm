@@ -80,55 +80,55 @@ class SommLLM:
         return wl
 
     def _default_providers(self) -> list[SommProvider]:
-        """Build the default provider chain from config.
+        """Build the provider chain from config.
 
-        Order (sovereign-first):
-          1. ollama (local; no network)
-          2. openrouter (free roster + cooldowns)
-          3. minimax (if key)
-          4. anthropic (if key)
-          5. openai / openai-compatible (if key)
+        Default order (sovereign-first): ollama → openrouter → minimax →
+        anthropic → openai. Override with SOMM_PROVIDER_ORDER env var
+        (comma-separated, e.g. "openrouter,minimax,ollama").
 
         Every commercial-API provider is opt-in via its env var. Library
         works offline with just ollama.
         """
-        chain: list[SommProvider] = [
-            OllamaProvider(
-                base_url=self.config.ollama_url,
-                default_model=self.config.ollama_model,
-            )
-        ]
+        available: dict[str, SommProvider] = {}
+        available["ollama"] = OllamaProvider(
+            base_url=self.config.ollama_url,
+            default_model=self.config.ollama_model,
+        )
         if self.config.openrouter_api_key:
-            chain.append(
-                OpenRouterProvider(
-                    api_key=self.config.openrouter_api_key,
-                    roster=self.config.openrouter_roster,
-                    tracker=self._tracker,
-                )
+            available["openrouter"] = OpenRouterProvider(
+                api_key=self.config.openrouter_api_key,
+                roster=self.config.openrouter_roster,
+                tracker=self._tracker,
             )
         if self.config.minimax_api_key:
-            chain.append(
-                MinimaxProvider(
-                    api_key=self.config.minimax_api_key,
-                    default_model=self.config.minimax_model,
-                )
+            available["minimax"] = MinimaxProvider(
+                api_key=self.config.minimax_api_key,
+                default_model=self.config.minimax_model,
             )
         if self.config.anthropic_api_key:
-            chain.append(
-                AnthropicProvider(
-                    api_key=self.config.anthropic_api_key,
-                    default_model=self.config.anthropic_model,
-                )
+            available["anthropic"] = AnthropicProvider(
+                api_key=self.config.anthropic_api_key,
+                default_model=self.config.anthropic_model,
             )
         if self.config.openai_api_key:
-            chain.append(
-                OpenAIProvider(
-                    api_key=self.config.openai_api_key,
-                    base_url=self.config.openai_base_url,
-                    default_model=self.config.openai_model,
-                )
+            available["openai"] = OpenAIProvider(
+                api_key=self.config.openai_api_key,
+                base_url=self.config.openai_base_url,
+                default_model=self.config.openai_model,
             )
-        return chain
+
+        if self.config.provider_order:
+            # User-specified order; skip providers not available
+            chain = [available[p] for p in self.config.provider_order if p in available]
+            # Append any remaining providers not in the explicit order
+            for name, prov in available.items():
+                if name not in self.config.provider_order:
+                    chain.append(prov)
+            return chain
+
+        # Default: ollama → openrouter → minimax → anthropic → openai
+        default_order = ["ollama", "openrouter", "minimax", "anthropic", "openai"]
+        return [available[p] for p in default_order if p in available]
 
     # ------------------------------------------------------------------
 

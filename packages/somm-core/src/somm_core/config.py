@@ -27,7 +27,8 @@ class Config:
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
     minimax_api_key: str | None = None
-    minimax_model: str = "MiniMax-M2"
+    minimax_model: str = "MiniMax-M2.7"
+    provider_order: list[str] | None = None  # e.g. ["openrouter", "minimax", "ollama"]
     busy_timeout_ms: int = 5000
     cross_project_enabled: bool = False
     cross_project_path: Path | None = None  # defaults to ~/.somm/global.sqlite
@@ -80,6 +81,10 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         cfg.cross_project_enabled = val in ("1", "true", "yes", "on")
     if "SOMM_GLOBAL_PATH" in os.environ:
         cfg.cross_project_path = Path(os.environ["SOMM_GLOBAL_PATH"])
+    if "SOMM_PROVIDER_ORDER" in os.environ:
+        cfg.provider_order = [
+            p.strip() for p in os.environ["SOMM_PROVIDER_ORDER"].split(",") if p.strip()
+        ]
     for env_var, attr in (
         ("ANTHROPIC_API_KEY", "anthropic_api_key"),
         ("SOMM_ANTHROPIC_MODEL", "anthropic_model"),
