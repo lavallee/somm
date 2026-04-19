@@ -12,6 +12,8 @@ recommendations — all local, all yours.
 - 🟢 **No phone-home**, no cloud account, no hosted service
 - 🟢 **One-line drop-in** for codebases with an existing LLM wrapper
 - 🟢 **Multimodal** — text + image prompts routed only to capable models
+- 🟢 **Sommelier** — cross-project model memory: pick once, remember
+  everywhere
 - 🟢 **MCP** for Claude Code / Cursor / Windsurf to query your real telemetry
 
 ---
@@ -185,10 +187,10 @@ provider is opt-in via its own env var:
 
 Five packages:
 
-- **`somm-core`** — schema v2, migrations, repository, config, parse helpers
-- **`somm`** — `SommLLM`, providers, routing, streaming, compat shims, CLI
+- **`somm-core`** — schema v4, migrations, repository, config, parse helpers
+- **`somm`** — `SommLLM`, providers, routing, streaming, sommelier, compat shims, CLI
 - **`somm-service`** — starlette web admin + HTTP API + scheduler + 3 workers
-- **`somm-mcp`** — stdio MCP server
+- **`somm-mcp`** — stdio MCP server with 10 tools
 - **`somm-skill`** — onboarding markdown templates for coding agents
 
 ## Docs
@@ -197,6 +199,11 @@ Five packages:
 - 📜 [**CHANGELOG.md**](./CHANGELOG.md) — milestone log
 - 🖼️ [**Multimodal prompts**](./docs/multimodal.md) — image blocks +
   capability-aware routing
+- 🍷 [**Sommelier skill**](./packages/somm-skill/src/somm_skill/SOMMELIER.md) —
+  cross-project model advisor for coding agents
+- 📐 [**BLUEPRINT.md**](./docs/BLUEPRINT.md) — design guide for
+  building your own take
+- 🚢 [**RELEASING.md**](./RELEASING.md) — canonical release checklist
 - 🔥 [**Error reference**](./docs/errors/) — canonical `SOMM_*` codes
 - 🧪 [**Examples**](./examples/) — drop-in, OpenAI swap, private workloads
 
@@ -204,7 +211,7 @@ Five packages:
 
 ```bash
 uv sync --all-packages
-uv run pytest packages/ tests/     # 180 tests pass
+uv run pytest packages/ tests/     # 221 tests pass
 ```
 
 Live-provider tests (ollama) auto-skip when unavailable. VCR-style
@@ -218,5 +225,5 @@ or personal paths.
 
 ## Status
 
-**v0.1.1.** See [CHANGELOG](./CHANGELOG.md) for the release log and
+**v0.2.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [PLAN.md](./PLAN.md) for where things are headed.

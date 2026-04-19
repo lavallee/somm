@@ -11,8 +11,9 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from somm_core.models import Call, Outcome, PrivacyClass, Prompt, Workload
+from somm_core.models import Call, Decision, Outcome, PrivacyClass, Prompt, Workload
 from somm_core.parse import prompt_id as _prompt_id
+from somm_core.parse import stable_hash
 from somm_core.parse import workload_id as _workload_id
 from somm_core.schema import ensure_schema
 
@@ -312,3 +313,122 @@ class Repository:
             }
             for r in rows
         ]
+
+    # Decisions (sommelier) --------------------------------------------------
+
+    def record_decision(self, decision: Decision) -> None:
+        """Persist a decision row. Idempotent on (id)."""
+        with self._open() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO decisions (
+                    id, ts, project, workload_id, workload_name,
+                    question, question_hash, constraints_json, candidates_json,
+                    chosen_provider, chosen_model, rationale, agent,
+                    superseded_by, outcome_note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision.id,
+                    decision.ts.isoformat(),
+                    decision.project,
+                    decision.workload_id,
+                    decision.workload_name,
+                    decision.question,
+                    decision.question_hash,
+                    json.dumps(decision.constraints) if decision.constraints else None,
+                    json.dumps(decision.candidates),
+                    decision.chosen_provider,
+                    decision.chosen_model,
+                    decision.rationale,
+                    decision.agent,
+                    decision.superseded_by,
+                    decision.outcome_note,
+                ),
+            )
+
+    def search_decisions(
+        self,
+        question: str | None = None,
+        project: str | None = None,
+        workload: str | None = None,
+        chosen_provider: str | None = None,
+        limit: int = 20,
+    ) -> list[Decision]:
+        """Search decisions. If `question` is provided, matches by question_hash
+        first (exact); falls back to LIKE on the natural-language text.
+
+        Results are newest-first. Supersession is surfaced via the
+        `superseded_by` field — callers decide whether to show or hide.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if question:
+            clauses.append("(question_hash = ? OR question LIKE ?)")
+            params.append(stable_hash(_normalise_question(question)))
+            params.append(f"%{question}%")
+        if project:
+            clauses.append("project = ?")
+            params.append(project)
+        if workload:
+            clauses.append("(workload_name = ? OR workload_id = ?)")
+            params.append(workload)
+            params.append(workload)
+        if chosen_provider:
+            clauses.append("chosen_provider = ?")
+            params.append(chosen_provider)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            "SELECT id, ts, project, workload_id, workload_name, question, "
+            "       question_hash, constraints_json, candidates_json, "
+            "       chosen_provider, chosen_model, rationale, agent, "
+            "       superseded_by, outcome_note "
+            f"FROM decisions {where} ORDER BY ts DESC LIMIT ?"
+        )
+        params.append(limit)
+        with self._open() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_decision(r) for r in rows]
+
+    def get_decision(self, decision_id: str) -> Decision | None:
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT id, ts, project, workload_id, workload_name, question, "
+                "       question_hash, constraints_json, candidates_json, "
+                "       chosen_provider, chosen_model, rationale, agent, "
+                "       superseded_by, outcome_note FROM decisions WHERE id = ?",
+                (decision_id,),
+            ).fetchone()
+        return _row_to_decision(row) if row else None
+
+    def mark_decision_outcome(self, decision_id: str, note: str) -> None:
+        """Attach a retrospective note. Idempotent — overwrites."""
+        with self._open() as conn:
+            conn.execute(
+                "UPDATE decisions SET outcome_note = ? WHERE id = ?",
+                (note, decision_id),
+            )
+
+
+def _normalise_question(q: str) -> str:
+    return " ".join(q.strip().lower().split())
+
+
+def _row_to_decision(row) -> Decision:
+    return Decision(
+        id=row[0],
+        ts=datetime.fromisoformat(row[1]),
+        project=row[2],
+        workload_id=row[3],
+        workload_name=row[4],
+        question=row[5],
+        question_hash=row[6],
+        constraints=json.loads(row[7]) if row[7] else None,
+        candidates=json.loads(row[8]) if row[8] else [],
+        chosen_provider=row[9],
+        chosen_model=row[10],
+        rationale=row[11],
+        agent=row[12],
+        superseded_by=row[13],
+        outcome_note=row[14],
+    )

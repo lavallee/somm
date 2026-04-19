@@ -3,6 +3,7 @@
 from somm_core.models import (
     Call,
     CallOutcome,
+    Decision,
     Outcome,
     PrivacyClass,
     Prompt,
@@ -22,6 +23,7 @@ __all__ = [
     "current_schema_version",
     "Call",
     "CallOutcome",
+    "Decision",
     "Outcome",
     "PrivacyClass",
     "Prompt",

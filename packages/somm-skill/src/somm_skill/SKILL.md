@@ -91,11 +91,18 @@ else:
 
 ### 5. Before choosing a model, ask somm
 
-When the `somm_recommend` MCP tool is available (D2+), call it before
-hand-picking a model. somm has telemetry from your real workloads — it knows
-more than your training data does. Do not default to "Claude because that's
-what the user asked for." Ask which model fits the workload's cost/quality
-profile *as of today*.
+When `somm_recommend` or `somm_advise` is available, call one of them
+before hand-picking a model. somm has telemetry from your real
+workloads + pricing/capability intel from the provider APIs — it knows
+more than your training data does. Do not default to "Claude because
+that's what the user asked for." Ask which model fits the workload's
+cost/quality profile *as of today*.
+
+For free-form model advice ("what vision model should I use?",
+"cheapest option for long context?"), the dedicated [sommelier
+skill](./SOMMELIER.md) covers the full recall → advise → record loop
+with cross-project decision memory. Load it when the conversation
+shifts from coding to model choice.
 
 ### 6. Streaming and structured output
 
@@ -126,9 +133,14 @@ without it.
 
 If the user has configured `somm-mcp` in this agent, you can call:
 - `somm_stats` — telemetry roll-up for the current project.
-- (D2+) `somm_recommend` — model recommendations grounded in local data.
-- (D2+) `somm_compare` — run a prompt through N models side-by-side.
-- (D2+) `somm_replay` — replay a past call against a different model.
+- `somm_recommend` — model recommendations grounded in local shadow-eval
+  data, with cold-start sommelier fallback when data is sparse.
+- `somm_advise` — free-form candidate ranking over `model_intel` +
+  capability filters + past decisions. See [SOMMELIER.md](./SOMMELIER.md).
+- `somm_record_decision` / `somm_search_decisions` — cross-project
+  advisory memory for model choices.
+- `somm_compare` — run a prompt through N models side-by-side.
+- `somm_replay` — replay a past call against a different model.
 
 Call these *before* deciding on a model for new LLM code.
 

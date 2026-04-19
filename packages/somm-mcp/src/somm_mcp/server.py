@@ -1,17 +1,23 @@
-"""FastMCP server — exposes 7 tools to coding agents.
+"""FastMCP server — exposes 10 tools to coding agents.
 
 Tool catalog:
   somm_stats              — rolled-up call counts per (workload, provider, model)
   somm_search_calls       — query the call log by filters
-  somm_recommend          — open recommendations + shadow-eval candidates for a workload
+  somm_recommend          — open recommendations + shadow-eval ranking
+                            (+ cold-start sommelier candidates when sparse)
+  somm_advise             — sommelier: free-form candidate ranking by
+                            capability / price / provider / workload
+  somm_record_decision    — persist the outcome of a sommelier conversation
+                            (always cross-project mirrored)
+  somm_search_decisions   — recall prior decisions by question / workload /
+                            provider (default scope: global)
   somm_register_workload  — commit a workload (+ optional privacy/schemas)
   somm_register_prompt    — commit a new prompt version for a workload
   somm_compare            — run a prompt through N models side-by-side (provider-dependent)
   somm_replay             — replay a stored call against a different model (provider-dependent)
 
-The handlers are thin — they delegate to `somm-core.Repository` /
-`somm.prompts` / `somm.client`. Same surface is reused by an HTTP
-transport (via `somm serve`) in D4+.
+The handlers are thin — they delegate to `somm-core.Repository`,
+`somm.sommelier`, `somm.prompts`, and `somm.client`.
 
 Providers parameter is optional — if omitted, compare/replay return a
 structured error rather than being hidden from the catalog, so tool
@@ -110,19 +116,240 @@ def build_server(
 
         recs = _open_recommendations(repo, wl.id)
         ranked = _shadow_ranking(repo, wl.id, since_days=since_days)
+
+        # Cold-start fallback: no shadow data yet → ask the sommelier for
+        # candidates grounded in model_intel + capability coverage + prior
+        # cross-project decisions. Better than an empty list.
+        cold_start: list[dict] = []
+        prior_decisions: list[dict] = []
+        if not ranked:
+            from somm.sommelier import AdviseConstraints, advise
+
+            cold_constraints = AdviseConstraints(
+                capabilities=list(wl.capabilities_required),
+                workload=wl.name,
+                limit=5,
+            )
+            cold_start = [c.as_dict() for c in advise(repo, cold_constraints)]
+            prior_decisions = _relevant_decisions(repo, workload=wl.name)
+
         return {
             "workload": workload,
             "project": cfg.project,
             "privacy_class": wl.privacy_class.value,
+            "capabilities_required": list(wl.capabilities_required),
             "open_recommendations": recs,
             "shadow_rankings": ranked,
+            "cold_start_candidates": cold_start,
+            "prior_decisions": prior_decisions,
             "note": (
-                "If no shadow_rankings: enable shadow-eval via "
+                "No shadow data yet — returning cold-start candidates "
+                "from model_intel and any prior decisions recorded for "
+                "this workload. Enable shadow-eval via "
                 "SommLLM.enable_shadow(workload, gold_provider, gold_model) "
-                "and let the worker accumulate grades."
+                "to start grading real calls."
             )
             if not ranked
             else None,
+        }
+
+    # ------------------------------------------------------------------
+    # somm_advise  (sommelier — free-form candidate ranking)
+
+    @server.tool()
+    def somm_advise(
+        question: str,
+        capabilities: list[str] | None = None,
+        providers: list[str] | None = None,
+        max_price_in_per_1m: float | None = None,
+        max_price_out_per_1m: float | None = None,
+        min_context_window: int | None = None,
+        free_only: bool = False,
+        workload: str | None = None,
+        limit: int = 8,
+    ) -> dict:
+        """Rank candidate (provider, model) pairs against the given constraints.
+
+        Returns the top-N ranked candidates from model_intel with reasoning,
+        plus any prior cross-project decisions whose question hashes match.
+        The agent uses this to surface options + rationale to the user,
+        then records the chosen outcome via `somm_record_decision`.
+
+        Args:
+            question: natural-language question (stored verbatim on any
+              resulting decision; normalised + hashed for dedup).
+            capabilities: required capability tokens (e.g. ["vision"]).
+              Hard filter — known-incapable models are excluded.
+            providers: whitelist of providers to consider.
+            max_price_in_per_1m / max_price_out_per_1m: price ceilings in
+              USD per 1M tokens. Null = no ceiling.
+            min_context_window: minimum context window in tokens.
+            free_only: shortcut — both input/output prices must be 0.
+            workload: optional — looks up any shadow-eval scores for this
+              workload so graded models get a ranking bonus.
+            limit: max candidates to return (default 8).
+        """
+        from somm.sommelier import AdviseConstraints, advise
+
+        constraints = AdviseConstraints(
+            capabilities=list(capabilities or []),
+            providers=list(providers) if providers else None,
+            max_price_in_per_1m=max_price_in_per_1m,
+            max_price_out_per_1m=max_price_out_per_1m,
+            min_context_window=min_context_window,
+            free_only=free_only,
+            workload=workload,
+            limit=limit,
+        )
+        cands = advise(repo, constraints)
+        priors = _relevant_decisions(repo, question=question, workload=workload)
+        return {
+            "question": question,
+            "project": cfg.project,
+            "constraints": {
+                "capabilities": constraints.capabilities,
+                "providers": constraints.providers,
+                "max_price_in_per_1m": constraints.max_price_in_per_1m,
+                "max_price_out_per_1m": constraints.max_price_out_per_1m,
+                "min_context_window": constraints.min_context_window,
+                "free_only": constraints.free_only,
+                "workload": constraints.workload,
+            },
+            "candidates": [c.as_dict() for c in cands],
+            "prior_decisions": priors,
+            "note": (
+                "No candidates matched. Loosen constraints, "
+                "run `somm-serve admin refresh-intel` to refresh the "
+                "model intel cache, or add a provider with capable models."
+            )
+            if not cands
+            else None,
+        }
+
+    # ------------------------------------------------------------------
+    # somm_record_decision
+
+    @server.tool()
+    def somm_record_decision(
+        question: str,
+        rationale: str,
+        candidates: list[dict],
+        chosen_provider: str | None = None,
+        chosen_model: str | None = None,
+        workload: str | None = None,
+        constraints: dict | None = None,
+        agent: str | None = None,
+    ) -> dict:
+        """Record the outcome of a sommelier conversation.
+
+        Decisions are *always* mirrored to the cross-project global store
+        (unlike call telemetry, which is per-project by default). The value
+        is explicitly cross-project: "last time I picked a vision model,
+        this is what I chose and why."
+
+        Args:
+            question: the original question text (stored verbatim; normalised
+              for dedup).
+            rationale: the "why" in the user's (or agent's) own words.
+              Keep short — this is the payload future sessions will read.
+            candidates: the candidates considered, usually the `candidates`
+              list from somm_advise serialised as-is.
+            chosen_provider / chosen_model: the pick (both optional — a
+              decision may legitimately be "none of these, recheck later").
+            workload: optional workload scope.
+            constraints: the constraint dict from somm_advise (stored for
+              audit / dedup).
+            agent: the caller identifier (e.g. "claude-code-malo").
+        """
+        from somm.sommelier import build_decision
+
+        wl = None
+        if workload:
+            wl = repo.workload_by_name(workload, cfg.project)
+
+        decision = build_decision(
+            question=question,
+            candidates=candidates,
+            rationale=rationale,
+            project=cfg.project,
+            chosen_provider=chosen_provider,
+            chosen_model=chosen_model,
+            workload=workload,
+            workload_id=wl.id if wl else None,
+            constraints=constraints,
+            agent=agent,
+        )
+
+        # Primary write
+        repo.record_decision(decision)
+        mirrored = False
+        # Always mirror to the global store, even when cross-project is off
+        # for calls — decisions are advisory memory by definition.
+        try:
+            global_repo = _global_repo(cfg)
+            if global_repo is not None:
+                global_repo.record_decision(decision)
+                mirrored = True
+        except Exception as e:  # noqa: BLE001 — mirror must not block
+            return {
+                "decision_id": decision.id,
+                "mirrored": False,
+                "mirror_error": str(e),
+            }
+        return {
+            "decision_id": decision.id,
+            "question_hash": decision.question_hash,
+            "mirrored": mirrored,
+            "chosen": {
+                "provider": decision.chosen_provider,
+                "model": decision.chosen_model,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # somm_search_decisions
+
+    @server.tool()
+    def somm_search_decisions(
+        question: str | None = None,
+        workload: str | None = None,
+        chosen_provider: str | None = None,
+        project: str | None = None,
+        scope: str = "global",
+        limit: int = 10,
+    ) -> dict:
+        """Look up past sommelier decisions.
+
+        By default scope="global" queries the cross-project store — so a
+        decision made in one project can inform reasoning in another. Use
+        scope="project" to restrict to the current project's DB only.
+
+        Args:
+            question: free-text search; matches by question_hash first,
+              then by LIKE on the natural-language text.
+            workload: filter by workload name or id.
+            chosen_provider: filter by the provider that was picked.
+            project: filter by project name (any scope).
+            scope: "global" (default) or "project".
+            limit: max results (default 10).
+        """
+        if scope == "project":
+            search_repo = repo
+        else:
+            g = _global_repo(cfg)
+            search_repo = g if g is not None else repo
+
+        decisions = search_repo.search_decisions(
+            question=question,
+            project=project,
+            workload=workload,
+            chosen_provider=chosen_provider,
+            limit=limit,
+        )
+        return {
+            "scope": scope,
+            "count": len(decisions),
+            "decisions": [_decision_as_dict(d) for d in decisions],
         }
 
     # ------------------------------------------------------------------
@@ -526,6 +753,57 @@ def _fetch_call_with_sample(repo: Repository, call_id: str) -> dict | None:
         "privacy_class": row[10],
         "prompt_body": row[11],
         "response_body": row[12],
+    }
+
+
+def _global_repo(cfg: Config) -> Repository | None:
+    """Open the cross-project global store on demand, or return None if
+    creation fails. Decisions always target this path — we don't gate
+    behind the cross_project_enabled flag (that flag is about calls)."""
+    try:
+        return Repository(cfg.global_db_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _relevant_decisions(
+    repo: Repository,
+    question: str | None = None,
+    workload: str | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """Lookup that prefers the global store but falls back to local."""
+    cfg = load_config()
+    for candidate in (_global_repo(cfg), repo):
+        if candidate is None:
+            continue
+        try:
+            results = candidate.search_decisions(
+                question=question, workload=workload, limit=limit
+            )
+        except Exception:  # noqa: BLE001 — never let a missing table crash MCP
+            results = []
+        if results:
+            return [_decision_as_dict(d) for d in results]
+    return []
+
+
+def _decision_as_dict(d) -> dict:
+    return {
+        "id": d.id,
+        "ts": d.ts.isoformat(),
+        "project": d.project,
+        "workload": d.workload_name,
+        "question": d.question,
+        "question_hash": d.question_hash,
+        "chosen_provider": d.chosen_provider,
+        "chosen_model": d.chosen_model,
+        "rationale": d.rationale,
+        "candidates": d.candidates,
+        "constraints": d.constraints,
+        "agent": d.agent,
+        "superseded_by": d.superseded_by,
+        "outcome_note": d.outcome_note,
     }
 
 

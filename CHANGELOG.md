@@ -4,6 +4,46 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.2.0] — 2026-04-19
+
+### Added — sommelier: model advisor + cross-project decision memory
+- **`somm.sommelier`** — new module that ranks (provider, model)
+  candidates from `model_intel` against free-form constraints:
+  capability tokens (hard filter), price ceilings, provider
+  whitelist, `min_context_window`, `free_only` shortcut, and optional
+  `workload` hook that boosts candidates with shadow-eval evidence.
+- **Schema v4** — `decisions` table + `Decision` dataclass. A
+  decision captures a question, candidates considered, chosen
+  (provider, model), rationale, and caller agent. `question_hash` is
+  stable across whitespace + case so near-identical questions dedup.
+- **Cross-project decision memory** — decisions are *always* mirrored
+  to `~/.somm/global.sqlite` (not gated by `SOMM_CROSS_PROJECT`).
+  Calls stay per-project for privacy; decisions cross over because
+  advisory memory is useless without portability.
+- **Three new MCP tools** on `somm-mcp` (now 10 tools total):
+  - `somm_advise` — ranked candidates with per-factor reasoning.
+  - `somm_record_decision` — persist the outcome of a sommelier
+    conversation, auto-mirrored globally.
+  - `somm_search_decisions` — recall by question / workload /
+    provider, default scope is `global`.
+- **`somm_recommend` cold-start branch** — when a workload has no
+  shadow data, the tool now returns sommelier candidates + any
+  prior decisions for that workload instead of an empty list.
+- **`SOMMELIER.md` skill** in `somm-skill` — documents the
+  recall → advise → record loop for coding agents, with guidance on
+  when not to use it (hard user intent, hot loops, private
+  workloads).
+
+### Added — documentation
+- **`RELEASING.md`** — canonical release checklist including the
+  `docs/index.html` update step (previously a forgotten manual
+  task).
+- **`docs/BLUEPRINT.md`** — design blueprint for anyone building
+  their own take: the six forces, the ten tables, non-obvious
+  decisions, and an explicit "what to keep minimal if you're
+  reimplementing" path. Intended for porters writing in other
+  languages or with narrower scope.
+
 ## [0.1.1] — 2026-04-19
 
 ### Added — multimodal + capability-aware routing

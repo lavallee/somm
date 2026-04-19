@@ -80,6 +80,13 @@ class SommLLM:
         self._writer.start()
         self._mirror_repo = mirror_repo
 
+        # Decisions are ALWAYS mirrored to the global store — unlike calls
+        # (per-project for privacy), advisory memory is explicitly
+        # cross-project: "last time I picked a vision model, here's why."
+        # We lazily create the handle so cold starts don't touch the global
+        # path unless a decision is actually recorded.
+        self._decision_mirror: Repository | None = mirror_repo
+
         # Seed pricing on first use so cost tracking works out of the box.
         seed_known_pricing(self.repo)
 

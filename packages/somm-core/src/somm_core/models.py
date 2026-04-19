@@ -80,6 +80,31 @@ class Call:
 
 
 @dataclass(slots=True)
+class Decision:
+    """Advisory memory: a question asked, candidates considered, a choice made.
+
+    Mirrored across projects by default — the whole point is to remember
+    past reasoning when the same question comes up elsewhere.
+    """
+
+    id: str  # UUID4
+    ts: datetime
+    project: str
+    question: str
+    question_hash: str
+    candidates: list[dict]
+    rationale: str
+    chosen_provider: str | None = None
+    chosen_model: str | None = None
+    workload_id: str | None = None
+    workload_name: str | None = None
+    constraints: dict | None = None
+    agent: str | None = None
+    superseded_by: str | None = None
+    outcome_note: str | None = None
+
+
+@dataclass(slots=True)
 class SommResult:
     """Return shape of SommLLM.generate()."""
 

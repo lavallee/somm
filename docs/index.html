@@ -17,7 +17,7 @@
   <div class="wrap">
     <a class="logo" href="./">
       <span class="mark">somm</span>
-      <span class="mark-sub">/ v0.1.0-dev</span>
+      <span class="mark-sub">/ v0.2.0</span>
     </a>
     <nav>
       <a href="#why">why</a>
@@ -101,11 +101,31 @@ print(r.text, r.provider, r.cost_usd)
         <div class="row">
           <h3>MCP for your coding agent</h3>
           <p>
-            Seven stdio tools. Your Claude Code / Cursor / Windsurf
+            Ten stdio tools. Your Claude Code / Cursor / Windsurf
             session can query actual telemetry: "what did claim_extract
             cost this week?" → real answer. "Compare gemma3 and llama3
             on this prompt" → real side-by-side. "Replay call X against
             a cheaper model" → real delta.
+          </p>
+        </div>
+        <div class="row">
+          <h3>Sommelier: cross-project model memory</h3>
+          <p>
+            Ask in <code>malo</code>: <em>good free vision models on
+            openrouter?</em> Get a ranked list with capability + price
+            reasoning. Pick one. Next week in a different project, ask
+            the same thing — somm remembers what you picked and why,
+            across every project on your machine. Decisions are the one
+            signal that always crosses project boundaries.
+          </p>
+        </div>
+        <div class="row">
+          <h3>Multimodal-native routing</h3>
+          <p>
+            Pass text + image content blocks to any provider that
+            accepts them. The router auto-filters to vision-capable
+            models before the network call. No surprise 400s on
+            text-only endpoints, no bespoke branching in your code.
           </p>
         </div>
       </div>
@@ -228,10 +248,10 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
       <p>Five packages:</p>
       <table class="pkg-tbl">
         <tbody>
-          <tr><th>somm-core</th><td>schema v2, migrations, repository, config, parse helpers</td></tr>
+          <tr><th>somm-core</th><td>schema v4, migrations, repository, config, parse helpers</td></tr>
           <tr><th>somm</th><td>library — <code>SommLLM</code>, providers, routing, streaming, compat shims, CLI</td></tr>
           <tr><th>somm-service</th><td>starlette web admin + HTTP API + scheduler + three workers</td></tr>
-          <tr><th>somm-mcp</th><td>stdio MCP server with seven tools</td></tr>
+          <tr><th>somm-mcp</th><td>stdio MCP server with ten tools</td></tr>
           <tr><th>somm-skill</th><td>onboarding templates for Claude / Codex / Cursor / Windsurf</td></tr>
         </tbody>
       </table>
@@ -246,8 +266,12 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
     <div class="wrap">
       <h2>Status</h2>
       <p class="section-lede">
-        v0.1.0-dev. Not yet published to PyPI. All 180 tests passing.
-        Plan milestones D1–D7 complete. MIT licensed.
+        v0.2.0 — sommelier release. Not yet published to PyPI. 221
+        tests passing. Plan milestones D1–D7 complete, plus multimodal
+        (0.1.1) and sommelier (0.2.0) as post-plan increments. MIT
+        licensed. If you want to build your own take, the
+        <a href="https://github.com/lavallee/somm/blob/main/docs/BLUEPRINT.md">BLUEPRINT</a>
+        distills the six design forces.
       </p>
       <p><a class="btn" href="https://github.com/lavallee/somm" rel="noopener">Star on GitHub →</a></p>
     </div>
