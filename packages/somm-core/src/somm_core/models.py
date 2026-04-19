@@ -40,6 +40,10 @@ class Workload:
     quality_criteria: list[str] = field(default_factory=list)
     budget_cap_usd_daily: float | None = None
     privacy_class: PrivacyClass = PrivacyClass.INTERNAL
+    # Capabilities every call for this workload requires of the serving
+    # (provider, model). See somm_core.parse.infer_capabilities — these are
+    # merged with what the prompt self-advertises at dispatch time.
+    capabilities_required: list[str] = field(default_factory=list)
     created_at: datetime | None = None
 
 

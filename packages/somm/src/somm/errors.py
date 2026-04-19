@@ -73,6 +73,28 @@ class SommProvidersExhausted(SommFatalError):
         self.next_cool_in_s = next_cool_in_s
 
 
+class SommNoCapableProvider(SommFatalError):
+    """No provider in the chain exposes a model with the required capabilities.
+
+    Raised before any network call. Carries the missing capabilities and the
+    list of (provider, model, reason) pairs the router skipped so operators
+    can understand the gap and fix it explicitly (enable a provider, swap
+    default model, etc.) rather than discover it via a late 400.
+    """
+
+    code = "SOMM_NO_CAPABLE_PROVIDER"
+
+    def __init__(
+        self,
+        detail: str = "",
+        required: list[str] | None = None,
+        skipped: list[tuple[str, str, str]] | None = None,
+    ) -> None:
+        super().__init__(detail)
+        self.required = list(required or [])
+        self.skipped = list(skipped or [])
+
+
 class SommStrictMode(SommError):
     """Strict mode refused an unregistered workload/prompt."""
 

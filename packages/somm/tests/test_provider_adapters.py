@@ -151,7 +151,7 @@ def test_minimax_uses_minimaxi_endpoint(monkeypatch):
     monkeypatch.setattr(httpx, "Client", _patch_client(handler))
     p = MinimaxProvider(api_key="mm-fake")
     p.generate(SommRequest(prompt="hi"))
-    assert "minimaxi.com" in captured["url"]
+    assert "minimax.io" in captured["url"]
 
 
 def test_minimax_default_model(monkeypatch):
@@ -173,7 +173,7 @@ def test_minimax_default_model(monkeypatch):
     monkeypatch.setattr(httpx, "Client", _patch_client(handler))
     p = MinimaxProvider(api_key="mm-fake")
     p.generate(SommRequest(prompt="hi"))
-    assert captured["model"] == "MiniMax-M2"
+    assert captured["model"] == "MiniMax-M2.7"
 
 
 # ---------------------------------------------------------------------------

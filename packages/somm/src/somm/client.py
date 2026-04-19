@@ -18,7 +18,12 @@ from somm_core.pricing import seed_known_pricing
 from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.models import Call, Prompt
-from somm_core.parse import ThinkStreamStripper, extract_json, stable_hash
+from somm_core.parse import (
+    ThinkStreamStripper,
+    extract_json,
+    infer_capabilities,
+    stable_hash,
+)
 from somm_core.repository import Repository
 
 from somm.errors import SommStrictMode as _SommStrictMode
@@ -141,13 +146,14 @@ class SommLLM:
 
     def generate(
         self,
-        prompt: str,
+        prompt: str | list[dict],
         system: str = "",
         workload: str = "default",
         max_tokens: int = 256,
         temperature: float = 0.2,
         model: str | None = None,
         provider: str | None = None,
+        capabilities_required: list[str] | None = None,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -169,12 +175,19 @@ class SommLLM:
                 )
             wl = self.repo.register_workload(name=workload, project=self.config.project)
 
+        effective_caps = _merge_caps(
+            wl.capabilities_required,
+            capabilities_required,
+            infer_capabilities(prompt),
+        )
+
         req = SommRequest(
             prompt=prompt,
             system=system,
             max_tokens=max_tokens,
             temperature=temperature,
             model=model,
+            capabilities_required=effective_caps,
         )
 
         call_id = str(uuid.uuid4())
@@ -318,7 +331,7 @@ class SommLLM:
 
     def stream(
         self,
-        prompt: str,
+        prompt: str | list[dict],
         system: str = "",
         workload: str = "default",
         max_tokens: int = 256,
@@ -378,7 +391,9 @@ class SommLLM:
             text = "".join(collected)
             if not actual_model:
                 actual_model = chosen.name
-            tokens_in = chosen.estimate_tokens(prompt + system, actual_model)
+            tokens_in = chosen.estimate_tokens(prompt, actual_model) + chosen.estimate_tokens(
+                system, actual_model
+            )
             tokens_out = chosen.estimate_tokens(text, actual_model)
             if not text.strip():
                 outcome = Outcome.EMPTY
@@ -584,6 +599,19 @@ def llm(**kwargs) -> SommLLM:
     return SommLLM(**kwargs)
 
 
+def _merge_caps(*sources: list[str] | None) -> list[str]:
+    """Merge capability lists deterministically — preserves declaration order
+    of the first source to name each capability."""
+    seen: dict[str, None] = {}
+    for src in sources:
+        if not src:
+            continue
+        for cap in src:
+            if cap and cap not in seen:
+                seen[cap] = None
+    return list(seen.keys())
+
+
 def _mirror_workloads(src: Repository, dst: Repository) -> None:
     """Copy workloads rows from src to dst (idempotent on id). Called once
     on SommLLM init when cross_project_enabled is set."""
@@ -592,7 +620,8 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
             rows = s_conn.execute(
                 "SELECT id, name, project, description, input_schema_json, "
                 "output_schema_json, quality_criteria_json, budget_cap_usd_daily, "
-                "privacy_class, created_at, shadow_config_json FROM workloads"
+                "privacy_class, created_at, shadow_config_json, "
+                "capabilities_required_json FROM workloads"
             ).fetchall()
         if not rows:
             return
@@ -602,8 +631,9 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
                 INSERT OR IGNORE INTO workloads
                     (id, name, project, description,
                      input_schema_json, output_schema_json, quality_criteria_json,
-                     budget_cap_usd_daily, privacy_class, created_at, shadow_config_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     budget_cap_usd_daily, privacy_class, created_at, shadow_config_json,
+                     capabilities_required_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

@@ -11,6 +11,7 @@ recommendations — all local, all yours.
 - 🟢 **Works offline** with just `ollama` running locally
 - 🟢 **No phone-home**, no cloud account, no hosted service
 - 🟢 **One-line drop-in** for codebases with an existing LLM wrapper
+- 🟢 **Multimodal** — text + image prompts routed only to capable models
 - 🟢 **MCP** for Claude Code / Cursor / Windsurf to query your real telemetry
 
 ---
@@ -193,7 +194,9 @@ Five packages:
 ## Docs
 
 - 📘 [**PLAN.md**](./PLAN.md) — full design doc + 48-row decision audit trail
-- 📜 [**CHANGELOG.md**](./CHANGELOG.md) — D1–D7 milestone log
+- 📜 [**CHANGELOG.md**](./CHANGELOG.md) — milestone log
+- 🖼️ [**Multimodal prompts**](./docs/multimodal.md) — image blocks +
+  capability-aware routing
 - 🔥 [**Error reference**](./docs/errors/) — canonical `SOMM_*` codes
 - 🧪 [**Examples**](./examples/) — drop-in, OpenAI swap, private workloads
 
@@ -215,6 +218,5 @@ or personal paths.
 
 ## Status
 
-**v0.1.0-dev.** Not yet published to PyPI. See
-[CHANGELOG](./CHANGELOG.md) for the milestone log and
+**v0.1.1.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [PLAN.md](./PLAN.md) for where things are headed.

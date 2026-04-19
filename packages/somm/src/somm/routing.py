@@ -22,8 +22,10 @@ from typing import TYPE_CHECKING
 
 from somm_core.repository import Repository
 
+from somm.capabilities import provider_can_serve
 from somm.errors import (
     SommFatalError,
+    SommNoCapableProvider,
     SommProvidersExhausted,
     SommTransientError,
 )
@@ -183,15 +185,28 @@ class Router:
         """Try each provider. Return the first successful response.
 
         Raises:
+            SommNoCapableProvider: no provider in the chain has a model that
+                can serve the request's required capabilities (e.g. `vision`).
+                Raised before any network call.
             SommProvidersExhausted: all providers cooled for too long to wait.
             SommFatalError: any provider raised a fatal error.
         """
-        first_attempt = self._try_once(request)
+        required = list(getattr(request, "capabilities_required", None) or [])
+        capable_providers, skipped = self._capability_filter(required)
+        if required and not capable_providers:
+            raise SommNoCapableProvider(
+                f"no provider in chain can serve capabilities={required}",
+                required=required,
+                skipped=skipped,
+            )
+        active = capable_providers if required else self.providers
+
+        first_attempt = self._try_once(request, active)
         if first_attempt is not None:
             return first_attempt
 
         # All providers cooled or all failed transiently this round.
-        next_ok = self.tracker.next_uncool_at([p.name for p in self.providers])
+        next_ok = self.tracker.next_uncool_at([p.name for p in active])
         if next_ok is None:
             raise SommProvidersExhausted("no providers configured or all failed fatally")
         sleep_s = (next_ok - datetime.now(UTC)).total_seconds()
@@ -206,15 +221,45 @@ class Router:
         else:
             time.sleep(sleep_s + 0.1)
 
-        retry = self._try_once(request)
+        retry = self._try_once(request, active)
         if retry is not None:
             return retry
         raise SommProvidersExhausted("all providers still failing after wait")
 
     # ------------------------------------------------------------------
 
-    def _try_once(self, request: SommRequest) -> RouterResult | None:
+    def _capability_filter(
+        self, required: list[str]
+    ) -> tuple[list[SommProvider], list[tuple[str, str, str]]]:
+        """Filter providers by model capability.
+
+        Returns (capable_providers, skipped). `skipped` is a list of
+        (provider, model, reason) triples — surfaced via SommNoCapableProvider
+        so operators can see why a provider was passed over.
+        """
+        if not required:
+            return list(self.providers), []
+
+        repo = getattr(self.tracker, "_repo", None)
+        if repo is None:
+            # No repo access → defensive allow.
+            return list(self.providers), []
+
+        capable: list[SommProvider] = []
+        skipped: list[tuple[str, str, str]] = []
         for provider in self.providers:
+            model = getattr(provider, "default_model", "") or ""
+            ok, reason = provider_can_serve(repo, provider.name, model, required)
+            if ok:
+                capable.append(provider)
+            else:
+                skipped.append((provider.name, model, reason))
+        return capable, skipped
+
+    def _try_once(
+        self, request: SommRequest, providers: list[SommProvider] | None = None
+    ) -> RouterResult | None:
+        for provider in (providers if providers is not None else self.providers):
             health = self.tracker.get(provider.name)
             if health.is_cooling():
                 continue

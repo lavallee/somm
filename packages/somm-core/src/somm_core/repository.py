@@ -58,6 +58,7 @@ class Repository:
         quality_criteria: list[str] | None = None,
         budget_cap_usd_daily: float | None = None,
         privacy_class: PrivacyClass = PrivacyClass.INTERNAL,
+        capabilities_required: list[str] | None = None,
     ) -> Workload:
         wid = _workload_id(name, input_schema, output_schema)
         with self._open() as conn:
@@ -66,8 +67,8 @@ class Repository:
                 INSERT OR IGNORE INTO workloads (
                     id, name, project, description,
                     input_schema_json, output_schema_json, quality_criteria_json,
-                    budget_cap_usd_daily, privacy_class
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    budget_cap_usd_daily, privacy_class, capabilities_required_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     wid,
@@ -79,6 +80,7 @@ class Repository:
                     json.dumps(quality_criteria or []),
                     budget_cap_usd_daily,
                     privacy_class.value,
+                    json.dumps(capabilities_required) if capabilities_required else None,
                 ),
             )
         return Workload(
@@ -90,13 +92,15 @@ class Repository:
             quality_criteria=quality_criteria or [],
             budget_cap_usd_daily=budget_cap_usd_daily,
             privacy_class=privacy_class,
+            capabilities_required=list(capabilities_required or []),
         )
 
     def workload_by_name(self, name: str, project: str) -> Workload | None:
         with self._open() as conn:
             row = conn.execute(
                 "SELECT id, name, description, input_schema_json, output_schema_json, "
-                "quality_criteria_json, budget_cap_usd_daily, privacy_class "
+                "quality_criteria_json, budget_cap_usd_daily, privacy_class, "
+                "capabilities_required_json "
                 "FROM workloads WHERE project = ? AND name = ? "
                 "ORDER BY created_at DESC LIMIT 1",
                 (project, name),
@@ -112,6 +116,7 @@ class Repository:
             quality_criteria=json.loads(row[5]) if row[5] else [],
             budget_cap_usd_daily=row[6],
             privacy_class=PrivacyClass(row[7]),
+            capabilities_required=json.loads(row[8]) if row[8] else [],
         )
 
     # Shadow-eval config ------------------------------------------------------

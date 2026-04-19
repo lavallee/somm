@@ -1,6 +1,6 @@
 [project]
 name = "somm-skill"
-version = "0.1.0"
+version = "0.1.1"
 description = "somm onboarding skill templates for coding agents (Claude, Codex, Cursor, Windsurf)"
 requires-python = ">=3.12"
 license = { text = "MIT" }

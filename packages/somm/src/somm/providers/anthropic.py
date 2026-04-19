@@ -156,8 +156,11 @@ class AnthropicProvider:
     def models(self) -> list[SommModel]:
         return [SommModel(name=m) for m in DEFAULT_ANTHROPIC_MODELS]
 
-    def estimate_tokens(self, text: str, model: str) -> int:
-        return max(1, len(text) // 4)
+    def estimate_tokens(self, text: str | list[dict], model: str) -> int:
+        from somm_core.parse import estimate_prompt_tokens
+
+        # Anthropic bills ~1568 tokens for a 1092×1092 image.
+        return estimate_prompt_tokens(text, image_token_cost=1568)
 
 
 def _retry_after(resp: httpx.Response) -> float | None:

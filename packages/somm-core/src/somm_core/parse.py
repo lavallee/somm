@@ -78,6 +78,121 @@ def stable_hash(value: str | dict | list) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:16]
 
 
+# ---------------------------------------------------------------------------
+# Multimodal content-block helpers
+# ---------------------------------------------------------------------------
+
+
+def text_prompt(text: str) -> list[dict]:
+    """Build a single-text-block content list. Ergonomic helper."""
+    return [{"type": "text", "text": text}]
+
+
+def image_prompt(
+    text: str,
+    image_bytes: bytes | None = None,
+    media_type: str = "image/png",
+    url: str | None = None,
+) -> list[dict]:
+    """Build a text+image content list following the Anthropic/OpenAI shape.
+
+    Pass either `image_bytes` (base64-encoded inline) or `url`.
+    """
+    import base64
+
+    blocks: list[dict] = [{"type": "text", "text": text}]
+    if image_bytes is not None:
+        b64 = base64.b64encode(image_bytes).decode()
+        blocks.append(
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": b64},
+            }
+        )
+    elif url is not None:
+        blocks.append({"type": "image", "source": {"type": "url", "url": url}})
+    else:
+        raise ValueError("image_prompt requires either image_bytes or url")
+    return blocks
+
+
+def infer_capabilities(prompt: str | list[dict]) -> list[str]:
+    """Return the capabilities a prompt self-advertises.
+
+    Today: `['vision']` if any image block is present; `[]` otherwise.
+    Extensible as more multimodal block types land (document, audio, …).
+    """
+    if isinstance(prompt, str):
+        return []
+    caps: set[str] = set()
+    for block in prompt:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "image":
+            caps.add("vision")
+    return sorted(caps)
+
+
+def estimate_prompt_tokens(
+    prompt: str | list[dict],
+    image_token_cost: int = 1500,
+) -> int:
+    """Cheap 4-char-per-token estimate; adds a fixed cost per image block.
+
+    Good enough for somm's cost/latency tracking. Real tokenizers are
+    provider-specific and can be wired behind `somm[tokenizers]` later.
+    `image_token_cost` defaults to ~1500 (Anthropic's ~1568 for 1092×1092,
+    OpenAI's 85+tiles); callers can override per-provider.
+    """
+    if isinstance(prompt, str):
+        return max(1, len(prompt) // 4)
+    total = 0
+    for block in prompt:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            total += max(1, len(block.get("text", "")) // 4)
+        elif btype == "image":
+            total += image_token_cost
+    return max(1, total)
+
+
+def prompt_preview(prompt: str | list[dict], max_chars: int = 2000) -> str:
+    """Flatten a prompt into a compact string preview for logs/samples.
+
+    For list prompts: concatenates text blocks, elides image payloads as
+    `[IMAGE media_type=...,bytes=N]` so base64 blobs don't bloat storage.
+    """
+    if isinstance(prompt, str):
+        return prompt[:max_chars]
+    parts: list[str] = []
+    for block in prompt:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            parts.append(block.get("text", ""))
+        elif btype == "image":
+            src = block.get("source") or {}
+            media = src.get("media_type") or "?"
+            data = src.get("data")
+            url = src.get("url")
+            if data:
+                size = (len(data) * 3) // 4  # decoded byte estimate
+                parts.append(f"[IMAGE media_type={media},bytes={size}]")
+            elif url:
+                parts.append(f"[IMAGE url={url}]")
+            else:
+                parts.append("[IMAGE]")
+        else:
+            parts.append(f"[{btype.upper() if isinstance(btype, str) else 'BLOCK'}]")
+    joined = "\n".join(parts)
+    return joined[:max_chars]
+
+
 def workload_id(name: str, input_schema: Any = None, output_schema: Any = None) -> str:
     """Content-address a workload by name + schemas."""
     payload = json.dumps(

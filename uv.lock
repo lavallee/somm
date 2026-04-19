@@ -1729,7 +1729,7 @@ wheels = [
 
 [[package]]
 name = "somm"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/somm" }
 dependencies = [
     { name = "httpx" },
@@ -1754,12 +1754,12 @@ requires-dist = [
 
 [[package]]
 name = "somm-core"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/somm-core" }
 
 [[package]]
 name = "somm-mcp"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/somm-mcp" }
 dependencies = [
     { name = "mcp" },
@@ -1776,7 +1776,7 @@ requires-dist = [
 
 [[package]]
 name = "somm-service"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/somm-service" }
 dependencies = [
     { name = "somm-core" },
@@ -1793,12 +1793,12 @@ requires-dist = [
 
 [[package]]
 name = "somm-skill"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/somm-skill" }
 
 [[package]]
 name = "somm-workspace"
-version = "0.1.0"
+version = "0.1.1"
 source = { virtual = "." }
 
 [package.dev-dependencies]

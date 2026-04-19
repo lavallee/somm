@@ -12,12 +12,16 @@ from typing import Protocol, runtime_checkable
 
 @dataclass(slots=True)
 class SommRequest:
-    prompt: str
+    prompt: str | list[dict]
     system: str = ""
     max_tokens: int = 256
     temperature: float = 0.2
     model: str | None = None  # None = provider's default
     metadata: dict = field(default_factory=dict)
+    # Capabilities required of the (provider, model) serving this request.
+    # Auto-inferred from image blocks, merged with workload defaults, and
+    # filtered against model_intel.capabilities_json by the router.
+    capabilities_required: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -63,4 +67,4 @@ class SommProvider(Protocol):
 
     def models(self) -> list[SommModel]: ...
 
-    def estimate_tokens(self, text: str, model: str) -> int: ...
+    def estimate_tokens(self, text: str | list[dict], model: str) -> int: ...

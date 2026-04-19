@@ -262,8 +262,12 @@ class OpenAICompatProvider:
                 out.append(SommModel(name=name, context_window=m.get("context_length")))
         return out
 
-    def estimate_tokens(self, text: str, model: str) -> int:
-        return max(1, len(text) // 4)
+    def estimate_tokens(self, text: str | list[dict], model: str) -> int:
+        from somm_core.parse import estimate_prompt_tokens
+
+        # OpenAI: ~85 for low-res image + tiles for hi-res. Use a middling
+        # estimate; a precise tokenizer lives behind `somm[tokenizers]` later.
+        return estimate_prompt_tokens(text, image_token_cost=700)
 
 
 def _retry_after(resp: httpx.Response) -> float | None:

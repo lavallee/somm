@@ -144,6 +144,10 @@ class OllamaProvider:
                 out.append(SommModel(name=name))
         return out
 
-    def estimate_tokens(self, text: str, model: str) -> int:
-        # D1: 4-char-per-token approximation. D2+: provider-specific via somm[tokenizers].
-        return max(1, len(text) // 4)
+    def estimate_tokens(self, text: str | list[dict], model: str) -> int:
+        # 4-char-per-token approximation. Real tokenizers live behind
+        # `somm[tokenizers]`. Vision models (llava, etc.) get a rough
+        # per-image addend — good enough for latency/cost tracking.
+        from somm_core.parse import estimate_prompt_tokens
+
+        return estimate_prompt_tokens(text, image_token_cost=1000)

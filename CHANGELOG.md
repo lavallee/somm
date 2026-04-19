@@ -4,6 +4,39 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.1.1] — 2026-04-19
+
+### Added — multimodal + capability-aware routing
+- `SommRequest.prompt` accepts `str | list[dict]` — pass content blocks
+  (text + image) following the Anthropic/OpenAI convention. All existing
+  `prompt=str` callers keep working.
+- Helpers in `somm_core.parse`:
+  - `text_prompt(text)` — build a single-text-block list.
+  - `image_prompt(text, image_bytes | url, media_type)` — build text +
+    image content.
+  - `infer_capabilities(prompt)` — scan for `"vision"` and future
+    modality capabilities.
+  - `prompt_preview(prompt)` — compact stringification that elides
+    base64 image payloads for logs/samples.
+  - `estimate_prompt_tokens(prompt, image_token_cost)` — per-image
+    token addend shared across providers.
+- `SommRequest.capabilities_required: list[str]` and `Workload.capabilities_required`:
+  workload-level defaults + per-request overrides. The client merges
+  these with auto-inferred capabilities before dispatch.
+- Router filters the provider chain against
+  `model_intel.capabilities_json` before any network call. Unknown
+  models fall through as capable (no regression for untracked models).
+- `SommNoCapableProvider` (`SOMM_NO_CAPABLE_PROVIDER`): raised when no
+  provider in the chain can serve the required capabilities, carrying
+  `(provider, model, reason)` skip triples for operator visibility.
+- Schema v3 — `workloads.capabilities_required_json`. Additive
+  migration; existing rows unaffected.
+
+### Fixed
+- Stale minimax tests aligned with live wire format: default model is
+  `MiniMax-M2.7` and domain is `api.minimax.io` (prior commit had
+  updated the adapter but left the assertions behind).
+
 ## [0.1.0] — 2026-04-19
 
 Initial public release. Milestones D1–D7 as described below; see the

@@ -242,8 +242,10 @@ class OpenRouterProvider:
             )
         return out
 
-    def estimate_tokens(self, text: str, model: str) -> int:
-        return max(1, len(text) // 4)
+    def estimate_tokens(self, text: str | list[dict], model: str) -> int:
+        from somm_core.parse import estimate_prompt_tokens
+
+        return estimate_prompt_tokens(text, image_token_cost=1200)
 
 
 # ---------------------------------------------------------------------------
