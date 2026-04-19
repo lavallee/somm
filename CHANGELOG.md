@@ -4,9 +4,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
-## [Unreleased / 0.1.0-dev0]
+## [0.1.0] — 2026-04-19
 
-Initial implementation milestones (development; not yet published).
+Initial public release. Milestones D1–D7 as described below; see the
+commit log for ordering. Not yet published to PyPI.
 
 ### Added — D1 — skeleton end-to-end
 - uv workspace with 5 packages.

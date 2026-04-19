@@ -1,6 +1,6 @@
 [project]
 name = "somm-mcp"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "somm MCP server — exposes telemetry + recommendations to coding agents"
 requires-python = ">=3.12"
 license = { text = "MIT" }
