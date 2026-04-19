@@ -15,6 +15,7 @@ _Items deferred during autoplan review to keep v0.1 focused. Tracked for post-v0
 - **HF trending model-intel source** — behind feature flag; OpenRouter is primary source. Fragile DOM scraping. (Phase 3 H1.)
 - **Release-feed model-intel sources** (RSS/Atom per-provider) — most are dead; feature-flagged. (Phase 3 H1.)
 - **Provider-specific tokenizers** as `somm[tokenizers]` extras (tiktoken, etc.). Default approximation (4 chars/token) ships in v0.1. (Phase 3 H2.)
+- **Broader model-intel signal sources for sommelier ranking** — see [`docs/intel-sources.md`](./docs/intel-sources.md). Candidates: LMArena Elo (quality), Artificial Analysis (price/speed/quality), canirun.ai (local GPU feasibility), LiveBench (contamination-resistant), Open LLM Leaderboard (per-benchmark). Each needs: stable source URL, refresh cadence, failure mode when the source is down. Likely feature-flagged per-source like the HF scraper.
 
 ### DX
 - **Beacon telemetry** for DX measurement — v0.1 is local-only `somm admin dx-report`; beacon (opt-in) deferred. (Phase 3.5.)
