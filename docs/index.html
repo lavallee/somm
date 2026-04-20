@@ -69,13 +69,14 @@ print(r.text, r.provider, r.cost_usd)
 
       <div class="row-list">
         <div class="row">
-          <h3>Router across five providers</h3>
+          <h3>Router across six providers</h3>
           <p>
-            ollama, OpenRouter, Anthropic, OpenAI, Minimax — plus any
-            OpenAI-compatible gateway (Groq, Together, Fireworks, vLLM,
-            LM Studio, custom). Preference-ordered fallback, per-model
-            cooldowns persisted to SQLite, circuit breaker. Free-tier
-            rate limits stop being a problem.
+            ollama, OpenRouter, Anthropic, OpenAI, Gemini, Minimax —
+            plus any OpenAI-compatible gateway (Groq, Together,
+            Fireworks, vLLM, LM Studio, custom). Preference-ordered
+            fallback overridable via <code>SOMM_PROVIDER_ORDER</code>,
+            per-model cooldowns persisted to SQLite, circuit breaker.
+            Free-tier rate limits stop being a problem.
           </p>
         </div>
         <div class="row">
@@ -128,6 +129,18 @@ print(r.text, r.provider, r.cost_usd)
             text-only endpoints, no bespoke branching in your code.
           </p>
         </div>
+        <div class="row">
+          <h3>Loud failures, quiet success</h3>
+          <p>
+            Every non-OK outcome writes a bounded error body (status +
+            server message + exception class) to
+            <code>calls.error_detail</code> AND fires an inline
+            <code>on_error</code> callback — default: a one-line stderr
+            warning so crashes never hide in the telemetry table. Pass
+            your own callable to forward to logging / Slack / PagerDuty,
+            or <code>lambda _: None</code> to silence.
+          </p>
+        </div>
       </div>
     </div>
   </section>
@@ -147,7 +160,7 @@ print(r.text, r.provider, r.cost_usd)
         somm at a local ollama and go. Every commercial provider is
         opt-in via its own env var (<code>ANTHROPIC_API_KEY</code>,
         <code>OPENAI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>,
-        <code>MINIMAX_API_KEY</code>).
+        <code>GEMINI_API_KEY</code>, <code>MINIMAX_API_KEY</code>).
       </p>
 
       <h3 class="sub">Spin up the dashboard</h3>
@@ -248,7 +261,7 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
       <p>Five packages:</p>
       <table class="pkg-tbl">
         <tbody>
-          <tr><th>somm-core</th><td>schema v4, migrations, repository, config, parse helpers</td></tr>
+          <tr><th>somm-core</th><td>schema v5, migrations, repository, config, parse helpers</td></tr>
           <tr><th>somm</th><td>library — <code>SommLLM</code>, providers, routing, streaming, compat shims, CLI</td></tr>
           <tr><th>somm-service</th><td>starlette web admin + HTTP API + scheduler + three workers</td></tr>
           <tr><th>somm-mcp</th><td>stdio MCP server with ten tools</td></tr>
