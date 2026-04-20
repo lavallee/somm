@@ -46,14 +46,15 @@ def test_seed_populates_empty_table():
     rows = list_intel(repo)
     assert len(rows) == len(_KNOWN_PRICING)
 
-    # Check a specific entry
+    # Check Sonnet entries — multiple snapshots are seeded (current + prior).
     anthropic_sonnet = [
         r for r in rows if r["provider"] == "anthropic" and "sonnet" in r["model"]
     ]
-    assert len(anthropic_sonnet) == 1
-    assert anthropic_sonnet[0]["price_in_per_1m"] == 3.00
-    assert anthropic_sonnet[0]["price_out_per_1m"] == 15.00
-    assert anthropic_sonnet[0]["source"] == "somm_seed"
+    assert len(anthropic_sonnet) >= 1
+    for row in anthropic_sonnet:
+        assert row["price_in_per_1m"] == 3.00
+        assert row["price_out_per_1m"] == 15.00
+        assert row["source"] == "somm_seed"
 
 
 def test_seed_does_not_overwrite_existing():

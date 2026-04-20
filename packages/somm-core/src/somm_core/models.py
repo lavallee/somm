@@ -77,6 +77,7 @@ class Call:
     error_kind: str | None
     prompt_hash: str
     response_hash: str
+    error_detail: str | None = None
 
 
 @dataclass(slots=True)
@@ -118,6 +119,9 @@ class SommResult:
     call_id: str
     outcome: Outcome = Outcome.OK
     error_kind: str | None = None
+    # Human-readable error body / stack summary. Truncated to 512 chars to
+    # keep telemetry rows bounded. Populated whenever outcome != OK.
+    error_detail: str | None = None
     raw: dict[str, Any] | None = None
 
     def mark(self, outcome: Outcome) -> SommResult:

@@ -26,8 +26,16 @@ _warned_missing_pricing: set[tuple[str, str]] = set()
 
 # Hardcoded pricing for major providers, used by seed_known_pricing().
 # Format: (provider, model, price_in_per_1m, price_out_per_1m)
+#
+# Prior-generation Anthropic model IDs are kept alongside current ones so
+# projects still pinning older snapshots continue to cost-track correctly.
+# Run `somm-serve admin refresh-intel` to pull live pricing.
 _KNOWN_PRICING: list[tuple[str, str, float, float]] = [
+    # Current Anthropic (Claude 4.5–4.7 family)
     ("anthropic", "claude-haiku-4-5-20251001", 0.80, 4.00),
+    ("anthropic", "claude-sonnet-4-6", 3.00, 15.00),
+    ("anthropic", "claude-opus-4-7", 15.00, 75.00),
+    # Prior Anthropic snapshots
     ("anthropic", "claude-sonnet-4-20250514", 3.00, 15.00),
     ("anthropic", "claude-opus-4-20250514", 15.00, 75.00),
     ("openai", "gpt-4o-mini", 0.15, 0.60),

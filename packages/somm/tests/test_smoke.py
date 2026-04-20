@@ -206,6 +206,27 @@ def test_extract_json_variants():
     assert extract_json("nothing parseable here") is None
 
 
+def test_extract_json_with_control_chars():
+    """Literal control bytes inside strings break json.loads — fallback strips."""
+    from somm_core.parse import extract_json
+
+    # Null byte embedded mid-string (seen from some local models)
+    assert extract_json('{"msg": "hi\x00there"}') == {"msg": "hi there"}
+    # Bell + vertical tab
+    assert extract_json('{"x": "a\x07b\x0bc"}') == {"x": "a b c"}
+
+
+def test_extract_json_with_unescaped_newlines():
+    """Unescaped \\n inside a JSON string — flatten-whitespace fallback recovers."""
+    from somm_core.parse import extract_json
+
+    raw = '{"text": "line one\nline two\nline three"}'
+    parsed = extract_json(raw)
+    assert parsed is not None
+    assert "line one" in parsed["text"]
+    assert "line three" in parsed["text"]
+
+
 # ---------------------------------------------------------------------------
 # Spool fallback
 

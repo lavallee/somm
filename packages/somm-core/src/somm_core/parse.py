@@ -16,6 +16,30 @@ from typing import Any
 _MD_FENCE_RE = re.compile(r"^\s*```(?:json|javascript|js)?\s*\n?|\n?```\s*$", re.MULTILINE)
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 _DOUBLE_QUOTE_RE = re.compile(r'""([^"]*)""')
+_CTRL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _strip_control_chars(text: str) -> str:
+    """Replace C0 control chars with spaces, preserving \\n, \\r, \\t.
+
+    Some LLMs emit literal control bytes mid-string when they think they're
+    quoting binary content; json.loads refuses those even inside strings.
+    """
+    return _CTRL_CHAR_RE.sub(
+        lambda m: m.group() if m.group() in "\n\r\t" else " ",
+        text,
+    )
+
+
+def _flatten_whitespace(text: str) -> str:
+    """Flatten all \\n, \\r, \\t to spaces after stripping other controls.
+
+    Last-ditch fallback for malformed JSON with unescaped newlines inside
+    string values.
+    """
+    return (
+        _strip_control_chars(text).replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    )
 
 
 def strip_think_block(text: str) -> str:
@@ -61,6 +85,10 @@ def extract_json(text: str) -> dict | list | None:
         lambda s: json.loads(_DOUBLE_QUOTE_RE.sub(r'"\1"', s)),
         lambda s: json.loads(extract_balanced(s, "{", "}") or ""),
         lambda s: json.loads(extract_balanced(s, "[", "]") or ""),
+        lambda s: json.loads(_strip_control_chars(s)),
+        lambda s: json.loads(_flatten_whitespace(s)),
+        lambda s: json.loads(extract_balanced(_strip_control_chars(s), "{", "}") or ""),
+        lambda s: json.loads(extract_balanced(_strip_control_chars(s), "[", "]") or ""),
     ):
         try:
             result = parser(cleaned)

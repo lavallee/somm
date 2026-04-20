@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
 
 from somm_core import Outcome, SommResult, cost_for_call
@@ -45,6 +45,48 @@ SommStrictMode = _SommStrictMode  # re-export; new canonical lives in somm.error
 _warned_budget_exceeded: set[tuple[str, date]] = set()
 
 
+def _format_error_detail(exc: Exception, provider: str, model: str | None) -> str:
+    """Build a bounded, operator-friendly description of an LLM call failure.
+
+    Captures the exception's text plus, if present, the HTTP response body
+    attached by httpx.HTTPStatusError. Truncated to 512 chars so telemetry
+    rows stay bounded.
+    """
+    parts: list[str] = [f"{type(exc).__name__}: {exc}"]
+    # httpx.HTTPStatusError carries the response as .response — its .text is
+    # the server's error body (e.g. "model 'qwen3:14b' not found").
+    response = getattr(exc, "response", None)
+    if response is not None:
+        body = getattr(response, "text", "") or ""
+        status = getattr(response, "status_code", None)
+        if status is not None:
+            parts.append(f"http_status={status}")
+        if body:
+            parts.append(f"body={body.strip()[:200]}")
+    if provider:
+        parts.append(f"provider={provider}")
+    if model:
+        parts.append(f"model={model}")
+    return " | ".join(parts)[:512]
+
+
+def _default_stderr_alerter(event: dict) -> None:
+    """Default on_error handler — one-line warning to stderr.
+
+    Replace via SommLLM(on_error=...) to forward to logging, Slack, etc.
+    Keep it cheap: this runs inline on every non-OK call.
+    """
+    print(
+        f"[somm] {event.get('outcome', '?').upper()} "
+        f"workload={event.get('workload')} "
+        f"provider={event.get('provider')} "
+        f"model={event.get('model')} "
+        f"kind={event.get('error_kind')} "
+        f"detail={event.get('error_detail')}",
+        file=sys.stderr,
+    )
+
+
 class SommLLM:
     """The library handle. One per process per project.
 
@@ -59,6 +101,7 @@ class SommLLM:
         mode: str | None = None,
         providers: list[SommProvider] | None = None,
         config: Config | None = None,
+        on_error: "Callable[[dict], None] | None" = None,
     ) -> None:
         self.config = config or load_config(project=project)
         if mode is not None:
@@ -68,6 +111,13 @@ class SommLLM:
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
         self.router = Router(self.providers, self._tracker)
+        # Alerting hook — fires on every non-OK outcome with a small context
+        # dict. Default writes a one-line warning to stderr so failures are
+        # visible in the caller's terminal. Pass on_error=lambda _: None to
+        # suppress, or your own callable to forward to logging / Slack / etc.
+        self._on_error: "Callable[[dict], None] | None" = (
+            on_error if on_error is not None else _default_stderr_alerter
+        )
 
         mirror_repo: Repository | None = None
         if self.config.cross_project_enabled:
@@ -114,6 +164,8 @@ class SommLLM:
         available["ollama"] = OllamaProvider(
             base_url=self.config.ollama_url,
             default_model=self.config.ollama_model,
+            enable_think=self.config.ollama_think,
+            keep_alive=self.config.ollama_keep_alive,
         )
         if self.config.openrouter_api_key:
             available["openrouter"] = OpenRouterProvider(
@@ -201,6 +253,7 @@ class SommLLM:
         ts = datetime.now(UTC)
         outcome = Outcome.OK
         error_kind: str | None = None
+        error_detail: str | None = None
         tokens_in = tokens_out = latency_ms = 0
         actual_model = model or ""
         actual_provider = ""
@@ -229,6 +282,11 @@ class SommLLM:
                 if isinstance(exc, SommFatalError):
                     # Auth errors etc. — don't retry, but still try router
                     pass
+                # Clear the pinned model before chain fallback: the pin is
+                # only meaningful to the pinned provider. Other providers
+                # serve different model inventories, so re-using the pinned
+                # model name (e.g. "qwen3:14b" on Minimax) guarantees a 404.
+                req.model = None
                 try:
                     router_result = self.router.dispatch(req)
                     resp = router_result.response
@@ -243,6 +301,7 @@ class SommLLM:
                 except Exception as fallback_exc:
                     outcome = Outcome.UPSTREAM_ERROR
                     error_kind = type(exc).__name__
+                    error_detail = _format_error_detail(exc, chosen.name, model)
                     actual_provider = chosen.name
                     if hasattr(exc, "model") and exc.model:
                         actual_model = exc.model
@@ -267,6 +326,7 @@ class SommLLM:
                     else Outcome.UPSTREAM_ERROR
                 )
                 error_kind = type(exc).__name__
+                error_detail = _format_error_detail(exc, actual_provider, actual_model)
 
         result = SommResult(
             text=text,
@@ -279,6 +339,7 @@ class SommLLM:
             call_id=call_id,
             outcome=outcome,
             error_kind=error_kind,
+            error_detail=error_detail,
         )
 
         call = Call(
@@ -295,10 +356,27 @@ class SommLLM:
             cost_usd=result.cost_usd,
             outcome=outcome,
             error_kind=error_kind,
+            error_detail=error_detail,
             prompt_hash=stable_hash(prompt),
             response_hash=stable_hash(text),
         )
         self._writer.submit(call)
+
+        # Fire the on_error alerter whenever the call did not succeed.
+        if outcome != Outcome.OK and self._on_error is not None:
+            try:
+                self._on_error({
+                    "call_id": call_id,
+                    "workload": workload,
+                    "provider": actual_provider,
+                    "model": actual_model,
+                    "outcome": outcome.value,
+                    "error_kind": error_kind,
+                    "error_detail": error_detail,
+                })
+            except Exception:
+                # Alerter must not break the caller. Swallow and continue.
+                pass
 
         # Feature 3: warn if daily budget cap is exceeded.
         if wl.budget_cap_usd_daily is not None and result.cost_usd > 0:
@@ -459,30 +537,39 @@ class SommLLM:
         temperature: float = 0.1,
         model: str | None = None,
         provider: str | None = None,
+        retries: int = 2,
+        temperature_jitter: float = 0.05,
     ) -> dict | list:
         """Call the LLM and extract JSON from the response.
 
         Handles markdown fences, bracket-balanced extraction, qwen2.5 double-
-        quote quirk, and `<think>` blocks (already stripped by adapters).
+        quote quirk, `<think>` blocks (already stripped by adapters), control
+        chars, and unescaped newlines.
 
-        Returns the parsed dict or list. On parse failure, returns
-        `{"raw": <text>, "_somm_parse_err": True}` so the caller can distinguish
-        between "LLM said nothing parseable" and "LLM said something parseable".
+        On parse failure, retries up to `retries` more times. Each retry bumps
+        temperature by `temperature_jitter` to break deterministic bad output.
+        After total exhaustion, returns `{"raw": <last text>,
+        "_somm_parse_err": True}` so the caller can distinguish between "LLM
+        said nothing parseable" and "LLM said something parseable".
         """
-        result = self.generate(
-            prompt=prompt,
-            system=system,
-            workload=workload,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            model=model,
-            provider=provider,
-        )
-        parsed = extract_json(result.text)
-        if parsed is None:
+        last_text = ""
+        for attempt in range(retries + 1):
+            temp = temperature + (attempt * temperature_jitter)
+            result = self.generate(
+                prompt=prompt,
+                system=system,
+                workload=workload,
+                max_tokens=max_tokens,
+                temperature=temp,
+                model=model,
+                provider=provider,
+            )
+            last_text = result.text
+            parsed = extract_json(result.text)
+            if parsed is not None:
+                return parsed
             result.mark(Outcome.BAD_JSON)
-            return {"raw": result.text, "_somm_parse_err": True}
-        return parsed
+        return {"raw": last_text, "_somm_parse_err": True}
 
     # ------------------------------------------------------------------
     # Prompt versioning
