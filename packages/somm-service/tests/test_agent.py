@@ -201,6 +201,60 @@ def test_new_model_landed_skips_free_local_models(tmp_path):
     assert summary["by_action"].get("new_model_landed", 0) == 0
 
 
+def test_new_model_landed_skips_unknown_pricing_sentinel(tmp_path):
+    """Rows with NULL or negative pricing (OpenRouter's '-1' dynamic-pricing
+    sentinel on meta-models like openrouter/auto) must not rank as cheapest.
+    Regression: the agent used to pick these as "~6666767% lower cost"."""
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload(name="w_sentinel", project=cfg.project)
+
+    # Current prod model — Opus 4.7 via OpenRouter
+    write_intel(repo, "openrouter", "anthropic/claude-opus-4.7", 5.0, 25.0, 200_000, None, "openrouter")
+    # Sentinel meta-model: pricing unknown (NULL after the bugfix; would
+    # have been -1M before). Must NOT be picked.
+    write_intel(repo, "openrouter", "openrouter/auto", None, None, 2_000_000, None, "openrouter")
+    # A genuine cheaper model — should be picked instead.
+    write_intel(repo, "openrouter", "anthropic/claude-haiku-4.5", 1.0, 5.0, 200_000, None, "openrouter")
+
+    for _ in range(15):
+        _write_call(
+            repo, wl.id, cfg.project,
+            "openrouter", "anthropic/claude-opus-4.7", latency_ms=300, cost_usd=0.01,
+        )
+
+    worker = AgentWorker(repo, min_calls_for_consideration=10)
+    summary = worker.run_once()
+    # Should emit exactly one rec — picking Haiku, not openrouter/auto.
+    recs = [r for r in worker.last_run_recs if r.action == "new_model_landed"] \
+        if hasattr(worker, "last_run_recs") else []
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT evidence_json FROM recommendations WHERE action = 'new_model_landed' "
+            "AND workload_id = ? ORDER BY created_at DESC",
+            (wl.id,),
+        ).fetchall()
+    assert rows, "expected a new_model_landed recommendation"
+    import json
+    ev = json.loads(rows[0][0])
+    assert ev["candidate"]["model"] == "anthropic/claude-haiku-4.5", (
+        f"agent picked {ev['candidate']['model']} — must not be openrouter/auto"
+    )
+
+
+def test_parse_price_per_token_handles_sentinels():
+    """The OpenRouter price parser must return None for -1/negative/malformed
+    values so they propagate as NULL, not as literal cheap prices."""
+    from somm_service.workers.model_intel import _parse_price_per_token
+
+    assert _parse_price_per_token("0.0000006") == 0.0000006
+    assert _parse_price_per_token("0") == 0.0
+    assert _parse_price_per_token("") is None
+    assert _parse_price_per_token(None) is None
+    assert _parse_price_per_token("-1") is None    # OpenRouter dynamic-pricing sentinel
+    assert _parse_price_per_token("-0.0001") is None
+    assert _parse_price_per_token("abc") is None
+
+
 # ---------------------------------------------------------------------------
 # chronic_cooldown
 

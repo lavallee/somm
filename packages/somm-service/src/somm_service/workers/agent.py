@@ -237,12 +237,17 @@ class AgentWorker:
                 if cur_in == 0 and cur_out == 0:
                     continue  # can't beat free; skip
 
-                # Candidates: same provider, appeared recently, cheaper
+                # Candidates: same provider, appeared recently, cheaper.
+                # Require both prices present and non-negative so that
+                # dynamic-pricing sentinels (OpenRouter's "-1" on meta-models
+                # like openrouter/auto) don't rank as infinitely cheap.
                 cands = conn.execute(
                     """
                     SELECT model, price_in_per_1m, price_out_per_1m, context_window, last_seen
                     FROM model_intel WHERE provider = ? AND model != ?
-                      AND last_seen >= ? AND price_in_per_1m IS NOT NULL
+                      AND last_seen >= ?
+                      AND price_in_per_1m IS NOT NULL AND price_out_per_1m IS NOT NULL
+                      AND price_in_per_1m >= 0 AND price_out_per_1m >= 0
                       AND price_in_per_1m + price_out_per_1m < ?
                     ORDER BY (price_in_per_1m + price_out_per_1m) ASC LIMIT 1
                     """,

@@ -136,9 +136,14 @@ class ModelIntelWorker:
             if not model_id:
                 continue
             pricing = m.get("pricing") or {}
-            # OpenRouter gives prices as string dollars-per-token; convert to per-1M.
-            price_in = _parse_price_per_token(pricing.get("prompt")) * 1_000_000
-            price_out = _parse_price_per_token(pricing.get("completion")) * 1_000_000
+            # OpenRouter gives prices as string dollars-per-token; convert to
+            # per-1M. Unknown-pricing sentinels ("-1" on meta-models) parse to
+            # None and propagate through as NULL so downstream comparisons
+            # don't treat them as cheap.
+            _in = _parse_price_per_token(pricing.get("prompt"))
+            _out = _parse_price_per_token(pricing.get("completion"))
+            price_in = _in * 1_000_000 if _in is not None else None
+            price_out = _out * 1_000_000 if _out is not None else None
             ctx = m.get("context_length")
             caps = {
                 "top_provider": m.get("top_provider"),
@@ -196,11 +201,22 @@ class ModelIntelWorker:
         return n
 
 
-def _parse_price_per_token(raw) -> float:
-    """OpenRouter gives prices as strings like '0.0000006'. Returns USD per token."""
+def _parse_price_per_token(raw) -> float | None:
+    """OpenRouter gives prices as strings like '0.0000006'. Returns USD per
+    token, or None when the price is unknown / sentinel.
+
+    OpenRouter uses "-1" as a sentinel for variable or dynamic pricing (e.g.,
+    `openrouter/auto`, `openrouter/bodybuilder` — router meta-models whose
+    effective price depends on which backend is chosen at inference time).
+    Treat those as unknown rather than literal negative prices — otherwise
+    downstream "cheaper than X" logic will pick them as ultra-cheap.
+    """
     if raw is None or raw == "":
-        return 0.0
+        return None
     try:
-        return float(raw)
+        v = float(raw)
     except (TypeError, ValueError):
-        return 0.0
+        return None
+    if v < 0:
+        return None
+    return v
