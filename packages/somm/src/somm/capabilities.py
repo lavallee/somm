@@ -124,3 +124,69 @@ def provider_can_serve(
         if verdict is False:
             return False, f"missing_capability:{cap}"
     return True, ""
+
+
+def model_output_modalities(
+    repo: Repository,
+    provider: str,
+    model: str,
+) -> list[str] | None:
+    """Return the set of output modalities this model can produce, or None
+    when we have no signal.
+
+    Signal sources, in order of preference:
+      1. OpenRouter `architecture.output_modalities` — list of strings.
+      2. OpenRouter `modality` scalar (`"text+image->text"`) — parse the
+         right-hand side.
+      3. HuggingFace `hf.output_modalities` — set by the HF intel worker
+         from `pipeline_tag`.
+
+    Returns lowercased modality tokens (`"text"`, `"image"`, `"audio"`,
+    `"video"`, `"embedding"`). Callers that want to filter for "outputs
+    text" should check membership against a requested set.
+    """
+    import json
+
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT capabilities_json FROM model_intel "
+            "WHERE provider = ? AND model = ?",
+            (provider, model),
+        ).fetchone()
+
+    if not row or not row[0]:
+        return None
+    try:
+        caps = json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(caps, dict):
+        return None
+
+    # 1. Direct OpenRouter architecture.output_modalities
+    arch = caps.get("architecture") or {}
+    if isinstance(arch, dict):
+        out = arch.get("output_modalities")
+        if isinstance(out, list) and out:
+            normalised = [m.lower() for m in out if isinstance(m, str)]
+            if normalised:
+                return normalised
+
+    # 2. OpenRouter scalar modality "in+out->out"
+    modality = caps.get("modality")
+    if isinstance(modality, str) and "->" in modality:
+        _, _, after = modality.partition("->")
+        parts = [p.strip().lower() for p in after.split("+") if p.strip()]
+        if parts:
+            return parts
+
+    # 3. HuggingFace enrichment
+    hf = caps.get("hf") or {}
+    if isinstance(hf, dict):
+        out = hf.get("output_modalities")
+        if isinstance(out, list) and out:
+            normalised = [m.lower() for m in out if isinstance(m, str)]
+            if normalised:
+                return normalised
+
+    return None

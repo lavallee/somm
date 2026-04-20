@@ -47,6 +47,7 @@ somm_advise(
     question="good free vision models on openrouter",
     capabilities=["vision"],
     providers=["openrouter"],
+    required_output_modalities=["text"],   # for captioning — excludes audio-gen
     free_only=True,
     workload="critique_visual",    # optional — boosts ranking with shadow-eval scores
     limit=8,
@@ -58,15 +59,37 @@ human-readable factors the sommelier weighed. Present them verbatim
 rather than restating in your own words; the reasons are
 tokenisation-light and calibrated.
 
+**0.2.2 constraint knobs (all optional):**
+
+- `required_output_modalities` — drop candidates whose output modality
+  isn't in this set. Pass `["text"]` for captioning / QA workloads to
+  exclude audio-gen or image-gen models that happen to accept image
+  inputs. `["image"]` for generation.
+- `exclude_models` — fnmatch-style patterns against
+  `"<provider>/<model>"`. Inline blocklist when you hit a bad candidate
+  without waiting for a release.
+- `include_meta_routers` — off by default. Router meta-models
+  (`openrouter/auto`, `openrouter/free`) pick a backend at inference
+  time, so they're non-deterministic and inherit capability claims from
+  whatever they route to. Opt in only when you specifically want one.
+- `unknown_capability_penalty` — `0.9` by default. Models with
+  confirmed capabilities outrank models where we can't confirm. Set to
+  `1.0` to preserve pre-0.2.2 behavior (unknown == known-yes).
+
 **Guidelines for turning the response into a conversation:**
 
 - Show the top 3 with their reasons, not all 8.
 - When shadow-eval data exists (`shadow_score` is not null), lead with
   that — it's the only candidate-level quality signal somm has.
 - If `prior_decisions` came back, cite them alongside the live
-  candidates: "Candidate X matches what we picked in project Y."
-- If `candidates` is empty, don't invent — ask the user to loosen
-  constraints or run `somm-serve admin refresh-intel`.
+  candidates: "Candidate X matches what we picked in project Y." Note
+  that as of 0.2.2 the sommelier also *weighs* matching priors into the
+  score — you'll see `prior(<project> <date>): chose — ×1.10` or
+  `flagged — ×0.50` in the reasons list. Weight decays with age
+  (half-life ~90 days).
+- If `candidates` is empty, read `note` — 0.2.2 returns a filter
+  breakdown like "Filtered out: 3 wrong output modality, 2 meta-router"
+  that tells you exactly which constraint to loosen.
 
 ### 3. Record
 

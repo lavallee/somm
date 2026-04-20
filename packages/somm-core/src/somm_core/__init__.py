@@ -10,7 +10,13 @@ from somm_core.models import (
     SommResult,
     Workload,
 )
-from somm_core.pricing import cost_for_call, list_intel, seed_known_pricing, write_intel
+from somm_core.pricing import (
+    cost_for_call,
+    list_intel,
+    merge_intel_capabilities,
+    seed_known_pricing,
+    write_intel,
+)
 from somm_core.repository import Repository
 from somm_core.schema import current_schema_version, ensure_schema
 from somm_core.version import SCHEMA_VERSION, VERSION
@@ -31,6 +37,7 @@ __all__ = [
     "Workload",
     "cost_for_call",
     "list_intel",
+    "merge_intel_capabilities",
     "seed_known_pricing",
     "write_intel",
 ]

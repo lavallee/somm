@@ -167,6 +167,10 @@ def build_server(
         free_only: bool = False,
         workload: str | None = None,
         limit: int = 8,
+        required_output_modalities: list[str] | None = None,
+        exclude_models: list[str] | None = None,
+        include_meta_routers: bool = False,
+        unknown_capability_penalty: float = 0.9,
     ) -> dict:
         """Rank candidate (provider, model) pairs against the given constraints.
 
@@ -188,6 +192,18 @@ def build_server(
             workload: optional — looks up any shadow-eval scores for this
               workload so graded models get a ranking bonus.
             limit: max candidates to return (default 8).
+            required_output_modalities: drop candidates whose output modality
+              isn't a superset of this. Pass `["text"]` for captioning to
+              exclude audio-gen models that accept image inputs.
+            exclude_models: fnmatch-style patterns against `"<provider>/<model>"`.
+              Inline blocklist for bad candidates without waiting for a release.
+            include_meta_routers: opt in to `openrouter/auto`/`openrouter/free`.
+              Off by default — these pick a backend at inference time, so
+              they're non-deterministic and inherit capability claims from
+              whatever they route to.
+            unknown_capability_penalty: score multiplier for models with
+              unknown (not known-lacking) capabilities. Default 0.9. Set
+              to 1.0 to score unknowns identically to known-yes.
         """
         from somm.sommelier import AdviseConstraints, consult
 
@@ -200,6 +216,11 @@ def build_server(
             free_only=free_only,
             workload=workload,
             limit=limit,
+            required_output_modalities=list(required_output_modalities)
+            if required_output_modalities else None,
+            exclude_models=list(exclude_models) if exclude_models else None,
+            include_meta_routers=include_meta_routers,
+            unknown_capability_penalty=unknown_capability_penalty,
         )
         result = consult(
             repo,

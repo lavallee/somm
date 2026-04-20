@@ -16,11 +16,26 @@ the "why we didn't use X" notes are useful too.
 | **[Artificial Analysis](https://artificialanalysis.ai)** | Composite quality + speed (tokens/s) + price per model | ❌ | Commercial-heavy coverage. Has an API (check terms). |
 | **[canirun.ai](https://canirun.ai)** | "Can my local GPU run model X at acceptable speed?" | ❌ | Critical for ollama-first workflows — price alone is the wrong filter when hardware is the bottleneck. |
 | **[LiveBench](https://livebench.ai)** | Contamination-resistant per-category benchmarks (reasoning, coding, math, data) | ❌ | Monthly refresh. Good for "which model for coding vs reasoning?" differentiation. |
+| **[HuggingFace Hub `pipeline_tag`](https://huggingface.co/api/models)** | Canonical per-model task type → input/output modalities | ✅ `HuggingFaceIntelWorker` (opt-in, `--hf` / `SOMM_ENABLE_HF_INTEL=1`) | Enriches OpenRouter rows with `pipeline_tag` + derived `input_modalities` / `output_modalities`. See notes below. |
 | **[HuggingFace Open LLM Leaderboard](https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard)** | MMLU / GPQA / HellaSwag / ARC-C / TruthfulQA / Winogrande, composite score | ❌ | Already in TODOs as "HF trending". DOM scraping is fragile. |
 | SWE-bench / SWE-bench Verified | Coding-specific quality (real GitHub issue solve rate) | ❌ | Per-model, slow to update, narrow task. |
 | `somm` internal shadow-eval | Workload-specific quality on YOUR prompts | ✅ (opt-in) | The highest-signal source for a specific workload, but only once it has coverage. |
 
 ## Why each might matter to the sommelier
+
+### HuggingFace `pipeline_tag` (live as of 0.2.2)
+
+The OpenRouter API publishes input modalities (`architecture.input_modalities`)
+reliably but `output_modalities` coverage is spotty. HF's `pipeline_tag`
+is canonical per model — `text-generation`, `image-text-to-text`,
+`text-to-speech`, `audio-to-audio`, etc. — and maps unambiguously to
+input/output modality pairs.
+
+- **Worker:** `HuggingFaceIntelWorker` in `packages/somm-service/src/somm_service/workers/hf_intel.py`. Off by default; opt in via `--hf` on `somm-serve admin refresh-intel` or `SOMM_ENABLE_HF_INTEL=1`.
+- **Use as:** the `hf.output_modalities` field on `capabilities_json`, consumed by `sommelier.model_output_modalities()` as a fallback when OpenRouter's `architecture.output_modalities` is empty.
+- **Coverage gaps:** only fetched for `openrouter/<org>/<model>` rows today. Ollama canonicalization (`gemma3:27b` → `google/gemma-3-27b-it`) is deferred to roadmap. Proprietary providers (Anthropic, OpenAI) skip — they're not on HF.
+- **Canonicalization:** strip `:free`/`:nitro`/`:beta`/`:extended`/`:online` suffixes. No further normalisation.
+- **Failure mode:** HF 404s and transient errors are swallowed — a bad fetch never poisons existing capabilities.
 
 ### LMArena (quality as Elo)
 

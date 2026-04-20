@@ -143,6 +143,61 @@ def write_intel(
         )
 
 
+def merge_intel_capabilities(
+    repo: Repository,
+    provider: str,
+    model: str,
+    delta: dict,
+) -> bool:
+    """Recursively merge `delta` into `model_intel.capabilities_json` for
+    an existing row. Returns True on success, False when no row exists.
+
+    Sources layered on top of the primary intel (HuggingFace pipeline_tag,
+    LMArena quality, canirun.ai feasibility …) write under their own
+    sub-key so they compose without stomping each other. Primary-source
+    workers (OpenRouter, Ollama) keep using `write_intel` — the sub-keys
+    survive because downstream workers run after, and re-enrich on the
+    next cycle.
+    """
+    import json
+
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT capabilities_json FROM model_intel "
+            "WHERE provider = ? AND model = ?",
+            (provider, model),
+        ).fetchone()
+        if row is None:
+            return False
+        existing: dict = {}
+        if row[0]:
+            try:
+                parsed = json.loads(row[0])
+                if isinstance(parsed, dict):
+                    existing = parsed
+            except json.JSONDecodeError:
+                existing = {}
+        merged = _deep_merge(existing, delta)
+        conn.execute(
+            "UPDATE model_intel SET capabilities_json = ?, "
+            "last_seen = CURRENT_TIMESTAMP "
+            "WHERE provider = ? AND model = ?",
+            (json.dumps(merged), provider, model),
+        )
+    return True
+
+
+def _deep_merge(base: dict, delta: dict) -> dict:
+    """Merge nested dicts — delta wins on leaf conflicts, dicts recurse."""
+    out = dict(base)
+    for k, v in delta.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def list_intel(repo: Repository, provider: str | None = None) -> list[dict]:
     """Return all known model_intel rows, optionally filtered by provider."""
     import json
