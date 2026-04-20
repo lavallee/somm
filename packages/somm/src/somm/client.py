@@ -30,6 +30,7 @@ from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import get_prompt, register_prompt
 from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import SommProvider, SommRequest
+from somm.providers.gemini import GeminiProvider
 from somm.providers.minimax import MinimaxProvider
 from somm.providers.ollama import OllamaProvider
 from somm.providers.openai import OpenAIProvider
@@ -137,6 +138,11 @@ class SommLLM:
                 base_url=self.config.openai_base_url,
                 default_model=self.config.openai_model,
             )
+        if self.config.gemini_api_key:
+            available["gemini"] = GeminiProvider(
+                api_key=self.config.gemini_api_key,
+                default_model=self.config.gemini_model,
+            )
 
         if self.config.provider_order:
             # Exclusive: ONLY providers in the list, in the listed order.
@@ -145,8 +151,8 @@ class SommLLM:
             chain = [available[p] for p in self.config.provider_order if p in available]
             return chain if chain else list(available.values())
 
-        # Default: ollama → openrouter → minimax → anthropic → openai
-        default_order = ["ollama", "openrouter", "minimax", "anthropic", "openai"]
+        # Default: ollama → openrouter → minimax → anthropic → gemini → openai
+        default_order = ["ollama", "openrouter", "minimax", "anthropic", "gemini", "openai"]
         return [available[p] for p in default_order if p in available]
 
     # ------------------------------------------------------------------
