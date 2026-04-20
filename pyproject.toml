@@ -1,6 +1,6 @@
 [project]
 name = "somm-workspace"
-version = "0.2.0"
+version = "0.2.1"
 description = "somm — self-hosted LLM telemetry, routing, and intelligence loop (workspace root)"
 requires-python = ">=3.12"
 

@@ -4,6 +4,61 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.2.1] — 2026-04-20
+
+### Added — providers
+- **Gemini provider** via the OpenAI-compatible endpoint (`GeminiProvider`).
+  Activates when `GEMINI_API_KEY` is set; default model
+  `gemini-2.5-pro`. Joins the default provider chain and the
+  capability-aware router like any other adapter.
+- **`SOMM_PROVIDER_ORDER`** env var — comma-separated override for the
+  default provider chain (e.g. `"openrouter,minimax,ollama"`).
+- **Ollama ergonomics** — `enable_think` (sets `"think": true` on
+  reasoning-capable models) and `keep_alive` (default `30m`, pinned
+  residency window to stop mid-chain cold-start outliers). Configurable
+  via `SOMM_OLLAMA_THINK` + `SOMM_OLLAMA_KEEP_ALIVE`. Ollama + minimax
+  both bump `num_predict` / `max_tokens` 3x (with a 1024 floor) so
+  thinking-token budget doesn't eat the visible reply.
+
+### Added — error visibility
+- **Schema v5** — `calls.error_detail` column: bounded (512-char)
+  operator-friendly description of non-OK outcomes
+  (`{ErrorClass}: msg | http_status=X | body=…`). Written on every
+  failed call; surfaced in doctor / stats / MCP `somm_search_calls`.
+- **`SommLLM(on_error=callable)`** — fires inline on every non-OK
+  outcome with a context dict
+  (`workload / provider / model / outcome / error_kind / error_detail`).
+  Default handler writes a one-line warning to stderr so failures are
+  visible without log plumbing. Pass `on_error=lambda _: None` to
+  suppress, or wire to logging / Slack / PagerDuty.
+- **`_format_error_detail`** walks `httpx.HTTPStatusError.response` to
+  capture the server's error body alongside the exception — no more
+  opaque `UPSTREAM_ERROR` rows.
+
+### Added — out-of-the-box cost tracking
+- `seed_known_pricing(repo)` fires on `SommLLM` init, so non-zero
+  `cost_usd` lands on the first call without a manual
+  `somm-serve admin refresh-intel`. Ships with current Anthropic
+  4.5–4.7 family IDs (`claude-haiku-4-5-20251001`,
+  `claude-sonnet-4-6`, `claude-opus-4-7`) alongside prior snapshots.
+
+### Fixed
+- **OpenRouter pricing sentinel** — treat the `"-1"` / `-1` value
+  OpenRouter uses for dynamic-priced models as unknown pricing
+  (`None`) rather than ingesting it as "negative one dollar."
+  model_intel + `somm_advise` now filter those entries correctly.
+- **Parse resilience** — four new fallback parsers in
+  `extract_json()` handle LLM output with literal C0 control bytes
+  mid-string (`_strip_control_chars` + `_flatten_whitespace`).
+  `extract_balanced` retries against the stripped text before giving
+  up.
+
+### Added — docs
+- **`docs/intel-sources.md`** — prospective model-intel sources for
+  the sommelier ranker (LMArena Elo, Artificial Analysis,
+  canirun.ai, LiveBench, Open LLM Leaderboard) with stability +
+  refresh notes.
+
 ## [0.2.0] — 2026-04-19
 
 ### Added — sommelier: model advisor + cross-project decision memory

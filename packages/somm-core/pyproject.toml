@@ -1,6 +1,6 @@
 [project]
 name = "somm-core"
-version = "0.2.0"
+version = "0.2.1"
 description = "somm shared core — schema, repository, config, parse, version"
 requires-python = ">=3.12"
 license = { text = "MIT" }
