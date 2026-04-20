@@ -302,11 +302,37 @@ def _ollama_live() -> bool:
         return False
 
 
+def _ollama_test_model() -> str | None:
+    """Pick a model that's actually installed on this machine's ollama.
+
+    Honours `SOMM_OLLAMA_MODEL` (so CI / devs can pin a specific choice),
+    otherwise returns the first model reported by `/api/tags`. Returns
+    None when ollama is unreachable or has no models installed — the
+    caller should skip.
+    """
+    env = os.environ.get("SOMM_OLLAMA_MODEL")
+    if env:
+        return env
+    url = os.environ.get("SOMM_OLLAMA_URL", "http://localhost:11434")
+    try:
+        r = httpx.get(f"{url}/api/tags", timeout=1.0)
+        r.raise_for_status()
+        models = r.json().get("models") or []
+        if models:
+            return models[0].get("name") or models[0].get("model")
+    except Exception:
+        return None
+    return None
+
+
 @pytest.mark.skipif(not _ollama_live(), reason="no local ollama")
 def test_ollama_live_generate(tmp_path):
     """Real call to local ollama. Verifies the full happy path end-to-end."""
+    model = _ollama_test_model()
+    if not model:
+        pytest.skip("ollama reachable but has no models installed")
     cfg = _tmp_config(tmp_path)
-    cfg.ollama_model = os.environ.get("SOMM_OLLAMA_MODEL", "gemma4:e4b")
+    cfg.ollama_model = model
     llm = SommLLM(config=cfg)
 
     result = llm.generate(

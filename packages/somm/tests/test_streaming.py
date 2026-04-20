@@ -222,9 +222,32 @@ def _ollama_live() -> bool:
         return False
 
 
+def _ollama_test_model() -> str | None:
+    """Same as test_smoke._ollama_test_model — pick whatever is installed
+    so the test runs on any dev machine with ollama available."""
+    import os
+
+    env = os.environ.get("SOMM_OLLAMA_MODEL")
+    if env:
+        return env
+    try:
+        r = httpx.get("http://localhost:11434/api/tags", timeout=1.0)
+        r.raise_for_status()
+        models = r.json().get("models") or []
+        if models:
+            return models[0].get("name") or models[0].get("model")
+    except Exception:
+        return None
+    return None
+
+
 @pytest.mark.skipif(not _ollama_live(), reason="no local ollama")
 def test_ollama_live_stream(tmp_path):
+    model = _ollama_test_model()
+    if not model:
+        pytest.skip("ollama reachable but has no models installed")
     cfg = _tmp_config(tmp_path)
+    cfg.ollama_model = model
     llm = SommLLM(config=cfg)
     try:
         pieces = list(
