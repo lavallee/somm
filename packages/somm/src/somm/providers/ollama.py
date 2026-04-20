@@ -30,10 +30,25 @@ class OllamaProvider:
         base_url: str = "http://localhost:11434",
         default_model: str = "gemma4:e4b",
         timeout: float = 120.0,
+        enable_think: bool = False,
+        keep_alive: str = "30m",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
         self.timeout = timeout
+        # When True, sets `"think": true` on the ollama request. Ollama 0.5+
+        # uses this to opt reasoning-capable models (qwen3, deepseek-r1, etc.)
+        # into their native thinking mode. Post-hoc <think> stripping still
+        # runs regardless.
+        self.enable_think = enable_think
+        # Pinned resident window for the model. Ollama's default (~5 min)
+        # evicts weights from GPU between sparse calls, paying the model-
+        # load cost on the next request. For workload chains that
+        # interleave many small calls (classifier+synthesis+evaluator) this
+        # shows up as slow outliers — a single call in the middle takes
+        # 10x its median because the model just got loaded back into VRAM.
+        # Use "0" to opt out, or e.g. "1h" for long-running batches.
+        self.keep_alive = keep_alive
 
     def _client(self) -> httpx.Client:
         return httpx.Client(timeout=self.timeout)
@@ -53,6 +68,10 @@ class OllamaProvider:
                 "num_predict": max(request.max_tokens * 3, 1024),
             },
         }
+        if self.enable_think:
+            payload["think"] = True
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
         if request.system:
             payload["messages"].append({"role": "system", "content": request.system})
         payload["messages"].append({"role": "user", "content": request.prompt})
@@ -98,6 +117,10 @@ class OllamaProvider:
                 "num_predict": max(request.max_tokens * 3, 1024),
             },
         }
+        if self.enable_think:
+            payload["think"] = True
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
         if request.system:
             payload["messages"].append({"role": "system", "content": request.system})
         payload["messages"].append({"role": "user", "content": request.prompt})

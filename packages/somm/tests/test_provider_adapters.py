@@ -309,6 +309,158 @@ def test_default_provider_chain_only_local_when_no_keys(tmp_path, monkeypatch):
         llm.close()
 
 
+# ---------------------------------------------------------------------------
+# Ollama — native `think: true` passthrough
+
+
+def _ollama_ok_handler():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "message": {"content": "ok"},
+                "prompt_eval_count": 3,
+                "eval_count": 1,
+            },
+        )
+
+    return handler
+
+
+def test_ollama_omits_think_by_default(monkeypatch):
+    """Default OllamaProvider config does not send `think`: true."""
+    from somm.providers.ollama import OllamaProvider
+
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"message": {"content": "ok"}, "prompt_eval_count": 1, "eval_count": 1},
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+
+    p = OllamaProvider()
+    p.generate(SommRequest(prompt="hi", system="", model="qwen2.5:7b",
+                           temperature=0.2, max_tokens=10))
+
+    assert "think" not in captured["payload"]
+
+
+def test_ollama_sends_think_when_enabled(monkeypatch):
+    """OllamaProvider(enable_think=True) sends `think`: true on generate."""
+    from somm.providers.ollama import OllamaProvider
+
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"message": {"content": "ok"}, "prompt_eval_count": 1, "eval_count": 1},
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+
+    p = OllamaProvider(enable_think=True)
+    p.generate(SommRequest(prompt="hi", system="", model="qwen3:14b",
+                           temperature=0.2, max_tokens=10))
+
+    assert captured["payload"].get("think") is True
+
+
+def test_ollama_sends_keep_alive_by_default(monkeypatch):
+    """Default OllamaProvider sends keep_alive="30m" so weights stay resident."""
+    from somm.providers.ollama import OllamaProvider
+
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"message": {"content": "ok"}, "prompt_eval_count": 1, "eval_count": 1},
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+
+    p = OllamaProvider()
+    p.generate(SommRequest(prompt="hi", system="", model="qwen2.5:7b",
+                           temperature=0.2, max_tokens=10))
+
+    assert captured["payload"].get("keep_alive") == "30m"
+
+
+def test_ollama_keep_alive_opt_out_with_empty_string(monkeypatch):
+    """Passing keep_alive='' disables the knob (ollama uses its default)."""
+    from somm.providers.ollama import OllamaProvider
+
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"message": {"content": "ok"}, "prompt_eval_count": 1, "eval_count": 1},
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+
+    p = OllamaProvider(keep_alive="")
+    p.generate(SommRequest(prompt="hi", system="", model="qwen2.5:7b",
+                           temperature=0.2, max_tokens=10))
+
+    assert "keep_alive" not in captured["payload"]
+
+
+def test_ollama_keep_alive_config_threads_through_client(tmp_path, monkeypatch):
+    """SOMM_OLLAMA_KEEP_ALIVE=1h → Config → OllamaProvider.keep_alive."""
+    from somm.client import SommLLM
+    from somm.providers.ollama import OllamaProvider
+    from somm_core.config import load as load_config
+
+    monkeypatch.setenv("SOMM_OLLAMA_KEEP_ALIVE", "1h")
+    cfg = load_config(cwd=tmp_path)
+    cfg.db_dir = tmp_path / ".somm"
+    assert cfg.ollama_keep_alive == "1h"
+
+    llm = SommLLM(config=cfg)
+    try:
+        ollama_provider = next(p for p in llm.providers if isinstance(p, OllamaProvider))
+        assert ollama_provider.keep_alive == "1h"
+    finally:
+        llm.close()
+
+
+def test_ollama_think_config_threads_through_client(tmp_path, monkeypatch):
+    """SOMM_OLLAMA_THINK=1 → Config.ollama_think → OllamaProvider.enable_think."""
+    from somm.client import SommLLM
+    from somm.providers.ollama import OllamaProvider
+    from somm_core.config import load as load_config
+
+    monkeypatch.setenv("SOMM_OLLAMA_THINK", "1")
+    cfg = load_config(cwd=tmp_path)
+    cfg.db_dir = tmp_path / ".somm"
+    assert cfg.ollama_think is True
+
+    llm = SommLLM(config=cfg)
+    try:
+        ollama_provider = next(p for p in llm.providers if isinstance(p, OllamaProvider))
+        assert ollama_provider.enable_think is True
+    finally:
+        llm.close()
+
+
 def test_default_provider_chain_includes_all_when_keys_set(tmp_path, monkeypatch):
     from somm.client import SommLLM
     from somm_core.config import Config

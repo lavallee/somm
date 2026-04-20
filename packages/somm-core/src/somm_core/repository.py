@@ -174,8 +174,8 @@ class Repository:
                     id, ts, project, workload_id, prompt_id,
                     provider, model,
                     tokens_in, tokens_out, latency_ms, cost_usd,
-                    outcome, error_kind, prompt_hash, response_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    outcome, error_kind, error_detail, prompt_hash, response_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     call.id,
@@ -191,6 +191,7 @@ class Repository:
                     call.cost_usd,
                     call.outcome.value,
                     call.error_kind,
+                    call.error_detail,
                     call.prompt_hash,
                     call.response_hash,
                 ),
@@ -209,8 +210,8 @@ class Repository:
                         id, ts, project, workload_id, prompt_id,
                         provider, model,
                         tokens_in, tokens_out, latency_ms, cost_usd,
-                        outcome, error_kind, prompt_hash, response_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        outcome, error_kind, error_detail, prompt_hash, response_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -227,6 +228,7 @@ class Repository:
                             c.cost_usd,
                             c.outcome.value,
                             c.error_kind,
+                            c.error_detail,
                             c.prompt_hash,
                             c.response_hash,
                         )
@@ -243,7 +245,7 @@ class Repository:
             row = conn.execute(
                 "SELECT id, ts, project, workload_id, prompt_id, provider, model, "
                 "tokens_in, tokens_out, latency_ms, cost_usd, outcome, error_kind, "
-                "prompt_hash, response_hash FROM calls WHERE id = ?",
+                "prompt_hash, response_hash, error_detail FROM calls WHERE id = ?",
                 (call_id,),
             ).fetchone()
         if not row:
@@ -264,6 +266,7 @@ class Repository:
             error_kind=row[12],
             prompt_hash=row[13],
             response_hash=row[14],
+            error_detail=row[15],
         )
 
     def record_outcome_update(self, call_id: str, outcome: Outcome) -> None:

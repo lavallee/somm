@@ -19,6 +19,8 @@ class Config:
     spool_dir: Path = field(default_factory=lambda: Path("./.somm/spool"))
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:e4b"
+    ollama_think: bool = False  # Set "think": true on ollama requests (reasoning models)
+    ollama_keep_alive: str = "30m"  # Model residency window; "0" to opt out
     openrouter_api_key: str | None = None
     openrouter_roster: list[str] | None = None
     anthropic_api_key: str | None = None
@@ -78,6 +80,11 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         cfg.openrouter_roster = [
             m.strip() for m in os.environ["SOMM_OPENROUTER_ROSTER"].split(",") if m.strip()
         ]
+    if "SOMM_OLLAMA_THINK" in os.environ:
+        val = os.environ["SOMM_OLLAMA_THINK"].strip().lower()
+        cfg.ollama_think = val in ("1", "true", "yes", "on")
+    if "SOMM_OLLAMA_KEEP_ALIVE" in os.environ:
+        cfg.ollama_keep_alive = os.environ["SOMM_OLLAMA_KEEP_ALIVE"].strip()
     if "SOMM_CROSS_PROJECT" in os.environ:
         val = os.environ["SOMM_CROSS_PROJECT"].strip().lower()
         cfg.cross_project_enabled = val in ("1", "true", "yes", "on")
