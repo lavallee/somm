@@ -189,7 +189,7 @@ def build_server(
               workload so graded models get a ranking bonus.
             limit: max candidates to return (default 8).
         """
-        from somm.sommelier import AdviseConstraints, advise
+        from somm.sommelier import AdviseConstraints, consult
 
         constraints = AdviseConstraints(
             capabilities=list(capabilities or []),
@@ -201,30 +201,14 @@ def build_server(
             workload=workload,
             limit=limit,
         )
-        cands = advise(repo, constraints)
-        priors = _relevant_decisions(repo, question=question, workload=workload)
-        return {
-            "question": question,
-            "project": cfg.project,
-            "constraints": {
-                "capabilities": constraints.capabilities,
-                "providers": constraints.providers,
-                "max_price_in_per_1m": constraints.max_price_in_per_1m,
-                "max_price_out_per_1m": constraints.max_price_out_per_1m,
-                "min_context_window": constraints.min_context_window,
-                "free_only": constraints.free_only,
-                "workload": constraints.workload,
-            },
-            "candidates": [c.as_dict() for c in cands],
-            "prior_decisions": priors,
-            "note": (
-                "No candidates matched. Loosen constraints, "
-                "run `somm-serve admin refresh-intel` to refresh the "
-                "model intel cache, or add a provider with capable models."
-            )
-            if not cands
-            else None,
-        }
+        result = consult(
+            repo,
+            question=question,
+            constraints=constraints,
+            project=cfg.project,
+            global_repo=_global_repo(cfg),
+        )
+        return result.as_dict()
 
     # ------------------------------------------------------------------
     # somm_record_decision

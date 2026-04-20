@@ -75,6 +75,31 @@ class Candidate:
         }
 
 
+@dataclass(slots=True)
+class ConsultResult:
+    """Full sommelier output — ranked candidates plus any prior decisions
+    that match the question or workload. This is what non-MCP callers want:
+    one object with both the fresh ranking and the institutional memory.
+    """
+
+    question: str
+    project: str
+    constraints: dict
+    candidates: list[Candidate]
+    prior_decisions: list[dict]
+    note: str | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            "question": self.question,
+            "project": self.project,
+            "constraints": self.constraints,
+            "candidates": [c.as_dict() for c in self.candidates],
+            "prior_decisions": self.prior_decisions,
+            "note": self.note,
+        }
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -153,6 +178,165 @@ def advise(
 
     candidates.sort(key=lambda c: c.score, reverse=True)
     return candidates[: constraints.limit]
+
+
+# ---------------------------------------------------------------------------
+
+
+def consult(
+    repo: Repository,
+    question: str,
+    constraints: AdviseConstraints,
+    *,
+    project: str = "default",
+    global_repo: Repository | None = None,
+    priors_limit: int = 5,
+) -> ConsultResult:
+    """Full sommelier consultation: ranked candidates + prior decisions.
+
+    Mirrors what `somm_advise` (MCP) returns but available directly to
+    library callers. `global_repo`, when given, is searched for decisions
+    before the project repo — keeps the "decisions mirror globally" model
+    working for Python callers without requiring MCP.
+
+    The returned `prior_decisions` have the same shape the MCP tool
+    emits so code can switch between surfaces without reshaping data.
+    """
+    cands = advise(repo, constraints)
+    priors = _search_prior_decisions(
+        repo, question=question, workload=constraints.workload,
+        limit=priors_limit, global_repo=global_repo,
+    )
+    return ConsultResult(
+        question=question,
+        project=project,
+        constraints={
+            "capabilities": constraints.capabilities,
+            "providers": constraints.providers,
+            "max_price_in_per_1m": constraints.max_price_in_per_1m,
+            "max_price_out_per_1m": constraints.max_price_out_per_1m,
+            "min_context_window": constraints.min_context_window,
+            "free_only": constraints.free_only,
+            "workload": constraints.workload,
+        },
+        candidates=cands,
+        prior_decisions=priors,
+        note=(
+            "No candidates matched. Loosen constraints, "
+            "run `somm-serve admin refresh-intel` to refresh the "
+            "model intel cache, or add a provider with capable models."
+        )
+        if not cands
+        else None,
+    )
+
+
+def _search_prior_decisions(
+    repo: Repository,
+    *,
+    question: str | None,
+    workload: str | None,
+    limit: int,
+    global_repo: Repository | None = None,
+) -> list[dict]:
+    """Search decisions across global → project, returning the first
+    non-empty result set. Matches the MCP helper's fallback order.
+
+    Falls back to keyword-level recall when the exact / substring query
+    misses: `Repository.search_decisions` uses LIKE '%question%', which
+    is empty on anything but near-identical phrasing. If the question
+    is long enough to contain distinctive content words, we retry per
+    keyword and dedupe — so "Which free vision model should malo use
+    for captioning?" still recalls an earlier decision titled "Which
+    local vision model should malo use for describing data-viz
+    artifacts?".
+    """
+    for candidate in (global_repo, repo):
+        if candidate is None:
+            continue
+        try:
+            rows = candidate.search_decisions(
+                question=question, workload=workload, limit=limit,
+            )
+        except Exception:  # noqa: BLE001
+            rows = []
+        if rows:
+            return [_decision_as_dict(d) for d in rows]
+
+    # Keyword fallback — union across every content word, dedupe by id,
+    # newest-first. A single-keyword match is better than nothing; a
+    # multi-keyword match surfaces decisions that overlap on more than
+    # one theme.
+    seen: set[str] = set()
+    aggregated: list = []  # (ts, decision_dict) for final sort
+    for keyword in _recall_keywords(question):
+        for candidate in (global_repo, repo):
+            if candidate is None:
+                continue
+            try:
+                rows = candidate.search_decisions(
+                    question=keyword, workload=workload, limit=limit,
+                )
+            except Exception:  # noqa: BLE001
+                rows = []
+            for d in rows:
+                if d.id in seen:
+                    continue
+                seen.add(d.id)
+                aggregated.append((d.ts, _decision_as_dict(d)))
+    # Newest-first by ts
+    aggregated.sort(key=lambda t: t[0], reverse=True)
+    return [d for _, d in aggregated[:limit]]
+
+
+_RECALL_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do",
+    "does", "for", "from", "good", "has", "have", "how", "i", "in", "is",
+    "it", "my", "of", "on", "or", "our", "should", "some", "that", "the",
+    "these", "this", "to", "use", "we", "what", "when", "where", "which",
+    "who", "why", "will", "with", "would", "you",
+}
+
+
+def _recall_keywords(question: str | None, *, min_len: int = 4, max_keywords: int = 4) -> list[str]:
+    """Extract keyword candidates from a natural-language question.
+
+    Longest content words first, under the assumption that rarer/longer
+    words are better matches for prior decisions. Caps at `max_keywords`
+    so we don't spam the repo with dozens of LIKE queries.
+    """
+    if not question:
+        return []
+    import re
+    tokens = re.findall(r"[a-z][a-z0-9\-]+", question.lower())
+    content = [t for t in tokens if len(t) >= min_len and t not in _RECALL_STOPWORDS]
+    # Dedupe preserving order, then sort by length descending
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for t in content:
+        if t not in seen:
+            seen.add(t)
+            deduped.append(t)
+    return sorted(deduped, key=lambda s: -len(s))[:max_keywords]
+
+
+def _decision_as_dict(d: Decision) -> dict:
+    return {
+        "id": d.id,
+        "ts": d.ts.isoformat() if hasattr(d.ts, "isoformat") else d.ts,
+        "project": d.project,
+        "workload": d.workload_name,
+        "question": d.question,
+        "question_hash": d.question_hash,
+        "chosen_provider": d.chosen_provider,
+        "chosen_model": d.chosen_model,
+        "rationale": d.rationale,
+        "candidates": d.candidates,
+        "constraints": d.constraints,
+        "agent": d.agent,
+        "superseded_by": d.superseded_by,
+        "outcome_note": d.outcome_note,
+    }
 
 
 # ---------------------------------------------------------------------------
