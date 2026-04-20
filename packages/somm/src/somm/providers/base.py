@@ -22,6 +22,10 @@ class SommRequest:
     # Auto-inferred from image blocks, merged with workload defaults, and
     # filtered against model_intel.capabilities_json by the router.
     capabilities_required: list[str] = field(default_factory=list)
+    # When False (default), the router treats an empty response as a
+    # transient failure and tries the next provider. Set True only if the
+    # caller genuinely expects some prompts to produce no output.
+    allow_empty: bool = False
 
 
 @dataclass(slots=True)

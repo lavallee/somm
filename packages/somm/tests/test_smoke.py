@@ -142,12 +142,28 @@ def test_strict_mode_allows_registered_workload(tmp_path):
     llm.close()
 
 
-def test_empty_response_marks_outcome(tmp_path):
+def test_empty_response_exhausts_by_default(tmp_path):
+    """With a single provider returning empty, the router exhausts — there's
+    nobody to fall back to.  This is the desired behavior: empty is treated
+    as a transient failure so that multi-provider setups get a retry on
+    the next provider."""
     cfg = _tmp_config(tmp_path)
     fake = FakeProvider(text="")
     llm = SommLLM(config=cfg, providers=[fake])
 
     result = llm.generate("prompt", workload="empty_test")
+    assert result.outcome == Outcome.EXHAUSTED
+
+    llm.close()
+
+
+def test_empty_response_accepted_with_allow_empty(tmp_path):
+    """When allow_empty=True, empty responses are returned as EMPTY."""
+    cfg = _tmp_config(tmp_path)
+    fake = FakeProvider(text="")
+    llm = SommLLM(config=cfg, providers=[fake])
+
+    result = llm.generate("prompt", workload="empty_allow", allow_empty=True)
     assert result.outcome == Outcome.EMPTY
 
     llm.close()

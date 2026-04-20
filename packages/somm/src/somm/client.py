@@ -88,6 +88,24 @@ def _default_stderr_alerter(event: dict) -> None:
     )
 
 
+def _default_stderr_fallback_notifier(event: dict) -> None:
+    """Default on_fallback handler — self-healing notice to stderr.
+
+    Fires when a pinned (provider, model) call failed and the chain
+    recovered via fallback. The call succeeded; this is *not* an error,
+    just a signal that a degradation happened. Suppress via
+    `SommLLM(on_fallback=lambda _: None)` or reroute to logging.
+    """
+    print(
+        f"[somm] FALLBACK workload={event.get('workload')} "
+        f"pinned={event.get('pinned_provider')}/{event.get('pinned_model')} "
+        f"→ actual={event.get('actual_provider')}/{event.get('actual_model')} "
+        f"reason={event.get('error_kind')} "
+        f"detail={event.get('error_detail')}",
+        file=sys.stderr,
+    )
+
+
 class SommLLM:
     """The library handle. One per process per project.
 
@@ -103,6 +121,7 @@ class SommLLM:
         providers: list[SommProvider] | None = None,
         config: Config | None = None,
         on_error: "Callable[[dict], None] | None" = None,
+        on_fallback: "Callable[[dict], None] | None" = None,
     ) -> None:
         self.config = config or load_config(project=project)
         if mode is not None:
@@ -118,6 +137,13 @@ class SommLLM:
         # suppress, or your own callable to forward to logging / Slack / etc.
         self._on_error: "Callable[[dict], None] | None" = (
             on_error if on_error is not None else _default_stderr_alerter
+        )
+        # Self-healing notice — fires when a pinned (provider, model) call
+        # failed and the chain recovered. The call itself succeeded, so this
+        # is intentionally *not* an error; it's observability for silent
+        # degradation (pinned provider down, key rotated, rate-limit wave).
+        self._on_fallback: "Callable[[dict], None] | None" = (
+            on_fallback if on_fallback is not None else _default_stderr_fallback_notifier
         )
 
         mirror_repo: Repository | None = None
@@ -219,6 +245,7 @@ class SommLLM:
         model: str | None = None,
         provider: str | None = None,
         capabilities_required: list[str] | None = None,
+        allow_empty: bool = False,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -253,6 +280,7 @@ class SommLLM:
             temperature=temperature,
             model=model,
             capabilities_required=effective_caps,
+            allow_empty=allow_empty,
         )
 
         call_id = str(uuid.uuid4())
@@ -264,6 +292,10 @@ class SommLLM:
         actual_model = model or ""
         actual_provider = ""
         text = ""
+
+        # Track whether we took the fallback path so we can fire on_fallback
+        # only on the narrow "pinned failed + chain saved us" window.
+        fallback_info: dict | None = None
 
         if provider is not None:
             chosen = self._pick_provider(provider)
@@ -288,6 +320,14 @@ class SommLLM:
                 if isinstance(exc, SommFatalError):
                     # Auth errors etc. — don't retry, but still try router
                     pass
+                # Remember what the caller asked for before clearing the pin
+                # — on_fallback needs to show pinned vs. actual.
+                fallback_info = {
+                    "pinned_provider": provider,
+                    "pinned_model": model,
+                    "error_kind": type(exc).__name__,
+                    "error_detail": _format_error_detail(exc, chosen.name, model),
+                }
                 # Clear the pinned model before chain fallback: the pin is
                 # only meaningful to the pinned provider. Other providers
                 # serve different model inventories, so re-using the pinned
@@ -305,6 +345,9 @@ class SommLLM:
                     if not text.strip():
                         outcome = Outcome.EMPTY
                 except Exception as fallback_exc:
+                    # Total failure — clear fallback_info so on_fallback
+                    # doesn't fire; on_error handles final-failure signal.
+                    fallback_info = None
                     outcome = Outcome.UPSTREAM_ERROR
                     error_kind = type(exc).__name__
                     error_detail = _format_error_detail(exc, chosen.name, model)
@@ -382,6 +425,39 @@ class SommLLM:
                 })
             except Exception:
                 # Alerter must not break the caller. Swallow and continue.
+                pass
+
+        # Fire on_fallback when a pinned call got rescued by the chain
+        # AND ended up on a DIFFERENT (provider, model) than what was
+        # pinned. Same-model recovery is just a retry — useful for
+        # telemetry but not worth an on_fallback alert (it's not a
+        # structural pin-vs-actual divergence). Keeping the signal
+        # narrow prevents alert fatigue on free-tier providers that
+        # intermittently 429 or return empty responses.
+        same_provider_and_model = (
+            fallback_info is not None
+            and fallback_info["pinned_provider"] == actual_provider
+            and (fallback_info["pinned_model"] or "") == (actual_model or "")
+        )
+        if (
+            outcome == Outcome.OK
+            and fallback_info is not None
+            and not same_provider_and_model
+            and self._on_fallback is not None
+        ):
+            try:
+                self._on_fallback({
+                    "call_id": call_id,
+                    "workload": workload,
+                    "pinned_provider": fallback_info["pinned_provider"],
+                    "pinned_model": fallback_info["pinned_model"],
+                    "actual_provider": actual_provider,
+                    "actual_model": actual_model,
+                    "error_kind": fallback_info["error_kind"],
+                    "error_detail": fallback_info["error_detail"],
+                })
+            except Exception:
+                # Hook must not break the caller.
                 pass
 
         # Feature 3: warn if daily budget cap is exceeded.

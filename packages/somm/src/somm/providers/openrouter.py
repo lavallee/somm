@@ -180,7 +180,15 @@ class OpenRouterProvider:
         choices = data.get("choices") or []
         if not choices:
             raise SommTransientError(f"openrouter: no choices on {model}", cooldown_s=15.0)
-        raw_text = choices[0].get("message", {}).get("content", "")
+        # Some OpenRouter models (notably ephemeral free ones like
+        # openrouter/elephant-alpha) occasionally return {"content": null}
+        # on a 200 response — safety filter, upstream hiccup, model quirk.
+        # Treat null exactly like an empty string: SommLLM already maps that
+        # to Outcome.EMPTY, letting callers distinguish "got nothing" from
+        # "got garbage". Without the `or ""`, strip_think_block blows up
+        # with TypeError on None and the whole call tree reports a crash
+        # instead of the truer "empty response" signal.
+        raw_text = choices[0].get("message", {}).get("content") or ""
         text = strip_think_block(raw_text)
 
         usage = data.get("usage") or {}

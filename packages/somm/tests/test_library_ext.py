@@ -151,6 +151,196 @@ def test_on_error_exception_is_swallowed(tmp_path):
         llm.close()
 
 
+def test_on_fallback_fires_when_chain_saves_pinned_call(tmp_path):
+    """Pinned provider fails, chain recovers — on_fallback fires with both
+    pinned and actual identities. on_error MUST NOT fire (call succeeded)."""
+    failing = _FailingProvider("ollama", RuntimeError("model not found"))
+    backup = FakeProvider(text="rescued")
+    backup.name = "minimax"
+
+    fallback_events: list[dict] = []
+    error_events: list[dict] = []
+
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(
+        config=cfg,
+        providers=[failing, backup],
+        on_fallback=lambda e: fallback_events.append(e),
+        on_error=lambda e: error_events.append(e),
+    )
+    try:
+        result = llm.generate(
+            prompt="hi",
+            workload="fallbackhook",
+            provider="ollama",
+            model="qwen3:14b",
+        )
+        assert result.outcome == Outcome.OK
+        assert result.text == "rescued"
+        assert len(fallback_events) == 1
+        ev = fallback_events[0]
+        assert ev["workload"] == "fallbackhook"
+        assert ev["pinned_provider"] == "ollama"
+        assert ev["pinned_model"] == "qwen3:14b"
+        assert ev["actual_provider"] == "minimax"
+        # Error path must stay silent on successful fallback.
+        assert error_events == []
+    finally:
+        llm.close()
+
+
+def test_on_fallback_suppresses_same_model_retries(tmp_path):
+    """Pinned (openrouter, elephant-alpha) fails once, chain re-tries, the
+    same provider+model succeeds on retry. That's a retry, not a structural
+    fallback — hook must NOT fire. Otherwise free-tier providers that
+    intermittently 429 spam the alert stream."""
+
+    class _FlakyProvider:
+        """Fails on first call, succeeds on second. Same identity both times."""
+        name = "openrouter"
+
+        def __init__(self):
+            self.calls = 0
+            self.received_models: list[str | None] = []
+
+        def generate(self, request):
+            self.received_models.append(request.model)
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient hiccup")
+            return SommResponse(
+                text="recovered",
+                model="openrouter/elephant-alpha",
+                tokens_in=3, tokens_out=2, latency_ms=5,
+            )
+
+        def stream(self, request):  # pragma: no cover
+            yield
+
+        def health(self):
+            return ProviderHealth(available=True)
+
+        def models(self):
+            return []
+
+        def estimate_tokens(self, text, model):
+            return 1
+
+    flaky = _FlakyProvider()
+    fallback_events: list[dict] = []
+
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(
+        config=cfg,
+        providers=[flaky],
+        on_fallback=lambda e: fallback_events.append(e),
+    )
+    try:
+        result = llm.generate(
+            prompt="hi",
+            workload="retry-only",
+            provider="openrouter",
+            model="openrouter/elephant-alpha",
+        )
+        assert result.outcome == Outcome.OK
+        assert result.text == "recovered"
+        assert result.provider == "openrouter"
+        assert result.model == "openrouter/elephant-alpha"
+        # Crucially: NO fallback event for same-model retry.
+        assert fallback_events == []
+        assert flaky.calls == 2  # sanity: retry actually happened
+    finally:
+        llm.close()
+
+
+def test_on_fallback_does_not_fire_on_happy_path(tmp_path):
+    """Pinned provider succeeds → no fallback event."""
+    ok = FakeProvider(text="ok")
+    ok.name = "ollama"
+
+    fallback_events: list[dict] = []
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(
+        config=cfg,
+        providers=[ok],
+        on_fallback=lambda e: fallback_events.append(e),
+    )
+    try:
+        llm.generate(prompt="hi", workload="happy", provider="ollama")
+        assert fallback_events == []
+    finally:
+        llm.close()
+
+
+def test_on_fallback_does_not_fire_when_unpinned(tmp_path):
+    """If provider wasn't pinned in the first place, no fallback event even
+    if the chain walked several providers."""
+    failing = _FailingProvider("ollama", _LONG_COOL)
+    backup = FakeProvider(text="chain-default")
+    backup.name = "minimax"
+
+    fallback_events: list[dict] = []
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(
+        config=cfg,
+        providers=[failing, backup],
+        on_fallback=lambda e: fallback_events.append(e),
+    )
+    try:
+        # No provider= kwarg — fallback is the router's normal mode of
+        # operation, not a self-healing event.
+        llm.generate(prompt="hi", workload="unpinned")
+        assert fallback_events == []
+    finally:
+        llm.close()
+
+
+def test_on_fallback_does_not_fire_when_chain_also_fails(tmp_path):
+    """Both pinned AND chain fail — only on_error fires, not on_fallback."""
+    failing_a = _FailingProvider("ollama", _LONG_COOL)
+    failing_b = _FailingProvider("minimax", _LONG_COOL)
+
+    fallback_events: list[dict] = []
+    error_events: list[dict] = []
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(
+        config=cfg,
+        providers=[failing_a, failing_b],
+        on_fallback=lambda e: fallback_events.append(e),
+        on_error=lambda e: error_events.append(e),
+    )
+    try:
+        result = llm.generate(
+            prompt="hi", workload="bothfail", provider="ollama"
+        )
+        assert result.outcome != Outcome.OK
+        assert fallback_events == []
+        assert len(error_events) == 1
+    finally:
+        llm.close()
+
+
+def test_on_fallback_exception_is_swallowed(tmp_path):
+    """A broken on_fallback handler must not break the caller."""
+    failing = _FailingProvider("ollama", RuntimeError("down"))
+    backup = FakeProvider(text="rescued")
+    backup.name = "minimax"
+
+    def _broken(_ev):
+        raise RuntimeError("hook itself is broken")
+
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(
+        config=cfg, providers=[failing, backup], on_fallback=_broken
+    )
+    try:
+        # Must not raise.
+        result = llm.generate(prompt="hi", workload="brokenhook", provider="ollama")
+        assert result.text == "rescued"
+    finally:
+        llm.close()
+
+
 def test_pinned_provider_failure_clears_model_on_fallback(tmp_path):
     """When the pinned (provider, model) fails, the fallback chain must NOT
     propagate the pinned model to other providers — they serve different

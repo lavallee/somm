@@ -265,9 +265,16 @@ class Router:
                 continue
             try:
                 resp = provider.generate(request)
-                # Empty responses are returned as-is (outcome=EMPTY is set by
-                # SommLLM, not the router). Empty != provider failure — the
-                # provider *worked*, the model just didn't produce output.
+                if not resp.text.strip() and not request.allow_empty:
+                    # Provider returned an empty response. Don't mark it as
+                    # a hard failure (the HTTP call succeeded), but do move
+                    # on to the next provider — empty is almost never what
+                    # the caller wanted. Short cooldown so we don't hammer
+                    # a provider that's consistently returning blanks.
+                    self.tracker.mark_failure(
+                        provider.name, cooldown_s=15,
+                    )
+                    continue
                 self.tracker.mark_ok(provider.name)
                 return RouterResult(response=resp, provider=provider.name)
             except SommFatalError:

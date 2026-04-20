@@ -78,6 +78,29 @@ def test_happy_path_returns_response(tmp_path, monkeypatch):
     assert not tr.get("openrouter", "m-a").is_cooling()
 
 
+def test_null_content_becomes_empty_not_crash(tmp_path, monkeypatch):
+    """Some OpenRouter free models (elephant-alpha et al.) return
+    {"content": null} on a 200 response — adapter used to crash with
+    TypeError when strip_think_block saw None. Regression: treat null like
+    empty, preserve call-tree so SommLLM can mark Outcome.EMPTY."""
+    tr = _tmp_tracker(tmp_path)
+
+    def handler(request):
+        body = {
+            "choices": [{"message": {"content": None}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 0},
+        }
+        return httpx.Response(200, json=body)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenRouterProvider(api_key="k", roster=["m-a"], tracker=tr)
+    resp = p.generate(SommRequest(prompt="hi"))
+    # No crash — empty text instead.
+    assert resp.text == ""
+    assert resp.tokens_in == 5
+    assert resp.tokens_out == 0
+
+
 def test_think_block_stripped(tmp_path, monkeypatch):
     tr = _tmp_tracker(tmp_path)
 

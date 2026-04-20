@@ -217,9 +217,8 @@ def test_router_rate_limited_uses_retry_after(tmp_path):
     assert 190 <= remaining <= 210
 
 
-def test_router_empty_response_returned_as_is(tmp_path):
-    """Empty responses are NOT treated as provider failure. The provider
-    worked; the model just had nothing to say. Caller gets outcome=EMPTY."""
+def test_router_empty_response_falls_through(tmp_path):
+    """Empty responses trigger fallthrough to the next provider by default."""
     repo = _tmp_repo(tmp_path)
     tr = ProviderHealthTracker(repo)
     p1 = ScriptedProvider(
@@ -230,9 +229,26 @@ def test_router_empty_response_returned_as_is(tmp_path):
     r = Router([p1, p2], tr)
 
     result = r.dispatch(SommRequest(prompt="hi"))
-    assert result.provider == "p1"  # p1 "succeeded" — empty is a valid response
+    assert result.provider == "p2"  # p1 was empty → fell through to p2
+    assert result.response.text.strip() != ""
+    assert tr.get("p1").is_cooling()  # short cooldown on p1
+
+
+def test_router_empty_response_accepted_with_allow_empty(tmp_path):
+    """When allow_empty=True, empty responses are returned as-is."""
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    p1 = ScriptedProvider(
+        "p1",
+        [SommResponse(text="   ", model="m", tokens_in=0, tokens_out=0, latency_ms=1)],
+    )
+    p2 = ScriptedProvider("p2", [_ok()])
+    r = Router([p1, p2], tr)
+
+    result = r.dispatch(SommRequest(prompt="hi", allow_empty=True))
+    assert result.provider == "p1"  # allow_empty=True — accept the empty response
     assert result.response.text.strip() == ""
-    assert not tr.get("p1").is_cooling()  # no cooling — provider worked
+    assert not tr.get("p1").is_cooling()  # no cooling — caller opted in
 
 
 def test_router_circuit_break_after_n_failures(tmp_path):

@@ -83,7 +83,7 @@ class OllamaProvider:
             data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        raw_text = data.get("message", {}).get("content", "")
+        raw_text = data.get("message", {}).get("content") or ""
         clean_text = strip_think_block(raw_text)
 
         # Ollama returns prompt_eval_count (tokens_in) + eval_count (tokens_out).
