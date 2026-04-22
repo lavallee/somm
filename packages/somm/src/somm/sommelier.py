@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from somm_core.models import Decision
 from somm_core.parse import stable_hash
 
-from somm.capabilities import model_has_capability
+from somm.capabilities import model_has_capability, model_output_modalities
 
 if TYPE_CHECKING:
     from somm_core.repository import Repository
@@ -42,6 +42,22 @@ class AdviseConstraints:
     free_only: bool = False               # shortcut: both prices == 0
     workload: str | None = None           # for scoping shadow-eval lookup
     limit: int = 8
+    # --- 0.2.2 additions -------------------------------------------------
+    required_output_modalities: list[str] | None = None
+    """Drop candidates whose output modality isn't a superset of this. For
+    captioning workloads, pass `["text"]` to exclude audio-gen models that
+    accept image inputs (Lyria et al). None = don't filter."""
+    exclude_models: list[str] | None = None
+    """fnmatch-style patterns matched against `"<provider>/<model>"`. Inline
+    blocklist for callers who hit a bad candidate without a release."""
+    include_meta_routers: bool = False
+    """Meta-router models (`openrouter/auto`, `openrouter/free`) are
+    non-deterministic and inherit capability claims from whatever backend
+    they route to. Excluded by default — opt in if you know you want one."""
+    unknown_capability_penalty: float = 0.9
+    """Score multiplier applied once per requested capability where we
+    can't confirm the model supports it. 1.0 reverts to pre-0.2.2 behavior
+    (unknown scores identically to known-yes); 0.0 hides unknowns entirely."""
 
 
 @dataclass(slots=True)
@@ -75,7 +91,48 @@ class Candidate:
         }
 
 
+@dataclass(slots=True)
+class ConsultResult:
+    """Full sommelier output — ranked candidates plus any prior decisions
+    that match the question or workload. This is what non-MCP callers want:
+    one object with both the fresh ranking and the institutional memory.
+    """
+
+    question: str
+    project: str
+    constraints: dict
+    candidates: list[Candidate]
+    prior_decisions: list[dict]
+    note: str | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            "question": self.question,
+            "project": self.project,
+            "constraints": self.constraints,
+            "candidates": [c.as_dict() for c in self.candidates],
+            "prior_decisions": self.prior_decisions,
+            "note": self.note,
+        }
+
+
 # ---------------------------------------------------------------------------
+
+
+# Provider/model patterns that identify router meta-models — models that
+# pick a backend at inference time, so they're non-deterministic and
+# inherit capability claims from whatever they happen to route to.
+# Patterns use fnmatch semantics against "<provider>/<model>".
+META_ROUTER_PATTERNS: tuple[str, ...] = (
+    "openrouter/openrouter/auto",
+    "openrouter/openrouter/free",
+    "openrouter/openrouter/auto-*",
+)
+
+
+def _fnmatches_any(s: str, patterns) -> bool:
+    import fnmatch
+    return any(fnmatch.fnmatchcase(s, p) for p in patterns)
 
 
 def advise(
@@ -92,24 +149,76 @@ def advise(
 
     Capability filtering is *hard*: a candidate that's known to lack a
     required capability is excluded. Unknown capability status is kept
-    (same "let the provider try" semantics as the router).
+    (same "let the provider try" semantics as the router) but scored
+    lower via `unknown_capability_penalty`.
+
+    Output-modality filtering is also hard when
+    `constraints.required_output_modalities` is set — an input-vision
+    model that outputs audio (e.g., music-gen) is dropped for a
+    captioning workload.
     """
+    result = _advise_with_reasons(repo, constraints)
+    return result.candidates
+
+
+@dataclass(slots=True)
+class _AdviseResult:
+    """Internal bundle so `consult()` can surface why a candidate was
+    filtered without re-running the ranking."""
+
+    candidates: list[Candidate]
+    filter_stats: dict[str, int]
+
+
+def _advise_with_reasons(
+    repo: Repository,
+    constraints: AdviseConstraints,
+) -> _AdviseResult:
     rows = _fetch_intel(repo, constraints)
     shadow_map = _shadow_map_for_workload(repo, constraints.workload)
+    required_out = [
+        m.lower() for m in (constraints.required_output_modalities or [])
+    ]
+    exclude_patterns = tuple(constraints.exclude_models or ())
 
+    filter_stats: dict[str, int] = {
+        "capability": 0, "output_modality": 0,
+        "meta_router": 0, "excluded": 0,
+    }
     candidates: list[Candidate] = []
     for r in rows:
         provider, model = r["provider"], r["model"]
+        pm = f"{provider}/{model}"
 
-        # Capability hard filter
+        if exclude_patterns and _fnmatches_any(pm, exclude_patterns):
+            filter_stats["excluded"] += 1
+            continue
+        if not constraints.include_meta_routers and _fnmatches_any(pm, META_ROUTER_PATTERNS):
+            filter_stats["meta_router"] += 1
+            continue
+
+        # Capability hard filter (False = known-lacking)
         drop_for: str | None = None
+        unknown_caps: list[str] = []
         for cap in constraints.capabilities:
             verdict = model_has_capability(repo, provider, model, cap)
             if verdict is False:
                 drop_for = cap
                 break
+            if verdict is None:
+                unknown_caps.append(cap)
         if drop_for:
+            filter_stats["capability"] += 1
             continue
+
+        # Output-modality hard filter. Unknown output modalities stay — we
+        # don't have enough signal to confidently exclude. The penalty
+        # above handles unknown inputs.
+        if required_out:
+            out_mods = model_output_modalities(repo, provider, model)
+            if out_mods is not None and not any(m in out_mods for m in required_out):
+                filter_stats["output_modality"] += 1
+                continue
 
         reasons: list[str] = []
         price_in = r["price_in_per_1m"] or 0.0
@@ -136,6 +245,14 @@ def advise(
         score = _score(
             price_in, price_out, ctx, r.get("last_seen"), shadow_score
         )
+        # Unknown-capability penalty — once per unknown capability so that
+        # (vision?, tool_use?) scores lower than (vision?) which scores
+        # lower than (vision✓). Clamp so 0.0 actually hides rather than
+        # leaving as a floating-point fuzz of zero.
+        penalty = constraints.unknown_capability_penalty
+        if unknown_caps and 0.0 <= penalty < 1.0:
+            score *= penalty ** len(unknown_caps)
+
         candidates.append(
             Candidate(
                 provider=provider,
@@ -151,8 +268,334 @@ def advise(
             )
         )
 
-    candidates.sort(key=lambda c: c.score, reverse=True)
-    return candidates[: constraints.limit]
+    # Deterministic sort — same inputs produce the same ranking across runs.
+    # Primary: score desc. Tiebreakers: shadow_score desc, last_seen desc,
+    # model asc. Use Python's stable sort by sorting secondary keys first
+    # then the primary; stable sort preserves tie-group order.
+    candidates.sort(key=lambda c: c.model)                              # 4th key
+    candidates.sort(key=lambda c: _ts_epoch(c.last_seen), reverse=True)  # 3rd key
+    candidates.sort(key=lambda c: c.shadow_score or 0.0, reverse=True)   # 2nd key
+    candidates.sort(key=lambda c: c.score, reverse=True)                 # primary
+    return _AdviseResult(
+        candidates=candidates[: constraints.limit],
+        filter_stats=filter_stats,
+    )
+
+
+def _ts_epoch(ts: str | None) -> float:
+    """Return an epoch-seconds float for an ISO timestamp, or 0 when
+    missing. Missing timestamps sort to the end under `reverse=True`."""
+    if not ts:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(ts.replace(" ", "T"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+
+
+def consult(
+    repo: Repository,
+    question: str,
+    constraints: AdviseConstraints,
+    *,
+    project: str = "default",
+    global_repo: Repository | None = None,
+    priors_limit: int = 5,
+) -> ConsultResult:
+    """Full sommelier consultation: ranked candidates + prior decisions.
+
+    Mirrors what `somm_advise` (MCP) returns but available directly to
+    library callers. `global_repo`, when given, is searched for decisions
+    before the project repo — keeps the "decisions mirror globally" model
+    working for Python callers without requiring MCP.
+
+    0.2.2 change: prior decisions no longer just surface alongside —
+    candidates whose (provider, model) matches a prior decision are
+    annotated and their score nudged. Previously-chosen models without
+    negative outcomes gain a small bonus ("we've used this before, no
+    complaints"); models with a negative `outcome_note` take a soft
+    penalty. Both effects decay with age (half-life ~90 days) so a
+    year-old decision carries a fraction of the weight of last week's.
+
+    The returned `prior_decisions` have the same shape the MCP tool
+    emits so code can switch between surfaces without reshaping data.
+    """
+    result = _advise_with_reasons(repo, constraints)
+    cands = result.candidates
+    priors = _search_prior_decisions(
+        repo, question=question, workload=constraints.workload,
+        limit=priors_limit, global_repo=global_repo,
+    )
+    cands = _apply_prior_decision_signals(cands, priors)
+    # Re-sort in case prior signals changed the order — stable on primary.
+    cands.sort(key=lambda c: c.score, reverse=True)
+    cands = cands[: constraints.limit]
+    return ConsultResult(
+        question=question,
+        project=project,
+        constraints={
+            "capabilities": constraints.capabilities,
+            "providers": constraints.providers,
+            "max_price_in_per_1m": constraints.max_price_in_per_1m,
+            "max_price_out_per_1m": constraints.max_price_out_per_1m,
+            "min_context_window": constraints.min_context_window,
+            "free_only": constraints.free_only,
+            "workload": constraints.workload,
+            "required_output_modalities": constraints.required_output_modalities,
+            "exclude_models": constraints.exclude_models,
+            "include_meta_routers": constraints.include_meta_routers,
+            "unknown_capability_penalty": constraints.unknown_capability_penalty,
+        },
+        candidates=cands,
+        prior_decisions=priors,
+        note=_build_note(cands, result.filter_stats, constraints),
+    )
+
+
+# Keywords that, when present in a prior decision's outcome_note or
+# rationale, indicate the prior was negative — "we tried this and it
+# didn't work." Case-insensitive substring match. Extend as we collect
+# more decisions and learn which phrasings show up.
+_NEGATIVE_OUTCOME_KEYWORDS: tuple[str, ...] = (
+    "unreliable", "not reliable", "unavailable",
+    "not capable", "incapable", "doesn't work", "failed", "failing",
+    "struggled", "refused", "timeout", "timed out",
+    "not enough", "too slow", "hallucinated", "hallucinations",
+)
+
+
+# Half-life for prior-decision score nudges, in days. After one half-life
+# the effect is multiplied by 0.5; after two, 0.25; etc. 90 days roughly
+# matches the "model intel changes" warning in SOMMELIER.md.
+_PRIOR_DECISION_HALF_LIFE_DAYS = 90.0
+
+# Base multipliers applied at age=0. Decay pulls them toward 1.0 over time.
+_PRIOR_NEGATIVE_FACTOR = 0.5
+_PRIOR_POSITIVE_FACTOR = 1.1
+
+
+def _apply_prior_decision_signals(
+    candidates: list[Candidate],
+    priors: list[dict],
+) -> list[Candidate]:
+    """Annotate and nudge candidates based on matching prior decisions.
+
+    For each candidate, find priors whose `chosen_provider`/`chosen_model`
+    match. Add a reason tag so the agent sees the connection. If the
+    outcome_note (or rationale, as a fallback) contains a negative
+    keyword, multiply score by `_PRIOR_NEGATIVE_FACTOR`; otherwise multiply
+    by `_PRIOR_POSITIVE_FACTOR`. Both factors decay toward 1.0 with age
+    via an exponential half-life.
+    """
+    if not priors or not candidates:
+        return candidates
+
+    # Group priors by (provider, model) for O(1) lookup.
+    by_pm: dict[tuple[str, str], list[dict]] = {}
+    for p in priors:
+        prov = p.get("chosen_provider")
+        mdl = p.get("chosen_model")
+        if not prov or not mdl:
+            continue
+        by_pm.setdefault((prov, mdl), []).append(p)
+
+    for cand in candidates:
+        matches = by_pm.get((cand.provider, cand.model))
+        if not matches:
+            continue
+        # Use the most recent matching prior for the score nudge.
+        matches.sort(key=lambda d: d.get("ts") or "", reverse=True)
+        top = matches[0]
+        age_days = _prior_age_days(top.get("ts"))
+        decay = 2.0 ** (-age_days / _PRIOR_DECISION_HALF_LIFE_DAYS) if age_days >= 0 else 1.0
+
+        outcome = (top.get("outcome_note") or "").lower()
+        rationale = (top.get("rationale") or "").lower()
+        negative = any(
+            kw in outcome or kw in rationale
+            for kw in _NEGATIVE_OUTCOME_KEYWORDS
+        )
+
+        # Decayed factor — interpolate from base toward 1.0 by `decay`.
+        base = _PRIOR_NEGATIVE_FACTOR if negative else _PRIOR_POSITIVE_FACTOR
+        effective = 1.0 + (base - 1.0) * decay
+        cand.score *= effective
+
+        ts_label = (top.get("ts") or "")[:10] or "prior"
+        proj_label = top.get("project") or "?"
+        if negative:
+            cand.reasons.append(
+                f"prior({proj_label} {ts_label}): flagged — ×{effective:.2f}"
+            )
+        else:
+            cand.reasons.append(
+                f"prior({proj_label} {ts_label}): chose — ×{effective:.2f}"
+            )
+    return candidates
+
+
+def _prior_age_days(ts: str | None) -> float:
+    if not ts:
+        return -1.0
+    try:
+        parsed = datetime.fromisoformat(ts.replace(" ", "T"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0.0, (datetime.now(UTC) - parsed).total_seconds() / 86400.0)
+    except (ValueError, TypeError):
+        return -1.0
+
+
+def _build_note(
+    candidates: list[Candidate],
+    filter_stats: dict[str, int],
+    constraints: AdviseConstraints,
+) -> str | None:
+    """Return a user-facing note when the result set is surprising.
+
+    Empty result: report which filters ate the candidates. When there are
+    real candidates but most got filtered, we stay silent — the ranking
+    speaks for itself.
+    """
+    if candidates:
+        return None
+    ate_by: list[str] = []
+    if filter_stats.get("capability"):
+        ate_by.append(f"{filter_stats['capability']} missed capability")
+    if filter_stats.get("output_modality"):
+        ate_by.append(
+            f"{filter_stats['output_modality']} wrong output modality"
+        )
+    if filter_stats.get("meta_router"):
+        ate_by.append(f"{filter_stats['meta_router']} meta-router")
+    if filter_stats.get("excluded"):
+        ate_by.append(f"{filter_stats['excluded']} exclude_models match")
+    if ate_by:
+        return (
+            "No candidates matched. Filtered out: "
+            + ", ".join(ate_by)
+            + ". Loosen constraints or refresh intel "
+            "(`somm-serve admin refresh-intel`)."
+        )
+    return (
+        "No candidates matched. Loosen constraints, "
+        "run `somm-serve admin refresh-intel` to refresh the "
+        "model intel cache, or add a provider with capable models."
+    )
+
+
+def _search_prior_decisions(
+    repo: Repository,
+    *,
+    question: str | None,
+    workload: str | None,
+    limit: int,
+    global_repo: Repository | None = None,
+) -> list[dict]:
+    """Search decisions across global → project, returning the first
+    non-empty result set. Matches the MCP helper's fallback order.
+
+    Falls back to keyword-level recall when the exact / substring query
+    misses: `Repository.search_decisions` uses LIKE '%question%', which
+    is empty on anything but near-identical phrasing. If the question
+    is long enough to contain distinctive content words, we retry per
+    keyword and dedupe — so "Which free vision model should malo use
+    for captioning?" still recalls an earlier decision titled "Which
+    local vision model should malo use for describing data-viz
+    artifacts?".
+    """
+    for candidate in (global_repo, repo):
+        if candidate is None:
+            continue
+        try:
+            rows = candidate.search_decisions(
+                question=question, workload=workload, limit=limit,
+            )
+        except Exception:  # noqa: BLE001
+            rows = []
+        if rows:
+            return [_decision_as_dict(d) for d in rows]
+
+    # Keyword fallback — union across every content word, dedupe by id,
+    # newest-first. A single-keyword match is better than nothing; a
+    # multi-keyword match surfaces decisions that overlap on more than
+    # one theme.
+    seen: set[str] = set()
+    aggregated: list = []  # (ts, decision_dict) for final sort
+    for keyword in _recall_keywords(question):
+        for candidate in (global_repo, repo):
+            if candidate is None:
+                continue
+            try:
+                rows = candidate.search_decisions(
+                    question=keyword, workload=workload, limit=limit,
+                )
+            except Exception:  # noqa: BLE001
+                rows = []
+            for d in rows:
+                if d.id in seen:
+                    continue
+                seen.add(d.id)
+                aggregated.append((d.ts, _decision_as_dict(d)))
+    # Newest-first by ts
+    aggregated.sort(key=lambda t: t[0], reverse=True)
+    return [d for _, d in aggregated[:limit]]
+
+
+_RECALL_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do",
+    "does", "for", "from", "good", "has", "have", "how", "i", "in", "is",
+    "it", "my", "of", "on", "or", "our", "should", "some", "that", "the",
+    "these", "this", "to", "use", "we", "what", "when", "where", "which",
+    "who", "why", "will", "with", "would", "you",
+}
+
+
+def _recall_keywords(question: str | None, *, min_len: int = 4, max_keywords: int = 4) -> list[str]:
+    """Extract keyword candidates from a natural-language question.
+
+    Longest content words first, under the assumption that rarer/longer
+    words are better matches for prior decisions. Caps at `max_keywords`
+    so we don't spam the repo with dozens of LIKE queries.
+    """
+    if not question:
+        return []
+    import re
+    tokens = re.findall(r"[a-z][a-z0-9\-]+", question.lower())
+    content = [t for t in tokens if len(t) >= min_len and t not in _RECALL_STOPWORDS]
+    # Dedupe preserving order, then sort by length descending
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for t in content:
+        if t not in seen:
+            seen.add(t)
+            deduped.append(t)
+    return sorted(deduped, key=lambda s: -len(s))[:max_keywords]
+
+
+def _decision_as_dict(d: Decision) -> dict:
+    return {
+        "id": d.id,
+        "ts": d.ts.isoformat() if hasattr(d.ts, "isoformat") else d.ts,
+        "project": d.project,
+        "workload": d.workload_name,
+        "question": d.question,
+        "question_hash": d.question_hash,
+        "chosen_provider": d.chosen_provider,
+        "chosen_model": d.chosen_model,
+        "rationale": d.rationale,
+        "candidates": d.candidates,
+        "constraints": d.constraints,
+        "agent": d.agent,
+        "superseded_by": d.superseded_by,
+        "outcome_note": d.outcome_note,
+    }
 
 
 # ---------------------------------------------------------------------------

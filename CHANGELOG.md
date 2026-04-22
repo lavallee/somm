@@ -26,6 +26,83 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   without `error_detail`, silently dropping the field for all stream
   outcomes. Now declared and threaded through.
 
+## [0.2.2] — 2026-04-20
+
+### Added — sommelier quality
+
+Driven by findings from malo's captioner selection
+(`../malo/docs/somm-sommelier-report.md`).
+
+- **Output-modality filter** — `AdviseConstraints.required_output_modalities`
+  drops candidates whose output modality isn't a superset of the request.
+  Excludes audio-gen models with image inputs (Lyria et al) from a
+  captioning (`output=["text"]`) query. Reads from OpenRouter's
+  `architecture.output_modalities`, the scalar `modality` field
+  (`"text+image->text"`), or the new HF enrichment — whichever is
+  populated first.
+- **Meta-router exclusion** — `openrouter/auto`, `openrouter/free`, and
+  `openrouter/auto-*` variants are filtered by default. These models
+  pick a backend at inference time, so they're non-deterministic and
+  inherit capability claims from whatever they route to. Opt in via
+  `include_meta_routers=True`.
+- **Inline blocklist** — `AdviseConstraints.exclude_models` accepts
+  fnmatch-style patterns against `"<provider>/<model>"`, so callers
+  can drop a bad candidate without waiting for a release.
+- **Unknown-capability penalty** — models with unknown (not
+  known-lacking) capabilities score by `×0.9` per unknown capability,
+  so confirmed `vision✓` outranks unconfirmed `vision?`. Tunable via
+  `AdviseConstraints.unknown_capability_penalty`; `1.0` restores pre-0.2.2
+  behavior.
+- **Prior-decision weighting** — candidates whose `(provider, model)`
+  matches a prior decision are annotated (`prior(<project> <date>):
+  chose — ×1.10`) *and* score-nudged. Positive nudge for clean priors,
+  negative for priors whose `outcome_note`/rationale contains
+  unreliability keywords (`unreliable`, `failed`, `struggled`, …).
+  Both factors decay with age via exponential half-life (~90 days).
+- **Deterministic tiebreaker** — candidates tying on score now sort
+  predictably by `(shadow_score desc, last_seen desc, model asc)` so
+  two adviser runs agree.
+- **Smarter empty-result note** — when the candidate list is empty the
+  `note` surfaces which filter ate them (e.g. *"Filtered out: 3 wrong
+  output modality, 2 meta-router"*), not just a generic "loosen
+  constraints" hint.
+
+### Added — intel sources
+
+- **HuggingFace `pipeline_tag` worker** (`HuggingFaceIntelWorker`).
+  Opt-in via `somm-serve admin refresh-intel --hf` or
+  `SOMM_ENABLE_HF_INTEL=1`. Fetches `pipeline_tag` + `tags` from the
+  HF Hub, maps tags (`image-text-to-text`, `text-to-speech`, …) to
+  input/output modalities, and merges under `capabilities_json.hf`.
+  Supplements OpenRouter rows where `architecture.output_modalities`
+  coverage is spotty. Non-fatal on 404s and rate limits.
+- **`merge_intel_capabilities(repo, provider, model, delta)`** —
+  shared helper for layering supplementary signals onto
+  `capabilities_json` without clobbering the primary-source fields.
+  Primary workers (OpenRouter, Ollama) keep using `write_intel`;
+  enrichment workers (HF, future LMArena/LiveBench) use the merge path.
+
+### Added — library
+
+- **`sommelier.consult()`** — returns `ConsultResult`
+  (`candidates`, `prior_decisions`, `note`) so Python callers get
+  parity with the MCP `somm_advise` tool without going through MCP.
+  The MCP wrapper routes through `consult()` for a single code path.
+- **Keyword-fallback prior-decision recall** — `consult()` retries
+  `search_decisions` per content word when the exact-substring query
+  misses, so slightly-reworded questions still recall priors.
+
+### Changed
+
+- **`somm_advise` MCP tool** — extended with `required_output_modalities`,
+  `exclude_models`, `include_meta_routers`, and
+  `unknown_capability_penalty`. Default behavior changes: meta-routers
+  are now excluded (opt in for the old default) and unknown-capability
+  rows score lower than known-yes.
+- **`capabilities.model_output_modalities(repo, provider, model)`** —
+  new helper returning the modality set a model can produce, or `None`
+  when we have no signal. Used by the output-modality filter.
+
 ## [0.2.1] — 2026-04-20
 
 ### Added — providers

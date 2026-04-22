@@ -167,6 +167,10 @@ def build_server(
         free_only: bool = False,
         workload: str | None = None,
         limit: int = 8,
+        required_output_modalities: list[str] | None = None,
+        exclude_models: list[str] | None = None,
+        include_meta_routers: bool = False,
+        unknown_capability_penalty: float = 0.9,
     ) -> dict:
         """Rank candidate (provider, model) pairs against the given constraints.
 
@@ -188,8 +192,20 @@ def build_server(
             workload: optional — looks up any shadow-eval scores for this
               workload so graded models get a ranking bonus.
             limit: max candidates to return (default 8).
+            required_output_modalities: drop candidates whose output modality
+              isn't a superset of this. Pass `["text"]` for captioning to
+              exclude audio-gen models that accept image inputs.
+            exclude_models: fnmatch-style patterns against `"<provider>/<model>"`.
+              Inline blocklist for bad candidates without waiting for a release.
+            include_meta_routers: opt in to `openrouter/auto`/`openrouter/free`.
+              Off by default — these pick a backend at inference time, so
+              they're non-deterministic and inherit capability claims from
+              whatever they route to.
+            unknown_capability_penalty: score multiplier for models with
+              unknown (not known-lacking) capabilities. Default 0.9. Set
+              to 1.0 to score unknowns identically to known-yes.
         """
-        from somm.sommelier import AdviseConstraints, advise
+        from somm.sommelier import AdviseConstraints, consult
 
         constraints = AdviseConstraints(
             capabilities=list(capabilities or []),
@@ -200,31 +216,20 @@ def build_server(
             free_only=free_only,
             workload=workload,
             limit=limit,
+            required_output_modalities=list(required_output_modalities)
+            if required_output_modalities else None,
+            exclude_models=list(exclude_models) if exclude_models else None,
+            include_meta_routers=include_meta_routers,
+            unknown_capability_penalty=unknown_capability_penalty,
         )
-        cands = advise(repo, constraints)
-        priors = _relevant_decisions(repo, question=question, workload=workload)
-        return {
-            "question": question,
-            "project": cfg.project,
-            "constraints": {
-                "capabilities": constraints.capabilities,
-                "providers": constraints.providers,
-                "max_price_in_per_1m": constraints.max_price_in_per_1m,
-                "max_price_out_per_1m": constraints.max_price_out_per_1m,
-                "min_context_window": constraints.min_context_window,
-                "free_only": constraints.free_only,
-                "workload": constraints.workload,
-            },
-            "candidates": [c.as_dict() for c in cands],
-            "prior_decisions": priors,
-            "note": (
-                "No candidates matched. Loosen constraints, "
-                "run `somm-serve admin refresh-intel` to refresh the "
-                "model intel cache, or add a provider with capable models."
-            )
-            if not cands
-            else None,
-        }
+        result = consult(
+            repo,
+            question=question,
+            constraints=constraints,
+            project=cfg.project,
+            global_repo=_global_repo(cfg),
+        )
+        return result.as_dict()
 
     # ------------------------------------------------------------------
     # somm_record_decision

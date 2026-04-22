@@ -17,7 +17,7 @@
   <div class="wrap">
     <a class="logo" href="./">
       <span class="mark">somm</span>
-      <span class="mark-sub">/ v0.2.1</span>
+      <span class="mark-sub">/ v0.2.2</span>
     </a>
     <nav>
       <a href="#why">why</a>
@@ -116,8 +116,13 @@ print(r.text, r.provider, r.cost_usd)
             openrouter?</em> Get a ranked list with capability + price
             reasoning. Pick one. Next week in a different project, ask
             the same thing — somm remembers what you picked and why,
-            across every project on your machine. Decisions are the one
-            signal that always crosses project boundaries.
+            across every project on your machine. As of 0.2.2 prior
+            decisions also <em>weigh</em> into the ranking: models
+            you've used before get a small bonus; models a prior flagged
+            as unreliable take a soft penalty, both decaying with age.
+            Output-modality filters, meta-router exclusion, and
+            HuggingFace <code>pipeline_tag</code> enrichment keep the
+            top of the list honest.
           </p>
         </div>
         <div class="row">
@@ -279,12 +284,16 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
     <div class="wrap">
       <h2>Status</h2>
       <p class="section-lede">
-        v0.2.1 — Gemini + error-visibility release. 242 tests
-        passing. Plan milestones D1–D7 complete, plus multimodal
-        (0.1.1), sommelier (0.2.0), and the Gemini provider +
-        <code>on_error</code> alerter + <code>calls.error_detail</code>
-        column in 0.2.1. MIT licensed. If you want to build your own
-        take, the
+        v0.2.2 — sommelier quality release. 276 tests
+        passing. Output-modality filters, meta-router exclusion,
+        unknown-capability penalty, prior-decision weighting with age
+        decay, and an opt-in HuggingFace <code>pipeline_tag</code>
+        enrichment worker. Plan milestones D1–D7 complete, plus
+        multimodal (0.1.1), sommelier (0.2.0), Gemini + error
+        visibility (0.2.1), and sommelier quality (0.2.2). MIT
+        licensed. Post-0.2.2 work tracked in
+        <a href="https://github.com/lavallee/somm/blob/main/ROADMAP.md">ROADMAP.md</a>;
+        if you want to build your own take, the
         <a href="https://github.com/lavallee/somm/blob/main/docs/BLUEPRINT.md">BLUEPRINT</a>
         distills the six design forces.
       </p>

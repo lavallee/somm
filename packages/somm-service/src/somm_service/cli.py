@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     admin_sub = admin.add_subparsers(dest="admin_cmd", required=True)
 
     pri = admin_sub.add_parser("refresh-intel", help="refresh model_intel cache")
+    pri.add_argument(
+        "--hf",
+        action="store_true",
+        help="also fetch HuggingFace pipeline_tag metadata (enriches modalities)",
+    )
     pri.add_argument("--project", default=None)
     pri.set_defaults(func=_cmd_refresh_intel)
 
@@ -50,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_refresh_intel(args: argparse.Namespace) -> int:
+    from somm_service.workers.hf_intel import HuggingFaceIntelWorker
     from somm_service.workers.model_intel import ModelIntelWorker
 
     cfg = load_config(project=args.project)
@@ -64,6 +70,16 @@ def _cmd_refresh_intel(args: argparse.Namespace) -> int:
         print("  errors:")
         for e in summary["errors"]:
             print(f"    {e}")
+
+    # HuggingFace supplement — runs after primary sources so it enriches
+    # fresh rows. Off by default; opt in via --hf or SOMM_ENABLE_HF_INTEL=1.
+    hf_worker = HuggingFaceIntelWorker(repo, enabled=args.hf or None)
+    if hf_worker.enabled:
+        hf_summary = hf_worker.run_once()
+        print(
+            f"  hf:         {hf_summary['enriched']} enriched, "
+            f"{hf_summary['skipped']} skipped, {hf_summary['errors']} errored"
+        )
     return 0 if not summary["errors"] else 1
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "somm"
-version = "0.2.1"
+version = "0.2.2"
 description = "somm — self-hosted LLM telemetry, routing, and intelligence loop (library)"
 requires-python = ">=3.12"
 license = { text = "MIT" }
