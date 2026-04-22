@@ -71,6 +71,39 @@ def _format_error_detail(exc: Exception, provider: str, model: str | None) -> st
     return " | ".join(parts)[:512]
 
 
+def _format_empty_detail(
+    *,
+    provider: str,
+    model: str,
+    tokens_out: int,
+    latency_ms: int,
+) -> str:
+    """Build a bounded diagnostic for the EMPTY outcome.
+
+    Two empirically-confirmed modes (see commit 54aa18f):
+      - ``no_content``    — upstream returned tokens_out=0; the model never
+                            actually generated (e.g. openrouter elephant-alpha
+                            with ``{"content": null}``, sub-500ms latency).
+      - ``stripped_empty`` — tokens_out>0 but the visible text is empty after
+                             post-processing (e.g. minimax M2.7 generating
+                             only inside ``<think>`` blocks; full latency).
+
+    Both fields are kept on the row so SQL filters (``WHERE outcome='empty'
+    AND error_detail LIKE '%no_content%'``) can split them without joining.
+    """
+    hint = "no_content" if tokens_out == 0 else "stripped_empty"
+    parts = [
+        f"EmptyResponse: {hint}",
+        f"out_tokens={tokens_out}",
+        f"latency_ms={latency_ms}",
+    ]
+    if provider:
+        parts.append(f"provider={provider}")
+    if model:
+        parts.append(f"model={model}")
+    return " | ".join(parts)[:512]
+
+
 def _default_stderr_alerter(event: dict) -> None:
     """Default on_error handler — one-line warning to stderr.
 
@@ -309,6 +342,13 @@ class SommLLM:
                 latency_ms = resp.latency_ms
                 if not text.strip():
                     outcome = Outcome.EMPTY
+                    error_kind = "EmptyResponse"
+                    error_detail = _format_empty_detail(
+                        provider=actual_provider,
+                        model=actual_model,
+                        tokens_out=tokens_out,
+                        latency_ms=latency_ms,
+                    )
             except Exception as exc:
                 # Preferred provider failed — fall through to the full
                 # router chain instead of giving up. "provider=X" means
@@ -344,6 +384,13 @@ class SommLLM:
                     latency_ms = resp.latency_ms
                     if not text.strip():
                         outcome = Outcome.EMPTY
+                        error_kind = "EmptyResponse"
+                        error_detail = _format_empty_detail(
+                            provider=actual_provider,
+                            model=actual_model,
+                            tokens_out=tokens_out,
+                            latency_ms=latency_ms,
+                        )
                 except Exception as fallback_exc:
                     # Total failure — clear fallback_info so on_fallback
                     # doesn't fire; on_error handles final-failure signal.
@@ -366,6 +413,13 @@ class SommLLM:
                 latency_ms = resp.latency_ms
                 if not text.strip():
                     outcome = Outcome.EMPTY
+                    error_kind = "EmptyResponse"
+                    error_detail = _format_empty_detail(
+                        provider=actual_provider,
+                        model=actual_model,
+                        tokens_out=tokens_out,
+                        latency_ms=latency_ms,
+                    )
             except Exception as exc:
                 if hasattr(exc, "model") and exc.model:
                     actual_model = exc.model
@@ -537,6 +591,7 @@ class SommLLM:
         collected = []
         outcome = Outcome.OK
         error_kind: str | None = None
+        error_detail: str | None = None
         tokens_in = tokens_out = 0
         actual_model = model or ""
 
@@ -564,6 +619,15 @@ class SommLLM:
             tokens_out = chosen.estimate_tokens(text, actual_model)
             if not text.strip():
                 outcome = Outcome.EMPTY
+                error_kind = "EmptyResponse"
+                # Stream latency is computed in `finally`; pass what we have
+                # so far (since we're between `try` and `finally`, t0 is set).
+                error_detail = _format_empty_detail(
+                    provider=chosen.name,
+                    model=actual_model or chosen.name,
+                    tokens_out=tokens_out,
+                    latency_ms=int((time.monotonic() - t0) * 1000),
+                )
         except Exception as exc:
             outcome = Outcome.UPSTREAM_ERROR
             error_kind = type(exc).__name__
@@ -592,6 +656,7 @@ class SommLLM:
                 ),
                 outcome=outcome,
                 error_kind=error_kind,
+                error_detail=error_detail,
                 prompt_hash=stable_hash(prompt),
                 response_hash=stable_hash(full_text),
             )

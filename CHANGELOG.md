@@ -4,6 +4,28 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [Unreleased]
+
+### Added — empty-outcome diagnostics
+- **`error_detail` + `error_kind="EmptyResponse"` on the EMPTY outcome.**
+  Previously every `outcome='empty'` row in `calls` had both fields
+  blank; cross-project audits had to inspect prompt/response bodies to
+  distinguish the two empirical empty modes — openrouter
+  `{"content": null}` (model never ran, sub-500ms, `tokens_out=0`) vs
+  minimax-style all-`<think>` output (full latency, `tokens_out>0`,
+  stripped to ""). Each EMPTY row now carries a hint
+  (`no_content` when `tokens_out=0`, `stripped_empty` otherwise) plus
+  `out_tokens`, `latency_ms`, `provider`, `model`. SQL triage works
+  without joining samples:
+  `SELECT error_detail FROM calls WHERE outcome='empty'`. Same payload
+  flows through the `on_error` alerter event — previously
+  `kind`/`detail` were both `None` for empties.
+
+### Fixed
+- Streaming path (`SommLLM.stream`) was constructing `Call(...)`
+  without `error_detail`, silently dropping the field for all stream
+  outcomes. Now declared and threaded through.
+
 ## [0.2.1] — 2026-04-20
 
 ### Added — providers

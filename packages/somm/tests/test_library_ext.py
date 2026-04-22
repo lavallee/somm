@@ -341,6 +341,127 @@ def test_on_fallback_exception_is_swallowed(tmp_path):
         llm.close()
 
 
+class _EmptyProvider:
+    """Returns an empty response with caller-controlled tokens_out / latency.
+
+    Used to drive the two empirical EMPTY modes: tokens_out=0 (no_content,
+    e.g. openrouter elephant-alpha returning ``{"content": null}``) vs
+    tokens_out>0 (stripped_empty, e.g. minimax M2.7 producing only
+    ``<think>`` blocks that the adapter strips to "").
+    """
+
+    name = "fake"
+
+    def __init__(self, tokens_out: int = 0, latency_ms: int = 100, model: str = "fake-empty-m"):
+        self._tokens_out = tokens_out
+        self._latency_ms = latency_ms
+        self._model = model
+
+    def generate(self, request):
+        return SommResponse(
+            text="",
+            model=request.model or self._model,
+            tokens_in=10,
+            tokens_out=self._tokens_out,
+            latency_ms=self._latency_ms,
+        )
+
+    def stream(self, request):  # pragma: no cover
+        yield
+
+    def health(self):
+        return ProviderHealth(available=True)
+
+    def models(self):
+        return []
+
+    def estimate_tokens(self, text, model):
+        return 1
+
+
+def test_empty_outcome_no_content_diagnostic(tmp_path):
+    """tokens_out=0 → 'no_content' hint (model never actually generated)."""
+    p = _EmptyProvider(tokens_out=0, latency_ms=300)
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(config=cfg, providers=[p], on_error=lambda _: None)
+    try:
+        result = llm.generate(prompt="hi", workload="empty_nc", allow_empty=True)
+        assert result.outcome == Outcome.EMPTY
+        assert result.error_kind == "EmptyResponse"
+        assert result.error_detail is not None
+        assert "no_content" in result.error_detail
+        assert "out_tokens=0" in result.error_detail
+        assert "latency_ms=300" in result.error_detail
+        assert "provider=fake" in result.error_detail
+    finally:
+        llm.close()
+
+
+def test_empty_outcome_stripped_empty_diagnostic(tmp_path):
+    """tokens_out>0 with empty post-strip text → 'stripped_empty' hint
+    (the all-<think> case from the 54aa18f commit)."""
+    p = _EmptyProvider(tokens_out=1234, latency_ms=20000)
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(config=cfg, providers=[p], on_error=lambda _: None)
+    try:
+        result = llm.generate(prompt="hi", workload="empty_se", allow_empty=True)
+        assert result.outcome == Outcome.EMPTY
+        assert result.error_kind == "EmptyResponse"
+        assert result.error_detail is not None
+        assert "stripped_empty" in result.error_detail
+        assert "out_tokens=1234" in result.error_detail
+        assert "latency_ms=20000" in result.error_detail
+    finally:
+        llm.close()
+
+
+def test_on_error_event_carries_empty_diagnostic(tmp_path):
+    """The on_error callback already fires on EMPTY (existing behaviour).
+    After this change the event dict carries error_kind + error_detail
+    populated, not None."""
+    p = _EmptyProvider(tokens_out=0, latency_ms=120)
+    events: list[dict] = []
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(
+        config=cfg, providers=[p], on_error=lambda e: events.append(e)
+    )
+    try:
+        llm.generate(prompt="hi", workload="empty_cb", allow_empty=True)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["outcome"] == "empty"
+        assert ev["error_kind"] == "EmptyResponse"
+        assert ev["error_detail"] is not None
+        assert "no_content" in ev["error_detail"]
+    finally:
+        llm.close()
+
+
+def test_empty_diagnostic_persisted_to_calls_row(tmp_path):
+    """error_detail / error_kind reach the persisted calls row, not just the
+    in-memory SommResult — so post-hoc audits (the survey that motivated this)
+    can group empties by mode."""
+    p = _EmptyProvider(tokens_out=0, latency_ms=180)
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(config=cfg, providers=[p], on_error=lambda _: None)
+    result = llm.generate(prompt="hi", workload="empty_persist", allow_empty=True)
+    # close() drains the writer queue AND joins the writer thread, so by
+    # the time it returns the row is committed. flush() only checks queue
+    # emptiness — the batched write may still be buffered in the worker.
+    llm.close()
+    with llm.repo._open() as conn:
+        row = conn.execute(
+            "SELECT outcome, error_kind, error_detail FROM calls WHERE id = ?",
+            (result.call_id,),
+        ).fetchone()
+    assert row is not None
+    outcome, error_kind, error_detail = row
+    assert outcome == "empty"
+    assert error_kind == "EmptyResponse"
+    assert error_detail is not None
+    assert "no_content" in error_detail
+
+
 def test_pinned_provider_failure_clears_model_on_fallback(tmp_path):
     """When the pinned (provider, model) fails, the fallback chain must NOT
     propagate the pinned model to other providers — they serve different
