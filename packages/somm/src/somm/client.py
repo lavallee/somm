@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 from somm_core import Outcome, SommResult, cost_for_call
 from somm_core.pricing import seed_known_pricing
@@ -159,6 +160,8 @@ class SommLLM:
         self.config = config or load_config(project=project)
         if mode is not None:
             self.config.mode = mode
+        if config is not None and Path(self.config.spool_dir) == Path("./.somm/spool"):
+            self.config.spool_dir = Path(self.config.db_dir) / "spool"
 
         self.repo = Repository(self.config.db_path)
         self._tracker = ProviderHealthTracker(self.repo)

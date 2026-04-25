@@ -81,6 +81,29 @@ def test_openai_sends_bearer_and_system(monkeypatch):
     assert body["messages"][1]["role"] == "user"
 
 
+def test_openai_gpt5_uses_max_completion_tokens(monkeypatch):
+    captured = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["body"] = _json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    p.generate(SommRequest(prompt="hi", model="gpt-5.4", max_tokens=123))
+
+    assert captured["body"]["max_completion_tokens"] == 123
+    assert "max_tokens" not in captured["body"]
+
+
 def test_openai_401_auth_error(monkeypatch):
     def handler(request):
         return httpx.Response(401, text="unauthorized")

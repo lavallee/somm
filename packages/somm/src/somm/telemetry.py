@@ -64,9 +64,9 @@ class WriterQueue:
         self._q.put(call)
 
     def flush(self, timeout: float = 5.0) -> None:
-        """Block until the queue is drained (best-effort)."""
+        """Block until queued and in-flight rows have been committed (best-effort)."""
         deadline = time.monotonic() + timeout
-        while not self._q.empty() and time.monotonic() < deadline:
+        while getattr(self._q, "unfinished_tasks", 0) and time.monotonic() < deadline:
             time.sleep(0.01)
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -91,6 +91,10 @@ class WriterQueue:
             if item is self._STOP:
                 if batch:
                     self._drain(batch)
+                    for _ in batch:
+                        self._q.task_done()
+                    batch = []
+                self._q.task_done()
                 return
 
             if item is not None:
@@ -100,6 +104,8 @@ class WriterQueue:
                 batch and (time.monotonic() - last_flush) * 1000 >= _BATCH_MS
             ):
                 self._drain(batch)
+                for _ in batch:
+                    self._q.task_done()
                 batch = []
                 last_flush = time.monotonic()
 

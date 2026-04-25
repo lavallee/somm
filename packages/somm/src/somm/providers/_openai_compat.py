@@ -92,13 +92,16 @@ class OpenAICompatProvider:
         if request.system:
             messages.append({"role": "system", "content": request.system})
         messages.append({"role": "user", "content": request.prompt})
-        return {
+        payload = {
             "model": model,
             "messages": messages,
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
             "stream": False,
         }
+        if _uses_max_completion_tokens(model):
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+        return payload
 
     # ------------------------------------------------------------------
 
@@ -286,3 +289,8 @@ def _retry_after(resp: httpx.Response) -> float | None:
             return max(0.0, (then - datetime.now(UTC)).total_seconds())
         except Exception:
             return None
+
+
+def _uses_max_completion_tokens(model: str) -> bool:
+    """Newer OpenAI reasoning/chat models reject legacy `max_tokens`."""
+    return model.lower().startswith(("gpt-5", "o1", "o3", "o4"))

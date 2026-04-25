@@ -62,6 +62,7 @@ def _tmp_config(tmp_path: Path) -> Config:
     cfg = Config()
     cfg.project = "d2c"
     cfg.db_dir = tmp_path / ".somm"
+    cfg.spool_dir = cfg.db_dir / "spool"
     return cfg
 
 
@@ -445,9 +446,6 @@ def test_empty_diagnostic_persisted_to_calls_row(tmp_path):
     cfg = _tmp_config(tmp_path)
     llm = SommLLM(config=cfg, providers=[p], on_error=lambda _: None)
     result = llm.generate(prompt="hi", workload="empty_persist", allow_empty=True)
-    # close() drains the writer queue AND joins the writer thread, so by
-    # the time it returns the row is committed. flush() only checks queue
-    # emptiness — the batched write may still be buffered in the worker.
     llm.close()
     with llm.repo._open() as conn:
         row = conn.execute(
@@ -460,6 +458,24 @@ def test_empty_diagnostic_persisted_to_calls_row(tmp_path):
     assert error_kind == "EmptyResponse"
     assert error_detail is not None
     assert "no_content" in error_detail
+
+
+def test_flush_waits_for_active_writer_batch(tmp_path):
+    p = FakeProvider()
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(config=cfg, providers=[p], on_error=lambda _: None)
+    try:
+        result = llm.generate(prompt="hi", workload="flush_persist")
+        llm._writer.flush()
+        with llm.repo._open() as conn:
+            row = conn.execute(
+                "SELECT outcome FROM calls WHERE id = ?",
+                (result.call_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "ok"
+    finally:
+        llm.close()
 
 
 def test_pinned_provider_failure_clears_model_on_fallback(tmp_path):
