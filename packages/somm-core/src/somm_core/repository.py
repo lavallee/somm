@@ -7,6 +7,7 @@ Same surface is used by MCP stdio (direct) and MCP HTTP (service-proxied).
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,27 @@ from somm_core.parse import prompt_id as _prompt_id
 from somm_core.parse import stable_hash
 from somm_core.parse import workload_id as _workload_id
 from somm_core.schema import ensure_schema
+
+
+def _percentiles(csv: str | None) -> tuple[int | None, int | None]:
+    """Return (p50, p95) of a comma-separated latency_ms list using nearest-rank.
+
+    Returns (None, None) when there are no usable values. Nearest-rank handles
+    small samples sensibly: with n=2, p50 returns the smaller value and p95
+    returns the larger; with n=1, both return the only value.
+    """
+    if not csv:
+        return None, None
+    try:
+        values = sorted(int(v) for v in csv.split(",") if v)
+    except ValueError:
+        return None, None
+    if not values:
+        return None, None
+    n = len(values)
+    p50_idx = max(0, min(n - 1, math.ceil(0.50 * n) - 1))
+    p95_idx = max(0, min(n - 1, math.ceil(0.95 * n) - 1))
+    return values[p50_idx], values[p95_idx]
 
 
 class Repository:
@@ -60,6 +82,9 @@ class Repository:
         budget_cap_usd_daily: float | None = None,
         privacy_class: PrivacyClass = PrivacyClass.INTERNAL,
         capabilities_required: list[str] | None = None,
+        max_p95_latency_ms: int | None = None,
+        max_capability_failure_rate: float | None = None,
+        max_cost_per_call_usd: float | None = None,
     ) -> Workload:
         wid = _workload_id(name, input_schema, output_schema)
         with self._open() as conn:
@@ -68,8 +93,9 @@ class Repository:
                 INSERT OR IGNORE INTO workloads (
                     id, name, project, description,
                     input_schema_json, output_schema_json, quality_criteria_json,
-                    budget_cap_usd_daily, privacy_class, capabilities_required_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    budget_cap_usd_daily, privacy_class, capabilities_required_json,
+                    max_p95_latency_ms, max_capability_failure_rate, max_cost_per_call_usd
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     wid,
@@ -82,6 +108,9 @@ class Repository:
                     budget_cap_usd_daily,
                     privacy_class.value,
                     json.dumps(capabilities_required) if capabilities_required else None,
+                    max_p95_latency_ms,
+                    max_capability_failure_rate,
+                    max_cost_per_call_usd,
                 ),
             )
         return Workload(
@@ -94,6 +123,9 @@ class Repository:
             budget_cap_usd_daily=budget_cap_usd_daily,
             privacy_class=privacy_class,
             capabilities_required=list(capabilities_required or []),
+            max_p95_latency_ms=max_p95_latency_ms,
+            max_capability_failure_rate=max_capability_failure_rate,
+            max_cost_per_call_usd=max_cost_per_call_usd,
         )
 
     def workload_by_name(self, name: str, project: str) -> Workload | None:
@@ -101,7 +133,8 @@ class Repository:
             row = conn.execute(
                 "SELECT id, name, description, input_schema_json, output_schema_json, "
                 "quality_criteria_json, budget_cap_usd_daily, privacy_class, "
-                "capabilities_required_json "
+                "capabilities_required_json, "
+                "max_p95_latency_ms, max_capability_failure_rate, max_cost_per_call_usd "
                 "FROM workloads WHERE project = ? AND name = ? "
                 "ORDER BY created_at DESC LIMIT 1",
                 (project, name),
@@ -118,7 +151,56 @@ class Repository:
             budget_cap_usd_daily=row[6],
             privacy_class=PrivacyClass(row[7]),
             capabilities_required=json.loads(row[8]) if row[8] else [],
+            max_p95_latency_ms=row[9],
+            max_capability_failure_rate=row[10],
+            max_cost_per_call_usd=row[11],
         )
+
+    def set_workload_constraints(
+        self,
+        workload_id: str,
+        *,
+        max_p95_latency_ms: int | None = None,
+        max_capability_failure_rate: float | None = None,
+        max_cost_per_call_usd: float | None = None,
+        clear: bool = False,
+    ) -> None:
+        """Update adequacy thresholds on an existing workload row.
+
+        Pass ``clear=True`` to set all three back to NULL. Otherwise,
+        only fields with a non-None value here are written; existing
+        values are preserved (use ``clear`` then re-set if you need to
+        null one specifically).
+        """
+        with self._open() as conn:
+            if clear:
+                conn.execute(
+                    "UPDATE workloads SET "
+                    "max_p95_latency_ms = NULL, "
+                    "max_capability_failure_rate = NULL, "
+                    "max_cost_per_call_usd = NULL "
+                    "WHERE id = ?",
+                    (workload_id,),
+                )
+                return
+            sets: list[str] = []
+            values: list[object] = []
+            if max_p95_latency_ms is not None:
+                sets.append("max_p95_latency_ms = ?")
+                values.append(max_p95_latency_ms)
+            if max_capability_failure_rate is not None:
+                sets.append("max_capability_failure_rate = ?")
+                values.append(max_capability_failure_rate)
+            if max_cost_per_call_usd is not None:
+                sets.append("max_cost_per_call_usd = ?")
+                values.append(max_cost_per_call_usd)
+            if not sets:
+                return
+            values.append(workload_id)
+            conn.execute(
+                f"UPDATE workloads SET {', '.join(sets)} WHERE id = ?",
+                values,
+            )
 
     # Shadow-eval config ------------------------------------------------------
 
@@ -316,6 +398,119 @@ class Repository:
             }
             for r in rows
         ]
+
+    def workload_frontier(
+        self,
+        workload_id: str,
+        since_days: int = 30,
+    ) -> list[dict]:
+        """Per-(provider, model) adequacy rollup for a workload.
+
+        Returns one row per (provider, model) the workload has touched in the
+        window, with capability vs. detractor failures kept separate so a
+        flaky free-tier provider doesn't get scored as a model that can't do
+        the work. Used by ``somm frontier`` and the admin UI.
+
+        Each row has:
+
+        * ``n_calls``, ``n_ok`` — call counts
+        * ``n_capability_failures`` (Tier 2/3: model's fault) and
+          ``capability_failure_rate`` (failures / n_calls)
+        * ``n_detractors`` (Tier 2 detractor: provider/network) and
+          ``detractor_rate``
+        * ``p50_latency_ms``, ``p95_latency_ms`` — across ok calls only
+        * ``mean_cost_per_ok_call``, ``total_cost_usd``
+        * ``fitness`` — dict of bool|None flags vs. workload constraints
+          (None = constraint unset; True = constraint *exceeded*)
+
+        Sorted by capability_failure_rate ascending, then mean_cost_per_ok_call,
+        so the candidate that's cheapest among the model-fit options floats up.
+        """
+        with self._open() as conn:
+            wl_row = conn.execute(
+                "SELECT max_p95_latency_ms, max_capability_failure_rate, "
+                "max_cost_per_call_usd FROM workloads WHERE id = ?",
+                (workload_id,),
+            ).fetchone()
+            if wl_row is None:
+                return []
+            constraints = {
+                "max_p95_latency_ms": wl_row[0],
+                "max_capability_failure_rate": wl_row[1],
+                "max_cost_per_call_usd": wl_row[2],
+            }
+            rows = conn.execute(
+                """
+                SELECT
+                    provider, model,
+                    COUNT(*) AS n_calls,
+                    SUM(CASE WHEN outcome = 'ok' THEN 1 ELSE 0 END) AS n_ok,
+                    SUM(is_capability_signal) AS n_capability_failures,
+                    SUM(is_detractor) AS n_detractors,
+                    AVG(CASE WHEN outcome = 'ok' THEN cost_usd END) AS mean_cost_per_ok_call,
+                    SUM(cost_usd) AS total_cost_usd,
+                    GROUP_CONCAT(
+                        CASE WHEN outcome = 'ok' THEN latency_ms END
+                    ) AS ok_latencies_csv
+                FROM v_calls_classified
+                WHERE workload_id = ?
+                  AND ts >= datetime('now', ?)
+                GROUP BY provider, model
+                """,
+                (workload_id, f"-{since_days} days"),
+            ).fetchall()
+
+        out: list[dict] = []
+        for r in rows:
+            n_calls = r[2]
+            n_ok = r[3] or 0
+            n_cap = r[4] or 0
+            n_det = r[5] or 0
+            cap_rate = (n_cap / n_calls) if n_calls else 0.0
+            det_rate = (n_det / n_calls) if n_calls else 0.0
+            p50, p95 = _percentiles(r[8])
+            mean_cost = r[6]
+            fitness = {
+                "exceeds_max_p95_latency_ms": (
+                    None
+                    if constraints["max_p95_latency_ms"] is None or p95 is None
+                    else p95 > constraints["max_p95_latency_ms"]
+                ),
+                "exceeds_max_capability_failure_rate": (
+                    None
+                    if constraints["max_capability_failure_rate"] is None
+                    else cap_rate > constraints["max_capability_failure_rate"]
+                ),
+                "exceeds_max_cost_per_call_usd": (
+                    None
+                    if constraints["max_cost_per_call_usd"] is None or mean_cost is None
+                    else mean_cost > constraints["max_cost_per_call_usd"]
+                ),
+            }
+            out.append(
+                {
+                    "provider": r[0],
+                    "model": r[1],
+                    "n_calls": n_calls,
+                    "n_ok": n_ok,
+                    "n_capability_failures": n_cap,
+                    "n_detractors": n_det,
+                    "capability_failure_rate": cap_rate,
+                    "detractor_rate": det_rate,
+                    "p50_latency_ms": p50,
+                    "p95_latency_ms": p95,
+                    "mean_cost_per_ok_call": mean_cost,
+                    "total_cost_usd": r[7],
+                    "fitness": fitness,
+                }
+            )
+        out.sort(
+            key=lambda x: (
+                x["capability_failure_rate"],
+                x["mean_cost_per_ok_call"] if x["mean_cost_per_ok_call"] is not None else float("inf"),
+            )
+        )
+        return out
 
     # Decisions (sommelier) --------------------------------------------------
 

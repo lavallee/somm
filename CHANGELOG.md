@@ -6,6 +6,44 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — adequacy frontier per workload (schema v6)
+
+Driven by sibling-project demand (steve's `parse_listing` workload, where
+some models we have at our immediate disposal struggle and the question
+"is this model performing adequately, or should we go shopping?" was
+hard to answer from telemetry alone).
+
+- **`FailureClass` classification on `Outcome`.** Splits the existing
+  outcome enum into capability signals (model unfit: `bad_json`,
+  `off_task`, `empty`) vs. detractors (provider/network flaky:
+  `timeout`, `rate_limit`, `upstream_error`). Available as
+  `Outcome.failure_class`, `.is_capability_signal`, `.is_detractor`,
+  and via the SQL view `v_calls_classified` for direct queries.
+- **Three new workload constraint columns** (nullable; null = no opinion):
+  `max_p95_latency_ms` (timeliness ceiling), `max_capability_failure_rate`
+  (model-traceable failure ceiling, 0–1), `max_cost_per_call_usd`
+  (cost ceiling). Set via `register_workload(...)` or
+  `Repository.set_workload_constraints(...)`.
+- **`Repository.workload_frontier(workload_id)`** — per-(provider, model)
+  rollup with capability vs detractor counts kept separate, p50/p95
+  latency over ok calls only, mean cost per ok call, and fitness flags
+  per constraint. Sorted fittest-first (capability_failure_rate asc,
+  then mean cost). Cleanly distinguishes "the model can't do this work"
+  from "the free tier was rate-limiting today."
+- **`somm frontier --workload NAME`** CLI — read-only adequacy view that
+  surfaces `UNFIT(cap)` / `UNFIT(slow)` / `UNFIT($)` flags only when
+  the workload has the matching constraint set. Default 30-day window.
+
+What this doesn't do: subjective quality scoring is intentionally out
+of scope (lives in `eval_results`, populated by shadow-eval). The
+frontier answers timeliness + error consistency + payload-validity,
+which is enough to make "let's go shopping for a better model" a
+visible state in the data.
+
+Migration 0006 is additive (new columns nullable, new view replaces no
+existing object). Pricing seed, sommelier ranking math, and existing
+queries are unchanged.
+
 ### Added — empty-outcome diagnostics
 - **`error_detail` + `error_kind="EmptyResponse"` on the EMPTY outcome.**
   Previously every `outcome='empty'` row in `calls` had both fields

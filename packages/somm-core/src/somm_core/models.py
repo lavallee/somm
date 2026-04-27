@@ -19,6 +19,80 @@ class Outcome(StrEnum):
     EXHAUSTED = "exhausted"
     UNKNOWN = "unknown"
 
+    @property
+    def failure_class(self) -> "FailureClass":
+        """Adequacy-tier classification — see FailureClass docstring."""
+        return _OUTCOME_TO_FAILURE_CLASS.get(self, FailureClass.UNKNOWN)
+
+    @property
+    def is_capability_signal(self) -> bool:
+        """True when the failure is the model's fault (Tier 2/3 in steve's framing).
+
+        Use to ask "is this model unfit for this workload?" — exclude detractors,
+        which reflect provider/network state, not model capability.
+        """
+        return self.failure_class.is_capability_signal
+
+    @property
+    def is_detractor(self) -> bool:
+        """True when the failure is a provider/network/operational issue.
+
+        Detractors are reasons to try other approaches (or wait), but not
+        evidence that the model itself can't do the workload.
+        """
+        return self.failure_class.is_detractor
+
+
+class FailureClass(StrEnum):
+    """Adequacy tier for a call's outcome.
+
+    Splits the existing :class:`Outcome` enum into two axes that admin
+    queries care about distinctly:
+
+    * ``capability_*`` — the model itself produced something inadequate
+      (no output, broken JSON, off-task content). Evidence the model is
+      unfit for this workload.
+    * ``detractor_*`` — the provider/network failed (rate limit, 5xx,
+      timeout). Reason to try other approaches, but not capability
+      evidence — a model is innocent until proven model-fault.
+    * ``meta_*`` / ``none`` / ``unknown`` — neither bucket.
+
+    The split mirrors steve's reporter's-notebook framework (timeliness
+    vs. model-traceable error vs. payload error vs. subjective quality).
+    Subjective quality is intentionally absent — it lives in
+    ``eval_results``, not in this classification.
+    """
+
+    NONE = "none"
+    CAPABILITY_PAYLOAD = "capability_payload"
+    CAPABILITY_EMPTY = "capability_empty"
+    DETRACTOR_TIMEOUT = "detractor_timeout"
+    DETRACTOR_RATE_LIMIT = "detractor_rate_limit"
+    DETRACTOR_UPSTREAM = "detractor_upstream"
+    META_EXHAUSTED = "meta_exhausted"
+    UNKNOWN = "unknown"
+
+    @property
+    def is_capability_signal(self) -> bool:
+        return self.value.startswith("capability_")
+
+    @property
+    def is_detractor(self) -> bool:
+        return self.value.startswith("detractor_")
+
+
+_OUTCOME_TO_FAILURE_CLASS: dict[Outcome, FailureClass] = {
+    Outcome.OK: FailureClass.NONE,
+    Outcome.BAD_JSON: FailureClass.CAPABILITY_PAYLOAD,
+    Outcome.OFF_TASK: FailureClass.CAPABILITY_PAYLOAD,
+    Outcome.EMPTY: FailureClass.CAPABILITY_EMPTY,
+    Outcome.TIMEOUT: FailureClass.DETRACTOR_TIMEOUT,
+    Outcome.RATE_LIMIT: FailureClass.DETRACTOR_RATE_LIMIT,
+    Outcome.UPSTREAM_ERROR: FailureClass.DETRACTOR_UPSTREAM,
+    Outcome.EXHAUSTED: FailureClass.META_EXHAUSTED,
+    Outcome.UNKNOWN: FailureClass.UNKNOWN,
+}
+
 
 # Back-compat alias for early code; prefer Outcome going forward.
 CallOutcome = Outcome
@@ -44,6 +118,11 @@ class Workload:
     # (provider, model). See somm_core.parse.infer_capabilities — these are
     # merged with what the prompt self-advertises at dispatch time.
     capabilities_required: list[str] = field(default_factory=list)
+    # Adequacy thresholds (schema v6+). Make "is this model performing
+    # adequately?" queryable rather than judgment-call. None = unset.
+    max_p95_latency_ms: int | None = None              # Tier 1: timeliness
+    max_capability_failure_rate: float | None = None   # Tier 2/3: 0–1 (e.g. 0.05 = 5%)
+    max_cost_per_call_usd: float | None = None         # cost ceiling per ok call
     created_at: datetime | None = None
 
 

@@ -4,6 +4,7 @@ Commands:
   somm status       roll-up per (workload, provider, model)
   somm tail         live call stream
   somm compare      run a prompt through N models side-by-side
+  somm frontier     adequacy frontier per (provider, model) for a workload
   somm doctor       health check (config, ollama, db, model_intel, workers, cooldowns)
   somm serve        run the web admin + HTTP API (requires somm-service)
 """
@@ -314,6 +315,69 @@ def _print_comparison(results: list[dict], truncate: int = 240) -> None:
 # somm doctor (enhanced)
 
 
+def _cmd_frontier(args: argparse.Namespace) -> int:
+    """Print the adequacy frontier for one workload.
+
+    For each (provider, model) the workload has touched in the window:
+    capability-failure rate, detractor rate, p50/p95 latency, mean cost
+    per ok call, and whether each workload constraint is exceeded.
+    """
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    wl = repo.workload_by_name(args.workload, cfg.project)
+    if wl is None:
+        print(
+            f"No workload {args.workload!r} registered for project {cfg.project!r}.\n"
+            f"Register one with somm.workload(...) in your code, then re-run.",
+            file=sys.stderr,
+        )
+        return 2
+
+    rows = repo.workload_frontier(wl.id, since_days=args.since)
+    if not rows:
+        print(
+            f"No calls for workload {wl.name!r} in the last {args.since}d. "
+            f"Run the workload, then come back."
+        )
+        return 0
+
+    cons = {
+        "max_p95_latency_ms": wl.max_p95_latency_ms,
+        "max_capability_failure_rate": wl.max_capability_failure_rate,
+        "max_cost_per_call_usd": wl.max_cost_per_call_usd,
+    }
+    print(f"Workload: {wl.name}  ({args.since}d window)")
+    cons_pretty = ", ".join(
+        f"{k.removeprefix('max_')}≤{v}" for k, v in cons.items() if v is not None
+    )
+    print(f"Constraints: {cons_pretty or '(none set — try `somm workload-set ...`)'}")
+    print(
+        f"\n{'provider':<14} {'model':<28} {'n':>5} {'cap%':>6} {'det%':>6} "
+        f"{'p50ms':>7} {'p95ms':>7} {'$/ok':>9} fitness"
+    )
+    for r in rows:
+        cap_pct = 100.0 * r["capability_failure_rate"]
+        det_pct = 100.0 * r["detractor_rate"]
+        p50 = r["p50_latency_ms"] if r["p50_latency_ms"] is not None else "-"
+        p95 = r["p95_latency_ms"] if r["p95_latency_ms"] is not None else "-"
+        cost = r["mean_cost_per_ok_call"]
+        cost_s = f"${cost:.5f}" if cost is not None else "-"
+        flags = []
+        f = r["fitness"]
+        if f["exceeds_max_capability_failure_rate"]:
+            flags.append("UNFIT(cap)")
+        if f["exceeds_max_p95_latency_ms"]:
+            flags.append("UNFIT(slow)")
+        if f["exceeds_max_cost_per_call_usd"]:
+            flags.append("UNFIT($)")
+        fitness_s = ",".join(flags) if flags else "ok"
+        print(
+            f"{r['provider'][:13]:<14} {r['model'][:27]:<28} {r['n_calls']:>5} "
+            f"{cap_pct:>5.1f}% {det_pct:>5.1f}% {str(p50):>7} {str(p95):>7} {cost_s:>9} {fitness_s}"
+        )
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
     repo_exists = cfg.db_path.exists()
@@ -498,6 +562,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="truncate response text at N chars (0 = no truncate)",
     )
     pc.set_defaults(func=_cmd_compare)
+
+    pf = sub.add_parser(
+        "frontier",
+        help="adequacy frontier per (provider, model) for one workload",
+    )
+    pf.add_argument("--workload", required=True, help="workload name to inspect")
+    pf.add_argument("--project", default=None)
+    pf.add_argument("--since", type=int, default=30, help="window in days (default 30)")
+    pf.set_defaults(func=_cmd_frontier)
 
     pd = sub.add_parser("doctor", help="check config + ollama + db + intel + workers + cooldowns")
     pd.add_argument("--project", default=None)
