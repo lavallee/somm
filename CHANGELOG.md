@@ -6,6 +6,23 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — `no_fallback` for pinned-or-bust evaluation runs
+
+`SommLLM.generate(..., no_fallback=True)` suppresses the normal pinned-call
+rescue path. When a `provider` is pinned and the upstream fails, instead of
+silently routing to the next provider in the chain, the call returns with
+`outcome=UPSTREAM_ERROR` and the *pinned* (provider, model) preserved on
+the `SommResult` and `calls` row.
+
+Driven by the same sibling-project (steve) finding that exposed the
+adequacy-frontier gap: when running an A/B comparison between two models on
+the same workload, the rescue path makes failures invisible — you see a
+result tagged with the pinned model that was actually produced by the
+fallback. This invalidates the experiment.
+
+Default behavior is unchanged: production workloads still fall through to
+the chain when the preferred provider transiently fails.
+
 ### Added — adequacy frontier per workload (schema v6)
 
 Driven by sibling-project demand (steve's `parse_listing` workload, where

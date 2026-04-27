@@ -282,11 +282,19 @@ class SommLLM:
         provider: str | None = None,
         capabilities_required: list[str] | None = None,
         allow_empty: bool = False,
+        no_fallback: bool = False,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
         demo mode: auto-registers unknown workloads as 'ad_hoc' equivalents.
         strict mode: raises SommStrictMode if workload isn't registered.
+
+        ``no_fallback``: when a ``provider`` is pinned, suppress the normal
+        rescue path through the router chain. The pinned (provider, model)
+        either succeeds or the call returns with ``outcome=UPSTREAM_ERROR``
+        — useful for evaluation runs where silent fallback to a different
+        model invalidates the experiment. Has no effect when ``provider``
+        is None (router-driven calls have no pinned target to honor).
         """
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
@@ -371,39 +379,51 @@ class SommLLM:
                     "error_kind": type(exc).__name__,
                     "error_detail": _format_error_detail(exc, chosen.name, model),
                 }
-                # Clear the pinned model before chain fallback: the pin is
-                # only meaningful to the pinned provider. Other providers
-                # serve different model inventories, so re-using the pinned
-                # model name (e.g. "qwen3:14b" on Minimax) guarantees a 404.
-                req.model = None
-                try:
-                    router_result = self.router.dispatch(req)
-                    resp = router_result.response
-                    text = resp.text
-                    actual_provider = router_result.provider
-                    actual_model = resp.model
-                    tokens_in = resp.tokens_in
-                    tokens_out = resp.tokens_out
-                    latency_ms = resp.latency_ms
-                    if not text.strip():
-                        outcome = Outcome.EMPTY
-                        error_kind = "EmptyResponse"
-                        error_detail = _format_empty_detail(
-                            provider=actual_provider,
-                            model=actual_model,
-                            tokens_out=tokens_out,
-                            latency_ms=latency_ms,
-                        )
-                except Exception as fallback_exc:
-                    # Total failure — clear fallback_info so on_fallback
-                    # doesn't fire; on_error handles final-failure signal.
+                if no_fallback:
+                    # Caller wants pinned-or-bust semantics — surface the
+                    # original error and stop. Used by evaluation harnesses
+                    # where a silent re-route to a different model would
+                    # invalidate the experiment.
                     fallback_info = None
                     outcome = Outcome.UPSTREAM_ERROR
                     error_kind = type(exc).__name__
                     error_detail = _format_error_detail(exc, chosen.name, model)
                     actual_provider = chosen.name
-                    if hasattr(exc, "model") and exc.model:
-                        actual_model = exc.model
+                    actual_model = model or ""
+                else:
+                    # Clear the pinned model before chain fallback: the pin is
+                    # only meaningful to the pinned provider. Other providers
+                    # serve different model inventories, so re-using the pinned
+                    # model name (e.g. "qwen3:14b" on Minimax) guarantees a 404.
+                    req.model = None
+                    try:
+                        router_result = self.router.dispatch(req)
+                        resp = router_result.response
+                        text = resp.text
+                        actual_provider = router_result.provider
+                        actual_model = resp.model
+                        tokens_in = resp.tokens_in
+                        tokens_out = resp.tokens_out
+                        latency_ms = resp.latency_ms
+                        if not text.strip():
+                            outcome = Outcome.EMPTY
+                            error_kind = "EmptyResponse"
+                            error_detail = _format_empty_detail(
+                                provider=actual_provider,
+                                model=actual_model,
+                                tokens_out=tokens_out,
+                                latency_ms=latency_ms,
+                            )
+                    except Exception as fallback_exc:
+                        # Total failure — clear fallback_info so on_fallback
+                        # doesn't fire; on_error handles final-failure signal.
+                        fallback_info = None
+                        outcome = Outcome.UPSTREAM_ERROR
+                        error_kind = type(exc).__name__
+                        error_detail = _format_error_detail(exc, chosen.name, model)
+                        actual_provider = chosen.name
+                        if hasattr(exc, "model") and exc.model:
+                            actual_model = exc.model
         else:
             try:
                 router_result = self.router.dispatch(req)
