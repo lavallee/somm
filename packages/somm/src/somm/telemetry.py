@@ -10,6 +10,7 @@ Preserves zero-service hot path: library works without somm serve running.
 
 from __future__ import annotations
 
+import atexit
 import json
 import queue
 import sqlite3
@@ -52,11 +53,22 @@ class WriterQueue:
         self._thread = threading.Thread(target=self._run, name="somm-writer", daemon=True)
         self._started = False
         self._stopping = False
+        self._atexit_registered = False
 
     def start(self) -> None:
         if not self._started:
             self._thread.start()
             self._started = True
+            # Daemon thread = killed on process exit without draining. Without
+            # this hook, calls submitted in the last ~100ms of process lifetime
+            # vanish — caller never sees them in calls.sqlite, and they don't
+            # spill to the JSONL fallback either (spill only fires on a drain
+            # *failure*, not on writer-thread death). atexit runs while the
+            # daemon thread is still alive so flush() + stop() can drain
+            # cleanly. Idempotent if close() is also called explicitly.
+            if not self._atexit_registered:
+                atexit.register(self._atexit_drain)
+                self._atexit_registered = True
 
     def submit(self, call: Call) -> None:
         if not self._started:
@@ -70,11 +82,25 @@ class WriterQueue:
             time.sleep(0.01)
 
     def stop(self, timeout: float = 5.0) -> None:
-        if not self._started:
+        if not self._started or self._stopping:
             return
         self._stopping = True
         self._q.put(self._STOP)
         self._thread.join(timeout=timeout)
+
+    def _atexit_drain(self) -> None:
+        """Atexit-safe drain. Tolerates a partially torn-down interpreter:
+        skips cleanly when stop() already fired (explicit close), and
+        swallows any teardown-related errors so we never crash exit."""
+        if self._stopping or not self._started:
+            return
+        try:
+            self.flush(timeout=5.0)
+            self.stop(timeout=5.0)
+        except Exception:
+            # Interpreter shutdown can yank module-level objects out from
+            # under us; never block exit on a logging concern.
+            pass
 
     # ------------------------------------------------------------------
 

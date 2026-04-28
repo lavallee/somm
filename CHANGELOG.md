@@ -6,6 +6,23 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Fixed — WriterQueue drains pending calls on normal process exit
+
+`WriterQueue`'s background thread is daemon, so Python's interpreter
+shutdown killed it without giving it a chance to finish its current
+batch — calls submitted in the last ~100ms of a script's lifetime
+vanished entirely, not even spilled to the JSONL fallback (spill only
+fires on a *drain failure*, not on writer-thread death).
+
+`start()` now registers an `atexit` hook that flushes + stops the
+writer on normal shutdown. atexit runs while the daemon thread is
+still alive, so the flush completes cleanly. Idempotent against
+explicit `close()` calls; tolerates partial-teardown errors silently
+so it never blocks process exit.
+
+This was caught in steve's `listing_time_allocation` evaluation runs
+where short-lived comparison scripts were losing telemetry rows.
+
 ### Added — `no_fallback` for pinned-or-bust evaluation runs
 
 `SommLLM.generate(..., no_fallback=True)` suppresses the normal pinned-call
