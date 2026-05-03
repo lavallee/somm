@@ -158,7 +158,9 @@ class OpenRouterProvider:
             raise SommBadRequest(f"openrouter 400 on {model}: {resp.text[:200]}")
         if resp.status_code == 429:
             retry = _retry_after(resp) or 120.0
-            raise SommRateLimited(f"openrouter 429 on {model}", retry_after_s=retry)
+            raise SommRateLimited(
+                f"openrouter 429 on {model}: {resp.text[:200]}", retry_after_s=retry,
+            )
         if 500 <= resp.status_code < 600:
             raise SommUpstream5xx(f"openrouter {resp.status_code} on {model}", cooldown_s=30.0, model=model)
         if resp.status_code != 200:

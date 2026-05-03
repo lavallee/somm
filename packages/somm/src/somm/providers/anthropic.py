@@ -134,7 +134,7 @@ class AnthropicProvider:
             raise SommBadRequest(f"anthropic 404 — model {model!r} not found: {body}")
         if sc == 429:
             retry = _retry_after(resp) or 120.0
-            raise SommRateLimited(f"anthropic 429 on {model}", retry_after_s=retry)
+            raise SommRateLimited(f"anthropic 429 on {model}: {body}", retry_after_s=retry)
         if sc == 529:  # overloaded (Anthropic-specific)
             raise SommTransientError(f"anthropic overloaded on {model}", cooldown_s=60.0)
         if 500 <= sc < 600:

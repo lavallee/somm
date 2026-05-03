@@ -163,8 +163,10 @@ class OpenAICompatProvider:
         if sc == 404:
             raise SommBadRequest(f"{self.name} 404 — model {model!r} not found: {body}")
         if sc == 429:
+            if "insufficient_quota" in body:
+                raise SommAuthError(f"{self.name} insufficient_quota on {model}: {body}")
             retry = _retry_after(resp) or 120.0
-            raise SommRateLimited(f"{self.name} 429 on {model}", retry_after_s=retry)
+            raise SommRateLimited(f"{self.name} 429 on {model}: {body}", retry_after_s=retry)
         if 500 <= sc < 600:
             raise SommUpstream5xx(f"{self.name} {sc} on {model}", cooldown_s=30.0)
         raise SommTransientError(f"{self.name} unexpected {sc} on {model}: {body}", cooldown_s=30.0)
