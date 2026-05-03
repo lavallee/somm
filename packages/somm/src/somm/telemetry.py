@@ -108,9 +108,12 @@ class WriterQueue:
         batch: list[Call] = []
         last_flush = time.monotonic()
         while True:
-            timeout = max(0.0, _BATCH_MS / 1000 - (time.monotonic() - last_flush))
+            # Floor at 1ms so an idle queue can't fall through to a 0-timeout
+            # poll: when batch is empty and no flush happened for >_BATCH_MS,
+            # the budget would otherwise clamp to 0 and busy-spin the writer.
+            timeout = max(0.001, _BATCH_MS / 1000 - (time.monotonic() - last_flush))
             try:
-                item = self._q.get(timeout=timeout) if timeout > 0 else self._q.get_nowait()
+                item = self._q.get(timeout=timeout)
             except queue.Empty:
                 item = None
 
@@ -133,6 +136,10 @@ class WriterQueue:
                 for _ in batch:
                     self._q.task_done()
                 batch = []
+                last_flush = time.monotonic()
+            elif not batch:
+                # Idle tick — reset the budget so the next get() blocks for the
+                # full _BATCH_MS window instead of waking every millisecond.
                 last_flush = time.monotonic()
 
     def _drain(self, batch: list[Call]) -> None:
