@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from somm_core import Outcome, SommResult, cost_for_call
+from somm_core import EmbedResult, Outcome, SommResult, cost_for_call
 from somm_core.pricing import seed_known_pricing
 from somm_core.config import Config
 from somm_core.config import load as load_config
@@ -30,7 +30,11 @@ from somm_core.repository import Repository
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import get_prompt, register_prompt
 from somm.providers.anthropic import AnthropicProvider
-from somm.providers.base import SommProvider, SommRequest
+from somm.providers.base import (
+    SommEmbedRequest,
+    SommProvider,
+    SommRequest,
+)
 from somm.providers.gemini import GeminiProvider
 from somm.providers.minimax import MinimaxProvider
 from somm.providers.ollama import OllamaProvider
@@ -557,6 +561,141 @@ class SommLLM:
                         f"${wl.budget_cap_usd_daily:.4f}.",
                         file=sys.stderr,
                     )
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Embeddings
+
+    def embed(
+        self,
+        text: str,
+        *,
+        workload: str = "default",
+        model: str | None = None,
+    ) -> EmbedResult:
+        """Compute one embedding via local ollama. v1 forces ollama with
+        no fallback chain (caller asked for "force ollama, no fallbacks").
+
+        Telemetry mirrors generate(): a row lands in calls.sqlite with
+        provider/model/latency/outcome/error_detail, so failed embeds show
+        up in `somm status` and `somm tail` like every other call.
+
+        Args:
+            text: input string. Single-string only — batch is the caller's
+                  concern (loop with their own cache, mirroring how
+                  tiling-check.py keys on sha256(model + body)).
+            workload: registered workload name. Auto-registers in observe
+                      mode; raises in strict mode (mirrors generate()).
+            model: ollama embed model. Defaults to `nomic-embed-text` via
+                   the ollama provider's `default_embed_model`.
+
+        Returns:
+            EmbedResult. On failure, `embedding=[]` and `outcome != OK`;
+            inspect `error_detail` for the operator-friendly description.
+        """
+        wl = self.repo.workload_by_name(workload, self.config.project)
+        if wl is None:
+            if self.config.mode == "strict":
+                raise SommStrictMode(
+                    f"SOMM_WORKLOAD_UNREGISTERED\n\n"
+                    f"Problem: This embed call used workload {workload!r}, "
+                    f"but it is not registered.\n"
+                    f"Cause: strict mode requires workload metadata.\n"
+                    f"Fix: somm workload add {workload} --from-example structured-extraction\n"
+                    f"     # or: export SOMM_MODE=observe"
+                )
+            wl = self.repo.register_workload(name=workload, project=self.config.project)
+
+        # v1: pin to ollama. No router involvement — `force ollama, no
+        # fallbacks` is the explicit posture for the calling project (eno
+        # tiling-check). Loosening this means deciding what cross-provider
+        # embedding routing should look like (different models = different
+        # vector spaces; cosine across them is meaningless), so it's a
+        # design call we're deferring.
+        provider_obj: OllamaProvider | None = None
+        for p in self.providers:
+            if p.name == "ollama":
+                provider_obj = p  # type: ignore[assignment]
+                break
+        if provider_obj is None:
+            raise ValueError(
+                "embed() requires the ollama provider to be configured "
+                "(it is in the default chain — check $SOMM_PROVIDER_ORDER "
+                "if you customized it)"
+            )
+
+        call_id = str(uuid.uuid4())
+        ts = datetime.now(UTC)
+        outcome = Outcome.OK
+        error_kind: str | None = None
+        error_detail: str | None = None
+        embedding: list[float] = []
+        actual_model = model or provider_obj.default_embed_model
+        tokens_in = 0
+        latency_ms = 0
+
+        req = SommEmbedRequest(text=text, model=model)
+        try:
+            resp = provider_obj.embed(req)
+            embedding = resp.embedding
+            actual_model = resp.model
+            tokens_in = resp.tokens_in
+            latency_ms = resp.latency_ms
+        except Exception as exc:
+            outcome = Outcome.UPSTREAM_ERROR
+            error_kind = type(exc).__name__
+            error_detail = _format_error_detail(exc, "ollama", actual_model)
+
+        result = EmbedResult(
+            embedding=embedding,
+            provider="ollama",
+            model=actual_model,
+            dim=len(embedding),
+            tokens_in=tokens_in,
+            latency_ms=latency_ms,
+            call_id=call_id,
+            outcome=outcome,
+            error_kind=error_kind,
+            error_detail=error_detail,
+        )
+
+        # response_hash: sha256 of the joined float repr. Cheap dedup
+        # signal in calls.sqlite without persisting the full vector.
+        response_hash = stable_hash(",".join(f"{v:.6f}" for v in embedding))
+        call = Call(
+            id=call_id,
+            ts=ts,
+            project=self.config.project,
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="ollama",
+            model=actual_model,
+            tokens_in=tokens_in,
+            tokens_out=0,
+            latency_ms=latency_ms,
+            cost_usd=cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0),
+            outcome=outcome,
+            error_kind=error_kind,
+            error_detail=error_detail,
+            prompt_hash=stable_hash(text),
+            response_hash=response_hash,
+        )
+        self._writer.submit(call)
+
+        if outcome != Outcome.OK and self._on_error is not None:
+            try:
+                self._on_error({
+                    "call_id": call_id,
+                    "workload": workload,
+                    "provider": "ollama",
+                    "model": actual_model,
+                    "outcome": outcome.value,
+                    "error_kind": error_kind,
+                    "error_detail": error_detail,
+                })
+            except Exception:
+                pass
 
         return result
 

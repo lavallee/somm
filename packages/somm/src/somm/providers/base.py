@@ -45,6 +45,21 @@ class SommChunk:
 
 
 @dataclass(slots=True)
+class SommEmbedRequest:
+    text: str
+    model: str | None = None  # None = provider's default embed model
+
+
+@dataclass(slots=True)
+class SommEmbedResponse:
+    embedding: list[float]
+    model: str
+    tokens_in: int
+    latency_ms: int
+    raw: dict | None = None
+
+
+@dataclass(slots=True)
 class ProviderHealth:
     available: bool
     detail: str = ""

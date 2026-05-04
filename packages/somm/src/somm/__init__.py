@@ -1,6 +1,6 @@
 """somm — self-hosted LLM telemetry, routing, and intelligence loop."""
 
-from somm_core import Outcome, PrivacyClass, SommResult
+from somm_core import EmbedResult, Outcome, PrivacyClass, SommResult
 from somm_core.parse import extract_json
 
 from somm.client import SommLLM, llm
@@ -11,6 +11,7 @@ __all__ = [
     "llm",
     "provenance",
     "extract_json",
+    "EmbedResult",
     "Outcome",
     "PrivacyClass",
     "SommResult",

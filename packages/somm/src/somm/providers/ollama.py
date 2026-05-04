@@ -16,6 +16,8 @@ from somm_core.parse import strip_think_block
 from somm.providers.base import (
     ProviderHealth,
     SommChunk,
+    SommEmbedRequest,
+    SommEmbedResponse,
     SommModel,
     SommRequest,
     SommResponse,
@@ -25,16 +27,20 @@ from somm.providers.base import (
 class OllamaProvider:
     name = "ollama"
 
+    DEFAULT_EMBED_MODEL = "nomic-embed-text"
+
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
         default_model: str = "gemma4:e4b",
+        default_embed_model: str = DEFAULT_EMBED_MODEL,
         timeout: float = 120.0,
         enable_think: bool = False,
         keep_alive: str = "30m",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
+        self.default_embed_model = default_embed_model
         self.timeout = timeout
         # When True, sets `"think": true` on the ollama request. Ollama 0.5+
         # uses this to opt reasoning-capable models (qwen3, deepseek-r1, etc.)
@@ -142,6 +148,38 @@ class OllamaProvider:
                     if done:
                         yield SommChunk(text="", done=True)
                         return
+
+    def embed(self, request: SommEmbedRequest) -> SommEmbedResponse:
+        """POST /api/embeddings. Single-string input only — batch is the
+        caller's concern (loop with caching)."""
+        model = request.model or self.default_embed_model
+        payload = {"model": model, "prompt": request.text}
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
+
+        t0 = time.monotonic()
+        with self._client() as client:
+            resp = client.post(f"{self.base_url}/api/embeddings", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        embedding = data.get("embedding") or []
+        if not isinstance(embedding, list) or not embedding:
+            # Caller surfaces as Outcome.UPSTREAM_ERROR; SommLLM.embed handles.
+            raise ValueError(f"ollama returned no embedding: {str(data)[:200]}")
+        # Approximate input tokens — ollama's embed endpoint doesn't report
+        # them, but we want a non-zero signal in calls.tokens_in.
+        from somm_core.parse import estimate_prompt_tokens
+
+        tokens_in = estimate_prompt_tokens(request.text, image_token_cost=0)
+        return SommEmbedResponse(
+            embedding=embedding,
+            model=model,
+            tokens_in=tokens_in,
+            latency_ms=latency_ms,
+            raw=data,
+        )
 
     def health(self) -> ProviderHealth:
         try:

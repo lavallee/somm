@@ -207,3 +207,30 @@ class SommResult:
         """Post-tag a call's outcome. Returns self for chaining."""
         self.outcome = outcome
         return self
+
+
+@dataclass(slots=True)
+class EmbedResult:
+    """Return shape of SommLLM.embed().
+
+    Mirrors SommResult so telemetry, provenance, and error semantics are
+    consistent with the generate() path. `embedding` is the vector;
+    `dim` is its length, surfaced for quick sanity checks at call sites.
+    On failure, `embedding` is empty and `outcome != OK`.
+    """
+
+    embedding: list[float]
+    provider: str
+    model: str
+    dim: int
+    tokens_in: int
+    latency_ms: int
+    call_id: str
+    outcome: Outcome = Outcome.OK
+    error_kind: str | None = None
+    error_detail: str | None = None
+    raw: dict[str, Any] | None = None
+
+    def mark(self, outcome: Outcome) -> EmbedResult:
+        self.outcome = outcome
+        return self
