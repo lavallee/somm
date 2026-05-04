@@ -14,6 +14,7 @@ from somm.providers.base import (
     SommRequest,
     SommResponse,
 )
+from somm.providers.deepseek import DeepSeekProvider
 from somm.providers.gemini import GeminiProvider
 from somm.providers.minimax import MinimaxProvider
 from somm.providers.ollama import OllamaProvider
@@ -34,5 +35,6 @@ __all__ = [
     "MinimaxProvider",
     "AnthropicProvider",
     "GeminiProvider",
+    "DeepSeekProvider",
     "DEFAULT_FREE_ROSTER",
 ]

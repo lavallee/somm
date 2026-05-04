@@ -35,6 +35,7 @@ from somm.providers.base import (
     SommProvider,
     SommRequest,
 )
+from somm.providers.deepseek import DeepSeekProvider
 from somm.providers.gemini import GeminiProvider
 from somm.providers.minimax import MinimaxProvider
 from somm.providers.ollama import OllamaProvider
@@ -244,6 +245,13 @@ class SommLLM:
             available["minimax"] = MinimaxProvider(
                 api_key=self.config.minimax_api_key,
                 default_model=self.config.minimax_model,
+                timeout=self.config.http_timeout,
+            )
+        if self.config.deepseek_api_key:
+            available["deepseek"] = DeepSeekProvider(
+                api_key=self.config.deepseek_api_key,
+                default_model=self.config.deepseek_model,
+                timeout=self.config.http_timeout,
             )
         if self.config.anthropic_api_key:
             available["anthropic"] = AnthropicProvider(
@@ -255,6 +263,7 @@ class SommLLM:
                 api_key=self.config.openai_api_key,
                 base_url=self.config.openai_base_url,
                 default_model=self.config.openai_model,
+                timeout=self.config.http_timeout,
             )
         if self.config.gemini_api_key:
             available["gemini"] = GeminiProvider(
@@ -269,8 +278,8 @@ class SommLLM:
             chain = [available[p] for p in self.config.provider_order if p in available]
             return chain if chain else list(available.values())
 
-        # Default: ollama → openrouter → minimax → anthropic → gemini → openai
-        default_order = ["ollama", "openrouter", "minimax", "anthropic", "gemini", "openai"]
+        # Default order — sovereign-first, then strong-paid (deepseek now in slot 3).
+        default_order = ["ollama", "openrouter", "deepseek", "minimax", "anthropic", "gemini", "openai"]
         return [available[p] for p in default_order if p in available]
 
     # ------------------------------------------------------------------

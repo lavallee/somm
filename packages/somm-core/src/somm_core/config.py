@@ -30,8 +30,11 @@ class Config:
     openai_base_url: str = "https://api.openai.com/v1"
     minimax_api_key: str | None = None
     minimax_model: str = "MiniMax-M2.7"
+    deepseek_api_key: str | None = None
+    deepseek_model: str = "deepseek-chat"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-pro"
+    http_timeout: float = 180.0  # seconds; used by openai-compat providers
     provider_order: list[str] | None = None  # e.g. ["openrouter", "minimax", "ollama"]
     busy_timeout_ms: int = 5000
     cross_project_enabled: bool = False
@@ -102,11 +105,18 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         ("SOMM_OPENAI_BASE_URL", "openai_base_url"),
         ("MINIMAX_API_KEY", "minimax_api_key"),
         ("SOMM_MINIMAX_MODEL", "minimax_model"),
+        ("DEEPSEEK_API_KEY", "deepseek_api_key"),
+        ("SOMM_DEEPSEEK_MODEL", "deepseek_model"),
         ("GEMINI_API_KEY", "gemini_api_key"),
         ("SOMM_GEMINI_MODEL", "gemini_model"),
     ):
         if env_var in os.environ:
             setattr(cfg, attr, os.environ[env_var])
+    if "SOMM_HTTP_TIMEOUT" in os.environ:
+        try:
+            cfg.http_timeout = float(os.environ["SOMM_HTTP_TIMEOUT"])
+        except ValueError:
+            pass
 
     if project is not None:
         cfg.project = project
