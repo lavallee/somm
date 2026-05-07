@@ -157,6 +157,13 @@ class Call:
     prompt_hash: str
     response_hash: str
     error_detail: str | None = None
+    # 0007: commission_id ties the call to a scribe commission (cross-tool
+    # audit spine); the param fields record what the caller asked for.
+    commission_id: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    top_p: float | None = None
+    stop_sequences_json: str | None = None
 
 
 @dataclass(slots=True)

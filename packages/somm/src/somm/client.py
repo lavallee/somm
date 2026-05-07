@@ -52,6 +52,73 @@ SommStrictMode = _SommStrictMode  # re-export; new canonical lives in somm.error
 _warned_budget_exceeded: set[tuple[str, date]] = set()
 
 
+def _scribe_commission_id() -> str | None:
+    """Soft read of scribe's active commission_id contextvar.
+
+    Returns None when scribe isn't installed, isn't initialized, or no
+    commission is active. Never raises — somm must work without scribe.
+    """
+    try:
+        import scribe  # type: ignore
+        return scribe.current_commission_id()
+    except Exception:
+        return None
+
+
+def _scribe_emit_llm_call(
+    *,
+    workload: str,
+    provider: str,
+    model: str,
+    outcome: str,
+    tokens_in: int,
+    tokens_out: int,
+    latency_ms: int,
+    cost_usd: float,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    error_kind: str | None = None,
+    call_id: str | None = None,
+) -> None:
+    """Mirror an LLM call into scribe's events table when a commission is active.
+
+    The full row stays in somm's calls.sqlite (for cost/budget/health tracking);
+    this thin mirror exists so that `scribe show <commission_id>` can render
+    the LLM activity inline with skill/decision/tool rows without a cross-DB
+    join. No-op when scribe isn't installed or no commission is active.
+    """
+    try:
+        import scribe  # type: ignore
+    except Exception:
+        return
+    if scribe.current_commission_id() is None:
+        return
+    body = {
+        "provider": provider, "model": model,
+        "tokens_in": tokens_in, "tokens_out": tokens_out,
+        "cost_usd": round(cost_usd, 6) if cost_usd else 0.0,
+        "call_id": call_id,
+    }
+    if temperature is not None: body["temperature"] = temperature
+    if max_tokens is not None:  body["max_tokens"] = max_tokens
+    if error_kind:              body["error_kind"] = error_kind
+    status = "success" if outcome == "ok" else (
+        "error" if outcome in ("upstream_error", "exhausted", "timeout") else "warning"
+    )
+    try:
+        scribe.event(
+            kind="llm_call",
+            actor=workload,
+            title=f"{provider}/{model}",
+            body=body,
+            status=status,
+            latency_ms=latency_ms,
+        )
+    except Exception:
+        # Audit logging must never break the LLM call path.
+        pass
+
+
 def _format_error_detail(exc: Exception, provider: str, model: str | None) -> str:
     """Build a bounded, operator-friendly description of an LLM call failure.
 
@@ -499,8 +566,18 @@ class SommLLM:
             error_detail=error_detail,
             prompt_hash=stable_hash(prompt),
             response_hash=stable_hash(text),
+            commission_id=_scribe_commission_id(),
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
         self._writer.submit(call)
+        _scribe_emit_llm_call(
+            workload=workload, provider=actual_provider, model=actual_model,
+            outcome=outcome.value, tokens_in=tokens_in, tokens_out=tokens_out,
+            latency_ms=latency_ms, cost_usd=result.cost_usd,
+            temperature=temperature, max_tokens=max_tokens,
+            error_kind=error_kind, call_id=call_id,
+        )
 
         # Fire the on_error alerter whenever the call did not succeed.
         if outcome != Outcome.OK and self._on_error is not None:
@@ -706,8 +783,15 @@ class SommLLM:
             error_detail=error_detail,
             prompt_hash=stable_hash(text),
             response_hash=response_hash,
+            commission_id=_scribe_commission_id(),
         )
         self._writer.submit(call)
+        _scribe_emit_llm_call(
+            workload=workload, provider="ollama", model=actual_model,
+            outcome=outcome.value, tokens_in=tokens_in, tokens_out=0,
+            latency_ms=latency_ms, cost_usd=result.cost_usd,
+            error_kind=error_kind, call_id=call_id,
+        )
 
         if outcome != Outcome.OK and self._on_error is not None:
             try:
@@ -847,8 +931,20 @@ class SommLLM:
                 error_detail=error_detail,
                 prompt_hash=stable_hash(prompt),
                 response_hash=stable_hash(full_text),
+                commission_id=_scribe_commission_id(),
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
             self._writer.submit(call)
+            _scribe_emit_llm_call(
+                workload=workload, provider=chosen.name,
+                model=actual_model or chosen.name,
+                outcome=outcome.value, tokens_in=tokens_in,
+                tokens_out=tokens_out, latency_ms=latency_ms,
+                cost_usd=call.cost_usd,
+                temperature=temperature, max_tokens=max_tokens,
+                error_kind=error_kind, call_id=call_id,
+            )
 
     def _pick_stream_provider(self, name: str | None):
         if name:

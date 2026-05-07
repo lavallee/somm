@@ -256,8 +256,9 @@ class Repository:
                     id, ts, project, workload_id, prompt_id,
                     provider, model,
                     tokens_in, tokens_out, latency_ms, cost_usd,
-                    outcome, error_kind, error_detail, prompt_hash, response_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    outcome, error_kind, error_detail, prompt_hash, response_hash,
+                    commission_id, temperature, max_tokens, top_p, stop_sequences_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     call.id,
@@ -276,6 +277,11 @@ class Repository:
                     call.error_detail,
                     call.prompt_hash,
                     call.response_hash,
+                    call.commission_id,
+                    call.temperature,
+                    call.max_tokens,
+                    call.top_p,
+                    call.stop_sequences_json,
                 ),
             )
 
@@ -292,8 +298,9 @@ class Repository:
                         id, ts, project, workload_id, prompt_id,
                         provider, model,
                         tokens_in, tokens_out, latency_ms, cost_usd,
-                        outcome, error_kind, error_detail, prompt_hash, response_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        outcome, error_kind, error_detail, prompt_hash, response_hash,
+                        commission_id, temperature, max_tokens, top_p, stop_sequences_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -313,6 +320,11 @@ class Repository:
                             c.error_detail,
                             c.prompt_hash,
                             c.response_hash,
+                            c.commission_id,
+                            c.temperature,
+                            c.max_tokens,
+                            c.top_p,
+                            c.stop_sequences_json,
                         )
                         for c in calls
                     ],
