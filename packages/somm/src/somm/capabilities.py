@@ -37,10 +37,44 @@ _VISION_NAME_HINTS: tuple[str, ...] = (
     "claude-haiku-4",
     "gpt-4o",
     "gpt-4.1",
+    "gpt-5",
     "llava",
     "bakllava",
     "vision",
     "gemini",
+)
+
+
+# Models that consume "thinking" / reasoning tokens before emitting visible
+# output. Workloads that declare ``capabilities_required=["thinking"]`` get
+# routed to one of these; mechanical workloads (copyedit, simple polish)
+# explicitly omit it and get steered to a non-thinking variant.
+#
+# Inverse: NON-thinking variants of these families exist (deepseek-v4-flash,
+# claude-sonnet-4-6 without extended thinking, gemini-2.5-flash). The
+# `_NON_THINKING_NAME_HINTS` list below excludes models that look like they
+# want thinking but explicitly don't.
+_THINKING_NAME_HINTS: tuple[str, ...] = (
+    "deepseek-v4-pro",
+    "deepseek-reasoner",
+    "claude-opus-4-7",  # Opus families default to extended thinking
+    "claude-opus-4-6",
+    "o1-",       # OpenAI o1 family
+    "o3-",       # OpenAI o3 family
+    "gemini-2.5-pro",
+    "gemini-3-pro",
+    "qwq-",
+    "magistral",
+)
+
+_NON_THINKING_NAME_HINTS: tuple[str, ...] = (
+    "-flash",
+    "-mini",
+    "-haiku",  # Haiku family is non-thinking by default
+    "deepseek-chat",
+    "deepseek-coder",
+    "gpt-4o",
+    "gpt-4.1",
 )
 
 
@@ -107,6 +141,29 @@ def model_has_capability(
         if caps is None:
             return None
         return False
+
+    if capability == "thinking":
+        # Thinking-tier models reason before emitting visible text. Routing
+        # workloads that declare needs_thinking="yes" to one of these is the
+        # difference between a calibrated answer and an empty response (the
+        # 8K-budget all-eaten-by-reasoning failure mode from 2026-05-06).
+        lowered = model.lower()
+        if any(h in lowered for h in _NON_THINKING_NAME_HINTS):
+            return False
+        if any(h in lowered for h in _THINKING_NAME_HINTS):
+            return True
+        return None  # unknown — let the provider try
+
+    if capability == "non-thinking":
+        # Inverse: workloads that DON'T need thinking explicitly steer away
+        # from reasoning models, which would burn budget on a mechanical task.
+        # E.g. a copyeditor pass on already-clean prose doesn't need v4-pro.
+        lowered = model.lower()
+        if any(h in lowered for h in _NON_THINKING_NAME_HINTS):
+            return True
+        if any(h in lowered for h in _THINKING_NAME_HINTS):
+            return False
+        return None
 
     # Unknown capability — don't block.
     return None

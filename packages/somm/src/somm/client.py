@@ -296,6 +296,7 @@ class SommLLM:
         capabilities_required: list[str] | None = None,
         allow_empty: bool = False,
         no_fallback: bool = False,
+        raise_on_empty: bool = False,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -570,6 +571,22 @@ class SommLLM:
                         f"${wl.budget_cap_usd_daily:.4f}.",
                         file=sys.stderr,
                     )
+
+        # Loud-empty: when the caller explicitly set raise_on_empty=True
+        # and we ended up with an empty response (every provider returned
+        # blanks), raise rather than handing back empty text. This is the
+        # 2026-05-06 lesson: a thinking model that consumed its whole token
+        # budget on internal reasoning shouldn't silently return empty —
+        # callers who care need a typed exception so they can fall back,
+        # bump max_tokens, or pick a non-thinking model.
+        if raise_on_empty and outcome == Outcome.EMPTY:
+            from somm.errors import SommEmptyResponse
+            raise SommEmptyResponse(
+                f"empty response from {actual_provider}/{actual_model} "
+                f"(workload={workload!r}); set raise_on_empty=False to "
+                f"swallow, or bump max_tokens / pick a non-thinking model "
+                f"if a thinking model burned the whole budget."
+            )
 
         return result
 
