@@ -26,6 +26,36 @@ class SommRequest:
     # transient failure and tries the next provider. Set True only if the
     # caller genuinely expects some prompts to produce no output.
     allow_empty: bool = False
+    # ------------------------------------------------------------------
+    # Tool-calling (see docs/tool-calling.md)
+    #
+    # `tools`: somm-neutral JSON-Schema-shaped tool declarations. Empty
+    # list (default) means no tool calling. Provider adapters translate
+    # to their native format. Providers that don't yet support tool
+    # calling raise SommBadRequest if `tools` is non-empty.
+    #
+    # `messages`: multi-turn conversation history. When set, overrides
+    # `prompt`. Format mirrors Anthropic Messages API (the closest to a
+    # cross-provider common denominator); OpenAI-compat adapter
+    # translates assistant/tool_use and user/tool_result blocks into
+    # OpenAI's tool_calls / tool messages.
+    #
+    # `tool_choice`: None (default), "auto", "any", "none", or
+    # {"type":"tool","name":"<tool_name>"} to force a specific tool.
+    tools: list[dict] = field(default_factory=list)
+    messages: list[dict] | None = None
+    tool_choice: str | dict | None = None
+
+
+@dataclass(slots=True)
+class ToolCall:
+    """Provider-level tool invocation. Mirrors somm_core.models.ToolCall
+    so providers don't need a somm-core import — client.py converts."""
+
+    id: str
+    name: str
+    arguments: dict
+    arguments_raw: str = ""
 
 
 @dataclass(slots=True)
@@ -36,6 +66,8 @@ class SommResponse:
     tokens_out: int
     latency_ms: int
     raw: dict | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    stop_reason: str = ""
 
 
 @dataclass(slots=True)

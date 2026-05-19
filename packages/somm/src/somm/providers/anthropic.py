@@ -30,6 +30,7 @@ from somm.providers.base import (
     SommModel,
     SommRequest,
     SommResponse,
+    ToolCall,
 )
 
 DEFAULT_ANTHROPIC_MODELS = [
@@ -66,14 +67,25 @@ class AnthropicProvider:
         }
 
     def _build_payload(self, request: SommRequest, model: str) -> dict:
+        # `messages` (multi-turn) overrides `prompt` (single-user-turn) when set.
+        # Anthropic accepts the somm-neutral message shape directly because
+        # somm's format mirrors Anthropic's Messages API.
+        if request.messages is not None:
+            messages = request.messages
+        else:
+            messages = [{"role": "user", "content": request.prompt}]
         payload: dict = {
             "model": model,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": messages,
         }
         if request.system:
             payload["system"] = request.system
+        if request.tools:
+            payload["tools"] = [_translate_tool(t) for t in request.tools]
+        if request.tool_choice is not None:
+            payload["tool_choice"] = _translate_tool_choice(request.tool_choice)
         return payload
 
     def generate(self, request: SommRequest) -> SommResponse:
@@ -97,14 +109,25 @@ class AnthropicProvider:
         self._classify_status(resp, model)
         data = resp.json()
 
-        # Anthropic: content is a list of blocks. Concatenate text blocks;
-        # drop thinking blocks entirely (not billed as output tokens in the
-        # somm view, even though Anthropic may bill them).
+        # Anthropic: content is a list of blocks. Text blocks concatenate
+        # into `text`; tool_use blocks become ToolCall entries; thinking
+        # blocks are intentionally ignored (not billed as output tokens in
+        # the somm view, even though Anthropic may bill them).
         text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
         for block in data.get("content") or []:
             btype = block.get("type")
             if btype == "text":
                 text_parts.append(block.get("text", ""))
+            elif btype == "tool_use":
+                tool_calls.append(
+                    ToolCall(
+                        id=str(block.get("id", "")),
+                        name=str(block.get("name", "")),
+                        # Anthropic returns parsed JSON in `input` already.
+                        arguments=block.get("input") or {},
+                    )
+                )
             # "thinking" blocks are intentionally ignored here.
         text = strip_think_block("".join(text_parts))
 
@@ -119,6 +142,8 @@ class AnthropicProvider:
             tokens_out=tokens_out,
             latency_ms=latency_ms,
             raw=data,
+            tool_calls=tool_calls,
+            stop_reason=str(data.get("stop_reason") or ""),
         )
 
     def _classify_status(self, resp: httpx.Response, model: str) -> None:
@@ -161,6 +186,30 @@ class AnthropicProvider:
 
         # Anthropic bills ~1568 tokens for a 1092×1092 image.
         return estimate_prompt_tokens(text, image_token_cost=1568)
+
+
+def _translate_tool(tool: dict) -> dict:
+    """somm-neutral → Anthropic tool shape. Rename `parameters` → `input_schema`."""
+    out = {"name": tool["name"], "description": tool.get("description", "")}
+    if "parameters" in tool:
+        out["input_schema"] = tool["parameters"]
+    elif "input_schema" in tool:
+        # Tolerate Anthropic-native form passed through unchanged.
+        out["input_schema"] = tool["input_schema"]
+    return out
+
+
+def _translate_tool_choice(choice: str | dict) -> dict:
+    """somm-neutral → Anthropic tool_choice."""
+    if choice == "auto":
+        return {"type": "auto"}
+    if choice == "any":
+        return {"type": "any"}
+    if choice == "none":
+        return {"type": "none"}
+    if isinstance(choice, dict) and choice.get("type") == "tool":
+        return {"type": "tool", "name": choice["name"]}
+    raise ValueError(f"unrecognized tool_choice: {choice!r}")
 
 
 def _retry_after(resp: httpx.Response) -> float | None:

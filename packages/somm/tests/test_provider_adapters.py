@@ -309,6 +309,181 @@ def test_anthropic_429_rate_limited(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Anthropic tool-calling (see docs/tool-calling.md)
+
+
+_WEATHER_TOOL = {
+    "name": "get_weather",
+    "description": "Get current weather for a location.",
+    "parameters": {
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+        "required": ["location"],
+    },
+}
+
+
+def _anthropic_text_ok(content_text: str = "ok", stop_reason: str = "end_turn"):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "content": [{"type": "text", "text": content_text}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "stop_reason": stop_reason,
+            },
+        )
+
+    return handler
+
+
+def test_anthropic_tools_renamed_to_input_schema(monkeypatch):
+    """somm-neutral `parameters` is sent to Anthropic as `input_schema`."""
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return _anthropic_text_ok()(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = AnthropicProvider(api_key="k")
+    p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL]))
+
+    assert "tools" in captured
+    assert len(captured["tools"]) == 1
+    tool = captured["tools"][0]
+    assert tool["name"] == "get_weather"
+    assert "input_schema" in tool
+    assert "parameters" not in tool
+    assert tool["input_schema"]["required"] == ["location"]
+
+
+def test_anthropic_tool_choice_translations(monkeypatch):
+    """tool_choice strings + explicit-tool dict translate to Anthropic shape."""
+    captured: list = []
+
+    def handler(request):
+        import json as _json
+
+        captured.append(_json.loads(request.read()).get("tool_choice"))
+        return _anthropic_text_ok()(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = AnthropicProvider(api_key="k")
+    p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL], tool_choice="auto"))
+    p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL], tool_choice="any"))
+    p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL], tool_choice="none"))
+    p.generate(
+        SommRequest(
+            prompt="hi",
+            tools=[_WEATHER_TOOL],
+            tool_choice={"type": "tool", "name": "get_weather"},
+        )
+    )
+
+    assert captured == [
+        {"type": "auto"},
+        {"type": "any"},
+        {"type": "none"},
+        {"type": "tool", "name": "get_weather"},
+    ]
+
+
+def test_anthropic_parses_tool_use_block(monkeypatch):
+    """tool_use blocks in the response become ToolCall entries; stop_reason set."""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "model": "claude-sonnet-4-6",
+                "content": [
+                    {"type": "text", "text": "Let me check."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_017abc",
+                        "name": "get_weather",
+                        "input": {"location": "SF"},
+                    },
+                ],
+                "usage": {"input_tokens": 4, "output_tokens": 12},
+                "stop_reason": "tool_use",
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = AnthropicProvider(api_key="k")
+    resp = p.generate(SommRequest(prompt="weather in SF?", tools=[_WEATHER_TOOL]))
+
+    assert resp.text == "Let me check."
+    assert resp.stop_reason == "tool_use"
+    assert len(resp.tool_calls) == 1
+    call = resp.tool_calls[0]
+    assert call.id == "toolu_017abc"
+    assert call.name == "get_weather"
+    assert call.arguments == {"location": "SF"}
+
+
+def test_anthropic_messages_overrides_prompt(monkeypatch):
+    """SommRequest.messages takes precedence over prompt; multi-turn history is forwarded verbatim."""
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return _anthropic_text_ok()(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = AnthropicProvider(api_key="k")
+    history = [
+        {"role": "user", "content": "weather in SF?"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "checking"},
+                {
+                    "type": "tool_use",
+                    "id": "tu_01",
+                    "name": "get_weather",
+                    "input": {"location": "SF"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_01", "content": "62F sunny"},
+            ],
+        },
+    ]
+    p.generate(SommRequest(prompt="IGNORED", messages=history, tools=[_WEATHER_TOOL]))
+
+    assert captured["messages"] == history
+
+
+def test_anthropic_no_tools_no_field(monkeypatch):
+    """Backward compat: empty tools list omits the field entirely."""
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return _anthropic_text_ok()(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = AnthropicProvider(api_key="k")
+    p.generate(SommRequest(prompt="hi"))
+
+    assert "tools" not in captured
+    assert "tool_choice" not in captured
+
+
+# ---------------------------------------------------------------------------
 # Default provider chain reflects env keys
 
 

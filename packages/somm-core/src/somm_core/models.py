@@ -191,6 +191,25 @@ class Decision:
     outcome_note: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """A tool invocation requested by the model.
+
+    `id` is the provider-assigned identifier (Anthropic `tool_use_id`,
+    OpenAI `tool_calls[].id`). Callers correlate tool_results back to
+    the request with this id when constructing the next turn.
+
+    `arguments` is the parsed JSON object the model produced — callers
+    do not need to `json.loads` again. Malformed arguments surface as an
+    empty dict with `arguments_raw` populated so the caller can repair.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+    arguments_raw: str = ""  # populated only when arguments failed to parse as JSON
+
+
 @dataclass(slots=True)
 class SommResult:
     """Return shape of SommLLM.generate()."""
@@ -209,6 +228,13 @@ class SommResult:
     # keep telemetry rows bounded. Populated whenever outcome != OK.
     error_detail: str | None = None
     raw: dict[str, Any] | None = None
+    # Tool calls the model requested in this turn. Empty when no tools
+    # were offered or the model chose to respond with text only.
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    # "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "" when unknown.
+    # Callers building an agent loop check `stop_reason == "tool_use"` to
+    # know to invoke the tools and submit a follow-up turn.
+    stop_reason: str = ""
 
     def mark(self, outcome: Outcome) -> SommResult:
         """Post-tag a call's outcome. Returns self for chaining."""
