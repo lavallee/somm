@@ -32,6 +32,7 @@ from somm.providers.base import (
     SommModel,
     SommRequest,
     SommResponse,
+    ToolCall,
 )
 
 if TYPE_CHECKING:
@@ -88,10 +89,16 @@ class OpenAICompatProvider:
         return h
 
     def _build_payload(self, request: SommRequest, model: str) -> dict:
-        messages = []
+        # Multi-turn `messages` overrides single-turn `prompt`. The somm-neutral
+        # message shape mirrors Anthropic; here we translate to OpenAI's
+        # tool_calls / tool message conventions.
+        messages: list[dict] = []
         if request.system:
             messages.append({"role": "system", "content": request.system})
-        messages.append({"role": "user", "content": request.prompt})
+        if request.messages is not None:
+            messages.extend(_translate_messages_to_openai(request.messages))
+        else:
+            messages.append({"role": "user", "content": request.prompt})
         payload = {
             "model": model,
             "messages": messages,
@@ -101,6 +108,10 @@ class OpenAICompatProvider:
         }
         if _uses_max_completion_tokens(model):
             payload["max_completion_tokens"] = payload.pop("max_tokens")
+        if request.tools:
+            payload["tools"] = [_translate_tool_to_openai(t) for t in request.tools]
+        if request.tool_choice is not None:
+            payload["tool_choice"] = _translate_tool_choice_to_openai(request.tool_choice)
         return payload
 
     # ------------------------------------------------------------------
@@ -135,8 +146,13 @@ class OpenAICompatProvider:
         choices = data.get("choices") or []
         if not choices:
             raise SommTransientError(f"{self.name}: no choices on {model}", cooldown_s=15.0)
-        raw_text = choices[0].get("message", {}).get("content", "") or ""
+        choice = choices[0]
+        message = choice.get("message") or {}
+        raw_text = message.get("content") or ""
         text = strip_think_block(raw_text)
+
+        tool_calls = _parse_openai_tool_calls(message.get("tool_calls") or [])
+        stop_reason = _normalize_finish_reason(choice.get("finish_reason"))
 
         usage = data.get("usage") or {}
         tokens_in = int(usage.get("prompt_tokens", 0) or 0)
@@ -149,6 +165,8 @@ class OpenAICompatProvider:
             tokens_out=tokens_out,
             latency_ms=latency_ms,
             raw=data,
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
         )
 
     def _classify_status(self, resp: httpx.Response, model: str) -> None:
@@ -273,6 +291,163 @@ class OpenAICompatProvider:
         # OpenAI: ~85 for low-res image + tiles for hi-res. Use a middling
         # estimate; a precise tokenizer lives behind `somm[tokenizers]` later.
         return estimate_prompt_tokens(text, image_token_cost=700)
+
+
+def _translate_tool_to_openai(tool: dict) -> dict:
+    """somm-neutral → OpenAI tool wrapping."""
+    function: dict = {"name": tool["name"]}
+    if "description" in tool:
+        function["description"] = tool["description"]
+    if "parameters" in tool:
+        function["parameters"] = tool["parameters"]
+    return {"type": "function", "function": function}
+
+
+def _translate_tool_choice_to_openai(choice: str | dict) -> str | dict:
+    """somm-neutral → OpenAI tool_choice."""
+    if choice == "auto":
+        return "auto"
+    if choice == "any":
+        return "required"
+    if choice == "none":
+        return "none"
+    if isinstance(choice, dict) and choice.get("type") == "tool":
+        return {"type": "function", "function": {"name": choice["name"]}}
+    raise ValueError(f"unrecognized tool_choice: {choice!r}")
+
+
+def _translate_messages_to_openai(messages: list[dict]) -> list[dict]:
+    """somm-neutral (Anthropic-shaped) → OpenAI messages.
+
+    Translation rules:
+    - Assistant message with text + tool_use blocks → single assistant
+      message with `content` (concatenated text) and `tool_calls` array.
+      OpenAI accepts an empty/None content when tool_calls are present.
+    - User message with tool_result blocks → one `{role:"tool", ...}`
+      message per tool_result. Any non-tool_result blocks in the same
+      message are emitted as a separate user message that follows
+      (preserves ordering).
+    """
+    import json as _json
+
+    out: list[dict] = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+
+        if role == "assistant" and isinstance(content, list):
+            text_parts: list[str] = []
+            tool_calls_payload: list[dict] = []
+            for block in content:
+                btype = block.get("type")
+                if btype == "text":
+                    text_parts.append(block.get("text", ""))
+                elif btype == "tool_use":
+                    args = block.get("input") or {}
+                    tool_calls_payload.append(
+                        {
+                            "id": block.get("id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": block.get("name", ""),
+                                "arguments": _json.dumps(args),
+                            },
+                        }
+                    )
+            assistant_msg: dict = {"role": "assistant"}
+            joined = "".join(text_parts)
+            # OpenAI requires either content or tool_calls; allow content=None
+            # when only tool_calls are present (matches OpenAI's docs).
+            assistant_msg["content"] = joined if joined else None
+            if tool_calls_payload:
+                assistant_msg["tool_calls"] = tool_calls_payload
+            out.append(assistant_msg)
+            continue
+
+        if role == "user" and isinstance(content, list):
+            # Split tool_results into separate `role:tool` messages; keep
+            # any other blocks in a trailing user message.
+            other_blocks: list[dict] = []
+            for block in content:
+                if block.get("type") == "tool_result":
+                    out.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": block.get("tool_use_id", ""),
+                            "content": _stringify_tool_result(block.get("content", "")),
+                        }
+                    )
+                else:
+                    other_blocks.append(block)
+            if other_blocks:
+                out.append({"role": "user", "content": other_blocks})
+            continue
+
+        # Plain text content or system message — forward unchanged.
+        out.append(msg)
+    return out
+
+
+def _stringify_tool_result(content: str | list | dict) -> str:
+    """OpenAI's tool message wants a string; somm-neutral allows blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    import json as _json
+
+    return _json.dumps(content)
+
+
+def _parse_openai_tool_calls(raw_tool_calls: list[dict]) -> list[ToolCall]:
+    """OpenAI tool_calls → somm ToolCall list.
+
+    OpenAI sends `arguments` as a JSON string; parse it. Malformed JSON
+    surfaces as `arguments={}` with `arguments_raw` populated so the
+    caller can repair or re-prompt rather than silently corrupt the loop.
+    """
+    import json as _json
+
+    out: list[ToolCall] = []
+    for entry in raw_tool_calls:
+        fn = entry.get("function") or {}
+        raw_args = fn.get("arguments") or ""
+        try:
+            args = _json.loads(raw_args) if raw_args else {}
+            arguments_raw = ""
+        except _json.JSONDecodeError:
+            args = {}
+            arguments_raw = raw_args
+        out.append(
+            ToolCall(
+                id=str(entry.get("id", "")),
+                name=str(fn.get("name", "")),
+                arguments=args,
+                arguments_raw=arguments_raw,
+            )
+        )
+    return out
+
+
+_OPENAI_FINISH_REASON_TO_SOMM: dict[str, str] = {
+    "stop": "end_turn",
+    "tool_calls": "tool_use",
+    "function_call": "tool_use",  # legacy single-call form
+    "length": "max_tokens",
+    "content_filter": "content_filter",
+}
+
+
+def _normalize_finish_reason(reason: str | None) -> str:
+    if not reason:
+        return ""
+    return _OPENAI_FINISH_REASON_TO_SOMM.get(reason, reason)
 
 
 def _retry_after(resp: httpx.Response) -> float | None:

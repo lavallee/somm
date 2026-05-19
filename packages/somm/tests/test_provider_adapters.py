@@ -484,6 +484,269 @@ def test_anthropic_no_tools_no_field(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# OpenAI-compat tool-calling (covers openai, minimax, openrouter, deepseek)
+
+
+def _oai_tool_use_handler(
+    *,
+    text: str = "checking",
+    tool_id: str = "call_abc",
+    tool_name: str = "get_weather",
+    arguments_json: str = '{"location": "SF"}',
+    finish_reason: str = "tool_calls",
+):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": text,
+                            "tool_calls": [
+                                {
+                                    "id": tool_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_name,
+                                        "arguments": arguments_json,
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": finish_reason,
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 7},
+            },
+        )
+
+    return handler
+
+
+def test_openai_tools_wrapped_as_function(monkeypatch):
+    """somm-neutral tool → OpenAI `{type:function, function:{...}}` shape."""
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return _oai_ok_handler("ok")(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL]))
+
+    assert len(captured["tools"]) == 1
+    sent = captured["tools"][0]
+    assert sent["type"] == "function"
+    assert sent["function"]["name"] == "get_weather"
+    assert sent["function"]["parameters"]["required"] == ["location"]
+
+
+def test_openai_tool_choice_translations(monkeypatch):
+    """tool_choice strings + explicit-tool dict translate to OpenAI shape."""
+    captured: list = []
+
+    def handler(request):
+        import json as _json
+
+        captured.append(_json.loads(request.read()).get("tool_choice"))
+        return _oai_ok_handler("ok")(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL], tool_choice="auto"))
+    p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL], tool_choice="any"))
+    p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL], tool_choice="none"))
+    p.generate(
+        SommRequest(
+            prompt="hi",
+            tools=[_WEATHER_TOOL],
+            tool_choice={"type": "tool", "name": "get_weather"},
+        )
+    )
+
+    assert captured == [
+        "auto",
+        "required",
+        "none",
+        {"type": "function", "function": {"name": "get_weather"}},
+    ]
+
+
+def test_openai_parses_tool_calls(monkeypatch):
+    """OpenAI tool_calls → ToolCall list with parsed JSON arguments; stop_reason normalized."""
+    monkeypatch.setattr(httpx, "Client", _patch_client(_oai_tool_use_handler()))
+    p = OpenAIProvider(api_key="sk-fake")
+    resp = p.generate(SommRequest(prompt="weather?", tools=[_WEATHER_TOOL]))
+
+    assert resp.text == "checking"
+    assert resp.stop_reason == "tool_use"  # normalized from "tool_calls"
+    assert len(resp.tool_calls) == 1
+    call = resp.tool_calls[0]
+    assert call.id == "call_abc"
+    assert call.name == "get_weather"
+    assert call.arguments == {"location": "SF"}
+    assert call.arguments_raw == ""
+
+
+def test_openai_malformed_tool_arguments_preserved(monkeypatch):
+    """Bad JSON args don't crash; arguments_raw preserves the original for repair."""
+    monkeypatch.setattr(
+        httpx, "Client", _patch_client(_oai_tool_use_handler(arguments_json="{broken"))
+    )
+    p = OpenAIProvider(api_key="sk-fake")
+    resp = p.generate(SommRequest(prompt="hi", tools=[_WEATHER_TOOL]))
+
+    assert resp.tool_calls[0].arguments == {}
+    assert resp.tool_calls[0].arguments_raw == "{broken"
+
+
+@pytest.mark.parametrize(
+    "finish_reason,expected_stop",
+    [
+        ("stop", "end_turn"),
+        ("tool_calls", "tool_use"),
+        ("function_call", "tool_use"),
+        ("length", "max_tokens"),
+        ("content_filter", "content_filter"),
+        ("unrecognized", "unrecognized"),  # pass through, don't lie
+    ],
+)
+def test_openai_finish_reason_normalization(monkeypatch, finish_reason, expected_stop):
+    """OpenAI finish_reason values translate to somm-neutral stop_reason.
+
+    Parametrized rather than looped — chained monkeypatch on httpx.Client
+    creates a subclass wrapper stack where the innermost (oldest) transport
+    wins, so a single-test loop reads the wrong handler.
+    """
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": finish_reason,
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    resp = p.generate(SommRequest(prompt="hi"))
+    assert resp.stop_reason == expected_stop
+
+
+def test_openai_translates_multi_turn_messages(monkeypatch):
+    """Anthropic-shaped messages → OpenAI tool_calls + role:tool messages."""
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return _oai_ok_handler("ok")(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    history = [
+        {"role": "user", "content": "weather in SF?"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "checking"},
+                {
+                    "type": "tool_use",
+                    "id": "tu_01",
+                    "name": "get_weather",
+                    "input": {"location": "SF"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_01", "content": "62F sunny"},
+            ],
+        },
+    ]
+    p.generate(SommRequest(prompt="IGNORED", messages=history, tools=[_WEATHER_TOOL]))
+
+    msgs = captured["messages"]
+    # Plain-string user message unchanged
+    assert msgs[0] == {"role": "user", "content": "weather in SF?"}
+    # Assistant message gets text + tool_calls
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[1]["content"] == "checking"
+    assert len(msgs[1]["tool_calls"]) == 1
+    tc = msgs[1]["tool_calls"][0]
+    assert tc["id"] == "tu_01"
+    assert tc["type"] == "function"
+    assert tc["function"]["name"] == "get_weather"
+    import json as _json
+
+    assert _json.loads(tc["function"]["arguments"]) == {"location": "SF"}
+    # tool_result becomes role:tool with tool_call_id
+    assert msgs[2] == {"role": "tool", "tool_call_id": "tu_01", "content": "62F sunny"}
+
+
+def test_openai_assistant_only_tool_calls_no_content(monkeypatch):
+    """When assistant only emits tool_use blocks (no text), content=None."""
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return _oai_ok_handler("ok")(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    history = [
+        {"role": "user", "content": "x"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_02", "name": "get_weather",
+                 "input": {"location": "NYC"}},
+            ],
+        },
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu_02", "content": "55F rain"},
+        ]},
+    ]
+    p.generate(SommRequest(prompt="x", messages=history, tools=[_WEATHER_TOOL]))
+
+    assistant_msg = captured["messages"][1]
+    assert assistant_msg["content"] is None
+    assert len(assistant_msg["tool_calls"]) == 1
+
+
+def test_openai_no_tools_backward_compat(monkeypatch):
+    """No tools = no tools/tool_choice fields in payload."""
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return _oai_ok_handler("ok")(request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    p.generate(SommRequest(prompt="hi"))
+
+    assert "tools" not in captured
+    assert "tool_choice" not in captured
+
+
+# ---------------------------------------------------------------------------
 # Default provider chain reflects env keys
 
 

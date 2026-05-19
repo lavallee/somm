@@ -265,12 +265,18 @@ class Router:
                 continue
             try:
                 resp = provider.generate(request)
-                if not resp.text.strip() and not request.allow_empty:
+                if (
+                    not resp.text.strip()
+                    and not resp.tool_calls
+                    and not request.allow_empty
+                ):
                     # Provider returned an empty response. Don't mark it as
                     # a hard failure (the HTTP call succeeded), but do move
                     # on to the next provider — empty is almost never what
                     # the caller wanted. Short cooldown so we don't hammer
                     # a provider that's consistently returning blanks.
+                    # Tool-only responses (empty text + tool_calls) are the
+                    # expected shape for tool-use turns — NOT empty.
                     self.tracker.mark_failure(
                         provider.name, cooldown_s=15,
                     )

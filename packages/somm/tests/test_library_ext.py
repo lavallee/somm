@@ -828,3 +828,118 @@ def test_parallel_slots_skips_cooled(tmp_path):
         assert all(s == "openrouter" for s in slots)
     finally:
         llm.close()
+
+
+# ---------------------------------------------------------------------------
+# Tool-calling threaded through SommLLM.generate()
+# See docs/tool-calling.md
+
+
+from somm.providers.base import ToolCall as ProviderToolCall
+
+
+class _ToolEchoProvider(FakeProvider):
+    """Records the SommRequest it received; returns canned tool_calls."""
+
+    name = "toolecho"
+
+    def __init__(self, tool_calls: list | None = None, text: str = ""):
+        super().__init__(text=text)
+        self._tool_calls = tool_calls or []
+        self.received_tools: list[dict] = []
+        self.received_messages: list[list[dict] | None] = []
+        self.received_tool_choice: list = []
+
+    def generate(self, request):
+        self.received_models.append(request.model)
+        self.received_tools = request.tools
+        self.received_messages.append(request.messages)
+        self.received_tool_choice.append(request.tool_choice)
+        return SommResponse(
+            text=self._text,
+            model=request.model or self._model,
+            tokens_in=3,
+            tokens_out=2,
+            latency_ms=5,
+            tool_calls=self._tool_calls,
+            stop_reason="tool_use" if self._tool_calls else "end_turn",
+        )
+
+
+_FAKE_TOOL = {
+    "name": "echo",
+    "description": "Echo back the input.",
+    "parameters": {"type": "object", "properties": {"v": {"type": "string"}}},
+}
+
+
+def test_generate_threads_tools_to_provider(tmp_path):
+    """SommLLM.generate(tools=..., messages=..., tool_choice=...) reaches the provider."""
+    p = _ToolEchoProvider(text="ok")
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(config=cfg, providers=[p])
+    try:
+        llm.generate(
+            prompt="ignored",
+            workload="tools",
+            tools=[_FAKE_TOOL],
+            messages=[{"role": "user", "content": "hi"}],
+            tool_choice="auto",
+        )
+        assert p.received_tools == [_FAKE_TOOL]
+        assert p.received_messages == [[{"role": "user", "content": "hi"}]]
+        assert p.received_tool_choice == ["auto"]
+    finally:
+        llm.close()
+
+
+def test_generate_returns_tool_calls_on_result(tmp_path):
+    """Provider tool_calls surface on SommResult; stop_reason copied through."""
+    tool_calls = [ProviderToolCall(id="tu_01", name="echo", arguments={"v": "hi"})]
+    p = _ToolEchoProvider(tool_calls=tool_calls, text="checking")
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(config=cfg, providers=[p])
+    try:
+        result = llm.generate(prompt="hi", workload="toolresult", tools=[_FAKE_TOOL])
+        assert result.outcome == Outcome.OK
+        assert result.stop_reason == "tool_use"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].id == "tu_01"
+        assert result.tool_calls[0].name == "echo"
+        assert result.tool_calls[0].arguments == {"v": "hi"}
+    finally:
+        llm.close()
+
+
+def test_generate_tool_call_with_empty_text_is_not_empty_outcome(tmp_path):
+    """When the model returns tool_calls and no text, outcome stays OK (NOT EMPTY)."""
+    tool_calls = [ProviderToolCall(id="tu_02", name="echo", arguments={"v": "x"})]
+    # text="" — tool-only response is the expected shape for many providers
+    p = _ToolEchoProvider(tool_calls=tool_calls, text="")
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(config=cfg, providers=[p])
+    try:
+        result = llm.generate(prompt="hi", workload="toolonly", tools=[_FAKE_TOOL])
+        assert result.outcome == Outcome.OK
+        assert result.text == ""
+        assert len(result.tool_calls) == 1
+    finally:
+        llm.close()
+
+
+def test_generate_no_text_no_tools_still_empty_outcome(tmp_path):
+    """Backward compat: pinned empty response without tool_calls is Outcome.EMPTY.
+
+    Uses the pinned path because the router treats empty (no-text, no-tool-calls)
+    responses as transient and recycles to the next provider — Outcome.EMPTY is
+    only ever surfaced from a pinned single-provider call.
+    """
+    p = _ToolEchoProvider(tool_calls=[], text="")
+    p.name = "fakepinned"
+    cfg = _tmp_config(tmp_path)
+    llm = SommLLM(config=cfg, providers=[p], on_error=lambda _e: None)
+    try:
+        result = llm.generate(prompt="hi", workload="nothing", provider="fakepinned")
+        assert result.outcome == Outcome.EMPTY
+    finally:
+        llm.close()

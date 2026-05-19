@@ -19,6 +19,7 @@ from somm_core.pricing import seed_known_pricing
 from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.models import Call, Prompt
+from somm_core.models import ToolCall as CoreToolCall
 from somm_core.parse import (
     ThinkStreamStripper,
     extract_json,
@@ -364,6 +365,9 @@ class SommLLM:
         allow_empty: bool = False,
         no_fallback: bool = False,
         raise_on_empty: bool = False,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -376,6 +380,16 @@ class SommLLM:
         — useful for evaluation runs where silent fallback to a different
         model invalidates the experiment. Has no effect when ``provider``
         is None (router-driven calls have no pinned target to honor).
+
+        Tool-calling (``tools``, ``messages``, ``tool_choice``): see
+        docs/tool-calling.md. Tools is a list of somm-neutral JSON-Schema-
+        shaped declarations; messages overrides prompt for multi-turn
+        history; tool_choice forces auto/any/none/specific. Providers that
+        don't yet support tool calls raise SommBadRequest if tools is
+        non-empty (the router will fall through to a capable provider).
+        A response with non-empty ``tool_calls`` and no text is NOT
+        treated as Outcome.EMPTY — it is the expected shape of a
+        tool-use turn.
         """
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
@@ -406,6 +420,9 @@ class SommLLM:
             model=model,
             capabilities_required=effective_caps,
             allow_empty=allow_empty,
+            tools=tools or [],
+            messages=messages,
+            tool_choice=tool_choice,
         )
 
         call_id = str(uuid.uuid4())
@@ -417,6 +434,8 @@ class SommLLM:
         actual_model = model or ""
         actual_provider = ""
         text = ""
+        tool_calls_out: list[CoreToolCall] = []
+        stop_reason_out: str = ""
 
         # Track whether we took the fallback path so we can fire on_fallback
         # only on the narrow "pinned failed + chain saved us" window.
@@ -432,7 +451,9 @@ class SommLLM:
                 tokens_in = resp.tokens_in
                 tokens_out = resp.tokens_out
                 latency_ms = resp.latency_ms
-                if not text.strip():
+                tool_calls_out = _to_core_tool_calls(resp.tool_calls)
+                stop_reason_out = resp.stop_reason
+                if not text.strip() and not tool_calls_out:
                     outcome = Outcome.EMPTY
                     error_kind = "EmptyResponse"
                     error_detail = _format_empty_detail(
@@ -486,7 +507,9 @@ class SommLLM:
                         tokens_in = resp.tokens_in
                         tokens_out = resp.tokens_out
                         latency_ms = resp.latency_ms
-                        if not text.strip():
+                        tool_calls_out = _to_core_tool_calls(resp.tool_calls)
+                        stop_reason_out = resp.stop_reason
+                        if not text.strip() and not tool_calls_out:
                             outcome = Outcome.EMPTY
                             error_kind = "EmptyResponse"
                             error_detail = _format_empty_detail(
@@ -515,7 +538,9 @@ class SommLLM:
                 tokens_in = resp.tokens_in
                 tokens_out = resp.tokens_out
                 latency_ms = resp.latency_ms
-                if not text.strip():
+                tool_calls_out = _to_core_tool_calls(resp.tool_calls)
+                stop_reason_out = resp.stop_reason
+                if not text.strip() and not tool_calls_out:
                     outcome = Outcome.EMPTY
                     error_kind = "EmptyResponse"
                     error_detail = _format_empty_detail(
@@ -547,6 +572,8 @@ class SommLLM:
             outcome=outcome,
             error_kind=error_kind,
             error_detail=error_detail,
+            tool_calls=tool_calls_out,
+            stop_reason=stop_reason_out,
         )
 
         call = Call(
@@ -1122,6 +1149,27 @@ class SommLLM:
 def llm(**kwargs) -> SommLLM:
     """Factory matching the plan's `somm.llm(project=...)` signature."""
     return SommLLM(**kwargs)
+
+
+def _to_core_tool_calls(provider_tool_calls) -> list[CoreToolCall]:
+    """Convert provider-layer ToolCall dataclasses to the core-layer shape.
+
+    Two separate dataclasses exist so provider modules don't need to
+    import from somm-core (and so the public SommResult contract lives
+    in core where library users import from). Structurally identical;
+    this is a one-to-one translation.
+    """
+    if not provider_tool_calls:
+        return []
+    return [
+        CoreToolCall(
+            id=tc.id,
+            name=tc.name,
+            arguments=tc.arguments,
+            arguments_raw=tc.arguments_raw,
+        )
+        for tc in provider_tool_calls
+    ]
 
 
 def _merge_caps(*sources: list[str] | None) -> list[str]:

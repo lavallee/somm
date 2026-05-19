@@ -10,6 +10,7 @@ from somm_core.models import (
     PrivacyClass,
     Prompt,
     SommResult,
+    ToolCall,
     Workload,
 )
 from somm_core.pricing import (
@@ -38,6 +39,7 @@ __all__ = [
     "PrivacyClass",
     "Prompt",
     "SommResult",
+    "ToolCall",
     "Workload",
     "cost_for_call",
     "list_intel",
