@@ -17,6 +17,9 @@ dist/
 .mypy_cache/
 .ruff_cache/
 
+# Local Claude session id log (per-machine, not source of truth)
+sessions.txt
+
 # Local data (never commit telemetry)
 .somm/
 *.sqlite

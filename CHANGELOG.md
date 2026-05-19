@@ -6,6 +6,43 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — Tool-calling (Anthropic + OpenAI-compat; agent substrate)
+
+`SommRequest` gains `tools`, `messages`, `tool_choice`; `SommResponse`
+and `SommResult` gain `tool_calls` and `stop_reason`. A new `ToolCall`
+dataclass (`id`, `name`, `arguments`, `arguments_raw`) lives on
+`somm_core` and is exported from the package init. All additions
+default-safe — existing callers are byte-identical.
+
+`AnthropicProvider` translates somm-neutral tool schemas to Anthropic's
+`input_schema`, emits native `tool_choice`, and parses `tool_use`
+content blocks back into `ToolCall` entries with `stop_reason` surfaced
+for agent loops.
+
+`OpenAICompatProvider` (covers `openai`, `minimax`, `openrouter`,
+`deepseek`) wraps tools as `{type:function, function:{...}}`,
+translates Anthropic-shaped multi-turn `messages` into OpenAI's
+`tool_calls` + `role:tool` messages, and parses tool_calls back —
+malformed JSON arguments surface as `arguments={}` with
+`arguments_raw` populated rather than crashing the agent loop.
+`finish_reason` normalizes to somm's neutral `stop_reason` vocabulary
+(`stop→end_turn`, `tool_calls→tool_use`, `length→max_tokens`,
+`content_filter→content_filter`; unknown values pass through).
+
+`SommLLM.generate(tools=..., messages=..., tool_choice=...)` threads
+the new fields end-to-end and surfaces `tool_calls`/`stop_reason` on
+the returned `SommResult`. The router's empty-response gate now
+treats a tool-use turn (empty `text` + non-empty `tool_calls`) as
+valid — it would previously have been recycled as "transient empty"
+and exhausted the chain.
+
+Driving project: Starboard's Orca orchestrator runs on `deepagents`,
+which mandates tool-calling. Without this somm couldn't be the
+substrate for any agent project. Full spec lives in
+[docs/tool-calling.md](./docs/tool-calling.md); remaining provider
+work (Gemini, Ollama, schema-0008 columns, model_intel `tools`
+capability seeding) tracked in TODOS.md.
+
 ### Fixed — WriterQueue drains pending calls on normal process exit
 
 `WriterQueue`'s background thread is daemon, so Python's interpreter

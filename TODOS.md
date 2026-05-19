@@ -2,6 +2,26 @@
 
 _Items deferred during autoplan review to keep v0.1 focused. Tracked for post-v0.1 consideration._
 
+## Tool-calling — in flight (2026-05-19)
+
+Anthropic + OpenAI-compat shipped tonight. See [docs/tool-calling.md](./docs/tool-calling.md) for the spec; CHANGELOG `[Unreleased]` for the shipped scope.
+
+Remaining work, ordered by impact for the Starboard driving project:
+
+1. **`GeminiProvider` tool support.** Gemini uses `functionDeclarations` nested under `tools`, and `tool_config.function_calling_config.mode` for tool_choice ("AUTO"/"ANY"/"NONE"). Response carries `functionCall` blocks (singular) in `candidates[0].content.parts[]`. Tool results in subsequent turns use `functionResponse` blocks. Different enough from Anthropic that translation lives entirely in `gemini.py`, not in a shared helper. Tests follow the same `httpx.MockTransport` pattern as tonight's commits.
+
+2. **`OllamaProvider` tool support.** Ollama 0.4+ exposes a `tools` field on `/api/chat`. Check the version actually installed on the box (the daily-driver model server) — some 0.3.x installs in the wild. If 0.4+: payload key is `tools`, response carries `message.tool_calls[]` with `function.name` + `function.arguments` (already a dict, not a JSON string — different from OpenAI). Tool_choice not yet supported by Ollama as of the last check; either silently drop or raise. **Decision needed.**
+
+3. **`model_intel` seeding pass for the `tools` capability.** Tonight's design doc plans `capabilities_required=["tools"]` filtering, but no seeded rows declare `tools` yet. Add a small one-off in `somm_core.pricing.seed_known_pricing` (or a new `seed_known_capabilities`) for the obvious tool-capable models: Claude 3+, GPT-4+, GPT-5+, Gemini 1.5+, Llama 3.1+, Qwen 2.5+, DeepSeek-Chat. Without this, capability-filtered workloads route to nobody.
+
+4. **Schema 0008 — telemetry columns.** Deferred from tonight by design. Once Starboard accumulates real tool-call workload calls, decide whether to lift `tool_calls_count`, `tools_offered_count`, `stop_reason` out of `raw_json` into dedicated columns for index-able queries. Don't migrate preemptively — wait for the query pattern.
+
+5. **Streaming tool calls.** Out of scope tonight. Anthropic streams `input_json_delta` events per tool_use block; OpenAI streams `tool_calls[].function.arguments` chunks via SSE deltas. Reassembly is non-trivial and matters mainly for low-latency UX, which agent loops don't typically have. Open issue when a project asks.
+
+6. **Defensive raise on tools-unsupported providers.** Currently if a caller passes `tools=[…]` to a provider that hasn't yet implemented it (Gemini, Ollama as of tonight), the tools are silently dropped — the model responds with text and `stop_reason="end_turn"` rather than `"tool_use"`. The signal exists but is implicit. Adding `raise SommBadRequest("…doesn't support tools yet")` in those providers would make this loud. Easy to add; just decide whether the lift-to-loud is worth the brittle behavior during the provider rollout.
+
+7. **Prompt-hash for `messages`.** `SommLLM.generate()` currently hashes only `prompt`. When `messages=` is used, the hash is taken of an unused string ("ignored" or whatever the caller passed for `prompt`). For replay/cache/dedup, hash `messages` when present. Small surgery in client.py around `stable_hash(prompt)`.
+
 ## Deferred (in priority order)
 
 ### Core product
