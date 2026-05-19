@@ -6,6 +6,32 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — `somm-langchain` adapter package
+
+New workspace package: `SommChatModel(BaseChatModel)` for LangChain /
+LangGraph / `deepagents` apps to treat somm as their LLM substrate.
+
+Thin adapter: extracts `SystemMessage`(s) into somm's `system` field,
+translates the rest into somm-neutral messages (Anthropic-shaped),
+unwraps OpenAI-form tool schemas to somm-neutral, calls
+`SommLLM.generate()`, and returns a `ChatGeneration` whose `AIMessage`
+carries `tool_calls`, somm provenance in `response_metadata`
+(provider, model, latency, cost, stop_reason, call_id), and standard
+LangChain `usage_metadata`.
+
+`bind_tools()` supports the LangChain convention (tool_choice =
+"auto" | "any" | "none" | "required" | "<tool_name>" | dict).
+Failures surface as `RuntimeError` by default (so retry / circuit-
+breaker middleware engages) or as an error-flagged `AIMessage` when
+`raise_on_failure=False` for callers that prefer in-band error handling.
+
+Driving project: Starboard's Orca runs on deepagents. This is the
+unlock that lets Starboard's agent substrate go through somm.
+
+13 new tests cover message translation in both directions, tool
+binding, tool_choice variants, provenance metadata, and the error
+modes. Full suite: 356 tests passing.
+
 ### Added — Tool-calling (Anthropic + OpenAI-compat; agent substrate)
 
 `SommRequest` gains `tools`, `messages`, `tool_choice`; `SommResponse`
