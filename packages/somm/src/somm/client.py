@@ -796,6 +796,10 @@ class SommLLM:
             error_kind = type(exc).__name__
             error_detail = _format_error_detail(exc, "ollama", actual_model)
 
+        # Embeddings bill on input tokens only (no output). Computed once and
+        # shared across the result, the telemetry row, and the scribe emit.
+        cost_usd = cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0)
+
         result = EmbedResult(
             embedding=embedding,
             provider="ollama",
@@ -803,6 +807,7 @@ class SommLLM:
             dim=len(embedding),
             tokens_in=tokens_in,
             latency_ms=latency_ms,
+            cost_usd=cost_usd,
             call_id=call_id,
             outcome=outcome,
             error_kind=error_kind,
@@ -823,7 +828,7 @@ class SommLLM:
             tokens_in=tokens_in,
             tokens_out=0,
             latency_ms=latency_ms,
-            cost_usd=cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0),
+            cost_usd=cost_usd,
             outcome=outcome,
             error_kind=error_kind,
             error_detail=error_detail,

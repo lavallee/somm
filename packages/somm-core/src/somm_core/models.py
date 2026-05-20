@@ -258,6 +258,7 @@ class EmbedResult:
     dim: int
     tokens_in: int
     latency_ms: int
+    cost_usd: float
     call_id: str
     outcome: Outcome = Outcome.OK
     error_kind: str | None = None
