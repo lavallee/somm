@@ -119,9 +119,17 @@ class SommChatModel(BaseChatModel):
             {"name": tc.name, "args": tc.arguments, "id": tc.id}
             for tc in result.tool_calls
         ]
+        # Preserve reasoning_content (DeepSeek v4 thinking models) in
+        # additional_kwargs so it survives in LangGraph's message history and
+        # can be echoed back on the next turn (_translate_ai_message). DeepSeek
+        # 400s on the 2nd turn of a tool-calling loop without it.
+        additional_kwargs: dict[str, Any] = {}
+        if result.reasoning_content:
+            additional_kwargs["reasoning_content"] = result.reasoning_content
         ai_message = AIMessage(
             content=result.text,
             tool_calls=lc_tool_calls,
+            additional_kwargs=additional_kwargs,
             response_metadata={
                 "provider": result.provider,
                 "model": result.model,
@@ -218,10 +226,20 @@ class SommChatModel(BaseChatModel):
                     "input": tc.get("args") or {},
                 }
             )
+        # Echo reasoning_content (DeepSeek v4 thinking models) back on the
+        # assistant turn — required or DeepSeek 400s on the next turn. Carried
+        # as a top-level key the OpenAI-compat provider emits and the Anthropic
+        # provider strips. Only matters on tool-calling turns (which have
+        # tool_use blocks → list content, so collapse-to-string never drops it).
+        reasoning = (m.additional_kwargs or {}).get("reasoning_content")
+
         # Collapse to plain-string content when the only block is text.
-        if len(blocks) == 1 and blocks[0].get("type") == "text":
+        if len(blocks) == 1 and blocks[0].get("type") == "text" and not reasoning:
             return {"role": "assistant", "content": cast(str, blocks[0]["text"])}
-        return {"role": "assistant", "content": blocks}
+        msg: dict[str, Any] = {"role": "assistant", "content": blocks}
+        if reasoning:
+            msg["reasoning_content"] = reasoning
+        return msg
 
     @staticmethod
     def _stringify_content(content: Any) -> str:

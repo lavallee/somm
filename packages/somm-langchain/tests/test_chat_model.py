@@ -317,3 +317,52 @@ def test_model_and_provider_pinning(tmp_path):
         assert req.model == "my-model-id"
     finally:
         llm.close()
+
+
+# ---------------------------------------------------------------------------
+# reasoning_content round-trip (DeepSeek v4 thinking models)
+
+
+def test_reasoning_content_surfaced_to_aimessage(tmp_path):
+    """A provider response with reasoning_content lands in AIMessage.additional_kwargs."""
+    p = _RecordingProvider(text="answer")
+    # SommResponse carries reasoning_content; RecordingProvider builds it,
+    # so set it via a subclass-free monkey: wrap generate.
+    orig = p.generate
+    def gen(req):
+        r = orig(req)
+        r.reasoning_content = "let me think... 2+2=4"
+        return r
+    p.generate = gen
+    llm = _tmp_llm(tmp_path, p)
+    try:
+        chat = SommChatModel(somm_llm=llm, workload="t")
+        result = chat.invoke([HumanMessage("2+2?")])
+        assert result.additional_kwargs.get("reasoning_content") == "let me think... 2+2=4"
+    finally:
+        llm.close()
+
+
+def test_reasoning_content_echoed_on_assistant_turn(tmp_path):
+    """An AIMessage carrying reasoning_content (with tool_calls) re-serializes it
+    onto the somm-neutral assistant message so the provider can echo it."""
+    p = _RecordingProvider(text="ok")
+    llm = _tmp_llm(tmp_path, p)
+    try:
+        chat = SommChatModel(somm_llm=llm, workload="t")
+        prior = AIMessage(
+            content="checking",
+            tool_calls=[{"name": "get_weather", "args": {"location": "SF"}, "id": "tu_1"}],
+            additional_kwargs={"reasoning_content": "I should call get_weather"},
+        )
+        chat.invoke([
+            HumanMessage("weather?"),
+            prior,
+            ToolMessage(content="62F", tool_call_id="tu_1"),
+        ])
+        msgs = p.received[0].messages
+        assistant = msgs[1]
+        assert assistant["role"] == "assistant"
+        assert assistant.get("reasoning_content") == "I should call get_weather"
+    finally:
+        llm.close()

@@ -447,6 +447,7 @@ class SommLLM:
         text = ""
         tool_calls_out: list[CoreToolCall] = []
         stop_reason_out: str = ""
+        reasoning_content_out: str = ""
         raw_out: dict | None = None
 
         # Track whether we took the fallback path so we can fire on_fallback
@@ -465,6 +466,7 @@ class SommLLM:
                 latency_ms = resp.latency_ms
                 tool_calls_out = _to_core_tool_calls(resp.tool_calls)
                 stop_reason_out = resp.stop_reason
+                reasoning_content_out = resp.reasoning_content
                 raw_out = resp.raw
                 if not text.strip() and not tool_calls_out:
                     outcome = Outcome.EMPTY
@@ -522,6 +524,7 @@ class SommLLM:
                         latency_ms = resp.latency_ms
                         tool_calls_out = _to_core_tool_calls(resp.tool_calls)
                         stop_reason_out = resp.stop_reason
+                        reasoning_content_out = resp.reasoning_content
                         raw_out = resp.raw
                         if not text.strip() and not tool_calls_out:
                             outcome = Outcome.EMPTY
@@ -554,6 +557,7 @@ class SommLLM:
                 latency_ms = resp.latency_ms
                 tool_calls_out = _to_core_tool_calls(resp.tool_calls)
                 stop_reason_out = resp.stop_reason
+                reasoning_content_out = resp.reasoning_content
                 raw_out = resp.raw
                 if not text.strip() and not tool_calls_out:
                     outcome = Outcome.EMPTY
@@ -590,6 +594,7 @@ class SommLLM:
             raw=raw_out,
             tool_calls=tool_calls_out,
             stop_reason=stop_reason_out,
+            reasoning_content=reasoning_content_out,
         )
 
         call = Call(

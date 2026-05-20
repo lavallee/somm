@@ -153,6 +153,10 @@ class OpenAICompatProvider:
 
         tool_calls = _parse_openai_tool_calls(message.get("tool_calls") or [])
         stop_reason = _normalize_finish_reason(choice.get("finish_reason"))
+        # Thinking models (DeepSeek v4) return chain-of-thought here; it must be
+        # echoed back on the assistant turn in subsequent calls (see
+        # _translate_messages_to_openai), or DeepSeek 400s on turn 2.
+        reasoning_content = message.get("reasoning_content") or ""
 
         usage = data.get("usage") or {}
         tokens_in = int(usage.get("prompt_tokens", 0) or 0)
@@ -167,6 +171,7 @@ class OpenAICompatProvider:
             raw=data,
             tool_calls=tool_calls,
             stop_reason=stop_reason,
+            reasoning_content=reasoning_content,
         )
 
     def _classify_status(self, resp: httpx.Response, model: str) -> None:
@@ -361,6 +366,11 @@ def _translate_messages_to_openai(messages: list[dict]) -> list[dict]:
             assistant_msg["content"] = joined if joined else None
             if tool_calls_payload:
                 assistant_msg["tool_calls"] = tool_calls_payload
+            # Thinking models (DeepSeek v4) require the prior turn's
+            # reasoning_content echoed back, carried as a top-level key on the
+            # somm-neutral assistant message by the somm_langchain adapter.
+            if msg.get("reasoning_content"):
+                assistant_msg["reasoning_content"] = msg["reasoning_content"]
             out.append(assistant_msg)
             continue
 

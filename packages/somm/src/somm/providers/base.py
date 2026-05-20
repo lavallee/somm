@@ -68,6 +68,9 @@ class SommResponse:
     raw: dict | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str = ""
+    # Chain-of-thought from thinking models (DeepSeek v4). Must be echoed back
+    # on the assistant turn in multi-turn calls or DeepSeek 400s on turn 2.
+    reasoning_content: str = ""
 
 
 @dataclass(slots=True)

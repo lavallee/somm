@@ -235,6 +235,10 @@ class SommResult:
     # Callers building an agent loop check `stop_reason == "tool_use"` to
     # know to invoke the tools and submit a follow-up turn.
     stop_reason: str = ""
+    # Chain-of-thought from "thinking" models (e.g. DeepSeek v4). DeepSeek
+    # REQUIRES this echoed back on the assistant turn in multi-turn calls, so
+    # agent loops must preserve it across turns (see somm_langchain adapter).
+    reasoning_content: str = ""
 
     def mark(self, outcome: Outcome) -> SommResult:
         """Post-tag a call's outcome. Returns self for chaining."""

@@ -71,7 +71,13 @@ class AnthropicProvider:
         # Anthropic accepts the somm-neutral message shape directly because
         # somm's format mirrors Anthropic's Messages API.
         if request.messages is not None:
-            messages = request.messages
+            # Strip OpenAI-compat-only keys (e.g. `reasoning_content`, which the
+            # somm_langchain adapter attaches for DeepSeek thinking models).
+            # Anthropic rejects unknown message keys; it has no use for them.
+            messages = [
+                {k: v for k, v in m.items() if k not in ("reasoning_content",)}
+                for m in request.messages
+            ]
         else:
             messages = [{"role": "user", "content": request.prompt}]
         payload: dict = {
