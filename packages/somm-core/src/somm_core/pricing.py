@@ -25,24 +25,33 @@ _PAID_PROVIDERS: frozenset[str] = frozenset({"anthropic", "openai"})
 _warned_missing_pricing: set[tuple[str, str]] = set()
 
 # Hardcoded pricing for major providers, used by seed_known_pricing().
-# Format: (provider, model, price_in_per_1m, price_out_per_1m)
+# Format: (provider, model, price_in_per_1m, price_out_per_1m, capabilities)
+#
+# `capabilities` is a dict merged into model_intel.capabilities_json, or None.
+# The named frontier rows below all support tool calling, so they declare
+# {"tools": True} — this makes capability-filtered tool workloads
+# (capabilities_required=["tools"]) route to them positively rather than
+# relying on name-hint inference. Wildcard rows (model="*") carry no caps:
+# capability lookup is exact-match, so a wildcard never matches a real
+# (provider, model) pair anyway.
 #
 # Prior-generation Anthropic model IDs are kept alongside current ones so
 # projects still pinning older snapshots continue to cost-track correctly.
 # Run `somm-serve admin refresh-intel` to pull live pricing.
-_KNOWN_PRICING: list[tuple[str, str, float, float]] = [
+_TOOLS: dict[str, bool] = {"tools": True}
+_KNOWN_PRICING: list[tuple[str, str, float, float, dict | None]] = [
     # Current Anthropic (Claude 4.5–4.7 family)
-    ("anthropic", "claude-haiku-4-5-20251001", 0.80, 4.00),
-    ("anthropic", "claude-sonnet-4-6", 3.00, 15.00),
-    ("anthropic", "claude-opus-4-7", 15.00, 75.00),
+    ("anthropic", "claude-haiku-4-5-20251001", 0.80, 4.00, _TOOLS),
+    ("anthropic", "claude-sonnet-4-6", 3.00, 15.00, _TOOLS),
+    ("anthropic", "claude-opus-4-7", 15.00, 75.00, _TOOLS),
     # Prior Anthropic snapshots
-    ("anthropic", "claude-sonnet-4-20250514", 3.00, 15.00),
-    ("anthropic", "claude-opus-4-20250514", 15.00, 75.00),
-    ("openai", "gpt-4o-mini", 0.15, 0.60),
-    ("openai", "gpt-4o", 2.50, 10.00),
-    ("ollama", "*", 0.0, 0.0),
-    ("openrouter", "*:free", 0.0, 0.0),
-    ("minimax", "*", 0.0, 0.0),
+    ("anthropic", "claude-sonnet-4-20250514", 3.00, 15.00, _TOOLS),
+    ("anthropic", "claude-opus-4-20250514", 15.00, 75.00, _TOOLS),
+    ("openai", "gpt-4o-mini", 0.15, 0.60, _TOOLS),
+    ("openai", "gpt-4o", 2.50, 10.00, _TOOLS),
+    ("ollama", "*", 0.0, 0.0, None),
+    ("openrouter", "*:free", 0.0, 0.0, None),
+    ("minimax", "*", 0.0, 0.0, None),
 ]
 
 
@@ -57,7 +66,7 @@ def seed_known_pricing(repo: Repository) -> None:
     if count > 0:
         return
 
-    for provider, model, price_in, price_out in _KNOWN_PRICING:
+    for provider, model, price_in, price_out, capabilities in _KNOWN_PRICING:
         write_intel(
             repo,
             provider=provider,
@@ -65,7 +74,7 @@ def seed_known_pricing(repo: Repository) -> None:
             price_in_per_1m=price_in,
             price_out_per_1m=price_out,
             context_window=None,
-            capabilities=None,
+            capabilities=capabilities,
             source="somm_seed",
         )
 

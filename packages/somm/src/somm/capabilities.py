@@ -78,6 +78,43 @@ _NON_THINKING_NAME_HINTS: tuple[str, ...] = (
 )
 
 
+# Model families that support function/tool calling. Workloads that declare
+# ``capabilities_required=["tools"]`` (e.g. deepagents orchestrators) route
+# only to these. Tool calling is near-universal across modern frontier and
+# mid-tier models, so the list is generous and unknown models fall through
+# as capable (None) rather than being blocked — there is no negative case.
+# Adapters that *can't* serve tools raise SommBadRequest at call time
+# instead of being filtered here.
+_TOOLS_NAME_HINTS: tuple[str, ...] = (
+    "claude-3",
+    "claude-opus-4",
+    "claude-sonnet-4",
+    "claude-haiku-4",
+    "gpt-4",       # gpt-4o, gpt-4.1, gpt-4-turbo …
+    "gpt-5",
+    "o1-",
+    "o3-",
+    "o4-",
+    "gemini-1.5",
+    "gemini-2",
+    "gemini-3",
+    "llama-3.1",
+    "llama-3.2",
+    "llama-3.3",
+    "llama3.1",
+    "llama3.2",
+    "llama3.3",
+    "llama-4",
+    "qwen2.5",
+    "qwen3",
+    "deepseek-chat",
+    "deepseek-v3",
+    "deepseek-v4",
+    "mistral",
+    "mixtral",
+)
+
+
 def _openrouter_has_vision(caps: dict) -> bool:
     modality = caps.get("modality") or ""
     if isinstance(modality, str) and "image" in modality.lower():
@@ -153,6 +190,16 @@ def model_has_capability(
         if any(h in lowered for h in _THINKING_NAME_HINTS):
             return True
         return None  # unknown — let the provider try
+
+    if capability == "tools":
+        # Function/tool calling. Known tool-capable families return True;
+        # everything else falls through as None (allow) — never False, since
+        # a provider that genuinely can't serve tools raises SommBadRequest
+        # at call time rather than being pre-filtered here.
+        lowered = model.lower()
+        if any(h in lowered for h in _TOOLS_NAME_HINTS):
+            return True
+        return None
 
     if capability == "non-thinking":
         # Inverse: workloads that DON'T need thinking explicitly steer away

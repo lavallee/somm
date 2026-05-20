@@ -2,25 +2,27 @@
 
 _Items deferred during autoplan review to keep v0.1 focused. Tracked for post-v0.1 consideration._
 
-## Tool-calling — in flight (2026-05-19)
+## Tool-calling — provider sweep complete (2026-05-19)
 
-Anthropic + OpenAI-compat shipped tonight. See [docs/tool-calling.md](./docs/tool-calling.md) for the spec; CHANGELOG `[Unreleased]` for the shipped scope.
+Anthropic + OpenAI-compat shipped first; Gemini, Ollama, and capability seeding followed. Every shipping provider now supports tools. See [docs/tool-calling.md](./docs/tool-calling.md) for the spec; CHANGELOG `[Unreleased]` for the shipped scope.
 
-Remaining work, ordered by impact for the Starboard driving project:
+Shipped:
 
-1. **`GeminiProvider` tool support.** Gemini uses `functionDeclarations` nested under `tools`, and `tool_config.function_calling_config.mode` for tool_choice ("AUTO"/"ANY"/"NONE"). Response carries `functionCall` blocks (singular) in `candidates[0].content.parts[]`. Tool results in subsequent turns use `functionResponse` blocks. Different enough from Anthropic that translation lives entirely in `gemini.py`, not in a shared helper. Tests follow the same `httpx.MockTransport` pattern as tonight's commits.
+1. ~~**`GeminiProvider` tool support.**~~ **Done.** Resolved via the inherited OAI-compat path, not a native `functionDeclarations` adapter: `GeminiProvider` extends `OpenAICompatProvider` and Google's OAI-compat endpoint accepts standard OpenAI `tools`/`tool_choice` and returns `tool_calls` in OpenAI shape. Stale "use native endpoint for function calling" note in `gemini.py` corrected; passthrough test added. (If a future need surfaces that the OAI-compat endpoint can't serve — multimodal tool use beyond image input, or generateContent-only features — revisit a native adapter then.)
 
-2. **`OllamaProvider` tool support.** Ollama 0.4+ exposes a `tools` field on `/api/chat`. Check the version actually installed on the box (the daily-driver model server) — some 0.3.x installs in the wild. If 0.4+: payload key is `tools`, response carries `message.tool_calls[]` with `function.name` + `function.arguments` (already a dict, not a JSON string — different from OpenAI). Tool_choice not yet supported by Ollama as of the last check; either silently drop or raise. **Decision needed.**
+2. ~~**`OllamaProvider` tool support.**~~ **Done.** Box runs Ollama 0.20.3 (well past the 0.4 floor). `tools` sent in OpenAI shape on `/api/chat`; multi-turn `messages` reuse the shared OpenAI translator; `function.arguments` parsed as a dict (no `json.loads`). `tool_choice` raises `SommBadRequest` (Ollama has no such knob) — decided in favor of loud-fail over silent-drop, per the spec's no-silent-drop rule.
 
-3. **`model_intel` seeding pass for the `tools` capability.** Tonight's design doc plans `capabilities_required=["tools"]` filtering, but no seeded rows declare `tools` yet. Add a small one-off in `somm_core.pricing.seed_known_pricing` (or a new `seed_known_capabilities`) for the obvious tool-capable models: Claude 3+, GPT-4+, GPT-5+, Gemini 1.5+, Llama 3.1+, Qwen 2.5+, DeepSeek-Chat. Without this, capability-filtered workloads route to nobody.
+3. ~~**`model_intel` seeding pass for the `tools` capability.**~~ **Done.** `model_has_capability` gained a name-hint `tools` branch (Claude 3+, GPT-4+/5+, Gemini 1.5+, Llama 3.1+, Qwen 2.5+, DeepSeek-Chat, Mistral/Mixtral, o-series); seeded frontier rows declare `{"tools": true}`. Unknown models fall through as capable (None = allow) — no negative case, since unsupported providers raise at call time.
 
-4. **Schema 0008 — telemetry columns.** Deferred from tonight by design. Once Starboard accumulates real tool-call workload calls, decide whether to lift `tool_calls_count`, `tools_offered_count`, `stop_reason` out of `raw_json` into dedicated columns for index-able queries. Don't migrate preemptively — wait for the query pattern.
+6. ~~**Defensive raise on tools-unsupported providers.**~~ **Done (subsumed).** With Gemini and Ollama landed, no shipping provider silently drops a `tools=` request. Ollama's `tool_choice` raise is the concrete instance of the loud-fail behavior. The router treats `SommBadRequest` as a permanent (provider, model) error and falls through.
 
-5. **Streaming tool calls.** Out of scope tonight. Anthropic streams `input_json_delta` events per tool_use block; OpenAI streams `tool_calls[].function.arguments` chunks via SSE deltas. Reassembly is non-trivial and matters mainly for low-latency UX, which agent loops don't typically have. Open issue when a project asks.
+7. ~~**Prompt-hash for `messages`.**~~ **Done.** `SommLLM.generate()` now hashes `messages` when present (`stable_hash(messages if messages is not None else prompt)`), so replay/cache/dedup keys off the real conversation rather than the ignored `prompt` placeholder.
 
-6. **Defensive raise on tools-unsupported providers.** Currently if a caller passes `tools=[…]` to a provider that hasn't yet implemented it (Gemini, Ollama as of tonight), the tools are silently dropped — the model responds with text and `stop_reason="end_turn"` rather than `"tool_use"`. The signal exists but is implicit. Adding `raise SommBadRequest("…doesn't support tools yet")` in those providers would make this loud. Easy to add; just decide whether the lift-to-loud is worth the brittle behavior during the provider rollout.
+Still deferred by design:
 
-7. **Prompt-hash for `messages`.** `SommLLM.generate()` currently hashes only `prompt`. When `messages=` is used, the hash is taken of an unused string ("ignored" or whatever the caller passed for `prompt`). For replay/cache/dedup, hash `messages` when present. Small surgery in client.py around `stable_hash(prompt)`.
+4. **Schema 0008 — telemetry columns.** Once Starboard accumulates real tool-call workload calls, decide whether to lift `tool_calls_count`, `tools_offered_count`, `stop_reason` out of `raw_json` into dedicated columns for index-able queries. Don't migrate preemptively — wait for the query pattern.
+
+5. **Streaming tool calls.** Anthropic streams `input_json_delta` events per tool_use block; OpenAI streams `tool_calls[].function.arguments` chunks via SSE deltas. Reassembly is non-trivial and matters mainly for low-latency UX, which agent loops don't typically have. Open issue when a project asks.
 
 ## Deferred (in priority order)
 

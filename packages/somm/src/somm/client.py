@@ -42,6 +42,7 @@ from somm.providers.minimax import MinimaxProvider
 from somm.providers.ollama import OllamaProvider
 from somm.providers.openai import OpenAIProvider
 from somm.providers.openrouter import OpenRouterProvider
+from somm.providers.perplexity import PerplexityProvider
 from somm.routing import ProviderHealthTracker, Router
 from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
@@ -338,6 +339,12 @@ class SommLLM:
                 api_key=self.config.gemini_api_key,
                 default_model=self.config.gemini_model,
             )
+        if self.config.perplexity_api_key:
+            available["perplexity"] = PerplexityProvider(
+                api_key=self.config.perplexity_api_key,
+                default_model=self.config.perplexity_model,
+                timeout=max(self.config.http_timeout, 300.0),
+            )
 
         if self.config.provider_order:
             # Exclusive: ONLY providers in the list, in the listed order.
@@ -347,7 +354,11 @@ class SommLLM:
             return chain if chain else list(available.values())
 
         # Default order — sovereign-first, then strong-paid (deepseek now in slot 3).
-        default_order = ["ollama", "openrouter", "deepseek", "minimax", "anthropic", "gemini", "openai"]
+        # perplexity is pinned-only: it sits last so it's reachable via
+        # `generate(provider="perplexity")` / `_pick_provider`, but the router
+        # only reaches it if every other provider is exhausted — search-grounded
+        # sonar models are a deliberate choice, not a routine fallback target.
+        default_order = ["ollama", "openrouter", "deepseek", "minimax", "anthropic", "gemini", "openai", "perplexity"]
         return [available[p] for p in default_order if p in available]
 
     # ------------------------------------------------------------------
@@ -591,7 +602,10 @@ class SommLLM:
             outcome=outcome,
             error_kind=error_kind,
             error_detail=error_detail,
-            prompt_hash=stable_hash(prompt),
+            # Multi-turn calls pass `messages` and a placeholder `prompt`;
+            # hash the actual conversation so replay/cache/dedup keys off
+            # real content rather than an ignored arg.
+            prompt_hash=stable_hash(messages if messages is not None else prompt),
             response_hash=stable_hash(text),
             commission_id=_scribe_commission_id(),
             temperature=temperature,

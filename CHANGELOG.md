@@ -65,9 +65,48 @@ and exhausted the chain.
 Driving project: Starboard's Orca orchestrator runs on `deepagents`,
 which mandates tool-calling. Without this somm couldn't be the
 substrate for any agent project. Full spec lives in
-[docs/tool-calling.md](./docs/tool-calling.md); remaining provider
-work (Gemini, Ollama, schema-0008 columns, model_intel `tools`
-capability seeding) tracked in TODOS.md.
+[docs/tool-calling.md](./docs/tool-calling.md).
+
+### Added — Tool-calling rollout: Gemini, Ollama, capability seeding
+
+Completes the provider sweep started above.
+
+`OllamaProvider` gains tool support on `/api/chat` (Ollama 0.4+; the
+box runs 0.20.x). Tools are sent in the OpenAI-shaped `tools` field and
+multi-turn `messages` translate through the shared OpenAI translator
+(Ollama mirrors that message shape). Response `tool_calls` parse back —
+Ollama returns `function.arguments` already as a dict, so there's no
+`json.loads` and no `arguments_raw` repair path. `done_reason` maps to
+somm's neutral `stop_reason` (`tool_use` when tool_calls are present,
+since Ollama reports `done_reason="stop"` even on tool turns). Ollama
+has no `tool_choice` knob, so passing one raises `SommBadRequest` rather
+than silently dropping it — the router then falls through to a provider
+that can honor it.
+
+`GeminiProvider` inherits tool support unchanged from
+`OpenAICompatProvider`: Google's OAI-compat endpoint accepts standard
+OpenAI `tools`/`tool_choice` and returns `tool_calls` in OpenAI shape,
+so no native `functionDeclarations` adapter is needed. The stale "use
+the native endpoint for function calling" note in `gemini.py` is
+corrected.
+
+Capability seeding for the `tools` capability: `model_has_capability`
+gains a name-hint `tools` branch (Claude 3+, GPT-4+/5+, Gemini 1.5+,
+Llama 3.1+, Qwen 2.5+, DeepSeek-Chat, Mistral/Mixtral, o1/o3/o4) and
+the seeded `model_intel` frontier rows now declare `{"tools": true}`.
+Unknown models still fall through as capable (None = allow); there is
+no negative case — a provider that genuinely can't serve tools raises
+at call time. This makes `capabilities_required=["tools"]` workloads
+(deepagents orchestrators) route positively to tool-capable models.
+
+`SommLLM.generate()` now hashes `messages` for `prompt_hash` when a
+multi-turn call is made, instead of the ignored `prompt` placeholder —
+so replay/cache/dedup keys off the real conversation.
+
+With Gemini and Ollama landed, every shipping provider supports tools;
+no adapter silently drops a `tools=` request (item 6 in TODOS.md is
+resolved by this — unsupported features raise loudly). Schema-0008
+telemetry columns and streaming tool calls remain deferred by design.
 
 ### Fixed — WriterQueue drains pending calls on normal process exit
 

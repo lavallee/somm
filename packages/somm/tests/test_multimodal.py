@@ -232,6 +232,38 @@ def test_provider_can_serve_returns_reason(tmp_path):
     assert ok
 
 
+def test_model_has_capability_tools_by_name(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    # Tool-capable families resolve True from name hints, no intel row needed.
+    for provider, model in [
+        ("anthropic", "claude-opus-4-7"),
+        ("openai", "gpt-4o-mini"),
+        ("gemini", "gemini-2.5-pro"),
+        ("ollama", "llama3.1:8b"),
+        ("ollama", "qwen2.5:7b"),
+        ("deepseek", "deepseek-chat"),
+    ]:
+        assert model_has_capability(repo, provider, model, "tools") is True, model
+
+
+def test_model_has_capability_tools_unknown_falls_through(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    # Unknown models never block on tools — provider raises at call time if
+    # it truly can't serve them. None = allow.
+    assert model_has_capability(repo, "ollama", "some-random-model", "tools") is None
+
+
+def test_seed_known_pricing_declares_tools(tmp_path):
+    from somm_core.pricing import seed_known_pricing
+
+    repo = _tmp_repo(tmp_path)
+    seed_known_pricing(repo)
+    # Seeded frontier rows positively advertise tools so capability-filtered
+    # workloads route to them.
+    assert model_has_capability(repo, "anthropic", "claude-sonnet-4-6", "tools") is True
+    assert model_has_capability(repo, "openai", "gpt-4o", "tools") is True
+
+
 # ---------------------------------------------------------------------------
 # Router: capability filtering
 # ---------------------------------------------------------------------------

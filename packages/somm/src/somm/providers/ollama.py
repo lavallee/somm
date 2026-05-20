@@ -13,6 +13,11 @@ from collections.abc import Iterator
 import httpx
 from somm_core.parse import strip_think_block
 
+from somm.errors import SommBadRequest
+from somm.providers._openai_compat import (
+    _translate_messages_to_openai,
+    _translate_tool_to_openai,
+)
 from somm.providers.base import (
     ProviderHealth,
     SommChunk,
@@ -21,6 +26,7 @@ from somm.providers.base import (
     SommModel,
     SommRequest,
     SommResponse,
+    ToolCall,
 )
 
 
@@ -61,9 +67,32 @@ class OllamaProvider:
 
     def generate(self, request: SommRequest) -> SommResponse:
         model = request.model or self.default_model
-        payload = {
+
+        # Ollama has no tool_choice knob (as of 0.20.x — it always lets the
+        # model decide). Raise rather than silently drop a forced-tool
+        # request, matching the spec's no-silent-drop rule
+        # (docs/tool-calling.md): the router then falls through to a
+        # provider that can honor it.
+        if request.tool_choice is not None:
+            raise SommBadRequest(
+                "ollama does not support tool_choice; omit it or route to a "
+                "provider that does (anthropic, openai-compat)"
+            )
+
+        # Multi-turn `messages` overrides single-turn `prompt`. Ollama's
+        # /api/chat mirrors OpenAI's message shape (assistant `tool_calls`,
+        # `role:tool` results), so the OpenAI translator applies unchanged.
+        messages: list[dict] = []
+        if request.system:
+            messages.append({"role": "system", "content": request.system})
+        if request.messages is not None:
+            messages.extend(_translate_messages_to_openai(request.messages))
+        else:
+            messages.append({"role": "user", "content": request.prompt})
+
+        payload: dict = {
             "model": model,
-            "messages": [],
+            "messages": messages,
             "stream": False,
             "options": {
                 "temperature": request.temperature,
@@ -78,9 +107,10 @@ class OllamaProvider:
             payload["think"] = True
         if self.keep_alive:
             payload["keep_alive"] = self.keep_alive
-        if request.system:
-            payload["messages"].append({"role": "system", "content": request.system})
-        payload["messages"].append({"role": "user", "content": request.prompt})
+        if request.tools:
+            # Ollama 0.4+ accepts OpenAI-shaped tool declarations on
+            # /api/chat. The box runs 0.20.x, well past that floor.
+            payload["tools"] = [_translate_tool_to_openai(t) for t in request.tools]
 
         t0 = time.monotonic()
         with self._client() as client:
@@ -89,8 +119,14 @@ class OllamaProvider:
             data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        raw_text = data.get("message", {}).get("content") or ""
+        message = data.get("message") or {}
+        raw_text = message.get("content") or ""
         clean_text = strip_think_block(raw_text)
+
+        tool_calls = _parse_ollama_tool_calls(message.get("tool_calls") or [])
+        stop_reason = _normalize_ollama_done_reason(
+            data.get("done_reason"), has_tool_calls=bool(tool_calls)
+        )
 
         # Ollama returns prompt_eval_count (tokens_in) + eval_count (tokens_out).
         tokens_in = int(data.get("prompt_eval_count", 0))
@@ -103,6 +139,8 @@ class OllamaProvider:
             tokens_out=tokens_out,
             latency_ms=latency_ms,
             raw=data,
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
         )
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
@@ -212,3 +250,44 @@ class OllamaProvider:
         from somm_core.parse import estimate_prompt_tokens
 
         return estimate_prompt_tokens(text, image_token_cost=1000)
+
+
+def _parse_ollama_tool_calls(raw_tool_calls: list[dict]) -> list[ToolCall]:
+    """Ollama tool_calls → somm ToolCall list.
+
+    Unlike OpenAI (which sends `arguments` as a JSON string), Ollama returns
+    `function.arguments` already parsed as a dict — so no json.loads and no
+    `arguments_raw` repair path. Ollama also doesn't assign tool-call ids, so
+    `id` is usually empty; the tool-use loop correlates by name/order.
+    """
+    out: list[ToolCall] = []
+    for entry in raw_tool_calls:
+        fn = entry.get("function") or {}
+        args = fn.get("arguments")
+        out.append(
+            ToolCall(
+                id=str(entry.get("id", "")),
+                name=str(fn.get("name", "")),
+                arguments=args if isinstance(args, dict) else {},
+            )
+        )
+    return out
+
+
+_OLLAMA_DONE_REASON_TO_SOMM: dict[str, str] = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+}
+
+
+def _normalize_ollama_done_reason(reason: str | None, *, has_tool_calls: bool) -> str:
+    """Ollama `done_reason` → somm-neutral stop_reason.
+
+    Ollama reports `done_reason="stop"` even when the turn is a tool call, so
+    presence of tool_calls is the authoritative signal for `tool_use`.
+    """
+    if has_tool_calls:
+        return "tool_use"
+    if not reason:
+        return ""
+    return _OLLAMA_DONE_REASON_TO_SOMM.get(reason, reason)

@@ -922,6 +922,178 @@ def test_ollama_think_config_threads_through_client(tmp_path, monkeypatch):
         llm.close()
 
 
+# ---------------------------------------------------------------------------
+# Ollama tool-calling (item 2 — native /api/chat tools field)
+
+
+def test_ollama_sends_tools_openai_shape(monkeypatch):
+    """somm-neutral tool → Ollama's OpenAI-shaped tools field on /api/chat."""
+    from somm.providers.ollama import OllamaProvider
+
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"message": {"content": "ok"}, "prompt_eval_count": 1, "eval_count": 1},
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OllamaProvider()
+    p.generate(SommRequest(prompt="weather?", model="llama3.1:8b", tools=[_WEATHER_TOOL]))
+
+    tools = captured["payload"]["tools"]
+    assert len(tools) == 1
+    assert tools[0]["type"] == "function"
+    assert tools[0]["function"]["name"] == "get_weather"
+    assert tools[0]["function"]["parameters"]["required"] == ["location"]
+
+
+def test_ollama_parses_tool_calls_args_already_dict(monkeypatch):
+    """Ollama returns function.arguments as a dict (not JSON string); stop_reason=tool_use."""
+    from somm.providers.ollama import OllamaProvider
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "get_weather", "arguments": {"location": "SF"}}}
+                    ],
+                },
+                "done_reason": "stop",
+                "prompt_eval_count": 4,
+                "eval_count": 7,
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OllamaProvider()
+    resp = p.generate(SommRequest(prompt="weather?", model="llama3.1:8b", tools=[_WEATHER_TOOL]))
+
+    assert resp.stop_reason == "tool_use"
+    assert len(resp.tool_calls) == 1
+    call = resp.tool_calls[0]
+    assert call.name == "get_weather"
+    assert call.arguments == {"location": "SF"}  # dict, no json.loads
+    assert call.arguments_raw == ""
+
+
+def test_ollama_tool_choice_raises(monkeypatch):
+    """Ollama has no tool_choice — passing one is a loud SommBadRequest."""
+    from somm.providers.ollama import OllamaProvider
+
+    # No transport patch needed: the raise happens before any HTTP call.
+    p = OllamaProvider()
+    with pytest.raises(SommBadRequest):
+        p.generate(
+            SommRequest(prompt="hi", model="llama3.1:8b",
+                        tools=[_WEATHER_TOOL], tool_choice="any")
+        )
+
+
+def test_ollama_translates_multi_turn_messages(monkeypatch):
+    """Anthropic-shaped messages → Ollama's OpenAI-style tool_calls + role:tool."""
+    from somm.providers.ollama import OllamaProvider
+
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"message": {"content": "62F"}, "prompt_eval_count": 1, "eval_count": 1},
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OllamaProvider()
+    history = [
+        {"role": "user", "content": "weather in SF?"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_01", "name": "get_weather",
+                 "input": {"location": "SF"}},
+            ],
+        },
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu_01", "content": "62F sunny"},
+        ]},
+    ]
+    p.generate(SommRequest(prompt="IGNORED", model="llama3.1:8b",
+                           messages=history, tools=[_WEATHER_TOOL]))
+
+    msgs = captured["payload"]["messages"]
+    assert msgs[0] == {"role": "user", "content": "weather in SF?"}
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[1]["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert msgs[2] == {"role": "tool", "tool_call_id": "tu_01", "content": "62F sunny"}
+
+
+# ---------------------------------------------------------------------------
+# Gemini tool-calling (item 1 — inherited from OpenAICompatProvider)
+
+
+def test_gemini_tools_pass_through_oai_compat(monkeypatch):
+    """Gemini inherits OAI-compat tool support: tools wrapped, tool_choice
+    translated, tool_calls parsed — no native functionDeclarations adapter."""
+    from somm.providers.gemini import GeminiProvider
+
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_g1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "arguments": '{"location": "SF"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 7},
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = GeminiProvider(api_key="g-fake")
+    resp = p.generate(
+        SommRequest(prompt="weather?", tools=[_WEATHER_TOOL], tool_choice="any")
+    )
+
+    sent = captured["payload"]
+    assert sent["tools"][0]["type"] == "function"
+    assert sent["tools"][0]["function"]["name"] == "get_weather"
+    assert sent["tool_choice"] == "required"  # "any" → OpenAI "required"
+    assert resp.stop_reason == "tool_use"
+    assert resp.tool_calls[0].name == "get_weather"
+    assert resp.tool_calls[0].arguments == {"location": "SF"}
+
+
 def test_default_provider_chain_includes_all_when_keys_set(tmp_path, monkeypatch):
     from somm.client import SommLLM
     from somm_core.config import Config

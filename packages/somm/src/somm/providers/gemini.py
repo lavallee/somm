@@ -25,10 +25,19 @@ We handle this the way somm handles MiniMax M2.7's `<think>` blocks:
 - Flash models (`gemini-2.5-flash`, `gemini-2.0-flash`) have much
   lower thinking overhead — the 4x scale still applies but rarely bites.
 
-Note: the OAI-compat endpoint is a subset of Gemini's native
-capabilities. For structured outputs, function calling, or multimodal
-tool use beyond plain image input, use the native
-`/v1beta/models/{model}:generateContent` endpoint instead.
+## Tool calling
+
+Google's OAI-compat endpoint accepts standard OpenAI `tools` /
+`tool_choice` and returns `tool_calls` in the OpenAI shape, so Gemini
+inherits tool support from OpenAICompatProvider unchanged — no native
+`functionDeclarations` adapter needed. `_build_payload` calls
+`super()._build_payload`, which already wires tools/tool_choice/multi-turn
+messages; this subclass only layers the thinking-budget knobs on top.
+
+Note: the OAI-compat endpoint is still a subset of Gemini's native
+capabilities. For multimodal tool use beyond plain image input, or
+features Google exposes only on `/v1beta/models/{model}:generateContent`,
+use the native endpoint instead.
 """
 
 from __future__ import annotations
