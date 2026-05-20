@@ -20,6 +20,7 @@ from somm.providers.minimax import MinimaxProvider
 from somm.providers.ollama import OllamaProvider
 from somm.providers.openai import OpenAIProvider
 from somm.providers.openrouter import DEFAULT_FREE_ROSTER, OpenRouterProvider
+from somm.providers.perplexity import PerplexityProvider
 
 __all__ = [
     "SommProvider",
@@ -36,5 +37,6 @@ __all__ = [
     "AnthropicProvider",
     "GeminiProvider",
     "DeepSeekProvider",
+    "PerplexityProvider",
     "DEFAULT_FREE_ROSTER",
 ]

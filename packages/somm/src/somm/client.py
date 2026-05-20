@@ -447,6 +447,7 @@ class SommLLM:
         text = ""
         tool_calls_out: list[CoreToolCall] = []
         stop_reason_out: str = ""
+        raw_out: dict | None = None
 
         # Track whether we took the fallback path so we can fire on_fallback
         # only on the narrow "pinned failed + chain saved us" window.
@@ -464,6 +465,7 @@ class SommLLM:
                 latency_ms = resp.latency_ms
                 tool_calls_out = _to_core_tool_calls(resp.tool_calls)
                 stop_reason_out = resp.stop_reason
+                raw_out = resp.raw
                 if not text.strip() and not tool_calls_out:
                     outcome = Outcome.EMPTY
                     error_kind = "EmptyResponse"
@@ -520,6 +522,7 @@ class SommLLM:
                         latency_ms = resp.latency_ms
                         tool_calls_out = _to_core_tool_calls(resp.tool_calls)
                         stop_reason_out = resp.stop_reason
+                        raw_out = resp.raw
                         if not text.strip() and not tool_calls_out:
                             outcome = Outcome.EMPTY
                             error_kind = "EmptyResponse"
@@ -551,6 +554,7 @@ class SommLLM:
                 latency_ms = resp.latency_ms
                 tool_calls_out = _to_core_tool_calls(resp.tool_calls)
                 stop_reason_out = resp.stop_reason
+                raw_out = resp.raw
                 if not text.strip() and not tool_calls_out:
                     outcome = Outcome.EMPTY
                     error_kind = "EmptyResponse"
@@ -583,6 +587,7 @@ class SommLLM:
             outcome=outcome,
             error_kind=error_kind,
             error_detail=error_detail,
+            raw=raw_out,
             tool_calls=tool_calls_out,
             stop_reason=stop_reason_out,
         )

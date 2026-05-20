@@ -34,6 +34,8 @@ class Config:
     deepseek_model: str = "deepseek-chat"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-pro"
+    perplexity_api_key: str | None = None
+    perplexity_model: str = "sonar"  # search-grounded; only used when pinned
     http_timeout: float = 180.0  # seconds; used by openai-compat providers
     provider_order: list[str] | None = None  # e.g. ["openrouter", "minimax", "ollama"]
     busy_timeout_ms: int = 5000
@@ -109,6 +111,8 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         ("SOMM_DEEPSEEK_MODEL", "deepseek_model"),
         ("GEMINI_API_KEY", "gemini_api_key"),
         ("SOMM_GEMINI_MODEL", "gemini_model"),
+        ("PERPLEXITY_API_KEY", "perplexity_api_key"),
+        ("SOMM_PERPLEXITY_MODEL", "perplexity_model"),
     ):
         if env_var in os.environ:
             setattr(cfg, attr, os.environ[env_var])
