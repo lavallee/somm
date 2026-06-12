@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from somm.errors import SommAuthError, SommBadRequest, SommRateLimited, SommUpstream5xx
+from somm.errors import (
+    SommAuthError,
+    SommBadRequest,
+    SommInsufficientCredit,
+    SommRateLimited,
+    SommTransientError,
+    SommUpstream5xx,
+)
 from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import SommRequest
 from somm.providers.minimax import MinimaxProvider
@@ -123,6 +130,24 @@ def test_openai_429_rate_limited(monkeypatch):
     with pytest.raises(SommRateLimited) as exc_info:
         p.generate(SommRequest(prompt="hi"))
     assert exc_info.value.retry_after_s == 90.0
+
+
+def test_openai_insufficient_quota_is_transient(monkeypatch):
+    # Out of money is a billing state on this provider, not a bad key — the
+    # router should skip it (transient), not abort the chain (fatal).
+    def handler(request):
+        return httpx.Response(
+            429,
+            json={"error": {"type": "insufficient_quota", "message": "quota"}},
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    with pytest.raises(SommInsufficientCredit) as exc_info:
+        p.generate(SommRequest(prompt="hi"))
+    assert isinstance(exc_info.value, SommTransientError)
+    assert not isinstance(exc_info.value, SommAuthError)
+    assert exc_info.value.cooldown_s >= 600
 
 
 def test_openai_5xx_transient(monkeypatch):
@@ -294,6 +319,46 @@ def test_anthropic_529_overloaded_is_transient(monkeypatch):
     monkeypatch.setattr(httpx, "Client", _patch_client(handler))
     p = AnthropicProvider(api_key="k")
     with pytest.raises(SommTransientError):
+        p.generate(SommRequest(prompt="hi"))
+
+
+def test_anthropic_credit_balance_is_transient(monkeypatch):
+    # Anthropic returns a 400 for an exhausted balance. It's a billing state,
+    # not a malformed request, so it must be transient (router falls through),
+    # NOT a fatal SommBadRequest that aborts the whole fallback chain.
+    def handler(request):
+        return httpx.Response(
+            400,
+            json={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "Your credit balance is too low to access the "
+                        "Anthropic API. Please go to Plans & Billing to "
+                        "upgrade or purchase credits."
+                    ),
+                },
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = AnthropicProvider(api_key="k")
+    with pytest.raises(SommInsufficientCredit) as exc_info:
+        p.generate(SommRequest(prompt="hi"))
+    assert isinstance(exc_info.value, SommTransientError)
+    assert not isinstance(exc_info.value, SommBadRequest)
+
+
+def test_anthropic_plain_400_still_fatal(monkeypatch):
+    # A genuine malformed request (no billing wording) stays fatal — retrying
+    # it on another provider would just fail again.
+    def handler(request):
+        return httpx.Response(400, text="invalid 'max_tokens': must be > 0")
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = AnthropicProvider(api_key="k")
+    with pytest.raises(SommBadRequest):
         p.generate(SommRequest(prompt="hi"))
 
 

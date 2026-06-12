@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from somm.errors import (
     SommAuthError,
+    SommInsufficientCredit,
     SommProvidersExhausted,
     SommRateLimited,
     SommTransientError,
@@ -160,6 +161,23 @@ def test_router_falls_through_transient(tmp_path):
     assert p1.calls == 1
     assert tr.get("p1").is_cooling()
     assert not tr.get("p2").is_cooling()
+
+
+def test_router_falls_through_insufficient_credit(tmp_path):
+    # A provider whose balance has lapsed must be skipped, not abort the chain.
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    p1 = ScriptedProvider("p1", [SommInsufficientCredit("p1 out of credit")])
+    p2 = ScriptedProvider("p2", [_ok(model="p2-m")])
+    r = Router([p1, p2], tr)
+
+    result = r.dispatch(SommRequest(prompt="hi"))
+    assert result.provider == "p2"
+    assert p1.calls == 1
+    # Lapsed provider is sidelined with a long cooldown (won't replenish soon).
+    rec = tr.get("p1")
+    assert rec.is_cooling()
+    assert (rec.cooldown_until - datetime.now(UTC)).total_seconds() > 600
 
 
 def test_router_raises_fatal_immediately(tmp_path):

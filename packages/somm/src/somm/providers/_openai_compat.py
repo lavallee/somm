@@ -21,10 +21,12 @@ from somm_core.parse import strip_think_block
 from somm.errors import (
     SommAuthError,
     SommBadRequest,
+    SommInsufficientCredit,
     SommRateLimited,
     SommTimeout,
     SommTransientError,
     SommUpstream5xx,
+    looks_like_insufficient_credit,
 )
 from somm.providers.base import (
     ProviderHealth,
@@ -179,6 +181,11 @@ class OpenAICompatProvider:
         if sc == 200:
             return
         body = resp.text[:200]
+        if looks_like_insufficient_credit(resp.text):
+            # Out of money/quota — a billing state on this provider, not a bad
+            # request or bad key. Transient so the router falls through to the
+            # next provider instead of aborting the chain.
+            raise SommInsufficientCredit(f"{self.name} out of credit on {model}: {body}")
         if sc in (401, 403):
             raise SommAuthError(f"{self.name} auth failed ({sc}): {body}")
         if sc == 400:
@@ -186,8 +193,6 @@ class OpenAICompatProvider:
         if sc == 404:
             raise SommBadRequest(f"{self.name} 404 — model {model!r} not found: {body}")
         if sc == 429:
-            if "insufficient_quota" in body:
-                raise SommAuthError(f"{self.name} insufficient_quota on {model}: {body}")
             retry = _retry_after(resp) or 120.0
             raise SommRateLimited(f"{self.name} 429 on {model}: {body}", retry_after_s=retry)
         if 500 <= sc < 600:
@@ -199,6 +204,10 @@ class OpenAICompatProvider:
             msg = err.get("message", "")
             code = err.get("code")
             typ = err.get("type", "")
+            if looks_like_insufficient_credit(f"{code} {typ} {msg}"):
+                raise SommInsufficientCredit(
+                    f"{self.name} out of credit on {model}: {msg}"
+                )
             if code == 429 or "rate" in str(msg).lower():
                 raise SommRateLimited(
                     f"{self.name} body-429 on {model}: {msg}", retry_after_s=120.0

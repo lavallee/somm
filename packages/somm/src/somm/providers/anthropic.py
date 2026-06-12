@@ -19,10 +19,12 @@ from somm_core.parse import strip_think_block
 from somm.errors import (
     SommAuthError,
     SommBadRequest,
+    SommInsufficientCredit,
     SommRateLimited,
     SommTimeout,
     SommTransientError,
     SommUpstream5xx,
+    looks_like_insufficient_credit,
 )
 from somm.providers.base import (
     ProviderHealth,
@@ -157,6 +159,10 @@ class AnthropicProvider:
         if sc == 200:
             return
         body = resp.text[:200]
+        if looks_like_insufficient_credit(resp.text):
+            # Billing state, not a bad request — the call would succeed on
+            # another provider, so let the router skip this one (long cooldown).
+            raise SommInsufficientCredit(f"anthropic out of credit on {model}: {body}")
         if sc in (401, 403):
             raise SommAuthError(f"anthropic auth failed ({sc}): {body}")
         if sc == 400:

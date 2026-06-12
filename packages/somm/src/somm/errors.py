@@ -51,6 +51,25 @@ class SommEmptyResponse(SommTransientError):
     code = "SOMM_EMPTY_RESPONSE"
 
 
+class SommInsufficientCredit(SommTransientError):
+    """Provider rejected the call because its balance/quota is exhausted.
+
+    Providers surface this as an auth-ish or bad-request-ish status (Anthropic
+    400 "credit balance is too low", OpenAI 429 ``insufficient_quota``), but
+    it's neither a malformed request nor a bad key — it's a *billing state* on
+    that one provider. The request itself is fine and would succeed elsewhere,
+    so this is transient: the router cools the lapsed provider and falls through
+    to the next. The cooldown is long because a balance won't replenish in
+    seconds; we'd rather sideline the provider than hammer it.
+    """
+
+    code = "SOMM_PROVIDER_INSUFFICIENT_CREDIT"
+
+    def __init__(self, detail: str = "", cooldown_s: float = 3600.0,
+                 model: str = "") -> None:
+        super().__init__(detail, cooldown_s=cooldown_s, model=model)
+
+
 class SommFatalError(SommProviderError):
     """Fatal — caller must fix. Don't retry, don't fall through."""
 
@@ -105,3 +124,28 @@ class SommPrivacyViolation(SommError):
     """Attempted upstream call on a privacy_class=private workload."""
 
     code = "SOMM_PRIVACY_VIOLATION"
+
+
+# Phrases providers use when the account is out of money/quota. Matched
+# case-insensitively against the raw error body. Kept deliberately narrow:
+# a false positive would silently fall through on a genuinely malformed
+# request, so we only match wording that unambiguously means "billing".
+_INSUFFICIENT_CREDIT_SIGNALS = (
+    "insufficient_quota",
+    "insufficient quota",
+    "insufficient credit",
+    "credit balance is too low",
+    "credit balance too low",
+    "exceeded your current quota",
+)
+
+
+def looks_like_insufficient_credit(body: str) -> bool:
+    """True if a provider error body signals an exhausted balance/quota.
+
+    Used by provider adapters to reclassify an otherwise-fatal billing 400/429
+    as a transient SommInsufficientCredit so the router skips the lapsed
+    provider instead of aborting the whole fallback chain.
+    """
+    low = body.lower()
+    return any(sig in low for sig in _INSUFFICIENT_CREDIT_SIGNALS)
