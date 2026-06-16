@@ -11,6 +11,11 @@ scored by evidence strength. v0.3c ships 3 recommendation types:
    model. Surfaces as a "try this" candidate, not an auto-switch.
 3. chronic_cooldown — a provider on a workload's chain has been cooled
    for >50% of the analysis window. Recommends re-ordering or removing.
+4. adaptive_param_bump — SELF-HEALING. A (workload, provider, model) keeps
+   returning empty with the `stripped_empty` signature (a reasoning model
+   exhausting its output budget on thinking before answering). Writes a
+   learned_param_override raising the max_tokens floor; auto-applied (no
+   approval step) and recorded as an already-applied recommendation.
 
 Outputs to `recommendations` (schema v1). Config-driven window, threshold,
 notification sink (stdout only in v0.3c; webhook/SMTP in v0.3d+).
@@ -75,12 +80,35 @@ class AgentWorker:
             if not self._already_open(rec):
                 self._write(rec)
                 written += 1
-        if written:
-            self._notify(recs[:written])
+
+        # adaptive_param_bump is SELF-HEALING — under the batch auto-heal policy
+        # we both write the learned override (which generate() applies on the
+        # next call) AND record an already-applied recommendation for the audit
+        # trail. No human approval step.
+        adaptive = self._rec_adaptive_param_bump()
+        auto_applied = 0
+        for rec in adaptive:
+            ev = rec.evidence
+            self.repo.upsert_learned_override(
+                workload_id=rec.workload_id,
+                provider=ev["provider"],
+                model=ev["model"],
+                max_tokens_floor=ev["recommended_max_tokens_floor"],
+                failure_signature=ev["failure_signature"],
+                evidence=ev,
+                confidence=rec.confidence,
+            )
+            self._write(rec, applied=True)
+            auto_applied += 1
+
+        all_recs = recs + adaptive
+        if written or auto_applied:
+            self._notify(all_recs)
         return {
-            "considered": len(recs),
+            "considered": len(all_recs),
             "written": written,
-            "by_action": _count_by_action(recs),
+            "auto_applied": auto_applied,
+            "by_action": _count_by_action(all_recs),
         }
 
     # ------------------------------------------------------------------
@@ -340,6 +368,55 @@ class AgentWorker:
         return out
 
     # ------------------------------------------------------------------
+    # Rec: adaptive_param_bump — self-healing for recurring capability failures.
+    # Detects the `stripped_empty` signature (a reasoning model exhausting its
+    # output budget on thinking tokens and returning empty) and prescribes a
+    # higher max_tokens floor for that (workload, provider, model). run_once()
+    # auto-applies these by writing a learned_param_override.
+
+    def _rec_adaptive_param_bump(self) -> list[Recommendation]:
+        out: list[Recommendation] = []
+        candidates = self.repo.detect_capability_overflow(
+            window_days=self.window_days,
+            min_calls=self.min_calls,
+        )
+        for c in candidates:
+            floor = c["recommended_max_tokens_floor"]
+            # Skip if a learned override is already at/above this floor — avoids
+            # rewriting an identical heal on every run.
+            existing = self.repo.lookup_learned_override(
+                c["workload_id"], c["model"], c["provider"]
+            )
+            if existing and (existing.get("max_tokens_floor") or 0) >= floor:
+                continue
+            out.append(
+                Recommendation(
+                    workload_id=c["workload_id"],
+                    action="adaptive_param_bump",
+                    evidence={
+                        "workload": c["workload_name"],
+                        "provider": c["provider"],
+                        "model": c["model"],
+                        "failure_signature": "capability_empty:stripped_empty",
+                        "empty_rate": c["empty_rate"],
+                        "n_calls": c["n_calls"],
+                        "n_empty": c["n_empty"],
+                        "n_stripped": c["n_stripped"],
+                        "current_max_tokens": c["max_tokens_req"],
+                        "recommended_max_tokens_floor": floor,
+                    },
+                    expected_impact=(
+                        f"raise max_tokens floor to {floor} for "
+                        f"{c['provider']}/{c['model']} on {c['workload_name']!r} — gives the "
+                        f"model budget to finish, cutting the {round(c['empty_rate'] * 100)}% "
+                        f"empty rate"
+                    ),
+                    confidence=c["confidence"],
+                )
+            )
+        return out
+
+    # ------------------------------------------------------------------
 
     def _already_open(self, rec: Recommendation) -> bool:
         with self.repo._open() as conn:
@@ -352,19 +429,27 @@ class AgentWorker:
             ).fetchone()
         return row is not None
 
-    def _write(self, rec: Recommendation) -> None:
+    def _write(self, rec: Recommendation, applied: bool = False) -> None:
+        cols = "(workload_id, action, evidence_json, expected_impact, confidence"
+        vals = "(?, ?, ?, ?, ?"
+        params = [
+            rec.workload_id,
+            rec.action,
+            json.dumps(rec.evidence),
+            rec.expected_impact,
+            rec.confidence,
+        ]
+        if applied:
+            # Auto-applied self-heal: stamp applied_at so the recommendation
+            # surfaces as already-done, not as an open suggestion.
+            cols += ", applied_at"
+            vals += ", CURRENT_TIMESTAMP"
+        cols += ")"
+        vals += ")"
         with self.repo._open() as conn:
             conn.execute(
-                "INSERT INTO recommendations "
-                "(workload_id, action, evidence_json, expected_impact, confidence) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    rec.workload_id,
-                    rec.action,
-                    json.dumps(rec.evidence),
-                    rec.expected_impact,
-                    rec.confidence,
-                ),
+                f"INSERT INTO recommendations {cols} VALUES {vals}",
+                tuple(params),
             )
 
     def _notify(self, recs: list[Recommendation]) -> None:

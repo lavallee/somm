@@ -619,6 +619,140 @@ class Repository:
                 (note, decision_id),
             )
 
+    # Learned parameter overrides (self-healing) ------------------------------
+
+    def lookup_learned_override(
+        self, workload_id: str, model: str, provider: str | None = None
+    ) -> dict | None:
+        """Hot-path read: the learned param override for a (workload, model).
+
+        Keyed by (workload, provider, model) but matched on (workload, model)
+        with the requested provider preferred — so it applies whether or not
+        the caller pinned a provider. Returns None when there's nothing learned.
+        Callers MUST treat this as best-effort (wrap in try/except): a lookup
+        failure must never break a live call.
+        """
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT max_tokens_floor, failure_signature, confidence, provider, model "
+                "FROM learned_param_overrides "
+                "WHERE workload_id = ? AND model = ? "
+                "ORDER BY (CASE WHEN provider = ? THEN 0 ELSE 1 END), confidence DESC "
+                "LIMIT 1",
+                (workload_id, model, provider or ""),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "max_tokens_floor": row[0],
+            "failure_signature": row[1],
+            "confidence": row[2],
+            "provider": row[3],
+            "model": row[4],
+        }
+
+    def upsert_learned_override(
+        self,
+        *,
+        workload_id: str,
+        provider: str,
+        model: str,
+        max_tokens_floor: int | None,
+        failure_signature: str,
+        evidence: dict | None = None,
+        confidence: float = 0.0,
+    ) -> None:
+        """Write (or refresh) a learned override for a (workload, provider, model)."""
+        with self._open() as conn:
+            conn.execute(
+                "INSERT INTO learned_param_overrides "
+                "(workload_id, provider, model, max_tokens_floor, failure_signature, "
+                " evidence_json, confidence, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(workload_id, provider, model) DO UPDATE SET "
+                "  max_tokens_floor = excluded.max_tokens_floor, "
+                "  failure_signature = excluded.failure_signature, "
+                "  evidence_json = excluded.evidence_json, "
+                "  confidence = excluded.confidence, "
+                "  updated_at = CURRENT_TIMESTAMP",
+                (
+                    workload_id,
+                    provider,
+                    model,
+                    max_tokens_floor,
+                    failure_signature,
+                    json.dumps(evidence or {}),
+                    confidence,
+                ),
+            )
+
+    def detect_capability_overflow(
+        self,
+        project: str | None = None,
+        *,
+        window_days: int = 7,
+        min_calls: int = 8,
+        empty_rate_threshold: float = 0.4,
+        min_stripped: int = 3,
+    ) -> list[dict]:
+        """Find (workload, provider, model) triples that keep returning empty
+        because the model exhausts its output budget on reasoning tokens before
+        answering — the ``stripped_empty`` signature. These are candidates for an
+        automatic max_tokens bump.
+
+        Returns one dict per candidate with a recommended ``max_tokens_floor``.
+        """
+        with self._open() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.workload_id,
+                       COALESCE(w.name, '(unregistered)') AS workload_name,
+                       c.provider, c.model,
+                       COUNT(*) AS n_calls,
+                       SUM(CASE WHEN c.outcome = 'empty' THEN 1 ELSE 0 END) AS n_empty,
+                       SUM(CASE WHEN c.outcome = 'empty'
+                                 AND c.error_detail LIKE '%stripped_empty%'
+                                THEN 1 ELSE 0 END) AS n_stripped,
+                       MAX(c.max_tokens) AS max_tokens_req
+                FROM calls c
+                LEFT JOIN workloads w ON w.id = c.workload_id
+                WHERE (? IS NULL OR c.project = ?)
+                  AND c.ts >= datetime('now', ?)
+                  AND c.workload_id IS NOT NULL
+                GROUP BY c.workload_id, c.provider, c.model
+                HAVING n_calls >= ? AND n_stripped >= ?
+                """,
+                (project, project, f"-{window_days} days", min_calls, min_stripped),
+            ).fetchall()
+
+        out: list[dict] = []
+        for wl_id, name, provider, model, n_calls, n_empty, n_stripped, max_req in rows:
+            empty_rate = (n_empty or 0) / n_calls if n_calls else 0.0
+            if empty_rate < empty_rate_threshold:
+                continue
+            base = int(max_req) if max_req else 4096
+            # Give the model materially more room; clamp to a sane ceiling so a
+            # runaway pattern can't request an absurd budget.
+            recommended_floor = min(max(base * 2, 8192), 32768)
+            # confidence scales with how dominant + how well-sampled the pattern is
+            confidence = round(min(0.95, 0.5 + empty_rate * 0.3 + min(n_calls, 50) / 200), 2)
+            out.append(
+                {
+                    "workload_id": wl_id,
+                    "workload_name": name,
+                    "provider": provider,
+                    "model": model,
+                    "n_calls": n_calls,
+                    "n_empty": n_empty,
+                    "n_stripped": n_stripped,
+                    "empty_rate": round(empty_rate, 3),
+                    "max_tokens_req": base,
+                    "recommended_max_tokens_floor": recommended_floor,
+                    "confidence": confidence,
+                }
+            )
+        return out
+
 
 def _normalise_question(q: str) -> str:
     return " ".join(q.strip().lower().split())

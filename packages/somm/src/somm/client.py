@@ -7,6 +7,7 @@ warning), call_id in result for provenance.
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 import uuid
@@ -416,6 +417,25 @@ class SommLLM:
                     f"Docs: docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"
                 )
             wl = self.repo.register_workload(name=workload, project=self.config.project)
+
+        # Self-healing: apply any learned parameter override for this
+        # (workload, model). The agent worker writes these when it detects a
+        # recurring capability failure (e.g. a reasoning model that exhausts its
+        # output budget on thinking tokens and returns empty). Fail-open and
+        # one-directional — only ever RAISES max_tokens, never lowers it, and a
+        # lookup failure must never break a live call.
+        if wl is not None and model:
+            try:
+                _ov = self.repo.lookup_learned_override(wl.id, model, provider)
+                _floor = _ov.get("max_tokens_floor") if _ov else None
+                if _floor and _floor > max_tokens:
+                    logging.getLogger("somm.client").info(
+                        "somm self-heal: max_tokens %d→%d for workload=%s model=%s (%s)",
+                        max_tokens, _floor, workload, model, _ov.get("failure_signature"),
+                    )
+                    max_tokens = _floor
+            except Exception:
+                pass  # never let a learned-override lookup break a live call
 
         effective_caps = _merge_caps(
             wl.capabilities_required,

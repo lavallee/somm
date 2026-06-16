@@ -3,5 +3,5 @@
 Every somm package imports these constants. Release process bumps both together.
 """
 
-VERSION = "0.2.3"
-SCHEMA_VERSION = 7
+VERSION = "0.2.4"
+SCHEMA_VERSION = 8
