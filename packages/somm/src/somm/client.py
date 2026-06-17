@@ -44,6 +44,8 @@ from somm.providers.ollama import OllamaProvider
 from somm.providers.openai import OpenAIProvider
 from somm.providers.openrouter import OpenRouterProvider
 from somm.providers.perplexity import PerplexityProvider
+from somm.providers.claude_cli import ClaudeCLIProvider
+from somm.providers.codex_cli import CodexCLIProvider
 from somm.routing import ProviderHealthTracker, Router
 from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
@@ -305,6 +307,15 @@ class SommLLM:
             enable_think=self.config.ollama_think,
             keep_alive=self.config.ollama_keep_alive,
         )
+        # CLI executors — subscription-seat `claude -p` / `codex exec`, gated on the binary being
+        # present. Not in default_order (so they don't change existing projects' routing); reach
+        # them by setting provider_order (SOMM_PROVIDER_ORDER) or pinning generate(provider=...).
+        import shutil
+
+        if shutil.which("claude"):
+            available["claude-cli"] = ClaudeCLIProvider(timeout=max(self.config.http_timeout, 600.0))
+        if shutil.which("codex"):
+            available["codex-cli"] = CodexCLIProvider(timeout=max(self.config.http_timeout, 600.0))
         if self.config.openrouter_api_key:
             available["openrouter"] = OpenRouterProvider(
                 api_key=self.config.openrouter_api_key,
