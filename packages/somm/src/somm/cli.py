@@ -7,14 +7,17 @@ Commands:
   somm frontier     adequacy frontier per (provider, model) for a workload
   somm doctor       health check (config, ollama, db, model_intel, workers, cooldowns)
   somm serve        run the web admin + HTTP API (requires somm-service)
+  somm spend        today's LLM spend vs daily budget cap per workload
 """
 
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from somm_core import VERSION, list_intel
 from somm_core.config import load as load_config
@@ -495,6 +498,86 @@ def _fmt_delta(delta: timedelta) -> str:
 
 
 # ---------------------------------------------------------------------------
+# somm spend
+
+
+def spend_today(
+    db_path: Path,
+    project: str,
+    default_cap: float | None,
+) -> list[dict]:
+    """Query today's (UTC) spend per workload. Read-only; no writes.
+
+    Returns list of dicts sorted by spent_usd desc:
+      {"workload": str, "spent_usd": float, "cap_usd": float | None}
+
+    cap_usd is the workload's budget_cap_usd_daily; falls back to
+    default_cap (config-level ceiling); None when neither is set.
+    """
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                COALESCE(w.name, '(unregistered)') AS workload,
+                SUM(c.cost_usd) AS spent_usd,
+                MAX(w.budget_cap_usd_daily) AS cap_usd
+            FROM calls c
+            LEFT JOIN workloads w ON w.id = c.workload_id
+            WHERE c.project = ?
+              AND date(c.ts) = date('now')
+            GROUP BY COALESCE(w.name, '(unregistered)')
+            ORDER BY spent_usd DESC
+            """,
+            (project,),
+        ).fetchall()
+
+    result = []
+    for name, spent, cap in rows:
+        effective_cap = cap if cap is not None else default_cap
+        result.append(
+            {
+                "workload": name,
+                "spent_usd": float(spent or 0.0),
+                "cap_usd": effective_cap,
+            }
+        )
+    return result
+
+
+def _cmd_spend(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+
+    if not cfg.db_path.exists():
+        print("no spend recorded today")
+        return 0
+
+    rows = spend_today(cfg.db_path, cfg.project, cfg.budget_default_cap_usd_daily)
+
+    if not rows:
+        print("no spend recorded today")
+        return 0
+
+    print(f"{'workload':<28} {'spent':>10} {'cap':>10} {'pct':>8}")
+    print("-" * 60)
+    for r in rows:
+        name = r["workload"][:27]
+        spent_s = f"${r['spent_usd']:.2f}"
+        cap = r["cap_usd"]
+        if cap is None:
+            cap_s = "—"
+            pct_s = "—"
+        elif cap == 0.0:
+            cap_s = f"${cap:.2f}"
+            pct_s = "∞"
+        else:
+            cap_s = f"${cap:.2f}"
+            pct_s = f"{100.0 * r['spent_usd'] / cap:.1f}%"
+        print(f"{name:<28} {spent_s:>10} {cap_s:>10} {pct_s:>8}")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # somm serve (thin shim to somm-service)
 
 
@@ -581,6 +664,12 @@ def build_parser() -> argparse.ArgumentParser:
     psr.add_argument("--host", default="127.0.0.1")
     psr.add_argument("--port", type=int, default=7878)
     psr.set_defaults(func=_cmd_serve)
+
+    pspend = sub.add_parser(
+        "spend", help="today's LLM spend vs daily budget cap per workload"
+    )
+    pspend.add_argument("--project", default=None)
+    pspend.set_defaults(func=_cmd_spend)
 
     return p
 
