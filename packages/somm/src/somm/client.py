@@ -392,7 +392,11 @@ class SommLLM:
         """
         if not self.config.budget_fail_closed:
             return
+        # explicit per-workload cap wins; else the config-level default cap
+        # (SOMM_BUDGET_DEFAULT_CAP_USD_DAILY); else no ceiling.
         cap = wl.budget_cap_usd_daily
+        if cap is None:
+            cap = self.config.budget_default_cap_usd_daily
         if cap is None:
             return
         with self.repo._open() as conn:

@@ -42,6 +42,7 @@ class Config:
     cross_project_enabled: bool = False
     cross_project_path: Path | None = None  # defaults to ~/.somm/global.sqlite
     budget_fail_closed: bool = False  # hard pre-request gate: block calls once a workload's daily cap is reached
+    budget_default_cap_usd_daily: float | None = None  # daily cap for workloads with no explicit budget_cap_usd_daily (when fail_closed)
 
     @property
     def db_path(self) -> Path:
@@ -97,6 +98,11 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     if "SOMM_BUDGET_FAIL_CLOSED" in os.environ:
         val = os.environ["SOMM_BUDGET_FAIL_CLOSED"].strip().lower()
         cfg.budget_fail_closed = val in ("1", "true", "yes", "on")
+    if "SOMM_BUDGET_DEFAULT_CAP_USD_DAILY" in os.environ:
+        try:
+            cfg.budget_default_cap_usd_daily = float(os.environ["SOMM_BUDGET_DEFAULT_CAP_USD_DAILY"])
+        except ValueError:
+            pass
     if "SOMM_GLOBAL_PATH" in os.environ:
         cfg.cross_project_path = Path(os.environ["SOMM_GLOBAL_PATH"])
     if "SOMM_PROVIDER_ORDER" in os.environ:

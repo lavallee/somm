@@ -130,3 +130,33 @@ def test_inert_when_no_cap(tmp_path):
         assert r.outcome == Outcome.OK and prov.calls == 1
     finally:
         llm.close()
+
+
+def test_default_cap_applies_when_workload_uncapped(tmp_path):
+    """A config-level default cap covers workloads with no explicit cap."""
+    cfg = _cfg(tmp_path, fail_closed=True)
+    cfg.budget_default_cap_usd_daily = 0.0  # default ceiling → blocks at 0
+    prov = CountingProvider()
+    llm = SommLLM(config=cfg, providers=[prov])
+    try:
+        with pytest.raises(SommBudgetExceeded):
+            llm.generate("p", workload="uncapped", provider="fake", model="m")
+        assert prov.calls == 0
+    finally:
+        llm.close()
+
+
+def test_explicit_cap_beats_default(tmp_path):
+    """An explicit per-workload cap overrides the config default."""
+    cfg = _cfg(tmp_path, fail_closed=True)
+    cfg.budget_default_cap_usd_daily = 0.0  # default would block everything
+    prov = CountingProvider()
+    llm = SommLLM(config=cfg, providers=[prov])
+    try:
+        llm.repo.register_workload(
+            name="vip", project=cfg.project, budget_cap_usd_daily=1000.0
+        )
+        r = llm.generate("p", workload="vip", provider="fake", model="m")
+        assert r.outcome == Outcome.OK and prov.calls == 1
+    finally:
+        llm.close()
