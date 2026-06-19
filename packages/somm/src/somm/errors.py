@@ -82,6 +82,26 @@ class SommBadRequest(SommFatalError):
     code = "SOMM_PROVIDER_BAD_REQUEST"
 
 
+class SommBudgetExceeded(SommFatalError):
+    """Fail-closed budget gate refused the call before dispatch.
+
+    Raised pre-request when a workload's accumulated daily spend has reached
+    its configured ``budget_cap_usd_daily`` and ``budget_fail_closed`` is on.
+    Deliberately FATAL and non-transient: the router must NOT cool a provider
+    and fall through (that would defeat the ceiling). No telemetry row is
+    written — a blocked call is not a spend event.
+    """
+
+    code = "SOMM_BUDGET_EXCEEDED"
+
+    def __init__(self, detail: str = "", *, workload: str = "",
+                 spent_usd: float = 0.0, cap_usd: float = 0.0) -> None:
+        super().__init__(detail)
+        self.workload = workload
+        self.spent_usd = spent_usd
+        self.cap_usd = cap_usd
+
+
 class SommProvidersExhausted(SommFatalError):
     """Every configured (provider, model) is either cooled or failed this round."""
 
