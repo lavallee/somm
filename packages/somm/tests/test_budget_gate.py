@@ -160,3 +160,21 @@ def test_explicit_cap_beats_default(tmp_path):
         assert r.outcome == Outcome.OK and prov.calls == 1
     finally:
         llm.close()
+
+
+def test_stream_blocks_when_cap_already_reached(tmp_path):
+    """stream() gate fires before first yield — provider never dispatched."""
+    cfg = _cfg(tmp_path, fail_closed=True)
+    prov = CountingProvider()
+    llm = SommLLM(config=cfg, providers=[prov])
+    try:
+        llm.repo.register_workload(
+            name="capped", project=cfg.project, budget_cap_usd_daily=0.0
+        )
+        with pytest.raises(SommBudgetExceeded) as ei:
+            list(llm.stream("p", workload="capped", provider="fake", model="m"))
+        assert ei.value.code == "SOMM_BUDGET_EXCEEDED"
+        assert ei.value.workload == "capped"
+        assert prov.calls == 0  # gate fires pre-dispatch, provider never reached
+    finally:
+        llm.close()
