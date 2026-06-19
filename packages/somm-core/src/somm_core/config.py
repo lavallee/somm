@@ -41,6 +41,7 @@ class Config:
     busy_timeout_ms: int = 5000
     cross_project_enabled: bool = False
     cross_project_path: Path | None = None  # defaults to ~/.somm/global.sqlite
+    budget_fail_closed: bool = False  # hard pre-request gate: block calls once a workload's daily cap is reached
 
     @property
     def db_path(self) -> Path:
@@ -93,6 +94,9 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     if "SOMM_CROSS_PROJECT" in os.environ:
         val = os.environ["SOMM_CROSS_PROJECT"].strip().lower()
         cfg.cross_project_enabled = val in ("1", "true", "yes", "on")
+    if "SOMM_BUDGET_FAIL_CLOSED" in os.environ:
+        val = os.environ["SOMM_BUDGET_FAIL_CLOSED"].strip().lower()
+        cfg.budget_fail_closed = val in ("1", "true", "yes", "on")
     if "SOMM_GLOBAL_PATH" in os.environ:
         cfg.cross_project_path = Path(os.environ["SOMM_GLOBAL_PATH"])
     if "SOMM_PROVIDER_ORDER" in os.environ:
