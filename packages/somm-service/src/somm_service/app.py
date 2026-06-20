@@ -8,6 +8,10 @@ HTTP surface:
   GET /api/recommendations     JSON open recs
   POST /api/recommendations/{id}/dismiss
   POST /api/recommendations/{id}/apply
+  POST /v1/messages            Anthropic Messages-compatible LLM proxy
+                                (non-streaming v1; budget-gated; uses litellm
+                                as a library; streaming + /v1/chat/completions
+                                are explicit follow-ups)
 
 Design tokens + a11y spec from PLAN.md Phase 2 applied inline (v0.1 ships
 tokens in-HTML; `packages/somm-service/web/tokens.css` lands when we extract).
@@ -30,6 +34,8 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
+
+from somm_service.proxy import messages_endpoint
 
 _HTML_SHELL = """<!DOCTYPE html>
 <html lang="en">
@@ -401,6 +407,7 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/api/recommendations", _api_recommendations),
             Route("/api/recommendations/{rec_id:int}/dismiss", _api_rec_dismiss, methods=["POST"]),
             Route("/api/recommendations/{rec_id:int}/apply", _api_rec_apply, methods=["POST"]),
+            Route("/v1/messages", messages_endpoint, methods=["POST"]),
         ],
     )
     app.state.config = cfg

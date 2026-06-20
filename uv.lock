@@ -1946,6 +1946,8 @@ name = "somm-service"
 version = "0.2.2"
 source = { editable = "packages/somm-service" }
 dependencies = [
+    { name = "litellm" },
+    { name = "somm" },
     { name = "somm-core" },
     { name = "starlette" },
     { name = "uvicorn" },
@@ -1953,6 +1955,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "litellm", specifier = ">=1.40" },
+    { name = "somm", editable = "packages/somm" },
     { name = "somm-core", editable = "packages/somm-core" },
     { name = "starlette", specifier = ">=0.40" },
     { name = "uvicorn", specifier = ">=0.30" },
