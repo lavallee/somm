@@ -182,6 +182,31 @@ def test_result_mark_updates_outcome(tmp_path):
     llm.close()
 
 
+def test_record_outcome_update_persists(tmp_path):
+    """record_outcome_update writes a late-arriving outcome mark to call_updates."""
+    cfg = _tmp_config(tmp_path)
+    fake = FakeProvider(text="ok")
+    llm = SommLLM(config=cfg, providers=[fake])
+
+    result = llm.generate("prompt", workload="mark_persist_test")
+    call_id = result.call_id
+
+    llm._writer.flush()  # ensure call row exists before FK insert
+    llm.repo.record_outcome_update(call_id, Outcome.BAD_JSON)
+
+    with llm.repo._open() as conn:
+        rows = conn.execute(
+            "SELECT field, value FROM call_updates WHERE call_id = ?",
+            (call_id,),
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0][0] == "outcome"
+    assert rows[0][1] == Outcome.BAD_JSON.value
+
+    llm.close()
+
+
 def test_stats_by_workload_rolls_up(tmp_path):
     cfg = _tmp_config(tmp_path)
     fake = FakeProvider(text="ok", tokens_in=10, tokens_out=5)
