@@ -13,6 +13,7 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
 import time
@@ -546,12 +547,32 @@ def spend_today(
 
 def _cmd_spend(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
+    use_json = getattr(args, "json", False)
 
     if not cfg.db_path.exists():
-        print("no spend recorded today")
+        print("[]" if use_json else "no spend recorded today")
         return 0
 
     rows = spend_today(cfg.db_path, cfg.project, cfg.budget_default_cap_usd_daily)
+
+    if use_json:
+        out = []
+        for r in rows:
+            cap = r["cap_usd"]
+            if cap is None or cap == 0.0:
+                pct = None
+            else:
+                pct = round(100.0 * r["spent_usd"] / cap, 4)
+            out.append(
+                {
+                    "workload": r["workload"],
+                    "spent_usd": r["spent_usd"],
+                    "cap_usd": cap,
+                    "pct_of_cap": pct,
+                }
+            )
+        print(json.dumps(out, indent=2))
+        return 0
 
     if not rows:
         print("no spend recorded today")
@@ -669,6 +690,13 @@ def build_parser() -> argparse.ArgumentParser:
         "spend", help="today's LLM spend vs daily budget cap per workload"
     )
     pspend.add_argument("--project", default=None)
+    pspend.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        default=False,
+        help="emit a JSON array instead of the aligned table",
+    )
     pspend.set_defaults(func=_cmd_spend)
 
     return p
