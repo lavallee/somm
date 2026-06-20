@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -174,3 +175,78 @@ def test_cmd_spend_no_cap_shows_dash(tmp_path, capsys, monkeypatch):
     assert rc == 0
     assert "free-wl" in out
     assert "—" in out
+
+
+# ---------------------------------------------------------------------------
+# --json flag tests
+
+
+def test_cmd_spend_json_empty_db_prints_empty_array(tmp_path, capsys, monkeypatch):
+    cfg = _cfg(tmp_path, "spend-json-empty")
+    Repository(cfg.db_path)  # schema only, no calls
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", cfg.project)
+
+    rc = main(["spend", "--json"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert json.loads(out) == []
+
+
+def test_cmd_spend_json_no_db_prints_empty_array(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", "spend-json-nodb")
+
+    rc = main(["spend", "--json"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert json.loads(out) == []
+
+
+def test_cmd_spend_json_output_shape(tmp_path, capsys, monkeypatch):
+    cfg = _cfg(tmp_path, "spend-json-shape")
+    repo = Repository(cfg.db_path)
+
+    wl = repo.register_workload(
+        name="summarize", project=cfg.project, budget_cap_usd_daily=1.00
+    )
+    repo.write_call(_call(cfg.project, wl.id, 0.25))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", cfg.project)
+
+    rc = main(["spend", "--json"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    data = json.loads(out)
+    assert len(data) == 1
+    row = data[0]
+    assert set(row.keys()) == {"workload", "spent_usd", "cap_usd", "pct_of_cap"}
+    assert row["workload"] == "summarize"
+    assert abs(row["spent_usd"] - 0.25) < 1e-9
+    assert abs(row["cap_usd"] - 1.00) < 1e-9
+    assert abs(row["pct_of_cap"] - 25.0) < 1e-4
+
+
+def test_cmd_spend_json_no_cap_gives_null_pct(tmp_path, capsys, monkeypatch):
+    cfg = _cfg(tmp_path, "spend-json-nocap")
+    repo = Repository(cfg.db_path)
+
+    wl = repo.register_workload(name="uncapped", project=cfg.project)
+    repo.write_call(_call(cfg.project, wl.id, 0.05))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", cfg.project)
+
+    rc = main(["spend", "--json"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    data = json.loads(out)
+    assert len(data) == 1
+    assert data[0]["cap_usd"] is None
+    assert data[0]["pct_of_cap"] is None
