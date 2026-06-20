@@ -182,6 +182,58 @@ def _format_empty_detail(
     return " | ".join(parts)[:512]
 
 
+def enforce_workload_budget(
+    repo,
+    workload,
+    *,
+    fail_closed: bool,
+    default_cap_usd_daily: float | None,
+) -> None:
+    """Fail-closed daily-budget gate. Raises ``SommBudgetExceeded`` BEFORE
+    any provider call when ``fail_closed`` is set and the workload's
+    accumulated spend today has reached its ``budget_cap_usd_daily``.
+
+    No-op unless both the flag and a per-workload (or default) cap are set, so
+    it is inert by default and for capless workloads. Enforces on COMMITTED
+    daily spend — the async telemetry writer drains during the seconds-long
+    real LLM call, so committed spend tracks actual spend closely. The call
+    that crosses the cap still completes and the next is blocked, so overshoot
+    is bounded to ~one call plus any spend not yet flushed. Unlike the
+    post-call soft-warn it does not dedup — every call past the ceiling is
+    refused, not warned once.
+
+    Shared by ``SommLLM`` and the somm-service /v1/messages proxy so the
+    library path and the harness-routed path enforce one and the same ceiling
+    (one ledger, one policy).
+    """
+    if not fail_closed:
+        return
+    cap = workload.budget_cap_usd_daily
+    if cap is None:
+        cap = default_cap_usd_daily
+    if cap is None:
+        return
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
+            "WHERE workload_id = ? AND date(ts) = date('now')",
+            (workload.id,),
+        ).fetchone()
+    spent = float(row[0]) if row else 0.0
+    if spent >= cap:
+        from somm.errors import SommBudgetExceeded
+        raise SommBudgetExceeded(
+            f"SOMM_BUDGET_EXCEEDED\n\n"
+            f"Problem: workload {workload.name!r} has spent ${spent:.4f} today, "
+            f"at/over its daily cap ${float(cap):.4f}.\n"
+            f"Cause: budget_fail_closed is on and the ceiling is reached; the "
+            f"call was blocked before dispatch (no spend, no telemetry row).\n"
+            f"Fix: raise the cap, wait for the UTC-day reset, or unset "
+            f"SOMM_BUDGET_FAIL_CLOSED.",
+            workload=workload.name, spent_usd=spent, cap_usd=float(cap),
+        )
+
+
 def _default_stderr_alerter(event: dict) -> None:
     """Default on_error handler — one-line warning to stderr.
 
@@ -376,48 +428,19 @@ class SommLLM:
     # ------------------------------------------------------------------
 
     def _enforce_budget(self, wl) -> None:
-        """Fail-closed daily-budget gate. Raises ``SommBudgetExceeded`` BEFORE
-        any provider call when ``budget_fail_closed`` is set and the workload's
-        accumulated spend today has reached its ``budget_cap_usd_daily``.
+        """Fail-closed daily-budget gate — thin wrapper over the shared helper.
 
-        No-op unless both the config flag and a per-workload cap are set, so it
-        is inert by default and for capless workloads. Enforces on COMMITTED
-        daily spend — the async telemetry writer drains during the seconds-long
-        real LLM call, so committed spend tracks actual spend closely. The call
-        that crosses the cap still completes and the next is blocked, so
-        overshoot is bounded to ~one call plus any spend not yet flushed. (A
-        pre-call cost estimate could block the crossing call itself — left as a
-        follow-up.) Unlike the post-call soft-warn it does not dedup — every
-        call past the ceiling is refused, not warned once.
+        See :func:`enforce_workload_budget` for the full contract. Lives as an
+        instance method so the call site reads naturally; both the library and
+        the somm-service /v1/messages proxy share one gate implementation
+        (one-ledger, one-policy).
         """
-        if not self.config.budget_fail_closed:
-            return
-        # explicit per-workload cap wins; else the config-level default cap
-        # (SOMM_BUDGET_DEFAULT_CAP_USD_DAILY); else no ceiling.
-        cap = wl.budget_cap_usd_daily
-        if cap is None:
-            cap = self.config.budget_default_cap_usd_daily
-        if cap is None:
-            return
-        with self.repo._open() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
-                "WHERE workload_id = ? AND date(ts) = date('now')",
-                (wl.id,),
-            ).fetchone()
-        spent = float(row[0]) if row else 0.0
-        if spent >= cap:
-            from somm.errors import SommBudgetExceeded
-            raise SommBudgetExceeded(
-                f"SOMM_BUDGET_EXCEEDED\n\n"
-                f"Problem: workload {wl.name!r} has spent ${spent:.4f} today, "
-                f"at/over its daily cap ${float(cap):.4f}.\n"
-                f"Cause: budget_fail_closed is on and the ceiling is reached; the "
-                f"call was blocked before dispatch (no spend, no telemetry row).\n"
-                f"Fix: raise the cap, wait for the UTC-day reset, or unset "
-                f"SOMM_BUDGET_FAIL_CLOSED.",
-                workload=wl.name, spent_usd=spent, cap_usd=float(cap),
-            )
+        enforce_workload_budget(
+            self.repo,
+            wl,
+            fail_closed=self.config.budget_fail_closed,
+            default_cap_usd_daily=self.config.budget_default_cap_usd_daily,
+        )
 
     def generate(
         self,
