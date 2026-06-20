@@ -320,3 +320,30 @@ def test_messages_route_rejects_missing_model(tmp_path):
     body = r.json()
     assert body["type"] == "error"
     assert body["error"]["type"] == "invalid_request_error"
+
+
+def test_messages_route_respects_x_somm_project_header(tmp_path):
+    """X-Somm-Project header overrides cfg.project for workload registration."""
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    fake = _fake_completion_response()
+    with patch("somm_service.proxy.litellm.completion", return_value=fake):
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers={"x-somm-workload": "wl-custom", "x-somm-project": "custom-proj"},
+        )
+    assert r.status_code == 200
+
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT project FROM workloads WHERE name = ?", ("wl-custom",)
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "custom-proj"
