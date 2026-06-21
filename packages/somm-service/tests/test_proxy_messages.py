@@ -166,6 +166,24 @@ def test_litellm_to_anthropic_response_tool_use():
     ]
 
 
+def test_litellm_to_anthropic_response_text_and_tool_use():
+    """Response with both text AND a tool call → two content blocks in order."""
+    tool_calls = [
+        {"id": "call_1", "type": "function",
+         "function": {"name": "search", "arguments": '{"q": "x"}'}}
+    ]
+    resp = _fake_completion_response(
+        text="Let me search for that.", tool_calls=tool_calls, finish="tool_calls"
+    )
+    body = _litellm_to_anthropic_response(resp, requested_model="m")
+    assert len(body["content"]) == 2
+    assert body["content"][0] == {"type": "text", "text": "Let me search for that."}
+    assert body["content"][1] == {
+        "type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "x"}
+    }
+    assert body["stop_reason"] == "tool_use"
+
+
 # -- End-to-end route tests --------------------------------------------------
 
 
