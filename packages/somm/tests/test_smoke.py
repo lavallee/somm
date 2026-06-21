@@ -170,6 +170,7 @@ def test_empty_response_accepted_with_allow_empty(tmp_path):
 
 
 def test_result_mark_updates_outcome(tmp_path):
+    """mark() updates the in-result outcome (D1 signal); D2 call_updates persistence is tested in test_record_outcome_update_persists."""
     cfg = _tmp_config(tmp_path)
     fake = FakeProvider(text="bad json: }")
     llm = SommLLM(config=cfg, providers=[fake])
@@ -177,7 +178,6 @@ def test_result_mark_updates_outcome(tmp_path):
     result = llm.generate("prompt", workload="mark_test")
     result.mark(Outcome.BAD_JSON)
     assert result.outcome == Outcome.BAD_JSON
-    # TODO D2: persist mark via call_updates; for D1 it's an in-result signal.
 
     llm.close()
 
