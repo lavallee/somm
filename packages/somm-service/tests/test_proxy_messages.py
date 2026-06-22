@@ -184,6 +184,20 @@ def test_litellm_to_anthropic_response_text_and_tool_use():
     assert body["stop_reason"] == "tool_use"
 
 
+def test_litellm_to_anthropic_response_multiple_tool_calls():
+    """Two parallel tool calls produce two separate tool_use content blocks."""
+    tool_calls = [
+        {"id": "call_1", "type": "function", "function": {"name": "search", "arguments": '{"q": "x"}'}},
+        {"id": "call_2", "type": "function", "function": {"name": "lookup", "arguments": '{"id": 42}'}},
+    ]
+    resp = _fake_completion_response(text="", finish="tool_calls", tool_calls=tool_calls)
+    body = _litellm_to_anthropic_response(resp, requested_model="m")
+    assert body["stop_reason"] == "tool_use"
+    assert len(body["content"]) == 2
+    assert body["content"][0] == {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "x"}}
+    assert body["content"][1] == {"type": "tool_use", "id": "call_2", "name": "lookup", "input": {"id": 42}}
+
+
 # -- End-to-end route tests --------------------------------------------------
 
 
