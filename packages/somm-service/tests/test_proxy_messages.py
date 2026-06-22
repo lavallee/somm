@@ -354,6 +354,38 @@ def test_messages_route_rejects_missing_model(tmp_path):
     assert body["error"]["type"] == "invalid_request_error"
 
 
+def test_messages_route_upstream_provider_error_returns_502(tmp_path):
+    """litellm.completion raises → 502 api_error, telemetry row with outcome=upstream_error."""
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    with patch(
+        "somm_service.proxy.litellm.completion",
+        side_effect=RuntimeError("provider down"),
+    ):
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 8,
+            },
+            headers={"x-somm-workload": "error_wl"},
+        )
+
+    assert r.status_code == 502
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "api_error"
+
+    with repo._open() as conn:
+        rows = conn.execute("SELECT outcome FROM calls").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "upstream_error"
+
+
 def test_messages_route_respects_x_somm_project_header(tmp_path):
     """X-Somm-Project header overrides cfg.project for workload registration."""
     cfg = _cfg(tmp_path)
