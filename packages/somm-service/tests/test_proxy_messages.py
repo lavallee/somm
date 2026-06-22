@@ -132,6 +132,17 @@ def test_anthropic_to_litellm_params_passes_tools_through():
     assert params["tool_choice"] == {"type": "auto"}
 
 
+def test_anthropic_to_litellm_params_maps_stop_sequences_to_stop():
+    body = {
+        "model": "claude-haiku-4-5-20251001",
+        "messages": [{"role": "user", "content": "x"}],
+        "stop_sequences": ["\n\nHuman:", "</result>"],
+    }
+    params = _anthropic_to_litellm_params(body)
+    assert params["stop"] == ["\n\nHuman:", "</result>"]
+    assert "stop_sequences" not in params
+
+
 def test_litellm_to_anthropic_response_text_only():
     resp = _fake_completion_response(text="hello world", tokens_in=4, tokens_out=2)
     body = _litellm_to_anthropic_response(resp, requested_model="claude-haiku-4-5-20251001")
