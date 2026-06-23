@@ -365,6 +365,23 @@ def test_messages_route_rejects_missing_model(tmp_path):
     assert body["error"]["type"] == "invalid_request_error"
 
 
+def test_messages_route_rejects_non_dict_body(tmp_path):
+    """A JSON body that is not an object (e.g. an array) -> 400 invalid_request_error."""
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+    r = client.post(
+        "/v1/messages",
+        content=b"[1, 2, 3]",
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 400
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "invalid_request_error"
+    assert "JSON object" in body["error"]["message"]
+
+
 def test_messages_route_upstream_provider_error_returns_502(tmp_path):
     """litellm.completion raises → 502 api_error, telemetry row with outcome=upstream_error."""
     cfg = _cfg(tmp_path)
