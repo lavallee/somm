@@ -1,0 +1,37 @@
+# somm roster — capabilities published to fab.roster
+
+[app]
+name = "somm"
+version = "0.2.2"
+description = "Self-hosted LLM telemetry, routing, and model-intelligence loop. Wraps a provider chain (ollama / OpenRouter / Anthropic / OpenAI / Gemini / Minimax) with per-call cost tracking, shadow-eval, and cross-project model memory. The metering substrate other tools bill against."
+
+[[capabilities]]
+id = "complete"
+description = "Route an LLM completion for a named workload through the provider chain, recording tokens, cost, latency, and outcome to the telemetry store. The single source of truth for per-call cost."
+entry_python = "somm:llm"
+inputs = [
+  { name = "prompt", type = "str", schema = "text" },
+  { name = "workload", type = "str", schema = "somm/workload-name" },
+]
+outputs = [
+  { name = "completion", type = "str", schema = "somm/completion/v1" },
+]
+tags = ["llm", "routing", "telemetry", "cost"]
+quality_tier = "default"
+status = "live"
+notes = "Call form: somm.llm(project=...).generate(prompt, workload). Telemetry at .somm/calls.sqlite — calls(project, workload_id, provider, model, tokens_in, tokens_out, cost_usd, latency_ms, outcome). cost_usd is the canonical metering input behind agent-economics."
+
+[[capabilities]]
+id = "advise"
+description = "Sommelier model advisor: rank candidate (provider, model) pairs for a workload against capability, price, and provider constraints, drawing on recorded shadow-eval and prior decisions."
+entry_python = "somm.sommelier:advise"
+entry_mcp = "somm-mcp → somm_advise"
+inputs = [
+  { name = "constraints", type = "object", schema = "somm/advise-constraints/v1" },
+]
+outputs = [
+  { name = "ranking", type = "object", schema = "somm/model-ranking/v1" },
+]
+tags = ["model-selection", "routing", "advisor"]
+status = "live"
+notes = "10-tool MCP server via `somm-mcp`; web admin + HTTP API via `somm-serve` (:7878)."
