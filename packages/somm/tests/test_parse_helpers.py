@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from somm_core.parse import extract_balanced, strip_markdown_fence
+from somm_core.parse import extract_balanced, strip_markdown_fence, strip_think_block, extract_json
 
 
 # ---------------------------------------------------------------------------
@@ -52,3 +52,39 @@ def test_strip_markdown_fence_no_fence():
 
 def test_strip_markdown_fence_empty_string():
     assert strip_markdown_fence("") == ""
+
+
+# ---------------------------------------------------------------------------
+# strip_think_block
+# ---------------------------------------------------------------------------
+
+
+def test_strip_think_block_removes_block():
+    assert strip_think_block('<think>reasoning</think>answer') == 'answer'
+
+
+def test_strip_think_block_no_block_passthrough():
+    assert strip_think_block('plain text') == 'plain text'
+
+
+# ---------------------------------------------------------------------------
+# extract_json
+# ---------------------------------------------------------------------------
+
+
+def test_extract_json_clean_dict():
+    assert extract_json('{"k": 1}') == {'k': 1}
+
+
+def test_extract_json_embedded_in_prose():
+    result = extract_json('Sure! Here is the JSON: {"status": "ok"} as requested.')
+    assert result == {'status': 'ok'}
+
+
+def test_extract_json_with_think_block():
+    result = extract_json('<think>reasoning</think>{"done": true}')
+    assert result == {'done': True}
+
+
+def test_extract_json_returns_none_for_non_json():
+    assert extract_json('no json here') is None
