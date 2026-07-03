@@ -27,7 +27,9 @@ from somm_core.parse import (
     infer_capabilities,
     stable_hash,
 )
+from somm_core.plans import load_plans
 from somm_core.pricing import seed_known_pricing, sync_bundled_pricing
+from somm_core.registry import fleet_db_paths, register_project
 from somm_core.repository import Repository
 
 from somm import hooks
@@ -63,6 +65,49 @@ _inprocess_schedulers: dict[str, object] = {}
 
 # DBs we've already warned about a configured-but-dormant intelligence loop.
 _warned_dormant_loop: set[str] = set()
+
+# Providers we've already emitted a plan-pacing warning for this process.
+_warned_plan_pace: set[str] = set()
+
+
+def _build_plan_governor(config: Config):
+    """PlanGovernor from ~/.somm/plans.toml, or None when no plan declares
+    metered limits (the common case — zero overhead on the call path).
+
+    A malformed plans.toml warns loudly and disables pacing rather than
+    breaking `somm.llm()`: a config typo shouldn't take production down,
+    but silently ignoring declared quotas would be worse than either.
+    """
+    from somm.plan_governor import PlanGovernor
+
+    try:
+        plans = load_plans()
+    except Exception as exc:
+        print(f"[somm] plans.toml is invalid — plan pacing disabled: {exc}", file=sys.stderr)
+        return None
+    governor = PlanGovernor(plans, lambda: fleet_db_paths(include=config.db_path))
+    return governor if governor.has_metered_limits() else None
+
+
+def _warn_if_plans_off_pace(governor) -> None:
+    """One line per provider per process when a metered plan is exhausted
+    or past its soft target and burning faster than the window passes."""
+    if governor is None:
+        return
+    try:
+        for st in governor.statuses():
+            if st.provider in _warned_plan_pace or st.state == "ok":
+                continue
+            _warned_plan_pace.add(st.provider)
+            print(
+                f"[somm] {st.provider} plan {st.plan_name or '(metered)'}: "
+                f"{st.used_pct:.0f}% of {st.limit.window} {st.limit.unit} quota used "
+                f"with {100 - st.elapsed_pct:.0f}% of the window left "
+                f"(pace {st.pace_ratio:.1f}x) — see `somm plans`.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
 
 
 def _maybe_start_inprocess_workers(config: Config, repo: Repository):
@@ -426,7 +471,10 @@ class SommLLM:
         self.repo = Repository(self.config.db_path)
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
-        self.router = Router(self.providers, self._tracker)
+        self._plan_governor = _build_plan_governor(self.config)
+        self.router = Router(
+            self.providers, self._tracker, plan_governor=self._plan_governor
+        )
         # Alerting hook — fires on every non-OK outcome with a small context
         # dict. Default writes a one-line warning to stderr so failures are
         # visible in the caller's terminal. Pass on_error=lambda _: None to
@@ -472,6 +520,12 @@ class SommLLM:
             self._scheduler = _maybe_start_inprocess_workers(self.config, self.repo)
         else:
             _warn_if_intelligence_loop_dormant(self.config, self.repo)
+
+        # Fleet registry + metered-plan pacing: quotas are shared across
+        # every project on this machine, so announce this DB and warn (once
+        # per process) when a metered plan is burning faster than its window.
+        register_project(self.config.project, self.config.db_path)
+        _warn_if_plans_off_pace(self._plan_governor)
 
     def register_workload(self, **kwargs):
         """Register a workload in the project repo AND mirror-if-enabled."""

@@ -545,6 +545,97 @@ def spend_today(
     return result
 
 
+def _cmd_plans(args: argparse.Namespace) -> int:
+    from somm_core.plans import limit_statuses, load_plans, plans_path
+    from somm_core.registry import fleet_db_paths
+
+    cfg = load_config(project=args.project)
+    try:
+        plans = load_plans()
+    except Exception as exc:
+        print(f"plans.toml is invalid: {exc}")
+        return 1
+    if not plans:
+        print(f"No plans declared. Create {plans_path()} — example:")
+        print(
+            "\n  [minimax]"
+            '\n  mode = "metered"'
+            '\n  plan = "coding-pro"'
+            "\n  soft_target_pct = 80"
+            "\n  enforce = false"
+            "\n  [[minimax.limits]]"
+            '\n  window = "month"      # or rolling: "5h", "7d", "1w"'
+            "\n  anchor_day = 1        # calendar reset day"
+            "\n  quota = 40.0"
+            '\n  unit = "usd_equiv"    # requests | tokens_in | tokens_out | tokens_total | usd_equiv'
+            "\n\n  [gemini]"
+            '\n  mode = "payg"'
+        )
+        return 0
+
+    dbs = (
+        [cfg.db_path]
+        if args.project_only
+        else fleet_db_paths(include=cfg.db_path if cfg.db_path.exists() else None)
+    )
+    statuses = limit_statuses(dbs, plans)
+    scope = "this project only" if args.project_only else f"fleet ({len(dbs)} project DBs)"
+
+    if args.json:
+        out = []
+        for st in statuses:
+            out.append({
+                "provider": st.provider,
+                "plan": st.plan_name,
+                "window": st.limit.window,
+                "unit": st.limit.unit,
+                "used": round(st.used, 4),
+                "quota": st.limit.quota,
+                "used_pct": round(st.used_pct, 1),
+                "elapsed_pct": round(st.elapsed_pct, 1),
+                "pace_ratio": round(st.pace_ratio, 2),
+                "projected_pct": round(st.projected_pct, 1),
+                "window_end": st.window_end.isoformat(),
+                "state": st.state,
+            })
+        payg = sorted(p for p, pl in plans.items() if pl.mode == "payg")
+        print(json.dumps({"scope": scope, "metered": out, "payg": payg}, indent=1))
+        return 0
+
+    print(f"Plan usage — {scope}\n")
+    if statuses:
+        print(
+            f"{'provider':<12} {'plan':<12} {'window':<7} {'used / quota':>22} "
+            f"{'used%':>6} {'elapsed%':>8} {'pace':>6} {'proj%':>6}  state"
+        )
+        for st in statuses:
+            used_s = (
+                f"${st.used:,.2f} / ${st.limit.quota:,.2f}"
+                if st.limit.unit == "usd_equiv"
+                else f"{st.used:,.0f} / {st.limit.quota:,.0f} {st.limit.unit}"
+            )
+            print(
+                f"{st.provider:<12} {(st.plan_name or '—'):<12} {st.limit.window:<7} "
+                f"{used_s:>22} {st.used_pct:>5.0f}% {st.elapsed_pct:>7.0f}% "
+                f"{st.pace_ratio:>5.1f}x {st.projected_pct:>5.0f}%  {st.state}"
+            )
+    metered_no_limits = [
+        p for p, pl in plans.items() if pl.mode == "metered" and not pl.limits
+    ]
+    if metered_no_limits:
+        print(
+            f"\nmetered, no limits declared (labelled only): "
+            f"{', '.join(sorted(metered_no_limits))}"
+        )
+    payg = sorted(p for p, pl in plans.items() if pl.mode == "payg")
+    if payg:
+        print(f"payg (cost_usd = real dollars): {', '.join(payg)}")
+    free = sorted(p for p, pl in plans.items() if pl.mode == "free")
+    if free:
+        print(f"free/local: {', '.join(free)}")
+    return 0
+
+
 def _cmd_drain_spool(args: argparse.Namespace) -> int:
     from somm_core.repository import Repository
 
@@ -740,6 +831,19 @@ def build_parser() -> argparse.ArgumentParser:
     pbf.add_argument("--since", type=int, default=None, help="only calls from the last N days")
     pbf.add_argument("--dry-run", action="store_true", help="report without writing")
     pbf.set_defaults(func=_cmd_backfill_costs)
+
+    ppl = sub.add_parser(
+        "plans",
+        help="metered-plan quota usage + pacing (PAYG vs metered, fleet-wide)",
+    )
+    ppl.add_argument("--project", default=None)
+    ppl.add_argument(
+        "--project-only",
+        action="store_true",
+        help="count only this project's usage (default: whole fleet — quotas are shared)",
+    )
+    ppl.add_argument("--json", action="store_true")
+    ppl.set_defaults(func=_cmd_plans)
 
     pds = sub.add_parser(
         "drain-spool",

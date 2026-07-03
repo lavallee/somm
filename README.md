@@ -283,6 +283,7 @@ somm tail [--workload NAME] [--poll-interval S]    # live call stream
 somm compare <prompt> --models p/m,p/m             # side-by-side N-model comparison
 somm frontier --workload NAME [--since N]          # adequacy frontier per (provider, model)
 somm spend [--json]                                # today's spend vs daily budget cap
+somm plans [--json] [--project-only]               # metered-plan quota usage + pacing (fleet-wide)
 somm backfill-costs [--since N] [--dry-run]        # recompute $0 calls that now have pricing
 somm drain-spool                                   # replay spooled telemetry into the DB
 somm doctor                                        # config, ollama, db, intel, workers, cooldowns
@@ -297,6 +298,55 @@ somm-serve admin list-intel             # inspect the cache
 somm-serve admin run-agent              # one-shot analysis pass
 somm-serve admin run-shadow             # one-shot online-eval grading pass
 ```
+
+### PAYG vs metered plans — cost is not always dollars
+
+Not every provider bills the same way. API keys are usually **PAYG**
+(per-token dollars; `cost_usd` is real spend), but coding plans and CLI
+seats are **metered**: marginal dollars are ~0 inside a recurring
+quota, `cost_usd` is notional list-price, and the scarce resource is
+**window headroom**. Declare which is which — machine-wide, because a
+plan's quota is shared by every project on the same account — in
+`~/.somm/plans.toml`:
+
+```toml
+[minimax]
+mode = "metered"
+plan = "coding-pro"
+soft_target_pct = 80    # deprioritize beyond this pace
+enforce = false         # true: hard-skip the provider when a limit is exhausted
+
+[[minimax.limits]]
+window = "month"        # calendar month (anchor_day = billing reset day)…
+anchor_day = 12
+quota = 40.0
+unit = "usd_equiv"      # requests | tokens_in | tokens_out | tokens_total | usd_equiv
+
+[[minimax.limits]]
+window = "5h"           # …and/or rolling windows
+quota = 500
+unit = "requests"
+
+[gemini]
+mode = "payg"
+```
+
+Then:
+
+- **`somm plans`** shows every limit's usage in its current window —
+  across all your projects (each `somm.llm()` registers its DB in
+  `~/.somm/registry.json`) — with pace ratio and straight-line
+  projection: are you on track to blow the quota before it resets?
+- **The router paces automatically**: a provider past its soft target
+  and burning faster than the window passes is deprioritized (tried
+  only after in-pace providers fail); an exhausted limit with
+  `enforce = true` is skipped outright.
+- **The sommelier knows the difference**: `somm_advise` annotates
+  metered candidates with plan headroom and pace, so "cheap but
+  scarce" ranks differently from "cheap".
+
+Providers you don't declare default sensibly: ollama → free,
+`claude-cli`/`codex-cli` → metered, API providers → PAYG.
 
 ## Configuration
 
@@ -408,5 +458,5 @@ internal names or personal paths.
 
 ## Status
 
-**v0.3.1.** See [CHANGELOG](./CHANGELOG.md) for the release log and
+**v0.4.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

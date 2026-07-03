@@ -170,6 +170,45 @@ class _AdviseResult:
     filter_stats: dict[str, int]
 
 
+# Cached (per process) plan annotations — advise may score hundreds of
+# candidates and the underlying pacing query scans every fleet DB.
+_plan_annotation_cache: dict[str, str] | None = None
+
+
+def _plan_annotation(provider: str) -> str:
+    """Short billing-mode note for a candidate's reasons list.
+
+    Metered plans get headroom + pace ("metered plan 62% used, pace
+    1.3x"); metered without declared limits get a label; PAYG/free get
+    nothing (the price reason already says it). Never raises."""
+    global _plan_annotation_cache
+    if _plan_annotation_cache is None:
+        notes: dict[str, str] = {}
+        try:
+            from somm_core.plans import limit_statuses, load_plans
+            from somm_core.registry import fleet_db_paths
+
+            plans = load_plans()
+            for name, plan in plans.items():
+                if plan.mode != "metered":
+                    continue
+                notes[name] = "metered plan (notional $)"
+            worst: dict[str, object] = {}
+            for st in limit_statuses(fleet_db_paths(), plans):
+                cur = worst.get(st.provider)
+                if cur is None or st.used_pct > cur.used_pct:  # type: ignore[union-attr]
+                    worst[st.provider] = st
+            for name, st in worst.items():
+                notes[name] = (
+                    f"metered plan {st.used_pct:.0f}% used, "
+                    f"pace {st.pace_ratio:.1f}x ({st.state})"
+                )
+        except Exception:
+            pass
+        _plan_annotation_cache = notes
+    return _plan_annotation_cache.get(provider, "")
+
+
 def _advise_with_reasons(
     repo: Repository,
     constraints: AdviseConstraints,
@@ -229,6 +268,12 @@ def _advise_with_reasons(
             reasons.append("free")
         else:
             reasons.append(f"${price_in:.2f}/${price_out:.2f} per 1M in/out")
+        # Billing-mode context: on a metered plan, listed prices are
+        # notional (quota-equivalent, ~$0 marginal); surface headroom and
+        # pace so "cheap but scarce" reads differently from "cheap".
+        plan_note = _plan_annotation(provider)
+        if plan_note:
+            reasons.append(plan_note)
         if ctx:
             reasons.append(f"{ctx:,} ctx")
         for cap in constraints.capabilities:

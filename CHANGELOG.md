@@ -4,6 +4,42 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.4.0] — 2026-07-03
+
+### Added — billing plans: PAYG vs metered, with quota pacing
+
+Providers bill in two fundamentally different shapes, and somm now
+models both. **PAYG** (API keys): `cost_usd` is real marginal dollars.
+**Metered** (coding plans, CLI seats): marginal dollars are ~0 inside a
+recurring quota, `cost_usd` is notional list-price, and the scarce
+resource is window headroom.
+
+- `~/.somm/plans.toml` declares each provider's mode and, for metered
+  plans, limits: calendar windows (`month` + `anchor_day`) or rolling
+  (`5h`/`7d`/`1w`), quotas in `requests` / `tokens_*` / `usd_equiv`,
+  a `soft_target_pct`, and optional `enforce`. Undeclared providers
+  default: ollama → free, `claude-cli`/`codex-cli` → metered, API
+  providers → PAYG. Malformed config fails loudly (pacing disabled
+  with a warning) rather than silently ignoring a declared quota.
+- **Fleet-wide accounting** (`somm_core.registry`): every
+  `somm.llm()` init registers its DB in `~/.somm/registry.json`, so
+  quota usage aggregates across all projects sharing an account —
+  pacing computed against one project alone would understate burn.
+- **`somm plans`** — per-limit usage in the current window with pace
+  ratio (burn vs window elapsed) and straight-line projection;
+  `--json`, `--project-only`.
+- **Pace-aware routing** — the router consults a TTL-cached plan
+  governor: over-pace providers are deprioritized (tried only after
+  in-pace providers fail); an exhausted limit with `enforce = true` is
+  skipped outright, and if every provider is blocked the call raises
+  loudly with remediation hints. Pacing failures never take the call
+  path down.
+- **Plan-aware sommelier** — `somm_advise` candidates on metered
+  plans carry a reason like "metered plan 62% used, pace 1.3x", so
+  workload-model fit accounts for quota scarcity, not just price.
+- One-line stderr warning (once per provider per process) when a
+  metered plan is exhausted or past its soft target and over pace.
+
 ## [0.3.1] — 2026-07-03
 
 ### Changed — migration 0010 drops `calls.commission_id` (schema v10)

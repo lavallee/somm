@@ -174,12 +174,39 @@ class Router:
         circuit_break_after: int = 5,
         circuit_break_cooldown_s: float = 600,
         exhausted_sleep_cap_s: float = 300,
+        plan_governor=None,
     ) -> None:
         self.providers = providers
         self.tracker = tracker
         self.circuit_break_after = circuit_break_after
         self.circuit_break_cooldown_s = circuit_break_cooldown_s
         self.exhausted_sleep_cap_s = exhausted_sleep_cap_s
+        # Optional somm.plan_governor.PlanGovernor — metered-plan pacing.
+        self.plan_governor = plan_governor
+
+    def _apply_plan_governor(self, active: list) -> list:
+        """Reorder/filter the chain by metered-plan pacing.
+
+        In-pace providers keep their configured order; over-pace
+        (`defer`) providers move to the back so they only serve when
+        everything in-pace has failed; exhausted+enforced (`block`)
+        providers are dropped. If EVERY provider is blocked the caller
+        gets an empty list and dispatch raises loudly — an enforced
+        quota is a budget ceiling, not a suggestion."""
+        if self.plan_governor is None:
+            return active
+        try:
+            ok, defer = [], []
+            for p in active:
+                d = self.plan_governor.decision(p.name)
+                if d == "block":
+                    continue
+                (defer if d == "defer" else ok).append(p)
+            return ok + defer
+        except Exception:
+            # Pacing is advisory infrastructure — never take the call
+            # path down with it.
+            return active
 
     def dispatch(self, request: SommRequest) -> RouterResult:
         """Try each provider. Return the first successful response.
@@ -200,6 +227,15 @@ class Router:
                 skipped=skipped,
             )
         active = capable_providers if required else self.providers
+        pre_plan = list(active)
+        active = self._apply_plan_governor(active)
+        if not active:
+            raise SommProvidersExhausted(
+                "all providers blocked by enforced metered-plan limits: "
+                + ", ".join(p.name for p in pre_plan)
+                + " — see `somm plans` (raise quota, wait for the window, "
+                "or set enforce=false in ~/.somm/plans.toml)"
+            )
 
         first_attempt = self._try_once(request, active)
         if first_attempt is not None:

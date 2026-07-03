@@ -13,6 +13,14 @@ from somm_core.models import (
     ToolCall,
     Workload,
 )
+from somm_core.plans import (
+    LimitStatus,
+    Plan,
+    PlanLimit,
+    limit_statuses,
+    load_plans,
+    plan_for,
+)
 from somm_core.pricing import (
     cost_for_call,
     list_intel,
@@ -21,6 +29,7 @@ from somm_core.pricing import (
     sync_bundled_pricing,
     write_intel,
 )
+from somm_core.registry import fleet_db_paths, register_project
 from somm_core.repository import Repository
 from somm_core.schema import current_schema_version, ensure_schema
 from somm_core.version import SCHEMA_VERSION, VERSION
@@ -48,4 +57,12 @@ __all__ = [
     "seed_known_pricing",
     "sync_bundled_pricing",
     "write_intel",
+    "Plan",
+    "PlanLimit",
+    "LimitStatus",
+    "load_plans",
+    "plan_for",
+    "limit_statuses",
+    "register_project",
+    "fleet_db_paths",
 ]
