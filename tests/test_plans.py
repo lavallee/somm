@@ -249,3 +249,82 @@ def test_router_gate_survives_broken_governor():
     r.plan_governor = Boom()
     chain = [_P("a")]
     assert r._apply_plan_governor(chain) == chain
+
+
+# ---------------------------------------------------------------------------
+# plan catalog
+
+
+CATALOG_TOML = """
+[minimax.coding-pro]
+display = "MiniMax Coding Pro"
+source = "https://example.test/pricing"
+last_verified = "2026-07-01"
+[[minimax.coding-pro.limits]]
+window = "5h"
+quota = 300
+unit = "requests"
+[[minimax.coding-pro.limits]]
+window = "month"
+quota = 40.0
+unit = "usd_equiv"
+"""
+
+
+def test_load_catalog_from_path(tmp_path):
+    from somm_core.plans import load_catalog
+
+    p = tmp_path / "catalog.toml"
+    p.write_text(CATALOG_TOML)
+    cat = load_catalog(p)
+    entry = cat["minimax/coding-pro"]
+    assert entry.display == "MiniMax Coding Pro"
+    assert len(entry.limits) == 2
+    assert entry.age_days() is not None
+
+
+def test_plans_inherit_catalog_limits(tmp_path, monkeypatch):
+    from somm_core.plans import load_catalog
+
+    catp = tmp_path / "catalog.toml"
+    catp.write_text(CATALOG_TOML)
+    _write_plans(
+        tmp_path,
+        '[minimax]\nmode = "metered"\ncatalog = "coding-pro"',
+        monkeypatch,
+    )
+    plans = load_plans(catalog=load_catalog(catp))
+    mm = plans["minimax"]
+    assert mm.catalog_ref == "minimax/coding-pro"
+    assert len(mm.limits) == 2
+    assert mm.name == "MiniMax Coding Pro"
+
+
+def test_explicit_limits_override_catalog(tmp_path, monkeypatch):
+    from somm_core.plans import load_catalog
+
+    catp = tmp_path / "catalog.toml"
+    catp.write_text(CATALOG_TOML)
+    _write_plans(
+        tmp_path,
+        '[minimax]\nmode = "metered"\ncatalog = "coding-pro"\n'
+        '[[minimax.limits]]\nwindow = "1d"\nquota = 7\nunit = "requests"',
+        monkeypatch,
+    )
+    plans = load_plans(catalog=load_catalog(catp))
+    assert len(plans["minimax"].limits) == 1
+    assert plans["minimax"].limits[0].quota == 7
+
+
+def test_unknown_catalog_ref_raises(tmp_path, monkeypatch):
+    from somm_core.plans import load_catalog
+
+    catp = tmp_path / "catalog.toml"
+    catp.write_text(CATALOG_TOML)
+    _write_plans(
+        tmp_path,
+        '[minimax]\nmode = "metered"\ncatalog = "coding-ultra"',
+        monkeypatch,
+    )
+    with pytest.raises(ValueError, match="coding-ultra"):
+        load_plans(catalog=load_catalog(catp))

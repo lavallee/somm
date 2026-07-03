@@ -1,6 +1,6 @@
 [project]
 name = "somm-langchain"
-version = "0.4.0"
+version = "0.5.0"
 description = "LangChain BaseChatModel adapter for somm — lets LangChain/LangGraph/deepagents apps use somm as their LLM substrate"
 requires-python = ">=3.12"
 license = { text = "MIT" }

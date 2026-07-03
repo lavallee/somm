@@ -1,0 +1,98 @@
+# somm plan catalog — known commercial metered plans and their limits.
+#
+# Plan limits are vendor marketing copy, not an API: as of mid-2026 no
+# major vendor publishes a complete, dated, numeric limits table
+# (MiniMax describes quotas as "agent counts", Anthropic as multipliers,
+# OpenAI hides its weekly cap). Every entry below therefore carries a
+# `source` URL, a `last_verified` date (when a human last checked), and
+# `notes` on provenance. Observed change cadence across vendors is
+# roughly MONTHLY — `somm plans` warns when a referenced entry is >90
+# days old, and RELEASING.md requires re-verification before releases.
+#
+# Where numbers are estimates, notes say so. The most reliable quota
+# signal is your own telemetry: `somm plans` also reports "observed
+# ceilings" — trailing-window usage at the moment of your own
+# quota-429s.
+#
+# Reference an entry from ~/.somm/plans.toml:
+#   [minimax]
+#   mode = "metered"
+#   catalog = "token-plan-max"
+
+[minimax.token-plan-plus]
+display = "MiniMax Token Plan Plus ($20/mo)"
+source = "https://platform.minimax.io/docs/guides/pricing-token-plan"
+last_verified = "2026-07-02"
+notes = "Rebranded from Coding Plan Q1 2026; vendor now describes quota qualitatively ('3-4 agents'). Monthly token figure below was published on the pricing page ~Jun 1-9 2026 then removed — treat as estimate. A 5h window also applies (size undisclosed; EN docs say rolling, CN docs say fixed). Unused quota does not carry over."
+[[minimax.token-plan-plus.limits]]
+window = "month"
+quota = 1633000000
+unit = "tokens_total"
+
+[minimax.token-plan-max]
+display = "MiniMax Token Plan Max ($50/mo)"
+source = "https://platform.minimax.io/docs/guides/pricing-token-plan"
+last_verified = "2026-07-02"
+notes = "'4-5 agents'. Monthly token figure published ~Jun 1-9 2026 then removed — treat as estimate. Undisclosed 5h window also applies."
+[[minimax.token-plan-max.limits]]
+window = "month"
+quota = 5053000000
+unit = "tokens_total"
+
+[minimax.token-plan-ultra]
+display = "MiniMax Token Plan Ultra ($120/mo)"
+source = "https://platform.minimax.io/docs/guides/pricing-token-plan"
+last_verified = "2026-07-02"
+notes = "'6-7 agents'. Monthly token figure published ~Jun 1-9 2026 then removed — treat as estimate. Undisclosed 5h window also applies."
+[[minimax.token-plan-ultra.limits]]
+window = "month"
+quota = 9796000000
+unit = "tokens_total"
+
+[claude-cli.pro]
+display = "Claude Pro ($20/mo)"
+source = "https://support.claude.com/en/articles/11647753"
+last_verified = "2026-07-02"
+notes = "Anthropic publishes NO absolute numbers — limits are 5h rolling sessions plus weekly caps, described only relatively; pool is shared across claude.ai/Desktop/Claude Code. 5h limits doubled May 2026; +50% weekly boost expires 2026-07-13. No limits encoded here: rely on observed ceilings from your own 429s, or set your own from Settings > Usage."
+
+[claude-cli.max-5x]
+display = "Claude Max 5x ($100/mo)"
+source = "https://support.claude.com/en/articles/11049741"
+last_verified = "2026-07-02"
+notes = "'5x Pro'; otherwise identical structure to Pro (see claude-cli/pro). The 'monthly spend limit' 429 message corresponds to the OPT-IN usage-credits cap you set at claude.ai/settings/usage, or was a mid-2026 labeling bug — not a published plan cap."
+
+[claude-cli.max-20x]
+display = "Claude Max 20x ($200/mo)"
+source = "https://support.claude.com/en/articles/11049741"
+last_verified = "2026-07-02"
+notes = "'20x Pro'; see claude-cli/pro and claude-cli/max-5x notes."
+
+[codex-cli.chatgpt-plus]
+display = "ChatGPT Plus ($20/mo) — Codex"
+source = "https://developers.openai.com/codex/pricing"
+last_verified = "2026-07-02"
+notes = "Official ranges per 5h rolling window: GPT-5.5 15-80, GPT-5.4 20-100, mini 60-350 'local messages' (cloud tasks + reviews share the pool). Underlying meter is token credits since Apr 2026. Quota below = GPT-5.5 range midpoint — a coarse approximation. An UNPUBLISHED weekly cap also applies."
+[[codex-cli.chatgpt-plus.limits]]
+window = "5h"
+quota = 48
+unit = "requests"
+
+[codex-cli.chatgpt-pro-5x]
+display = "ChatGPT Pro 5x ($100/mo) — Codex"
+source = "https://developers.openai.com/codex/pricing"
+last_verified = "2026-07-02"
+notes = "GPT-5.5 75-400 per 5h; quota = range midpoint. Unpublished weekly cap also applies."
+[[codex-cli.chatgpt-pro-5x.limits]]
+window = "5h"
+quota = 238
+unit = "requests"
+
+[codex-cli.chatgpt-pro-20x]
+display = "ChatGPT Pro 20x ($200/mo) — Codex"
+source = "https://developers.openai.com/codex/pricing"
+last_verified = "2026-07-02"
+notes = "GPT-5.5 300-1600 per 5h; quota = range midpoint. Unpublished weekly cap also applies. The $200 price is corroborated by secondary sources only; official table shows 'From $100/month'."
+[[codex-cli.chatgpt-pro-20x.limits]]
+window = "5h"
+quota = 950
+unit = "requests"

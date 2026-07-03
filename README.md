@@ -345,6 +345,24 @@ Then:
   metered candidates with plan headroom and pace, so "cheap but
   scarce" ranks differently from "cheap".
 
+You don't have to transcribe vendor limits by hand: somm ships a
+curated **plan catalog** (`somm plans --catalog` lists it, with source
+URLs and last-verified dates). Reference an entry and inherit its
+limits — your own `[[limits]]` always win:
+
+```toml
+[minimax]
+mode = "metered"
+catalog = "coding-pro"   # limits inherited from the bundled catalog
+```
+
+Plan limits are marketing copy, not an API, so every catalog entry is
+dated; `somm plans` warns when one you rely on hasn't been re-verified
+in 90 days. And because vendors increasingly publish *no* numbers at
+all, `somm plans` also reports **observed ceilings**: at each quota-429
+in your own telemetry, the trailing-window usage ≈ the real limit —
+your fleet measures what the vendor won't say.
+
 Providers you don't declare default sensibly: ollama → free,
 `claude-cli`/`codex-cli` → metered, API providers → PAYG.
 
@@ -458,5 +476,5 @@ internal names or personal paths.
 
 ## Status
 
-**v0.4.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
+**v0.5.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

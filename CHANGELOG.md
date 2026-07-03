@@ -4,6 +4,37 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.5.0] — 2026-07-03
+
+### Added — plan catalog + observed ceilings (keeping quota data honest)
+
+Research finding that shaped this: as of mid-2026 **no major vendor
+publishes a complete numeric limits table** for subscription plans
+(MiniMax describes quotas as "agent counts", Anthropic as multipliers,
+OpenAI hides its weekly cap), and limits change roughly monthly. somm
+now handles that with three layers:
+
+- **Bundled plan catalog** (`somm_core/data/plan_catalog.toml`, browse
+  with `somm plans --catalog`): curated entries for known plans
+  (MiniMax Token Plan tiers, Claude Pro/Max, ChatGPT Plus/Pro Codex)
+  with per-entry `source` URL, `last_verified` date, and provenance
+  notes that say plainly when a number is an estimate. plans.toml can
+  reference an entry (`catalog = "token-plan-max"`) and inherit its
+  limits; explicit `[[limits]]` always win; unknown references fail
+  loudly.
+- **Staleness warnings**: `somm plans` flags referenced catalog
+  entries not re-verified in 90 days; RELEASING.md now requires
+  re-verifying aged entries (and regenerating the pricing bundle)
+  before each release.
+- **Observed ceilings**: `somm plans` infers quotas empirically from
+  your own telemetry — at each quota-429, trailing-window usage across
+  the fleet approximates the binding limit; the median over
+  burst-collapsed events is reported per window/unit. Ground truth
+  that self-updates when vendors move the goalposts.
+
+Historical provider-name spellings (`claude_cli`) are matched when
+aggregating usage.
+
 ## [0.4.0] — 2026-07-03
 
 ### Added — billing plans: PAYG vs metered, with quota pacing

@@ -545,13 +545,37 @@ def spend_today(
     return result
 
 
+_CATALOG_STALE_DAYS = 90
+
+
 def _cmd_plans(args: argparse.Namespace) -> int:
-    from somm_core.plans import limit_statuses, load_plans, plans_path
+    from somm_core.plans import limit_statuses, load_catalog, load_plans, plans_path
     from somm_core.registry import fleet_db_paths
+
+    catalog = load_catalog()
+    if args.catalog:
+        if not catalog:
+            print("plan catalog is empty")
+            return 0
+        print("Known plans (bundled catalog — verify against source before trusting):\n")
+        for key in sorted(catalog):
+            e = catalog[key]
+            age = e.age_days()
+            age_s = f"verified {age}d ago" if age is not None else "unverified"
+            lims = "; ".join(
+                f"{lim.quota:g} {lim.unit}/{lim.window}" for lim in e.limits
+            ) or "no limits recorded"
+            print(f"  {key:<28} {e.display}")
+            print(f"    {lims}  [{age_s}]")
+            if e.notes:
+                print(f"    note: {e.notes}")
+            if e.source:
+                print(f"    source: {e.source}")
+        return 0
 
     cfg = load_config(project=args.project)
     try:
-        plans = load_plans()
+        plans = load_plans(catalog=catalog)
     except Exception as exc:
         print(f"plans.toml is invalid: {exc}")
         return 1
@@ -633,6 +657,46 @@ def _cmd_plans(args: argparse.Namespace) -> int:
     free = sorted(p for p, pl in plans.items() if pl.mode == "free")
     if free:
         print(f"free/local: {', '.join(free)}")
+
+    # Empirical ceilings: vendors stopped publishing numeric limits, but
+    # every quota-429 in your own telemetry is ground truth.
+    from somm_core.plans import observed_ceilings
+
+    printed_header = False
+    for prov, pl in sorted(plans.items()):
+        if pl.mode != "metered":
+            continue
+        ceilings = observed_ceilings(dbs, prov)
+        if not ceilings:
+            continue
+        if not printed_header:
+            print(
+                "\nobserved ceilings — inferred from your own quota errors "
+                "(median trailing-window usage at each 429):"
+            )
+            printed_header = True
+        for c in ceilings:
+            est = f"${c.estimate:,.2f}" if c.unit == "usd_equiv" else f"{c.estimate:,.0f} {c.unit}"
+            print(
+                f"  {prov:<12} ~{est}/{c.window}  "
+                f"(from {c.n_events} event(s), last {c.last_event[:10]})"
+            )
+
+    # Staleness: plan limits are vendor marketing copy, not an API.
+    # Nudge re-verification when a referenced catalog entry ages out.
+    for pl in plans.values():
+        if not pl.catalog_ref:
+            continue
+        entry = catalog.get(pl.catalog_ref)
+        if entry is None:
+            continue
+        age = entry.age_days()
+        if age is None or age > _CATALOG_STALE_DAYS:
+            age_s = f"{age}d ago" if age is not None else "never"
+            print(
+                f"\n⚠ catalog entry {pl.catalog_ref} last verified {age_s} — "
+                f"limits may have changed; check {entry.source or 'the vendor page'}"
+            )
     return 0
 
 
@@ -843,6 +907,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="count only this project's usage (default: whole fleet — quotas are shared)",
     )
     ppl.add_argument("--json", action="store_true")
+    ppl.add_argument(
+        "--catalog",
+        action="store_true",
+        help="list known plans from the bundled catalog (with sources + verified dates)",
+    )
     ppl.set_defaults(func=_cmd_plans)
 
     pds = sub.add_parser(

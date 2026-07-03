@@ -14,11 +14,15 @@ from somm_core.models import (
     Workload,
 )
 from somm_core.plans import (
+    CatalogEntry,
     LimitStatus,
+    ObservedCeiling,
     Plan,
     PlanLimit,
     limit_statuses,
+    load_catalog,
     load_plans,
+    observed_ceilings,
     plan_for,
 )
 from somm_core.pricing import (
@@ -60,9 +64,13 @@ __all__ = [
     "Plan",
     "PlanLimit",
     "LimitStatus",
+    "CatalogEntry",
+    "ObservedCeiling",
     "load_plans",
+    "load_catalog",
     "plan_for",
     "limit_statuses",
+    "observed_ceilings",
     "register_project",
     "fleet_db_paths",
 ]

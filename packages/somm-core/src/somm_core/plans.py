@@ -113,6 +113,39 @@ class Plan:
     soft_target_pct: float = 80.0
     enforce: bool = False
     limits: list[PlanLimit] = field(default_factory=list)
+    catalog_ref: str = ""  # "provider/plan-id" when limits came from the catalog
+
+
+@dataclass(slots=True)
+class CatalogEntry:
+    """A known commercial plan and its published limits.
+
+    The catalog (data/plan_catalog.toml, shipped in the somm-core wheel)
+    is hand-curated from vendor pages — plan limits are marketing copy,
+    not an API, so every entry carries its source URL and the date a
+    human last verified it. `somm plans` warns when a referenced entry
+    goes stale; re-verify against `source` and bump `last_verified`."""
+
+    provider: str
+    plan_id: str
+    display: str = ""
+    source: str = ""
+    last_verified: str = ""  # ISO date
+    notes: str = ""
+    limits: list[PlanLimit] = field(default_factory=list)
+
+    @property
+    def key(self) -> str:
+        return f"{self.provider}/{self.plan_id}"
+
+    def age_days(self, now: datetime | None = None) -> int | None:
+        if not self.last_verified:
+            return None
+        try:
+            verified = datetime.fromisoformat(self.last_verified).replace(tzinfo=UTC)
+        except ValueError:
+            return None
+        return max(0, ((now or datetime.now(UTC)) - verified).days)
 
 
 @dataclass(slots=True)
@@ -175,11 +208,77 @@ def plans_path() -> Path:
     return Path(env) if env else Path.home() / ".somm" / "plans.toml"
 
 
-def load_plans(path: Path | None = None) -> dict[str, Plan]:
+def _parse_limit(provider: str, lim: dict) -> PlanLimit:
+    unit = lim.get("unit", "requests")
+    if unit not in VALID_UNITS:
+        raise ValueError(f"[{provider}]: unit {unit!r} not in {VALID_UNITS}")
+    limit = PlanLimit(
+        window=str(lim.get("window", "month")),
+        quota=float(lim["quota"]),
+        unit=unit,
+        anchor_day=int(lim.get("anchor_day", 1)),
+    )
+    if limit.is_rolling():
+        limit.window_seconds()  # validate format now, loudly
+    return limit
+
+
+def load_catalog(path: Path | None = None) -> dict[str, CatalogEntry]:
+    """Load the bundled plan catalog → {"provider/plan-id": CatalogEntry}.
+
+    Missing/broken catalog → {} (the catalog is a convenience layer;
+    explicit limits in plans.toml never depend on it)."""
+    try:
+        if path is not None:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        else:
+            from importlib import resources
+
+            raw = (
+                resources.files("somm_core") / "data" / "plan_catalog.toml"
+            ).read_bytes()
+            data = tomllib.loads(raw.decode("utf-8"))
+    except Exception:
+        return {}
+    out: dict[str, CatalogEntry] = {}
+    for provider, entries in data.items():
+        if not isinstance(entries, dict):
+            continue
+        for plan_id, spec in entries.items():
+            if not isinstance(spec, dict):
+                continue
+            try:
+                limits = [_parse_limit(provider, lim) for lim in spec.get("limits", [])]
+                lv = spec.get("last_verified", "")
+                entry = CatalogEntry(
+                    provider=provider,
+                    plan_id=plan_id,
+                    display=str(spec.get("display", plan_id)),
+                    source=str(spec.get("source", "")),
+                    last_verified=str(lv),
+                    notes=str(spec.get("notes", "")),
+                    limits=limits,
+                )
+            except Exception:
+                continue
+            out[entry.key] = entry
+    return out
+
+
+def load_plans(
+    path: Path | None = None,
+    catalog: dict[str, CatalogEntry] | None = None,
+) -> dict[str, Plan]:
     """Parse plans.toml → {provider: Plan}. Missing file → {} (defaults
     still apply via plan_for). Malformed entries raise ValueError with the
     offending provider named — a silently ignored quota is worse than a
-    loud config error."""
+    loud config error.
+
+    A plan may set ``catalog = "<plan-id>"`` to inherit its limits from
+    the bundled plan catalog (resolved as ``<provider>/<plan-id>``)
+    instead of spelling them out. Explicit ``[[limits]]`` always win over
+    the catalog. Referencing a plan-id the catalog doesn't know raises —
+    a typo here would silently disable pacing."""
     path = path or plans_path()
     if not path.exists():
         return {}
@@ -192,27 +291,39 @@ def load_plans(path: Path | None = None) -> dict[str, Plan]:
         mode = spec.get("mode", "payg")
         if mode not in VALID_MODES:
             raise ValueError(f"plans.toml [{provider}]: mode {mode!r} not in {VALID_MODES}")
-        limits = []
-        for lim in spec.get("limits", []):
-            unit = lim.get("unit", "requests")
-            if unit not in VALID_UNITS:
-                raise ValueError(f"plans.toml [{provider}]: unit {unit!r} not in {VALID_UNITS}")
-            limit = PlanLimit(
-                window=str(lim.get("window", "month")),
-                quota=float(lim["quota"]),
-                unit=unit,
-                anchor_day=int(lim.get("anchor_day", 1)),
-            )
-            if limit.is_rolling():
-                limit.window_seconds()  # validate format now, loudly
-            limits.append(limit)
+        try:
+            limits = [_parse_limit(provider, lim) for lim in spec.get("limits", [])]
+        except ValueError as exc:
+            raise ValueError(f"plans.toml {exc}") from exc
+
+        catalog_ref = ""
+        cat_id = spec.get("catalog", "")
+        name = str(spec.get("plan", ""))
+        if cat_id:
+            if catalog is None:
+                catalog = load_catalog()
+            key = f"{provider}/{cat_id}"
+            entry = catalog.get(key)
+            if entry is None:
+                known = sorted(k for k in catalog if k.startswith(f"{provider}/"))
+                raise ValueError(
+                    f"plans.toml [{provider}]: catalog = {cat_id!r} not found"
+                    + (f"; known for {provider}: {', '.join(known)}" if known else "")
+                )
+            catalog_ref = key
+            if not limits:
+                limits = list(entry.limits)
+            if not name:
+                name = entry.display
+
         out[provider] = Plan(
             provider=provider,
             mode=mode,
-            name=str(spec.get("plan", "")),
+            name=name,
             soft_target_pct=float(spec.get("soft_target_pct", 80.0)),
             enforce=bool(spec.get("enforce", False)),
             limits=limits,
+            catalog_ref=catalog_ref,
         )
     return out
 
@@ -233,6 +344,11 @@ _UNIT_SQL = {
 }
 
 
+def _provider_aliases(provider: str) -> tuple[str, ...]:
+    """Match historical spellings ('claude_cli' rows predate 'claude-cli')."""
+    return tuple({provider, provider.replace("-", "_"), provider.replace("_", "-")})
+
+
 def usage_in_window(
     db_paths: list[Path],
     provider: str,
@@ -245,6 +361,8 @@ def usage_in_window(
     pacing is advisory and must never take the call path down."""
     now = now or datetime.now(UTC)
     start, _end = limit.bounds(now)
+    aliases = _provider_aliases(provider)
+    marks = ",".join("?" for _ in aliases)
     total = 0.0
     for db in db_paths:
         try:
@@ -252,8 +370,8 @@ def usage_in_window(
             try:
                 row = conn.execute(
                     f"SELECT {_UNIT_SQL[limit.unit]} FROM calls "
-                    f"WHERE provider = ? AND ts >= ?",
-                    (provider, start.isoformat()),
+                    f"WHERE provider IN ({marks}) AND ts >= ?",
+                    (*aliases, start.isoformat()),
                 ).fetchone()
                 total += float(row[0] or 0)
             finally:
@@ -261,6 +379,116 @@ def usage_in_window(
         except Exception:
             continue
     return total
+
+
+@dataclass(slots=True)
+class ObservedCeiling:
+    """A quota estimate inferred from your own telemetry.
+
+    Vendors no longer publish complete numeric limits (as of mid-2026
+    all major metered plans describe quotas qualitatively or in
+    multipliers), but every quota-429 is ground truth: at that moment,
+    trailing-window usage ≈ the binding ceiling. The estimate is the
+    median across observed events — noisy, but empirical and
+    self-updating, which beats stale marketing copy."""
+
+    provider: str
+    window: str
+    unit: str
+    estimate: float
+    n_events: int
+    last_event: str  # ISO timestamp of the most recent quota error
+
+
+_QUOTA_ERROR_WHERE = (
+    "outcome != 'ok' AND ("
+    "error_kind LIKE '%RateLimit%' "
+    "OR lower(coalesce(error_detail,'')) LIKE '%rate_limit%' "
+    "OR lower(coalesce(error_detail,'')) LIKE '%spend limit%' "
+    "OR lower(coalesce(error_detail,'')) LIKE '%usage limit%' "
+    "OR lower(coalesce(error_detail,'')) LIKE '%quota%'"
+    ")"
+)
+
+
+def observed_ceilings(
+    db_paths: list[Path],
+    provider: str,
+    windows: tuple[str, ...] = ("5h", "7d"),
+    units: tuple[str, ...] = ("tokens_total", "requests"),
+    lookback_days: int = 90,
+    max_events: int = 24,
+    now: datetime | None = None,
+) -> list[ObservedCeiling]:
+    """Estimate quota ceilings from quota-429 moments in the fleet.
+
+    For each observed quota error, sum trailing-window usage across all
+    DBs ending at that moment; the median over events estimates the
+    limit. Events within one window-span of a previous event are
+    collapsed (a burst of 429s is one ceiling observation, not many)."""
+    now = now or datetime.now(UTC)
+    aliases = _provider_aliases(provider)
+    marks = ",".join("?" for _ in aliases)
+    cutoff = (now - timedelta(days=lookback_days)).isoformat()
+
+    events: list[datetime] = []
+    for db in db_paths:
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+            try:
+                rows = conn.execute(
+                    f"SELECT ts FROM calls WHERE provider IN ({marks}) "
+                    f"AND ts >= ? AND {_QUOTA_ERROR_WHERE} "
+                    f"ORDER BY ts DESC LIMIT ?",
+                    (*aliases, cutoff, max_events),
+                ).fetchall()
+                for (ts,) in rows:
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        events.append(dt if dt.tzinfo else dt.replace(tzinfo=UTC))
+                    except ValueError:
+                        continue
+            finally:
+                conn.close()
+        except Exception:
+            continue
+    if not events:
+        return []
+    events.sort(reverse=True)
+
+    out: list[ObservedCeiling] = []
+    for window in windows:
+        lim_probe = PlanLimit(window=window, quota=1)
+        if not lim_probe.is_rolling():
+            continue
+        span = timedelta(seconds=lim_probe.window_seconds())
+        # Collapse 429 bursts: keep events at least one span apart.
+        distinct: list[datetime] = []
+        for ev in events:
+            if not distinct or (distinct[-1] - ev) >= span:
+                distinct.append(ev)
+            if len(distinct) >= max_events:
+                break
+        for unit in units:
+            samples = [
+                usage_in_window(db_paths, provider, PlanLimit(window=window, quota=1, unit=unit), now=ev)
+                for ev in distinct
+            ]
+            samples = sorted(s for s in samples if s > 0)
+            if not samples:
+                continue
+            median = samples[len(samples) // 2]
+            out.append(
+                ObservedCeiling(
+                    provider=provider,
+                    window=window,
+                    unit=unit,
+                    estimate=median,
+                    n_events=len(samples),
+                    last_event=events[0].isoformat(),
+                )
+            )
+    return out
 
 
 def limit_statuses(

@@ -76,7 +76,20 @@ independent.
    streaming), add a short sub-section to the landing page linking out
    to the corresponding `docs/*.md`.
 
-5. **Run the test suite one more time.** Version bumps occasionally
+5. **Refresh the bundled data snapshots.** Two files ship stale unless
+   a human refreshes them:
+   - **Pricing bundle** — regenerate from LiteLLM's price file:
+     ```bash
+     uv run python scripts/update_pricing_bundle.py
+     ```
+   - **Plan catalog** (`packages/somm-core/src/somm_core/data/plan_catalog.toml`) —
+     plan limits are vendor marketing copy, not an API. Re-verify any
+     entry whose `last_verified` is older than ~90 days against its
+     `source` URL and bump the date (`somm plans --catalog` lists them
+     with ages). Vendors change subscription limits far more often than
+     token prices — treat unverified entries as suspect.
+
+6. **Run the test suite one more time.** Version bumps occasionally
    touch version-format tests.
    ```bash
    uv run pytest -q
