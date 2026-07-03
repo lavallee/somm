@@ -1,14 +1,23 @@
 # Publishes all somm workspace packages to PyPI via trusted publishing
 # (OIDC — no stored API tokens).
 #
-# PREREQUISITE: before this workflow can run successfully, a
-# "pypi" trusted publisher must be configured on PyPI for EACH of the
-# six packages below (Project settings -> Publishing -> Add a new
-# publisher), pointing at this repo (lavallee/somm), this workflow
-# file (publish.yml), and the "pypi" environment. Each package name
-# must also already exist on PyPI (or use PyPI's "pending publisher"
-# flow for first-time releases). Until that's done, every job here
-# will fail at the publish step with an authentication error.
+# PREREQUISITE: a trusted publisher must be configured on PyPI for EACH
+# package. PyPI requires *pending* publishers (used before a project
+# first exists) to be unique per (repo, workflow, environment) — so each
+# package gets its own GitHub environment, "pypi-<package>":
+#
+#   package         environment
+#   somm            pypi-somm
+#   somm-core       pypi-somm-core
+#   somm-service    pypi-somm-service
+#   somm-mcp        pypi-somm-mcp
+#   somm-langchain  pypi-somm-langchain
+#   somm-skill      pypi-somm-skill
+#
+# Register each pending publisher at PyPI → Account settings →
+# Publishing with: owner "lavallee", repo "somm", workflow
+# "publish.yml", and the environment from the table above. The GitHub
+# environments are created automatically on first workflow run.
 name: Publish to PyPI
 
 on:
@@ -17,9 +26,10 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         package:
           - somm
@@ -28,6 +38,11 @@ jobs:
           - somm-mcp
           - somm-langchain
           - somm-skill
+    environment:
+      name: pypi-${{ matrix.package }}
+      url: https://pypi.org/p/${{ matrix.package }}
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -37,28 +52,7 @@ jobs:
       - name: Build ${{ matrix.package }}
         run: uv build
         working-directory: packages/${{ matrix.package }}
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.package }}
-          path: packages/${{ matrix.package }}/dist/
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/somm
-    permissions:
-      id-token: write
-    steps:
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: dist-*
-          path: dist
-          merge-multiple: true
-      - name: Publish to PyPI
+      - name: Publish ${{ matrix.package }} to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist/
+          packages-dir: packages/${{ matrix.package }}/dist/
