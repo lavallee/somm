@@ -14,8 +14,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "somm-core",
-    "somm",
+    "somm-core==0.6.0",
+    "somm==0.6.0",
     "litellm>=1.40",
     "starlette>=0.40",
     "uvicorn>=0.30",

@@ -43,13 +43,15 @@ independent.
    packages/somm-skill/pyproject.toml
    packages/somm-core/src/somm_core/version.py   # VERSION + SCHEMA_VERSION
    ```
-   One-liner:
+   One-liner (also rewrites the exact inter-package dependency pins —
+   `somm==X`, `somm-core==X` — which MUST move in lockstep or PyPI
+   installs can mix incompatible package versions):
    ```bash
    OLD=0.1.1; NEW=0.2.0
-   for f in pyproject.toml packages/*/pyproject.toml; do
-     sed -i '' "s/version = \"$OLD\"/version = \"$NEW\"/" "$f"
+   for f in pyproject.toml packages/*/pyproject.toml roster.toml; do
+     sed -i "s/version = \"$OLD\"/version = \"$NEW\"/; s/==$OLD\"/==$NEW\"/" "$f"
    done
-   sed -i '' "s/VERSION = \"$OLD\"/VERSION = \"$NEW\"/" packages/somm-core/src/somm_core/version.py
+   sed -i "s/VERSION = \"$OLD\"/VERSION = \"$NEW\"/" packages/somm-core/src/somm_core/version.py
    ```
 
 3. **Update `CHANGELOG.md`.** Add a new dated heading at the top:

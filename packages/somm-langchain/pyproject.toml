@@ -14,8 +14,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "somm-core",
-    "somm",
+    "somm-core==0.6.0",
+    "somm==0.6.0",
     "langchain-core>=0.3",
 ]
 
