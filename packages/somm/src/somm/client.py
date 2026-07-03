@@ -469,6 +469,7 @@ class SommLLM:
             self.config.spool_dir = Path(self.config.db_dir) / "spool"
 
         self.repo = Repository(self.config.db_path)
+        self._shadow_cfg_cache: dict[str, tuple[float, dict | None]] = {}
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
         self._plan_governor = _build_plan_governor(self.config)
@@ -541,6 +542,65 @@ class SommLLM:
         return build_default_providers(self.config, tracker=self._tracker)
 
     # ------------------------------------------------------------------
+
+    # Bodies bigger than this (e.g. multimodal prompts with inline base64
+    # images) are not captured — a truncated prompt can't be re-run
+    # faithfully against the gold model, so skipping beats storing junk.
+    _SAMPLE_BODY_CAP = 200_000  # chars
+
+    def _shadow_config_cached(self, workload_id: str) -> dict | None:
+        """Shadow config with a 5-minute in-process cache — the capture
+        hook runs on every successful call and must not add a query."""
+        now = time.monotonic()
+        cached = self._shadow_cfg_cache.get(workload_id)
+        if cached and cached[0] > now:
+            return cached[1]
+        try:
+            cfg = self.repo.get_shadow_config(workload_id)
+        except Exception:
+            cfg = None
+        self._shadow_cfg_cache[workload_id] = (now + 300.0, cfg)
+        return cfg
+
+    def _maybe_capture_sample(
+        self, wl, call_id: str, prompt, messages, text: str, outcome
+    ) -> None:
+        """Capture prompt/response bodies for online-eval grading.
+
+        A workload's shadow config is the documented opt-in for body
+        storage; private workloads are never captured, whatever their
+        config says. Rate-gated deterministically by call_id (the shadow
+        worker grades exactly what was captured, so sample_rate applies
+        here, once). Never raises — capture must not break the call path.
+        """
+        import json as _json
+
+        try:
+            if outcome != Outcome.OK or not text:
+                return
+            privacy = getattr(wl, "privacy_class", None)
+            if str(getattr(privacy, "value", privacy or "")).lower() == "private":
+                return
+            cfg = self._shadow_config_cached(wl.id)
+            if not cfg:
+                return
+            rate = float(cfg.get("sample_rate", 0.02) or 0.0)
+            if rate <= 0.0:
+                return
+            bucket = int(stable_hash(call_id)[:8], 16) / 0xFFFFFFFF
+            if bucket >= rate:
+                return
+            if messages is not None:
+                body = _json.dumps(messages)
+            elif isinstance(prompt, str):
+                body = prompt
+            else:
+                body = _json.dumps(prompt)
+            if len(body) > self._SAMPLE_BODY_CAP or len(text) > self._SAMPLE_BODY_CAP:
+                return
+            self.repo.write_sample(call_id, body, text)
+        except Exception:
+            pass
 
     def _enforce_budget(self, wl) -> None:
         """Fail-closed daily-budget gate — thin wrapper over the shared helper.
@@ -839,6 +899,7 @@ class SommLLM:
             max_tokens=max_tokens,
         )
         self._writer.submit(call)
+        self._maybe_capture_sample(wl, call_id, prompt, messages, text, outcome)
         hooks.notify_call_observers(_call_event(
             call_id=call_id, correlation_id=correlation_id,
             project=self.config.project, workload=workload,

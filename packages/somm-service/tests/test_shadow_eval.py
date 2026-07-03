@@ -288,8 +288,8 @@ def test_budget_ceiling_stops_grading(tmp_path):
     assert 1 <= summary["calls_graded"] <= 5
 
 
-def test_missing_samples_logs_note_no_crash(tmp_path):
-    """If `samples` row is missing, worker records a note and moves on."""
+def test_missing_samples_not_considered(tmp_path):
+    """Calls without captured bodies are not candidates (capture is the gate)."""
     cfg, repo = _tmp_setup(tmp_path)
     wl = repo.register_workload(name="nosamples", project=cfg.project)
     repo.set_shadow_config(
@@ -324,17 +324,14 @@ def test_missing_samples_logs_note_no_crash(tmp_path):
 
     worker = ShadowEvalWorker(repo, providers=[_GoldProvider()])
     summary = worker.run_once()
-    assert summary["calls_graded"] == 1  # lease claimed, but grade has None scores
+    # 0.7.0: uncaptured calls are no longer candidates at all — sample_rate
+    # is applied once, at capture time in the library. Nothing graded,
+    # nothing churned into "samples not captured" results, no crash.
+    assert summary["calls_graded"] == 0
 
     with repo._open() as conn:
-        row = conn.execute(
-            "SELECT structural_score, embedding_score, judge_reason FROM eval_results"
-        ).fetchone()
-    struct, text_sim, reason = row
-    assert struct is None
-    assert text_sim is None
-    # Notes include an explanation
-    assert "samples" in str(reason)
+        n = conn.execute("SELECT COUNT(*) FROM eval_results").fetchone()[0]
+    assert n == 0
 
 
 def test_lease_prevents_duplicate_grading(tmp_path):

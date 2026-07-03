@@ -204,6 +204,26 @@ class Repository:
 
     # Shadow-eval config ------------------------------------------------------
 
+    def write_sample(self, call_id: str, prompt_body: str, response_body: str) -> None:
+        """Store one call's bodies for online-eval grading.
+
+        Only ever written for workloads that opted into shadow eval (the
+        documented consent for body storage) — see SommLLM's capture
+        hook. INSERT OR IGNORE: a call is sampled at most once.
+
+        FK enforcement is disabled for this one connection: the calls row
+        is written by the ASYNC WriterQueue and usually hasn't landed yet
+        when capture fires. A momentarily-orphaned sample is harmless —
+        every reader joins through calls — and heals when the batch (or a
+        spool drain) lands."""
+        with self._open() as conn:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute(
+                "INSERT OR IGNORE INTO samples (call_id, prompt_body, response_body) "
+                "VALUES (?, ?, ?)",
+                (call_id, prompt_body, response_body),
+            )
+
     def set_shadow_config(self, workload_id: str, config: dict | None) -> None:
         """Attach (or clear) shadow-eval config for a workload.
 

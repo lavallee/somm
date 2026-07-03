@@ -127,8 +127,10 @@ class ShadowEvalWorker:
                     _log.info("shadow: workload %s over budget ($%.4f)", workload_id, spent)
                     continue
 
-                # Sample
-                sampled = _deterministic_sample(calls, cfg.sample_rate, cfg.max_grades_per_run)
+                # Candidates already passed the capture-time sample gate
+                # (rate applied once, in the library) — here we only cap
+                # the per-run batch, deterministically ordered.
+                sampled = _deterministic_sample(calls, 1.0, cfg.max_grades_per_run)
                 for call_row in sampled:
                     if not self._claim_lease(call_row["call_id"]):
                         continue
@@ -154,11 +156,17 @@ class ShadowEvalWorker:
     # Candidate sourcing
 
     def _fetch_candidates(self) -> list[dict]:
+        # Only calls with captured bodies are gradable: sample_rate is
+        # applied ONCE, at capture time in the library (0.7.0+). Historical
+        # candidates that predate body capture are simply never considered
+        # rather than churned into "samples not captured" results.
         with self.repo._open() as conn:
             rows = conn.execute(
                 "SELECT call_id, ts, project, workload_id, provider, model, "
                 "prompt_hash, response_hash, workload_name, privacy_class, "
-                "shadow_config_json FROM shadow_candidates ORDER BY ts DESC LIMIT 500"
+                "shadow_config_json FROM shadow_candidates sc "
+                "WHERE EXISTS (SELECT 1 FROM samples s WHERE s.call_id = sc.call_id) "
+                "ORDER BY ts DESC LIMIT 500"
             ).fetchall()
         return [
             {

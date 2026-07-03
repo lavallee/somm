@@ -4,6 +4,21 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.7.0] — 2026-07-03
+
+### Added — online-eval sample capture (the missing half of the loop)
+
+Shadow grading needs prompt/response bodies, but nothing ever captured
+them — candidates piled up ungradeable. The library now captures
+bodies at call time for workloads that opted into shadow eval (the
+documented consent for body storage): deterministic per-call sampling
+at the workload's `sample_rate` (applied once, at capture — the worker
+no longer re-samples), never for `privacy_class=private`, oversized
+bodies (inline images) skipped rather than truncated, and capture can
+never break the call path. The shadow worker now considers only
+captured candidates, so historical body-less calls age out instead of
+churning into "samples not captured" results.
+
 ## [0.6.1] — 2026-07-03
 
 ### Changed — first PyPI release
