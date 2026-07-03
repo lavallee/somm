@@ -1,12 +1,12 @@
 # somm roadmap
 
-Post-0.2.2 work, in rough priority order. Items move here from
-`docs/intel-sources.md` and from malo proposals (`../malo/docs/*.md`)
+Post-0.2.x work, in rough priority order. Items move here from
+`docs/intel-sources.md` and from usage findings in adopting projects
 as they mature from "idea" to "sized and ready to build."
 
 Nothing here is committed to a release date. The goal is to keep the
-shape of the future sommelier visible without letting the short list
-grow unbounded.
+shape of the future visible without letting the short list grow
+unbounded.
 
 ## Recommendation quality
 
@@ -132,6 +132,72 @@ off X to Y?" conversations.
 `recorded_by_tool` field so the sommelier can trace which agent/tool
 recorded a decision. Useful when multiple assistants share the global
 repo.
+
+## Deferred (sized but not scheduled)
+
+Larger items deliberately deferred; each is promotable when a real
+user demand makes it load-bearing.
+
+### Core product
+
+- **A/B routing** — agent recommendations become live shadow traffic
+  splits with lift calculation. Currently the agent only recommends;
+  no closed loop. (~2–3d.)
+- **`somm.ensemble(prompt, models=[…], aggregate=fn)`** —
+  parallel-model call primitive for ensembling. (~2–3d.)
+- **Auto-eval generation from production samples** — a frontier model
+  writes grading rubrics from sampled call pairs; builds eval suites
+  automatically. (~2d.)
+
+### Telemetry
+
+- **Dedicated tool-call telemetry columns** — once tool-call workloads
+  accumulate real calls, decide whether to lift `tool_calls_count`,
+  `tools_offered_count`, `stop_reason` out of `raw_json` into
+  indexable columns. Don't migrate preemptively — wait for the query
+  pattern.
+- **Streaming tool calls** — providers stream tool-call arguments as
+  deltas; reassembly is non-trivial and matters mainly for
+  low-latency UX, which agent loops don't typically have. Open an
+  issue when a project asks.
+
+### Infrastructure
+
+- **Postgres backend** for small-team shared deployments as an
+  optional `somm[postgres]` extra. SQLite remains default.
+- **Windows service lifecycle** support (Task Scheduler integration).
+  Linux + macOS first.
+- **HF trending model-intel source** — behind a feature flag;
+  OpenRouter is the primary source. Fragile DOM scraping.
+- **Release-feed model-intel sources** (RSS/Atom per-provider) — most
+  are dead; feature-flagged.
+- **Provider-specific tokenizers** as `somm[tokenizers]` extras
+  (tiktoken, etc.). Default approximation (4 chars/token) ships today.
+
+### DX / packaging
+
+- **`somm plugin` command** — install/list/remove plugins (providers,
+  graders, etc.) with supply-chain checks. Currently pip-based.
+- **Packaged installers** (.dmg / .deb) — pipx/uv tool install works
+  today.
+- **Opt-in beacon telemetry for DX measurement** — local-only
+  reporting is the default; any beacon stays opt-in.
+
+### Web admin design
+
+- Recommendation evidence detail panel (deep drawer/modal).
+- Richer dashboard filtering/search beyond per-project toggle + time
+  window.
+- Dark-mode polish (light mode is currently first-class).
+
+### Principles for promoting deferred items
+
+- If a deferred item becomes load-bearing for a real user demand,
+  promote it.
+- If it can ship as an optional extra (`somm[X]`) without bloating
+  core, prefer that over blocking a release.
+- If it would be a days-of-work surprise to someone trying to build it
+  themselves (plugin protocol, extensibility), promote it earlier.
 
 ## What we are *not* planning
 

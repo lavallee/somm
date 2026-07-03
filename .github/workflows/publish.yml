@@ -1,0 +1,64 @@
+# Publishes all somm workspace packages to PyPI via trusted publishing
+# (OIDC — no stored API tokens).
+#
+# PREREQUISITE: before this workflow can run successfully, a
+# "pypi" trusted publisher must be configured on PyPI for EACH of the
+# six packages below (Project settings -> Publishing -> Add a new
+# publisher), pointing at this repo (lavallee/somm), this workflow
+# file (publish.yml), and the "pypi" environment. Each package name
+# must also already exist on PyPI (or use PyPI's "pending publisher"
+# flow for first-time releases). Until that's done, every job here
+# will fail at the publish step with an authentication error.
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          - somm
+          - somm-core
+          - somm-service
+          - somm-mcp
+          - somm-langchain
+          - somm-skill
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build ${{ matrix.package }}
+        run: uv build
+        working-directory: packages/${{ matrix.package }}
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.package }}
+          path: packages/${{ matrix.package }}/dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/somm
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

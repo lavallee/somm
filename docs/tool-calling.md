@@ -1,8 +1,8 @@
 # Tool-calling — design
 
-**Status:** in-progress (2026-05-19). Anthropic + OpenAI providers land first; Gemini/OpenRouter/MiniMax/DeepSeek/Ollama follow.
+**Status:** shipped (2026-05-19). All providers support tools; see CHANGELOG for the rollout.
 
-**Driving project:** Starboard's Orca orchestrator runs on `deepagents`, which mandates a tool-calling LLM. Without tool support somm can't be the substrate for any project that builds agents. See `../starboard/docs/proposal/` for the upstream context.
+**Motivation:** agent frameworks (`deepagents`, LangChain agents, and similar) mandate a tool-calling LLM. Without tool support somm can't be the substrate for any project that builds agents.
 
 ## Goal
 

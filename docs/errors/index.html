@@ -39,6 +39,16 @@
         <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_PROVIDERS_EXHAUSTED.md"><code>SOMM_PROVIDERS_EXHAUSTED</code></a> — every provider is cooled for longer than the retry cap</li>
         <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_SCHEMA_STALE.md"><code>SOMM_SCHEMA_STALE</code></a> — DB schema older than the library expects</li>
         <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_PRIVACY_VIOLATION.md"><code>SOMM_PRIVACY_VIOLATION</code></a> — attempted to egress a <code>privacy_class=PRIVATE</code> workload</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_NO_CAPABLE_PROVIDER.md"><code>SOMM_NO_CAPABLE_PROVIDER</code></a> — no provider in the chain can serve a required capability</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_PROVIDER_TIMEOUT.md"><code>SOMM_PROVIDER_TIMEOUT</code></a> — a provider call didn't return before the timeout</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_PROVIDER_RATE_LIMIT.md"><code>SOMM_PROVIDER_RATE_LIMIT</code></a> — a provider returned HTTP 429</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_PROVIDER_5XX.md"><code>SOMM_PROVIDER_5XX</code></a> — a provider returned a server-side error</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_EMPTY_RESPONSE.md"><code>SOMM_EMPTY_RESPONSE</code></a> — a model returned no usable content</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_PROVIDER_INSUFFICIENT_CREDIT.md"><code>SOMM_PROVIDER_INSUFFICIENT_CREDIT</code></a> — a provider's account balance/quota is exhausted</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_PROVIDER_AUTH.md"><code>SOMM_PROVIDER_AUTH</code></a> — a provider rejected the call as unauthenticated/unauthorized</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_PROVIDER_BAD_REQUEST.md"><code>SOMM_PROVIDER_BAD_REQUEST</code></a> — a provider rejected the call as malformed</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_BUDGET_EXCEEDED.md"><code>SOMM_BUDGET_EXCEEDED</code></a> — the fail-closed daily budget gate refused the call before dispatch</li>
+        <li><a href="https://github.com/lavallee/somm/blob/main/docs/errors/SOMM_ERROR.md"><code>SOMM_ERROR</code></a> — base code for the somm exception hierarchy</li>
       </ul>
 
       <p>Links open the canonical markdown on GitHub for rich rendering.

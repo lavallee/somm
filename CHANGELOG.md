@@ -6,6 +6,82 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — bundled pricing snapshot; cost tracking now works for every provider
+
+`somm-core` ships `data/pricing_bundle.json` (~350 models, derived from
+LiteLLM's community price file by `scripts/update_pricing_bundle.py`)
+and a new `sync_bundled_pricing(repo)` that upserts it into
+`model_intel` on library init. Existing databases get it too: rows
+sourced from the old seed or a previous bundle are refreshed; manually
+set or live-refreshed rows are never touched. A crc32 fingerprint in
+`PRAGMA user_version` makes repeat syncs a no-op. Previously only a
+handful of hand-seeded anthropic/openai models ever cost-tracked;
+gemini, deepseek, minimax, perplexity, and openrouter paid models all
+logged $0 forever. `_PAID_PROVIDERS` now covers all six paid providers
+so missing pricing warns loudly.
+
+### Added — `somm backfill-costs`
+
+Recomputes `cost_usd` for historical calls logged at $0 whose
+(provider, model) now has pricing intel, from the recorded token
+counts. `--dry-run` reports without writing; `--since N` limits the
+window. On a real production database this recovered ~$290 of
+previously invisible spend in one command.
+
+### Added — intelligence loop without a dedicated service
+
+- `SOMM_INPROCESS_WORKERS=1` runs the somm-service scheduler (model
+  intel refresh, online-eval grading, agent recommendations) inside
+  the library process — no `somm serve` needed. Singleton per DB per
+  process; requires somm-service installed.
+- When online eval is configured but no worker has ever run, the
+  library now prints a one-line stderr warning (once per DB per
+  process) instead of letting sampled calls pile up ungraded silently.
+
+### Added — `somm.hooks` extension surface
+
+Neutral integration point replacing the previous hard-wired
+soft-integration: `set_correlation_provider()` stamps an external id
+(request/trace/job id) on every `calls` row, and `add_call_observer()`
+receives an event dict after every generate/stream/embed call.
+Integrations can also attach via the `somm.hooks` entry-point group.
+Hook failures never break the call path. Schema migration 0009 renames
+`calls.commission_id` → `calls.correlation_id` (the column was
+write-only, so the rename is data-safe).
+
+### Fixed
+
+- The MCP server and the shadow-eval worker now build the exact
+  provider chain `SommLLM` builds (via the new
+  `somm.client.build_default_providers`) — previously both wired only
+  5 of 10 providers, so `somm_compare`/`somm_replay`/shadow grading
+  could never reach gemini, deepseek, perplexity, or the CLI
+  executors.
+- `SommPrivacyViolation` (and the other user-facing error classes) are
+  now exported from `somm` — `examples/private_workload.py` previously
+  crashed with `AttributeError` at its own `except` clause.
+- `SommStrictMode.code` is now `SOMM_WORKLOAD_UNREGISTERED`, matching
+  the operator-facing message and docs page (was `SOMM_STRICT_MODE`,
+  which matched neither).
+- Local ollama 503 "server busy" (queue full) now cools for 5s instead
+  of 30s — a momentary queue spike no longer instantly exhausts
+  single-provider projects.
+- Live-ollama tests skip embedding-only models and skip (instead of
+  fail) when the server is contended.
+- `somm-serve admin list-intel` empty-state hint printed a command
+  that doesn't exist.
+
+### Changed — docs & packaging
+
+README rewritten around the full current surface (10 providers, 6
+packages, tool calling / streaming / embeddings, full env-var table);
+PLAN.md archived out of the repo with `docs/BLUEPRINT.md` as the
+canonical design doc; TODOS.md folded into ROADMAP.md; 9 missing
+`SOMM_*` error pages added; CONTRIBUTING/SECURITY/CODE_OF_CONDUCT,
+issue/PR templates, ruff + Python-matrix CI, PyPI trusted-publishing
+workflow, `py.typed` markers, and per-package READMEs added; all
+package versions unified at 0.3.0.dev0.
+
 ### Added — `somm-langchain` adapter package
 
 New workspace package: `SommChatModel(BaseChatModel)` for LangChain /
@@ -25,12 +101,12 @@ Failures surface as `RuntimeError` by default (so retry / circuit-
 breaker middleware engages) or as an error-flagged `AIMessage` when
 `raise_on_failure=False` for callers that prefer in-band error handling.
 
-Driving project: Starboard's Orca runs on deepagents. This is the
-unlock that lets Starboard's agent substrate go through somm.
+Driven by agent orchestrators running on deepagents. This is the
+unlock that lets agent substrates go through somm.
 
 13 new tests cover message translation in both directions, tool
 binding, tool_choice variants, provenance metadata, and the error
-modes. Full suite: 356 tests passing.
+modes.
 
 ### Added — Tool-calling (Anthropic + OpenAI-compat; agent substrate)
 
@@ -62,9 +138,9 @@ treats a tool-use turn (empty `text` + non-empty `tool_calls`) as
 valid — it would previously have been recycled as "transient empty"
 and exhausted the chain.
 
-Driving project: Starboard's Orca orchestrator runs on `deepagents`,
-which mandates tool-calling. Without this somm couldn't be the
-substrate for any agent project. Full spec lives in
+Driven by agent orchestrators on `deepagents`, which mandate
+tool-calling. Without this somm couldn't be the substrate for any
+agent project. Full spec lives in
 [docs/tool-calling.md](./docs/tool-calling.md).
 
 ### Added — Tool-calling rollout: Gemini, Ollama, capability seeding
@@ -104,9 +180,9 @@ multi-turn call is made, instead of the ignored `prompt` placeholder —
 so replay/cache/dedup keys off the real conversation.
 
 With Gemini and Ollama landed, every shipping provider supports tools;
-no adapter silently drops a `tools=` request (item 6 in TODOS.md is
-resolved by this — unsupported features raise loudly). Schema-0008
-telemetry columns and streaming tool calls remain deferred by design.
+no adapter silently drops a `tools=` request — unsupported features
+raise loudly. Dedicated tool-call telemetry columns and streaming tool
+calls remain deferred by design (see ROADMAP.md).
 
 ### Fixed — WriterQueue drains pending calls on normal process exit
 
@@ -122,8 +198,8 @@ still alive, so the flush completes cleanly. Idempotent against
 explicit `close()` calls; tolerates partial-teardown errors silently
 so it never blocks process exit.
 
-This was caught in steve's `listing_time_allocation` evaluation runs
-where short-lived comparison scripts were losing telemetry rows.
+This was caught in a sibling project's evaluation runs where
+short-lived comparison scripts were losing telemetry rows.
 
 ### Added — `no_fallback` for pinned-or-bust evaluation runs
 
@@ -133,7 +209,7 @@ silently routing to the next provider in the chain, the call returns with
 `outcome=UPSTREAM_ERROR` and the *pinned* (provider, model) preserved on
 the `SommResult` and `calls` row.
 
-Driven by the same sibling-project (steve) finding that exposed the
+Driven by the same sibling-project finding that exposed the
 adequacy-frontier gap: when running an A/B comparison between two models on
 the same workload, the rescue path makes failures invisible — you see a
 result tagged with the pinned model that was actually produced by the
@@ -144,7 +220,7 @@ the chain when the preferred provider transiently fails.
 
 ### Added — adequacy frontier per workload (schema v6)
 
-Driven by sibling-project demand (steve's `parse_listing` workload, where
+Driven by sibling-project demand (a parsing workload where
 some models we have at our immediate disposal struggle and the question
 "is this model performing adequately, or should we go shopping?" was
 hard to answer from telemetry alone).
@@ -204,8 +280,8 @@ queries are unchanged.
 
 ### Added — sommelier quality
 
-Driven by findings from malo's captioner selection
-(`../malo/docs/somm-sommelier-report.md`).
+Driven by findings from a sibling project's captioner-selection
+report.
 
 - **Output-modality filter** — `AdviseConstraints.required_output_modalities`
   drops candidates whose output modality isn't a superset of the request.
