@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from somm_core.repository import Repository
 
 
-def build_workers_factory(cfg: "Config", repo: "Repository"):
+def build_workers_factory(cfg: Config, repo: Repository):
     """Create a factory that returns a worker instance for a given job name."""
     from somm.client import build_default_providers
 
@@ -39,7 +39,7 @@ def build_workers_factory(cfg: "Config", repo: "Repository"):
     return factory
 
 
-def start_inprocess_scheduler(cfg: "Config", repo: "Repository"):
+def start_inprocess_scheduler(cfg: Config, repo: Repository):
     """Start the background scheduler inside the current process.
 
     This is what `somm serve` runs, minus the web server — for library-only

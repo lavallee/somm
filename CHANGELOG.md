@@ -4,6 +4,16 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.7.1] — 2026-07-03
+
+### Fixed — in-process workers no longer require the web stack
+
+`start_inprocess_scheduler` moved to `somm_service.inprocess`
+(workers-only import weight); importing it via `somm_service.app`
+dragged in starlette, which broke SOMM_INPROCESS_WORKERS=1 in
+environments that have the workers' deps but not the web server's.
+Old import path re-exported for compatibility.
+
 ## [0.7.0] — 2026-07-03
 
 ### Added — online-eval sample capture (the missing half of the loop)

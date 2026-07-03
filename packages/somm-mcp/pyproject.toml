@@ -1,6 +1,6 @@
 [project]
 name = "somm-mcp"
-version = "0.7.0"
+version = "0.7.1"
 description = "somm MCP server — exposes telemetry + recommendations to coding agents"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -14,8 +14,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "somm-core==0.7.0",
-    "somm==0.7.0",
+    "somm-core==0.7.1",
+    "somm==0.7.1",
     "mcp>=1.2",
 ]
 

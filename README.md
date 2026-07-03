@@ -493,5 +493,5 @@ internal names or personal paths.
 
 ## Status
 
-**v0.7.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
+**v0.7.1.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

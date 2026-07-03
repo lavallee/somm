@@ -2,7 +2,7 @@
 
 [app]
 name = "somm"
-version = "0.7.0"
+version = "0.7.1"
 description = "Self-hosted LLM telemetry, routing, and model-intelligence loop. Wraps a provider chain (ollama / OpenRouter / Anthropic / OpenAI / Gemini / Minimax) with per-call cost tracking, shadow-eval, and cross-project model memory. The metering substrate other tools bill against."
 
 [[capabilities]]
