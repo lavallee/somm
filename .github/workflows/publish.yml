@@ -58,3 +58,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist-${{ matrix.package }}/
+          # Idempotent re-runs: a version already on PyPI is skipped, not an
+          # error — needed when a partial publish (e.g. staged pending-
+          # publisher registration) is completed by re-dispatching.
+          skip-existing: true
