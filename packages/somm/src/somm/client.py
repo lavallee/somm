@@ -121,7 +121,7 @@ def _maybe_start_inprocess_workers(config: Config, repo: Repository):
     if key in _inprocess_schedulers:
         return _inprocess_schedulers[key]
     try:
-        from somm_service.app import start_inprocess_scheduler
+        from somm_service.inprocess import start_inprocess_scheduler
     except ImportError:
         print(
             "[somm] SOMM_INPROCESS_WORKERS=1 but somm-service is not "

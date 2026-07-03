@@ -415,44 +415,14 @@ def create_app(config: Config | None = None) -> Starlette:
     return app
 
 
-def _build_workers_factory(cfg: Config, repo: Repository):
-    """Create a factory that returns a worker instance for a given job name."""
-    from somm.client import build_default_providers
-
-    from somm_service.workers import (
-        AgentWorker,
-        ModelIntelWorker,
-        ShadowEvalWorker,
-    )
-
-    def factory(job_name: str):
-        if job_name == "model_intel":
-            return ModelIntelWorker(repo, ollama_url=cfg.ollama_url)
-        if job_name == "shadow_eval":
-            # Same chain SommLLM builds — shadow grading can reach every
-            # provider the library can (gemini, deepseek, CLI executors, …).
-            return ShadowEvalWorker(repo, providers=build_default_providers(cfg))
-        if job_name == "agent":
-            return AgentWorker(repo)
-        return None
-
-    return factory
-
-
-def start_inprocess_scheduler(cfg: Config, repo: Repository):
-    """Start the background scheduler inside the current process.
-
-    This is what `somm serve` runs, minus the web server — for library-only
-    deployments that still want the intelligence loop (model-intel refresh,
-    online-eval grading, recommendations) without a dedicated service.
-    Enabled from the library via SOMM_INPROCESS_WORKERS=1. Returns the
-    running Scheduler; caller owns stop().
-    """
-    from somm_service.workers import Scheduler
-
-    scheduler = Scheduler(repo, _build_workers_factory(cfg, repo))
-    scheduler.start()
-    return scheduler
+# Moved to somm_service.inprocess (workers-only import weight, no
+# starlette) — re-exported here for backward compatibility.
+from somm_service.inprocess import (  # noqa: E402
+    build_workers_factory as _build_workers_factory,
+)
+from somm_service.inprocess import (  # noqa: E402,F401
+    start_inprocess_scheduler,
+)
 
 
 def run_server(
