@@ -7,6 +7,7 @@ warning), call_id in result for provenance.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 import time
@@ -16,7 +17,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from somm_core import EmbedResult, Outcome, SommResult, cost_for_call
-from somm_core.pricing import seed_known_pricing
 from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.models import Call, Prompt
@@ -27,8 +27,10 @@ from somm_core.parse import (
     infer_capabilities,
     stable_hash,
 )
+from somm_core.pricing import seed_known_pricing, sync_bundled_pricing
 from somm_core.repository import Repository
 
+from somm import hooks
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import get_prompt, register_prompt
 from somm.providers.anthropic import AnthropicProvider
@@ -37,6 +39,8 @@ from somm.providers.base import (
     SommProvider,
     SommRequest,
 )
+from somm.providers.claude_cli import ClaudeCLIProvider
+from somm.providers.codex_cli import CodexCLIProvider
 from somm.providers.deepseek import DeepSeekProvider
 from somm.providers.gemini import GeminiProvider
 from somm.providers.minimax import MinimaxProvider
@@ -44,8 +48,6 @@ from somm.providers.ollama import OllamaProvider
 from somm.providers.openai import OpenAIProvider
 from somm.providers.openrouter import OpenRouterProvider
 from somm.providers.perplexity import PerplexityProvider
-from somm.providers.claude_cli import ClaudeCLIProvider
-from somm.providers.codex_cli import CodexCLIProvider
 from somm.routing import ProviderHealthTracker, Router
 from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
@@ -56,22 +58,81 @@ SommStrictMode = _SommStrictMode  # re-export; new canonical lives in somm.error
 # warning so we only warn once per workload per day per process.
 _warned_budget_exceeded: set[tuple[str, date]] = set()
 
+# One in-process scheduler per DB per process (SOMM_INPROCESS_WORKERS=1).
+_inprocess_schedulers: dict[str, object] = {}
 
-def _scribe_commission_id() -> str | None:
-    """Soft read of scribe's active commission_id contextvar.
+# DBs we've already warned about a configured-but-dormant intelligence loop.
+_warned_dormant_loop: set[str] = set()
 
-    Returns None when scribe isn't installed, isn't initialized, or no
-    commission is active. Never raises — somm must work without scribe.
+
+def _maybe_start_inprocess_workers(config: Config, repo: Repository):
+    """Start the somm-service scheduler inside this process, once per DB.
+
+    Library-only deployments that set SOMM_INPROCESS_WORKERS=1 get the
+    full intelligence loop (model-intel refresh, online-eval grading,
+    recommendations) without running `somm serve`. Requires somm-service.
     """
+    key = str(config.db_path)
+    if key in _inprocess_schedulers:
+        return _inprocess_schedulers[key]
     try:
-        import scribe  # type: ignore
-        return scribe.current_commission_id()
-    except Exception:
+        from somm_service.app import start_inprocess_scheduler
+    except ImportError:
+        print(
+            "[somm] SOMM_INPROCESS_WORKERS=1 but somm-service is not "
+            "installed — `pip install somm-service` to enable the "
+            "in-process intelligence loop.",
+            file=sys.stderr,
+        )
         return None
+    try:
+        scheduler = start_inprocess_scheduler(config, repo)
+    except Exception as exc:
+        print(f"[somm] in-process workers failed to start: {exc}", file=sys.stderr)
+        return None
+    _inprocess_schedulers[key] = scheduler
+    return scheduler
 
 
-def _scribe_emit_llm_call(
+def _warn_if_intelligence_loop_dormant(config: Config, repo: Repository) -> None:
+    """One-line heads-up when online eval is configured but nothing grades it.
+
+    The most common somm deployment gap: a workload opts into shadow
+    sampling, but no scheduler ever runs, so calls pile up ungraded and
+    the recommendation loop stays silent forever. Warn once per DB per
+    process; never raise.
+    """
+    key = str(config.db_path)
+    if key in _warned_dormant_loop:
+        return
+    _warned_dormant_loop.add(key)
+    try:
+        with repo._open() as conn:
+            shadow_n = conn.execute(
+                "SELECT COUNT(*) FROM workloads WHERE shadow_config_json IS NOT NULL"
+            ).fetchone()[0]
+            if not shadow_n:
+                return
+            heartbeat_n = conn.execute(
+                "SELECT COUNT(*) FROM worker_heartbeat"
+            ).fetchone()[0]
+        if heartbeat_n == 0:
+            print(
+                f"[somm] online eval is configured for {shadow_n} workload(s) "
+                f"but no worker has ever run — sampled calls are piling up "
+                f"ungraded. Run `somm serve`, `somm-serve admin run-shadow`, "
+                f"or set SOMM_INPROCESS_WORKERS=1.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+
+
+def _call_event(
     *,
+    call_id: str,
+    correlation_id: str | None,
+    project: str,
     workload: str,
     provider: str,
     model: str,
@@ -83,45 +144,114 @@ def _scribe_emit_llm_call(
     temperature: float | None = None,
     max_tokens: int | None = None,
     error_kind: str | None = None,
-    call_id: str | None = None,
-) -> None:
-    """Mirror an LLM call into scribe's events table when a commission is active.
+) -> dict:
+    """Assemble the observer event for one completed call.
 
-    The full row stays in somm's calls.sqlite (for cost/budget/health tracking);
-    this thin mirror exists so that `scribe show <commission_id>` can render
-    the LLM activity inline with skill/decision/tool rows without a cross-DB
-    join. No-op when scribe isn't installed or no commission is active.
+    The full row stays in somm's calls.sqlite; this event is what external
+    audit hooks receive (see somm.hooks). Keys are stable — additions only.
     """
-    try:
-        import scribe  # type: ignore
-    except Exception:
-        return
-    if scribe.current_commission_id() is None:
-        return
-    body = {
-        "provider": provider, "model": model,
-        "tokens_in": tokens_in, "tokens_out": tokens_out,
-        "cost_usd": round(cost_usd, 6) if cost_usd else 0.0,
+    return {
         "call_id": call_id,
+        "correlation_id": correlation_id,
+        "project": project,
+        "workload": workload,
+        "provider": provider,
+        "model": model,
+        "outcome": outcome,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "latency_ms": latency_ms,
+        "cost_usd": round(cost_usd, 6) if cost_usd else 0.0,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "error_kind": error_kind,
     }
-    if temperature is not None: body["temperature"] = temperature
-    if max_tokens is not None:  body["max_tokens"] = max_tokens
-    if error_kind:              body["error_kind"] = error_kind
-    status = "success" if outcome == "ok" else (
-        "error" if outcome in ("upstream_error", "exhausted", "timeout") else "warning"
+
+
+def build_default_providers(config: Config, tracker=None) -> list[SommProvider]:
+    """Build the provider chain from config.
+
+    Default order (sovereign-first): ollama → openrouter → deepseek →
+    minimax → anthropic → gemini → openai → perplexity. Override with
+    SOMM_PROVIDER_ORDER env var (comma-separated, e.g.
+    "openrouter,minimax,ollama").
+
+    Every commercial-API provider is opt-in via its env var. Library
+    works offline with just ollama. Shared by SommLLM and the MCP
+    server so both expose the identical chain.
+    """
+    available: dict[str, SommProvider] = {}
+    available["ollama"] = OllamaProvider(
+        base_url=config.ollama_url,
+        default_model=config.ollama_model,
+        enable_think=config.ollama_think,
+        keep_alive=config.ollama_keep_alive,
     )
-    try:
-        scribe.event(
-            kind="llm_call",
-            actor=workload,
-            title=f"{provider}/{model}",
-            body=body,
-            status=status,
-            latency_ms=latency_ms,
+    # CLI executors — subscription-seat `claude -p` / `codex exec`, gated on the binary being
+    # present. Not in default_order (so they don't change existing projects' routing); reach
+    # them by setting provider_order (SOMM_PROVIDER_ORDER) or pinning generate(provider=...).
+    import shutil
+
+    if shutil.which("claude"):
+        available["claude-cli"] = ClaudeCLIProvider(timeout=max(config.http_timeout, 600.0))
+    if shutil.which("codex"):
+        available["codex-cli"] = CodexCLIProvider(timeout=max(config.http_timeout, 600.0))
+    if config.openrouter_api_key:
+        available["openrouter"] = OpenRouterProvider(
+            api_key=config.openrouter_api_key,
+            roster=config.openrouter_roster,
+            tracker=tracker,
         )
-    except Exception:
-        # Audit logging must never break the LLM call path.
-        pass
+    if config.minimax_api_key:
+        available["minimax"] = MinimaxProvider(
+            api_key=config.minimax_api_key,
+            default_model=config.minimax_model,
+            timeout=config.http_timeout,
+        )
+    if config.deepseek_api_key:
+        available["deepseek"] = DeepSeekProvider(
+            api_key=config.deepseek_api_key,
+            default_model=config.deepseek_model,
+            timeout=config.http_timeout,
+        )
+    if config.anthropic_api_key:
+        available["anthropic"] = AnthropicProvider(
+            api_key=config.anthropic_api_key,
+            default_model=config.anthropic_model,
+        )
+    if config.openai_api_key:
+        available["openai"] = OpenAIProvider(
+            api_key=config.openai_api_key,
+            base_url=config.openai_base_url,
+            default_model=config.openai_model,
+            timeout=config.http_timeout,
+        )
+    if config.gemini_api_key:
+        available["gemini"] = GeminiProvider(
+            api_key=config.gemini_api_key,
+            default_model=config.gemini_model,
+        )
+    if config.perplexity_api_key:
+        available["perplexity"] = PerplexityProvider(
+            api_key=config.perplexity_api_key,
+            default_model=config.perplexity_model,
+            timeout=max(config.http_timeout, 300.0),
+        )
+
+    if config.provider_order:
+        # Exclusive: ONLY providers in the list, in the listed order.
+        # If you set SOMM_PROVIDER_ORDER=openrouter,minimax,ollama
+        # then anthropic is NOT in the chain, even if its key is set.
+        chain = [available[p] for p in config.provider_order if p in available]
+        return chain if chain else list(available.values())
+
+    # Default order — sovereign-first, then strong-paid (deepseek now in slot 3).
+    # perplexity is pinned-only: it sits last so it's reachable via
+    # `generate(provider="perplexity")` / `_pick_provider`, but the router
+    # only reaches it if every other provider is exhausted — search-grounded
+    # sonar models are a deliberate choice, not a routine fallback target.
+    default_order = ["ollama", "openrouter", "deepseek", "minimax", "anthropic", "gemini", "openai", "perplexity"]
+    return [available[p] for p in default_order if p in available]
 
 
 def _format_error_detail(exc: Exception, provider: str, model: str | None) -> str:
@@ -283,9 +413,10 @@ class SommLLM:
         mode: str | None = None,
         providers: list[SommProvider] | None = None,
         config: Config | None = None,
-        on_error: "Callable[[dict], None] | None" = None,
-        on_fallback: "Callable[[dict], None] | None" = None,
+        on_error: Callable[[dict], None] | None = None,
+        on_fallback: Callable[[dict], None] | None = None,
     ) -> None:
+        hooks.load_entry_points()
         self.config = config or load_config(project=project)
         if mode is not None:
             self.config.mode = mode
@@ -300,14 +431,14 @@ class SommLLM:
         # dict. Default writes a one-line warning to stderr so failures are
         # visible in the caller's terminal. Pass on_error=lambda _: None to
         # suppress, or your own callable to forward to logging / Slack / etc.
-        self._on_error: "Callable[[dict], None] | None" = (
+        self._on_error: Callable[[dict], None] | None = (
             on_error if on_error is not None else _default_stderr_alerter
         )
         # Self-healing notice — fires when a pinned (provider, model) call
         # failed and the chain recovered. The call itself succeeded, so this
         # is intentionally *not* an error; it's observability for silent
         # degradation (pinned provider down, key rotated, rate-limit wave).
-        self._on_fallback: "Callable[[dict], None] | None" = (
+        self._on_fallback: Callable[[dict], None] | None = (
             on_fallback if on_fallback is not None else _default_stderr_fallback_notifier
         )
 
@@ -331,6 +462,16 @@ class SommLLM:
 
         # Seed pricing on first use so cost tracking works out of the box.
         seed_known_pricing(self.repo)
+        sync_bundled_pricing(self.repo)
+
+        # Intelligence-loop activation: run the service scheduler in-process
+        # when asked; otherwise warn (once) if grading is configured but no
+        # worker has ever run.
+        self._scheduler = None
+        if self.config.inprocess_workers:
+            self._scheduler = _maybe_start_inprocess_workers(self.config, self.repo)
+        else:
+            _warn_if_intelligence_loop_dormant(self.config, self.repo)
 
     def register_workload(self, **kwargs):
         """Register a workload in the project repo AND mirror-if-enabled."""
@@ -343,87 +484,7 @@ class SommLLM:
         return wl
 
     def _default_providers(self) -> list[SommProvider]:
-        """Build the provider chain from config.
-
-        Default order (sovereign-first): ollama → openrouter → minimax →
-        anthropic → openai. Override with SOMM_PROVIDER_ORDER env var
-        (comma-separated, e.g. "openrouter,minimax,ollama").
-
-        Every commercial-API provider is opt-in via its env var. Library
-        works offline with just ollama.
-        """
-        available: dict[str, SommProvider] = {}
-        available["ollama"] = OllamaProvider(
-            base_url=self.config.ollama_url,
-            default_model=self.config.ollama_model,
-            enable_think=self.config.ollama_think,
-            keep_alive=self.config.ollama_keep_alive,
-        )
-        # CLI executors — subscription-seat `claude -p` / `codex exec`, gated on the binary being
-        # present. Not in default_order (so they don't change existing projects' routing); reach
-        # them by setting provider_order (SOMM_PROVIDER_ORDER) or pinning generate(provider=...).
-        import shutil
-
-        if shutil.which("claude"):
-            available["claude-cli"] = ClaudeCLIProvider(timeout=max(self.config.http_timeout, 600.0))
-        if shutil.which("codex"):
-            available["codex-cli"] = CodexCLIProvider(timeout=max(self.config.http_timeout, 600.0))
-        if self.config.openrouter_api_key:
-            available["openrouter"] = OpenRouterProvider(
-                api_key=self.config.openrouter_api_key,
-                roster=self.config.openrouter_roster,
-                tracker=self._tracker,
-            )
-        if self.config.minimax_api_key:
-            available["minimax"] = MinimaxProvider(
-                api_key=self.config.minimax_api_key,
-                default_model=self.config.minimax_model,
-                timeout=self.config.http_timeout,
-            )
-        if self.config.deepseek_api_key:
-            available["deepseek"] = DeepSeekProvider(
-                api_key=self.config.deepseek_api_key,
-                default_model=self.config.deepseek_model,
-                timeout=self.config.http_timeout,
-            )
-        if self.config.anthropic_api_key:
-            available["anthropic"] = AnthropicProvider(
-                api_key=self.config.anthropic_api_key,
-                default_model=self.config.anthropic_model,
-            )
-        if self.config.openai_api_key:
-            available["openai"] = OpenAIProvider(
-                api_key=self.config.openai_api_key,
-                base_url=self.config.openai_base_url,
-                default_model=self.config.openai_model,
-                timeout=self.config.http_timeout,
-            )
-        if self.config.gemini_api_key:
-            available["gemini"] = GeminiProvider(
-                api_key=self.config.gemini_api_key,
-                default_model=self.config.gemini_model,
-            )
-        if self.config.perplexity_api_key:
-            available["perplexity"] = PerplexityProvider(
-                api_key=self.config.perplexity_api_key,
-                default_model=self.config.perplexity_model,
-                timeout=max(self.config.http_timeout, 300.0),
-            )
-
-        if self.config.provider_order:
-            # Exclusive: ONLY providers in the list, in the listed order.
-            # If you set SOMM_PROVIDER_ORDER=openrouter,minimax,ollama
-            # then anthropic is NOT in the chain, even if its key is set.
-            chain = [available[p] for p in self.config.provider_order if p in available]
-            return chain if chain else list(available.values())
-
-        # Default order — sovereign-first, then strong-paid (deepseek now in slot 3).
-        # perplexity is pinned-only: it sits last so it's reachable via
-        # `generate(provider="perplexity")` / `_pick_provider`, but the router
-        # only reaches it if every other provider is exhausted — search-grounded
-        # sonar models are a deliberate choice, not a routine fallback target.
-        default_order = ["ollama", "openrouter", "deepseek", "minimax", "anthropic", "gemini", "openai", "perplexity"]
-        return [available[p] for p in default_order if p in available]
+        return build_default_providers(self.config, tracker=self._tracker)
 
     # ------------------------------------------------------------------
 
@@ -637,7 +698,7 @@ class SommLLM:
                                 tokens_out=tokens_out,
                                 latency_ms=latency_ms,
                             )
-                    except Exception as fallback_exc:
+                    except Exception:
                         # Total failure — clear fallback_info so on_fallback
                         # doesn't fire; on_error handles final-failure signal.
                         fallback_info = None
@@ -719,18 +780,20 @@ class SommLLM:
             # real content rather than an ignored arg.
             prompt_hash=stable_hash(messages if messages is not None else prompt),
             response_hash=stable_hash(text),
-            commission_id=_scribe_commission_id(),
+            correlation_id=(correlation_id := hooks.current_correlation_id()),
             temperature=temperature,
             max_tokens=max_tokens,
         )
         self._writer.submit(call)
-        _scribe_emit_llm_call(
-            workload=workload, provider=actual_provider, model=actual_model,
+        hooks.notify_call_observers(_call_event(
+            call_id=call_id, correlation_id=correlation_id,
+            project=self.config.project, workload=workload,
+            provider=actual_provider, model=actual_model,
             outcome=outcome.value, tokens_in=tokens_in, tokens_out=tokens_out,
             latency_ms=latency_ms, cost_usd=result.cost_usd,
             temperature=temperature, max_tokens=max_tokens,
-            error_kind=error_kind, call_id=call_id,
-        )
+            error_kind=error_kind,
+        ))
 
         # Fire the on_error alerter whenever the call did not succeed.
         if outcome != Outcome.OK and self._on_error is not None:
@@ -864,11 +927,11 @@ class SommLLM:
             wl = self.repo.register_workload(name=workload, project=self.config.project)
 
         # v1: pin to ollama. No router involvement — `force ollama, no
-        # fallbacks` is the explicit posture for the calling project (eno
-        # tiling-check). Loosening this means deciding what cross-provider
-        # embedding routing should look like (different models = different
-        # vector spaces; cosine across them is meaningless), so it's a
-        # design call we're deferring.
+        # fallbacks` is the explicit posture embeddings callers asked for.
+        # Loosening this means deciding what cross-provider embedding
+        # routing should look like (different models = different vector
+        # spaces; cosine across them is meaningless), so it's a design
+        # call we're deferring.
         provider_obj: OllamaProvider | None = None
         for p in self.providers:
             if p.name == "ollama":
@@ -904,7 +967,7 @@ class SommLLM:
             error_detail = _format_error_detail(exc, "ollama", actual_model)
 
         # Embeddings bill on input tokens only (no output). Computed once and
-        # shared across the result, the telemetry row, and the scribe emit.
+        # shared across the result, the telemetry row, and the observer event.
         cost_usd = cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0)
 
         result = EmbedResult(
@@ -941,18 +1004,20 @@ class SommLLM:
             error_detail=error_detail,
             prompt_hash=stable_hash(text),
             response_hash=response_hash,
-            commission_id=_scribe_commission_id(),
+            correlation_id=(correlation_id := hooks.current_correlation_id()),
         )
         self._writer.submit(call)
-        _scribe_emit_llm_call(
-            workload=workload, provider="ollama", model=actual_model,
+        hooks.notify_call_observers(_call_event(
+            call_id=call_id, correlation_id=correlation_id,
+            project=self.config.project, workload=workload,
+            provider="ollama", model=actual_model,
             outcome=outcome.value, tokens_in=tokens_in, tokens_out=0,
             latency_ms=latency_ms, cost_usd=result.cost_usd,
-            error_kind=error_kind, call_id=call_id,
-        )
+            error_kind=error_kind,
+        ))
 
         if outcome != Outcome.OK and self._on_error is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._on_error({
                     "call_id": call_id,
                     "workload": workload,
@@ -962,8 +1027,6 @@ class SommLLM:
                     "error_kind": error_kind,
                     "error_detail": error_detail,
                 })
-            except Exception:
-                pass
 
         return result
 
@@ -1090,20 +1153,21 @@ class SommLLM:
                 error_detail=error_detail,
                 prompt_hash=stable_hash(prompt),
                 response_hash=stable_hash(full_text),
-                commission_id=_scribe_commission_id(),
+                correlation_id=(correlation_id := hooks.current_correlation_id()),
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
             self._writer.submit(call)
-            _scribe_emit_llm_call(
-                workload=workload, provider=chosen.name,
-                model=actual_model or chosen.name,
+            hooks.notify_call_observers(_call_event(
+                call_id=call_id, correlation_id=correlation_id,
+                project=self.config.project, workload=workload,
+                provider=chosen.name, model=actual_model or chosen.name,
                 outcome=outcome.value, tokens_in=tokens_in,
                 tokens_out=tokens_out, latency_ms=latency_ms,
                 cost_usd=call.cost_usd,
                 temperature=temperature, max_tokens=max_tokens,
-                error_kind=error_kind, call_id=call_id,
-            )
+                error_kind=error_kind,
+            ))
 
     def _pick_stream_provider(self, name: str | None):
         if name:

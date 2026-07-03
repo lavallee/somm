@@ -343,8 +343,10 @@ def _ollama_test_model() -> str | None:
         r = httpx.get(f"{url}/api/tags", timeout=1.0)
         r.raise_for_status()
         models = r.json().get("models") or []
-        if models:
-            return models[0].get("name") or models[0].get("model")
+        for m in models:
+            name = m.get("name") or m.get("model") or ""
+            if name and "embed" not in name.lower():
+                return name
     except Exception:
         return None
     return None
@@ -367,6 +369,10 @@ def test_ollama_live_generate(tmp_path):
         temperature=0.0,
     )
     llm.close()
+
+    detail = (getattr(result, "error_detail", None) or "").lower()
+    if "503" in detail or "server busy" in detail or "failing after wait" in detail:
+        pytest.skip("local ollama contended (busy/503)")
 
     assert result.provider == "ollama"
     assert result.call_id

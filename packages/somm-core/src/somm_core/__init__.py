@@ -18,6 +18,7 @@ from somm_core.pricing import (
     list_intel,
     merge_intel_capabilities,
     seed_known_pricing,
+    sync_bundled_pricing,
     write_intel,
 )
 from somm_core.repository import Repository
@@ -45,5 +46,6 @@ __all__ = [
     "list_intel",
     "merge_intel_capabilities",
     "seed_known_pricing",
+    "sync_bundled_pricing",
     "write_intel",
 ]

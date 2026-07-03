@@ -66,10 +66,7 @@ def register_prompt(
 
     # Find latest active version for this workload → bump
     latest = _latest_version(repo, workload_id)
-    if bump.startswith("v") and _VERSION_RE.match(bump):
-        new_version = bump
-    else:
-        new_version = _bump(latest, bump)
+    new_version = bump if bump.startswith("v") and _VERSION_RE.match(bump) else _bump(latest, bump)
 
     with repo._open() as conn:
         conn.execute(

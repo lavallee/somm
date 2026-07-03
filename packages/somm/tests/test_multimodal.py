@@ -29,7 +29,6 @@ from somm_core.parse import (
 from somm_core.pricing import write_intel
 from somm_core.repository import Repository
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

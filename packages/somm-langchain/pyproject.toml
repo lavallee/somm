@@ -1,15 +1,29 @@
 [project]
 name = "somm-langchain"
-version = "0.2.2"
+version = "0.3.0.dev0"
 description = "LangChain BaseChatModel adapter for somm — lets LangChain/LangGraph/deepagents apps use somm as their LLM substrate"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 readme = "README.md"
+authors = [{ name = "Marc Lavallee" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "somm-core",
     "somm",
     "langchain-core>=0.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/lavallee/somm"
+Repository = "https://github.com/lavallee/somm"
+Issues = "https://github.com/lavallee/somm/issues"
+Changelog = "https://github.com/lavallee/somm/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]

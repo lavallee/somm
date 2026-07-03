@@ -3,7 +3,7 @@
 Transient errors cool the offending (provider, model) and let the router try
 the next one. Fatal errors bubble up — the caller must handle them. Every
 exception carries a canonical SOMM_* code so error messages stay consistent
-(per PLAN.md DX canonical error format).
+(canonical operator-facing error format).
 """
 
 from __future__ import annotations
@@ -135,9 +135,15 @@ class SommNoCapableProvider(SommFatalError):
 
 
 class SommStrictMode(SommError):
-    """Strict mode refused an unregistered workload/prompt."""
+    """Strict mode refused an unregistered workload/prompt.
 
-    code = "SOMM_STRICT_MODE"
+    The code matches the operator-facing message and docs page
+    (docs/errors/SOMM_WORKLOAD_UNREGISTERED.md) — every raise site is an
+    unregistered workload; the class name describes the mode that
+    enforces it.
+    """
+
+    code = "SOMM_WORKLOAD_UNREGISTERED"
 
 
 class SommPrivacyViolation(SommError):

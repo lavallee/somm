@@ -34,7 +34,7 @@ somm_search_decisions(
 ```
 
 Do not treat past decisions as authoritative — model intel changes. But
-*do* acknowledge them: "Last time in `malo` (2026-04-10) we picked
+*do* acknowledge them: "Last time in `captionapp` (2026-04-10) we picked
 `openrouter/gemma-3-27b-it:free` because … — still relevant?"
 
 ### 2. Advise

@@ -1,6 +1,6 @@
 """Router + ProviderHealthTracker.
 
-Routing rules (from PLAN.md Eng phase):
+Routing rules:
   1. Providers tried in configured preference order.
   2. Each (provider, model) has its own cooldown entry in provider_health.
   3. On transient failure, cool the (provider, model) with per-error backoff.
@@ -10,7 +10,7 @@ Routing rules (from PLAN.md Eng phase):
 
 State is persisted in SQLite (`provider_health`) so cooldowns survive
 process restarts — an overnight flaky free-tier doesn't get re-hammered
-at dawn (PLAN.md §routing-strategy).
+at dawn.
 """
 
 from __future__ import annotations
@@ -315,6 +315,12 @@ def _classify_unknown(exc: Exception) -> tuple[float, bool]:
         return (0.0, False)
     if "429" in msg:
         return (120.0, True)
+    if "server busy" in msg or "pending requests exceeded" in msg:
+        # Local ollama queue-full (503 "server busy, maximum pending
+        # requests exceeded"): the queue drains in seconds. A 30s cooldown
+        # here instantly exhausts single-provider projects — keep it short
+        # so the router's exhausted-wait retry actually succeeds.
+        return (5.0, True)
     if "500" in msg or "502" in msg or "503" in msg or "504" in msg:
         return (30.0, True)
     # Default: treat unknown as transient; better than losing a call.

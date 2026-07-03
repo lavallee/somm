@@ -545,6 +545,23 @@ def spend_today(
     return result
 
 
+def _cmd_backfill_costs(args: argparse.Namespace) -> int:
+    from somm_core.pricing import backfill_costs
+    from somm_core.repository import Repository
+
+    cfg = load_config(project=args.project)
+    if not cfg.db_path.exists():
+        print("no telemetry database found")
+        return 1
+    repo = Repository(cfg.db_path)
+    n, total = backfill_costs(repo, since_days=args.since, dry_run=args.dry_run)
+    verb = "would update" if args.dry_run else "updated"
+    print(f"{verb} {n} call(s), ${total:.4f} in previously untracked spend")
+    if args.dry_run and n:
+        print("re-run without --dry-run to apply")
+    return 0
+
+
 def _cmd_spend(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
     use_json = getattr(args, "json", False)
@@ -559,10 +576,7 @@ def _cmd_spend(args: argparse.Namespace) -> int:
         out = []
         for r in rows:
             cap = r["cap_usd"]
-            if cap is None or cap == 0.0:
-                pct = None
-            else:
-                pct = round(100.0 * r["spent_usd"] / cap, 4)
+            pct = None if cap is None or cap == 0.0 else round(100.0 * r["spent_usd"] / cap, 4)
             out.append(
                 {
                     "workload": r["workload"],
@@ -698,6 +712,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit a JSON array instead of the aligned table",
     )
     pspend.set_defaults(func=_cmd_spend)
+
+    pbf = sub.add_parser(
+        "backfill-costs",
+        help="recompute cost_usd for $0 calls that now have pricing intel",
+    )
+    pbf.add_argument("--project", default=None)
+    pbf.add_argument("--since", type=int, default=None, help="only calls from the last N days")
+    pbf.add_argument("--dry-run", action="store_true", help="report without writing")
+    pbf.set_defaults(func=_cmd_backfill_costs)
 
     return p
 

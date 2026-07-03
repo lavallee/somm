@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from somm.cli import _cmd_spend, main, spend_today
+from somm.cli import main, spend_today
 from somm_core.config import Config
 from somm_core.models import Call, Outcome
 from somm_core.repository import Repository

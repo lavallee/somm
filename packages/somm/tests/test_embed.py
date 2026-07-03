@@ -214,6 +214,9 @@ def test_embed_against_live_ollama(tmp_path):
     llm = SommLLM(config=cfg, providers=[OllamaProvider()])
     try:
         result = llm.embed("the quick brown fox", workload="ad_hoc")
+        detail = (result.error_detail or "").lower()
+        if "503" in detail or "server busy" in detail:
+            pytest.skip("local ollama contended (busy/503)")
         assert result.outcome == Outcome.OK
         assert result.dim > 0
         assert all(isinstance(v, float) for v in result.embedding)

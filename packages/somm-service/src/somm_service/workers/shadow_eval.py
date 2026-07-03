@@ -1,7 +1,7 @@
 """Shadow-eval worker — re-runs sampled production calls through a gold model
 to build a real-world quality signal.
 
-Design (per PLAN.md reframe):
+Design:
 - OFF by default. Per-workload opt-in via `repo.set_shadow_config(...)`.
 - privacy_class=private workloads are BANNED from shadow-eval — the gate is
   enforced by the `shadow_candidates` view (schema v2) AND defense-in-depth

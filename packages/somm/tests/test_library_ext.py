@@ -73,7 +73,7 @@ def _tmp_config(tmp_path: Path) -> Config:
 # Use a SommTransientError with a cooldown longer than the router's
 # exhausted_sleep_cap_s so exhaustion fires immediately (no real sleep) and
 # these tests stay fast. 1-hour cooldown >> default 300s cap.
-from somm.errors import SommTransientError as _SommTransient
+from somm.errors import SommTransientError as _SommTransient  # noqa: E402
 
 _LONG_COOL = _SommTransient("upstream failed", cooldown_s=3600)
 
@@ -835,7 +835,7 @@ def test_parallel_slots_skips_cooled(tmp_path):
 # See docs/tool-calling.md
 
 
-from somm.providers.base import ToolCall as ProviderToolCall
+from somm.providers.base import ToolCall as ProviderToolCall  # noqa: E402
 
 
 class _ToolEchoProvider(FakeProvider):

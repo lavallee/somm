@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from somm.client import SommLLM
 from somm.errors import SommTransientError
 from somm.providers.base import ProviderHealth, SommResponse

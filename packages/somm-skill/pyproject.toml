@@ -1,11 +1,25 @@
 [project]
 name = "somm-skill"
-version = "0.2.2"
+version = "0.3.0.dev0"
 description = "somm onboarding skill templates for coding agents (Claude, Codex, Cursor, Windsurf)"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-readme = "../../README.md"
+readme = "README.md"
+authors = [{ name = "Marc Lavallee" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/lavallee/somm"
+Repository = "https://github.com/lavallee/somm"
+Issues = "https://github.com/lavallee/somm/issues"
+Changelog = "https://github.com/lavallee/somm/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]

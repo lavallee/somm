@@ -79,9 +79,8 @@ def test_parse_model_specs_empty():
 def test_status_empty(tmp_path, capsys):
     cfg = _tmp_config(tmp_path)
     Repository(cfg.db_path)  # create db
-    env = {"SOMM_PROJECT": cfg.project}
     rc = main(["status", "--project", cfg.project, "--since", "7"])
-    out = capsys.readouterr().out
+    capsys.readouterr()  # drain captured output
     # Rely on load_config picking up default db_dir — skip the test if it
     # doesn't align (CLI tests here exercise the functions, not arg routing).
     assert rc == 0
@@ -243,7 +242,7 @@ def test_doctor_reports_schema_and_no_db(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("SOMM_PROJECT", "doctor-test")
     # Disable ollama check by pointing to a dead URL
     monkeypatch.setenv("SOMM_OLLAMA_URL", "http://127.0.0.1:1")
-    rc = main(["doctor"])
+    main(["doctor"])
     out = capsys.readouterr().out
     assert "somm v" in out
     assert "project: doctor-test" in out

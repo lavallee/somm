@@ -16,44 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _providers_from_config(cfg: Config):
-    """Build the default provider chain (same as SommLLM's default)."""
-    from somm.providers.anthropic import AnthropicProvider
-    from somm.providers.minimax import MinimaxProvider
-    from somm.providers.ollama import OllamaProvider
-    from somm.providers.openai import OpenAIProvider
-    from somm.providers.openrouter import OpenRouterProvider
+    """Build the default provider chain — the exact chain SommLLM builds,
+    so somm_compare / somm_replay can reach every provider the library can
+    (including gemini, deepseek, perplexity, and the CLI executors)."""
+    from somm.client import build_default_providers
 
-    chain = [OllamaProvider(base_url=cfg.ollama_url, default_model=cfg.ollama_model)]
-    if cfg.openrouter_api_key:
-        chain.append(
-            OpenRouterProvider(
-                api_key=cfg.openrouter_api_key,
-                roster=cfg.openrouter_roster,
-            )
-        )
-    if cfg.minimax_api_key:
-        chain.append(
-            MinimaxProvider(
-                api_key=cfg.minimax_api_key,
-                default_model=cfg.minimax_model,
-            )
-        )
-    if cfg.anthropic_api_key:
-        chain.append(
-            AnthropicProvider(
-                api_key=cfg.anthropic_api_key,
-                default_model=cfg.anthropic_model,
-            )
-        )
-    if cfg.openai_api_key:
-        chain.append(
-            OpenAIProvider(
-                api_key=cfg.openai_api_key,
-                base_url=cfg.openai_base_url,
-                default_model=cfg.openai_model,
-            )
-        )
-    return chain
+    return build_default_providers(cfg)
 
 
 def main(argv: list[str] | None = None) -> int:
