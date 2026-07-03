@@ -16,12 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _providers_from_config(cfg: Config):
-    """Build the default provider chain — the exact chain SommLLM builds,
-    so somm_compare / somm_replay can reach every provider the library can
-    (including gemini, deepseek, perplexity, and the CLI executors)."""
+    """Build the FULL provider chain — somm_compare / somm_replay are
+    explicit-selection surfaces, so they reach every configured provider
+    (CLI executors included), regardless of SOMM_PROVIDER_ORDER."""
     from somm.client import build_default_providers
 
-    return build_default_providers(cfg)
+    return build_default_providers(cfg, full=True)
 
 
 def main(argv: list[str] | None = None) -> int:

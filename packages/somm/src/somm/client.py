@@ -213,7 +213,9 @@ def _call_event(
     }
 
 
-def build_default_providers(config: Config, tracker=None) -> list[SommProvider]:
+def build_default_providers(
+    config: Config, tracker=None, full: bool = False
+) -> list[SommProvider]:
     """Build the provider chain from config.
 
     Default order (sovereign-first): ollama → openrouter → deepseek →
@@ -224,6 +226,13 @@ def build_default_providers(config: Config, tracker=None) -> list[SommProvider]:
     Every commercial-API provider is opt-in via its env var. Library
     works offline with just ollama. Shared by SommLLM and the MCP
     server so both expose the identical chain.
+
+    ``full=True`` returns EVERY available provider, ignoring both
+    SOMM_PROVIDER_ORDER and the pinned-only exclusions (CLI executors,
+    perplexity's last-place rule). Routing preference is about which
+    provider serves production traffic; explicit-selection surfaces —
+    shadow gold models, somm_compare, somm_replay — must reach anything
+    that's configured.
     """
     available: dict[str, SommProvider] = {}
     available["ollama"] = OllamaProvider(
@@ -282,6 +291,9 @@ def build_default_providers(config: Config, tracker=None) -> list[SommProvider]:
             default_model=config.perplexity_model,
             timeout=max(config.http_timeout, 300.0),
         )
+
+    if full:
+        return list(available.values())
 
     if config.provider_order:
         # Exclusive: ONLY providers in the list, in the listed order.

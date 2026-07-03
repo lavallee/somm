@@ -29,17 +29,11 @@ def build_workers_factory(cfg: Config, repo: Repository):
         if job_name == "model_intel":
             return ModelIntelWorker(repo, ollama_url=cfg.ollama_url)
         if job_name == "shadow_eval":
-            # Gold-model access must NOT be filtered by SOMM_PROVIDER_ORDER:
-            # the order expresses production routing preference (exclusive by
-            # design), but a workload's gold provider is an explicit choice —
-            # a project routing openrouter,minimax,ollama still grades
-            # against anthropic if its key is set. Build the full available
-            # chain, order ignored.
-            import copy
-
-            gold_cfg = copy.copy(cfg)
-            gold_cfg.provider_order = None
-            return ShadowEvalWorker(repo, providers=build_default_providers(gold_cfg))
+            # A workload's gold provider is an explicit choice — it must not
+            # be filtered by SOMM_PROVIDER_ORDER (routing preference) or the
+            # pinned-only exclusions (CLI executors). full=True reaches
+            # anything configured.
+            return ShadowEvalWorker(repo, providers=build_default_providers(cfg, full=True))
         if job_name == "agent":
             return AgentWorker(repo)
         return None

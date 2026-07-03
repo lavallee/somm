@@ -373,8 +373,12 @@ def test_gold_provider_not_filtered_by_provider_order(tmp_path, monkeypatch):
     from somm_core.repository import Repository
 
     repo = Repository(cfg.db_path)
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     worker = build_workers_factory(cfg, repo)("shadow_eval")
     assert "anthropic" in worker.providers
+    assert "claude-cli" in worker.providers  # pinned-only executors reachable as gold
     assert cfg.provider_order == ["ollama"]  # original config untouched
 
 

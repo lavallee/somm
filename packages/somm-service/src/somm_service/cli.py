@@ -97,39 +97,13 @@ def _cmd_run_agent(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_shadow(args: argparse.Namespace) -> int:
-    from somm.providers.anthropic import AnthropicProvider
-    from somm.providers.minimax import MinimaxProvider
-    from somm.providers.ollama import OllamaProvider
-    from somm.providers.openai import OpenAIProvider
-    from somm.providers.openrouter import OpenRouterProvider
-
-    from somm_service.workers.shadow_eval import ShadowEvalWorker
+    from somm_service.inprocess import build_workers_factory
 
     cfg = load_config(project=args.project)
     repo = Repository(cfg.db_path)
-    providers = [OllamaProvider(base_url=cfg.ollama_url, default_model=cfg.ollama_model)]
-    if cfg.openrouter_api_key:
-        providers.append(
-            OpenRouterProvider(api_key=cfg.openrouter_api_key, roster=cfg.openrouter_roster)
-        )
-    if cfg.anthropic_api_key:
-        providers.append(
-            AnthropicProvider(api_key=cfg.anthropic_api_key, default_model=cfg.anthropic_model)
-        )
-    if cfg.openai_api_key:
-        providers.append(
-            OpenAIProvider(
-                api_key=cfg.openai_api_key,
-                base_url=cfg.openai_base_url,
-                default_model=cfg.openai_model,
-            )
-        )
-    if cfg.minimax_api_key:
-        providers.append(
-            MinimaxProvider(api_key=cfg.minimax_api_key, default_model=cfg.minimax_model)
-        )
-
-    worker = ShadowEvalWorker(repo, providers=providers)
+    # Same worker the scheduler builds — full gold chain (all keyed
+    # providers + CLI executors), SOMM_PROVIDER_ORDER deliberately ignored.
+    worker = build_workers_factory(cfg, repo)("shadow_eval")
     summary = worker.run_once()
     print(f"shadow-eval: graded {summary['calls_graded']} call(s)")
     for k, v in summary.items():
