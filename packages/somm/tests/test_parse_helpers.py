@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import pytest
-from somm_core.parse import extract_balanced, strip_markdown_fence, strip_think_block, extract_json
-
+from somm_core.parse import extract_balanced, extract_json, strip_markdown_fence, strip_think_block
 
 # ---------------------------------------------------------------------------
 # extract_balanced

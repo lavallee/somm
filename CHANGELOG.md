@@ -4,6 +4,17 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.3.1] — 2026-07-03
+
+### Changed — migration 0010 drops `calls.commission_id` (schema v10)
+
+Completes the 0009 expand-contract. The dead column (all NULL, never
+read) existed only so telemetry writers running pre-0.3 code survived
+a migrated database; with long-running daemons restarted onto 0.3+,
+the contract phase lands. Any straggler pre-0.3 writer fails its
+INSERT and spills to the JSONL spool — recover with `somm drain-spool`
+after restarting it.
+
 ## [0.3.0] — 2026-07-03
 
 ### Added — bundled pricing snapshot; cost tracking now works for every provider
