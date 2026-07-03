@@ -1,6 +1,6 @@
 [project]
 name = "somm-service"
-version = "0.6.0"
+version = "0.6.1"
 description = "somm service — web admin, HTTP API, background workers"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -14,8 +14,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "somm-core==0.6.0",
-    "somm==0.6.0",
+    "somm-core==0.6.1",
+    "somm==0.6.1",
     "litellm>=1.40",
     "starlette>=0.40",
     "uvicorn>=0.30",

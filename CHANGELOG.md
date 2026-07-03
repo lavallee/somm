@@ -4,6 +4,19 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.6.1] — 2026-07-03
+
+### Changed — first PyPI release
+
+Published to PyPI: `pip install somm` (+ `somm-service`, `somm-mcp`,
+`somm-langchain`, `somm-core`, `somm-skill`). Packaging fixes for the
+occasion: exact lockstep pins on inter-package dependencies
+(`somm-core==X`), absolute links in package READMEs (relative links
+404 on PyPI), and per-package trusted-publishing environments
+(`pypi-<package>`) in the publish workflow — PyPI requires pending
+publishers to be unique per (repo, workflow, environment). README
+install instructions now lead with pip.
+
 ## [0.6.0] — 2026-07-03
 
 ### Added — payg budgets, burn rates, plan value, quota drift

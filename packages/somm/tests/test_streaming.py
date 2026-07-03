@@ -215,8 +215,11 @@ def test_stream_provider_error_propagates(tmp_path):
 
 
 def _ollama_live() -> bool:
+    import os
+
+    url = os.environ.get("SOMM_OLLAMA_URL", "http://localhost:11434")
     try:
-        r = httpx.get("http://localhost:11434/api/tags", timeout=1.0)
+        r = httpx.get(f"{url}/api/tags", timeout=1.0)
         return r.status_code == 200
     except Exception:
         return False
@@ -231,8 +234,9 @@ def _ollama_test_model() -> str | None:
     env = os.environ.get("SOMM_OLLAMA_MODEL")
     if env:
         return env
+    url = os.environ.get("SOMM_OLLAMA_URL", "http://localhost:11434")
     try:
-        r = httpx.get("http://localhost:11434/api/tags", timeout=1.0)
+        r = httpx.get(f"{url}/api/tags", timeout=1.0)
         r.raise_for_status()
         models = r.json().get("models") or []
         for m in models:

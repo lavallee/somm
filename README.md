@@ -37,18 +37,24 @@ platform doesn't.
 
 ## Install
 
-> somm's first PyPI release is pending. Until it lands, install from
-> source:
+```bash
+# library only:
+pip install somm
+
+# + web admin + scheduled workers + MCP server:
+pip install somm somm-service somm-mcp
+```
+
+Requires Python 3.12+. The library (`somm` + `somm-core`) is all you
+need to start; `somm-service` adds the web admin + background workers,
+`somm-mcp` the MCP server, `somm-langchain` the LangChain adapter.
+
+Working from source ([uv](https://docs.astral.sh/uv/) workspace):
 
 ```bash
 git clone https://github.com/lavallee/somm && cd somm
-uv sync --all-packages          # or: pip install -e packages/somm-core -e packages/somm
+uv sync --all-packages
 ```
-
-Requires Python 3.12+. Uses [uv](https://docs.astral.sh/uv/) in development.
-The library (`somm` + `somm-core`) is all you need to start;
-`somm-service` adds the web admin + background workers, `somm-mcp` the
-MCP server, `somm-langchain` the LangChain adapter.
 
 ## Two-minute hello world
 
@@ -487,5 +493,5 @@ internal names or personal paths.
 
 ## Status
 
-**v0.6.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
+**v0.6.1.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.
