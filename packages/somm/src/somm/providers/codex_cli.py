@@ -11,6 +11,7 @@ the installed codex when its seat is live before leaning on it.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -54,11 +55,14 @@ class CodexCLIProvider:
         if model:
             cmd += ["-m", model]
         cmd += ["-"]  # read the prompt from stdin
+        # Seat-billing, same rationale as claude-cli: an ambient
+        # OPENAI_API_KEY would flip the CLI to API-key billing.
+        env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
         t0 = time.monotonic()
         try:
             proc = subprocess.run(
                 cmd, input=self._prompt_text(request), capture_output=True, text=True,
-                timeout=self.timeout, cwd=tempfile.gettempdir(),
+                timeout=self.timeout, cwd=tempfile.gettempdir(), env=env,
             )
         except subprocess.TimeoutExpired as e:
             raise SommTimeout(f"codex exec timed out after {self.timeout:.0f}s") from e

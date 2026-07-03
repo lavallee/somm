@@ -14,6 +14,7 @@ does NOT inherit a project's CLAUDE.md / tools — it's a generator, not an agen
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -59,11 +60,20 @@ class ClaudeCLIProvider:
         cmd = [self.binary, "-p", "--output-format", "json"]
         if model:
             cmd += ["--model", model]
+        # This provider exists to spend the SUBSCRIPTION seat. An ambient
+        # ANTHROPIC_API_KEY (set for the API provider) silently takes auth
+        # precedence inside the CLI and bills — or fails on — the API
+        # account instead; shield the subprocess from it.
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY")
+        }
         t0 = time.monotonic()
         try:
             proc = subprocess.run(
                 cmd, input=self._prompt_text(request), capture_output=True, text=True,
-                timeout=self.timeout, cwd=tempfile.gettempdir(),
+                timeout=self.timeout, cwd=tempfile.gettempdir(), env=env,
             )
         except subprocess.TimeoutExpired as e:
             raise SommTimeout(f"claude -p timed out after {self.timeout:.0f}s") from e
