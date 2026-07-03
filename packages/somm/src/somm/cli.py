@@ -545,8 +545,22 @@ def spend_today(
     return result
 
 
+def _cmd_drain_spool(args: argparse.Namespace) -> int:
+    from somm_core.repository import Repository
+
+    from somm.telemetry import drain_spool
+
+    cfg = load_config(project=args.project)
+    if not cfg.db_path.exists():
+        print("no telemetry database found")
+        return 1
+    n = drain_spool(Repository(cfg.db_path), cfg.spool_dir)
+    print(f"drained {n} spooled call(s) into {cfg.db_path}")
+    return 0
+
+
 def _cmd_backfill_costs(args: argparse.Namespace) -> int:
-    from somm_core.pricing import backfill_costs
+    from somm_core.pricing import backfill_costs, sync_bundled_pricing
     from somm_core.repository import Repository
 
     cfg = load_config(project=args.project)
@@ -554,6 +568,11 @@ def _cmd_backfill_costs(args: argparse.Namespace) -> int:
         print("no telemetry database found")
         return 1
     repo = Repository(cfg.db_path)
+    # Make sure current pricing intel is present before joining against it,
+    # so backfill works even on a DB the library hasn't opened since upgrade.
+    synced = sync_bundled_pricing(repo)
+    if synced:
+        print(f"synced {synced} pricing row(s) from the bundled snapshot")
     n, total = backfill_costs(repo, since_days=args.since, dry_run=args.dry_run)
     verb = "would update" if args.dry_run else "updated"
     print(f"{verb} {n} call(s), ${total:.4f} in previously untracked spend")
@@ -721,6 +740,13 @@ def build_parser() -> argparse.ArgumentParser:
     pbf.add_argument("--since", type=int, default=None, help="only calls from the last N days")
     pbf.add_argument("--dry-run", action="store_true", help="report without writing")
     pbf.set_defaults(func=_cmd_backfill_costs)
+
+    pds = sub.add_parser(
+        "drain-spool",
+        help="replay spooled JSONL telemetry (written during DB outages) into the DB",
+    )
+    pds.add_argument("--project", default=None)
+    pds.set_defaults(func=_cmd_drain_spool)
 
     return p
 

@@ -284,6 +284,7 @@ somm compare <prompt> --models p/m,p/m             # side-by-side N-model compar
 somm frontier --workload NAME [--since N]          # adequacy frontier per (provider, model)
 somm spend [--json]                                # today's spend vs daily budget cap
 somm backfill-costs [--since N] [--dry-run]        # recompute $0 calls that now have pricing
+somm drain-spool                                   # replay spooled telemetry into the DB
 somm doctor                                        # config, ollama, db, intel, workers, cooldowns
 somm serve [--host H] [--port N]                   # web admin + scheduler + workers
 ```
@@ -407,5 +408,5 @@ internal names or personal paths.
 
 ## Status
 
-**v0.3.0-dev.** See [CHANGELOG](./CHANGELOG.md) for the release log and
+**v0.3.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

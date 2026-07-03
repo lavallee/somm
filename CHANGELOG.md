@@ -4,7 +4,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
-## [Unreleased]
+## [0.3.0] — 2026-07-03
 
 ### Added — bundled pricing snapshot; cost tracking now works for every provider
 
@@ -45,9 +45,11 @@ soft-integration: `set_correlation_provider()` stamps an external id
 (request/trace/job id) on every `calls` row, and `add_call_observer()`
 receives an event dict after every generate/stream/embed call.
 Integrations can also attach via the `somm.hooks` entry-point group.
-Hook failures never break the call path. Schema migration 0009 renames
-`calls.commission_id` → `calls.correlation_id` (the column was
-write-only, so the rename is data-safe).
+Hook failures never break the call path. Schema migration 0009 adds
+`calls.correlation_id`; the old `commission_id` column stays in place
+(dead, all NULL) so telemetry writers still running pre-0.3 code keep
+inserting against a migrated database — a future migration drops it
+once no pre-0.3 writers remain.
 
 ### Fixed
 
@@ -80,7 +82,7 @@ canonical design doc; TODOS.md folded into ROADMAP.md; 9 missing
 `SOMM_*` error pages added; CONTRIBUTING/SECURITY/CODE_OF_CONDUCT,
 issue/PR templates, ruff + Python-matrix CI, PyPI trusted-publishing
 workflow, `py.typed` markers, and per-package READMEs added; all
-package versions unified at 0.3.0.dev0.
+package versions unified at 0.3.0 (PyPI publication deferred).
 
 ### Added — `somm-langchain` adapter package
 

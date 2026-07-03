@@ -151,6 +151,11 @@ user demand makes it load-bearing.
 
 ### Telemetry
 
+- **Migration 0010: drop `calls.commission_id`** — the contract phase
+  of the 0009 expand-contract. The column is dead (all NULL, no
+  reader) but kept so pre-0.3 telemetry writers survive against a
+  migrated database. Drop it once every long-running process on the
+  fleet has restarted onto 0.3+.
 - **Dedicated tool-call telemetry columns** — once tool-call workloads
   accumulate real calls, decide whether to lift `tool_calls_count`,
   `tools_offered_count`, `stop_reason` out of `raw_json` into
