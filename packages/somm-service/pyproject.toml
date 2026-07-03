@@ -1,6 +1,6 @@
 [project]
 name = "somm-service"
-version = "0.5.0"
+version = "0.6.0"
 description = "somm service — web admin, HTTP API, background workers"
 requires-python = ">=3.12"
 license = { text = "MIT" }

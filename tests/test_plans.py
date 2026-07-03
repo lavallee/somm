@@ -328,3 +328,65 @@ def test_unknown_catalog_ref_raises(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="coding-ultra"):
         load_plans(catalog=load_catalog(catp))
+
+
+# ---------------------------------------------------------------------------
+# payg budgets + burn rates (0.6.0)
+
+
+def test_payg_budget_appears_in_statuses_and_governor(tmp_path, monkeypatch):
+    _write_plans(
+        tmp_path,
+        '[gemini]\nmode = "payg"\nsoft_target_pct = 50\n'
+        '[[gemini.limits]]\nwindow = "1d"\nquota = 3.0\nunit = "usd_equiv"',
+        monkeypatch,
+    )
+    db = _db_with_calls(tmp_path, "g.sqlite", "gemini", 5, 0.5)  # $2.50 today
+    (st,) = limit_statuses([db], load_plans())
+    assert st.mode == "payg"
+    assert st.used == pytest.approx(2.5)
+    assert st.state == "over_pace"  # rolling window past 50% soft target
+
+    from somm.plan_governor import PlanGovernor
+
+    gov = PlanGovernor(load_plans(), lambda: [db])
+    assert gov.decision("gemini") == "defer"
+
+
+def test_free_and_limitless_plans_never_paced(tmp_path, monkeypatch):
+    _write_plans(tmp_path, '[ollama]\nmode = "free"\n[minimax]\nmode = "metered"', monkeypatch)
+    from somm.plan_governor import PlanGovernor
+
+    gov = PlanGovernor(load_plans(), lambda: [])
+    assert not gov.has_paceable_limits()
+    assert gov.decision("ollama") == "ok"
+    assert gov.decision("minimax") == "ok"
+
+
+def test_payg_burn_rates(tmp_path, monkeypatch):
+    from somm_core.plans import payg_burn_rates
+
+    _write_plans(tmp_path, '[gemini]\nmode = "payg"\n[ollama]\nmode = "free"', monkeypatch)
+    db = _db_with_calls(tmp_path, "b2.sqlite", "gemini", 4, 1.0)
+    (b,) = payg_burn_rates([db], load_plans())
+    assert b.provider == "gemini"
+    assert b.spend_1d == pytest.approx(4.0)
+    assert b.per_day == pytest.approx(4.0 / 7)
+    assert b.projected_month == pytest.approx(4.0 / 7 * 30)
+
+
+def test_recent_ok_calls_counts_only_ok(tmp_path):
+    from somm_core.plans import recent_ok_calls
+
+    db = _db_with_calls(tmp_path, "ok.sqlite", "minimax", 3, 0.0)
+    assert recent_ok_calls([db], "minimax", hours=1) == 3
+    assert recent_ok_calls([db], "gemini", hours=1) == 0
+
+
+def test_plan_price_parses(tmp_path, monkeypatch):
+    _write_plans(
+        tmp_path,
+        '[minimax]\nmode = "metered"\nprice = 50.0',
+        monkeypatch,
+    )
+    assert load_plans()["minimax"].price_usd_month == 50.0

@@ -331,12 +331,23 @@ unit = "requests"
 mode = "payg"
 ```
 
+PAYG providers can carry limits too — there they're **self-imposed
+budgets** (a max spend over a window, LiteLLM-style), paced with the
+same math but in real dollars.
+
 Then:
 
 - **`somm plans`** shows every limit's usage in its current window —
   across all your projects (each `somm.llm()` registers its DB in
   `~/.somm/registry.json`) — with pace ratio and straight-line
   projection: are you on track to blow the quota before it resets?
+  Plus **payg burn rates** (1d/7d/30d spend, $/day, projected month),
+  a **value multiple** for metered plans (`price = 50.0` → "consumed
+  $260 of list-price tokens on a $50/mo plan, ≈5.2x"), and **quota
+  drift warnings** when your own telemetry contradicts a declared
+  limit (usage past quota with calls still succeeding, or recent 429
+  ceilings far from the declared number — vendors reset limits
+  without notice).
 - **The router paces automatically**: a provider past its soft target
   and burning faster than the window passes is deprioritized (tried
   only after in-pace providers fail); an exhausted limit with
@@ -476,5 +487,5 @@ internal names or personal paths.
 
 ## Status
 
-**v0.5.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
+**v0.6.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

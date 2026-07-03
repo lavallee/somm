@@ -114,6 +114,9 @@ class Plan:
     enforce: bool = False
     limits: list[PlanLimit] = field(default_factory=list)
     catalog_ref: str = ""  # "provider/plan-id" when limits came from the catalog
+    # Subscription price (metered plans). Lets reporting show the value
+    # multiple: notional list-price consumed ÷ what the plan costs.
+    price_usd_month: float = 0.0
 
 
 @dataclass(slots=True)
@@ -150,7 +153,12 @@ class CatalogEntry:
 
 @dataclass(slots=True)
 class LimitStatus:
-    """One limit's usage inside its current window."""
+    """One limit's usage inside its current window.
+
+    For metered plans the limit is a vendor quota (used/quota are
+    notional units); for payg plans it's a self-imposed **budget** in
+    real dollars — same pacing math, different meaning of exhaustion
+    (vendor cuts you off vs. you chose a ceiling)."""
 
     provider: str
     plan_name: str
@@ -159,6 +167,7 @@ class LimitStatus:
     window_start: datetime
     window_end: datetime
     soft_target_pct: float = 80.0
+    mode: str = "metered"
 
     @property
     def used_pct(self) -> float:
@@ -324,6 +333,7 @@ def load_plans(
             enforce=bool(spec.get("enforce", False)),
             limits=limits,
             catalog_ref=catalog_ref,
+            price_usd_month=float(spec.get("price", 0.0)),
         )
     return out
 
@@ -374,6 +384,83 @@ def usage_in_window(
                     (*aliases, start.isoformat()),
                 ).fetchone()
                 total += float(row[0] or 0)
+            finally:
+                conn.close()
+        except Exception:
+            continue
+    return total
+
+
+@dataclass(slots=True)
+class BurnRate:
+    """Real-dollar spend velocity for one payg provider."""
+
+    provider: str
+    spend_1d: float
+    spend_7d: float
+    spend_30d: float
+
+    @property
+    def per_day(self) -> float:
+        """Smoothed daily rate (7-day average)."""
+        return self.spend_7d / 7.0
+
+    @property
+    def projected_month(self) -> float:
+        return self.per_day * 30.0
+
+
+def payg_burn_rates(
+    db_paths: list[Path],
+    plans: dict[str, Plan],
+    now: datetime | None = None,
+) -> list[BurnRate]:
+    """Spend velocity per payg provider across the fleet.
+
+    PAYG has no vendor window — the meaningful number is rate: $/day and
+    where that lands by month-end. Providers with zero spend in 30 days
+    are omitted."""
+    now = now or datetime.now(UTC)
+    out: list[BurnRate] = []
+    for provider, plan in plans.items():
+        if plan.mode != "payg":
+            continue
+        spends = []
+        for days in (1, 7, 30):
+            lim = PlanLimit(window=f"{days}d", quota=1, unit="usd_equiv")
+            spends.append(usage_in_window(db_paths, provider, lim, now))
+        if spends[2] <= 0:
+            continue
+        out.append(BurnRate(provider, *spends))
+    out.sort(key=lambda b: -b.spend_30d)
+    return out
+
+
+def recent_ok_calls(
+    db_paths: list[Path],
+    provider: str,
+    hours: float = 24.0,
+    now: datetime | None = None,
+) -> int:
+    """Successful calls for a provider in the trailing window — used to
+    tell 'quota exhausted' apart from 'declared quota is stale: usage
+    exceeds it but the vendor is still serving us' (limits get raised
+    and reset without notice)."""
+    now = now or datetime.now(UTC)
+    since = (now - timedelta(hours=hours)).isoformat()
+    aliases = _provider_aliases(provider)
+    marks = ",".join("?" for _ in aliases)
+    total = 0
+    for db in db_paths:
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+            try:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM calls WHERE provider IN ({marks}) "
+                    f"AND ts >= ? AND outcome = 'ok'",
+                    (*aliases, since),
+                ).fetchone()
+                total += int(row[0] or 0)
             finally:
                 conn.close()
         except Exception:
@@ -497,13 +584,17 @@ def limit_statuses(
     providers: list[str] | None = None,
     now: datetime | None = None,
 ) -> list[LimitStatus]:
-    """Current-window status for every limit of every metered plan."""
+    """Current-window status for every limit of every plan that has any.
+
+    Metered plans' limits are vendor quotas; payg plans' limits are
+    self-imposed budgets (LiteLLM-style: a max spend over a duration).
+    Free plans never have paceable limits."""
     now = now or datetime.now(UTC)
     out: list[LimitStatus] = []
     for provider, plan in plans.items():
         if providers is not None and provider not in providers:
             continue
-        if plan.mode != "metered":
+        if plan.mode == "free" or not plan.limits:
             continue
         for limit in plan.limits:
             start, end = limit.bounds(now)
@@ -517,6 +608,7 @@ def limit_statuses(
                     window_start=start,
                     window_end=end,
                     soft_target_pct=plan.soft_target_pct,
+                    mode=plan.mode,
                 )
             )
     return out

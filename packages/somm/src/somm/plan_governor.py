@@ -13,9 +13,9 @@ routing decision the Router consults on every dispatch:
 
 Decisions are TTL-cached (default 60s) because computing them means
 read-only scans of every fleet database — cheap, but not per-call
-cheap. PAYG and free providers are always ``ok``; their constraint is
-money or rate limits, which the budget gate and cooldowns already
-handle.
+cheap. Paced limits are metered vendor quotas AND payg self-imposed
+budgets (same math, real dollars); free providers are always ``ok`` —
+their constraint is rate limits, which cooldowns already handle.
 """
 
 from __future__ import annotations
@@ -41,8 +41,10 @@ class PlanGovernor:
         self.ttl_s = ttl_s
         self._cache: dict[str, tuple[float, Decision]] = {}
 
-    def has_metered_limits(self) -> bool:
-        return any(p.mode == "metered" and p.limits for p in self.plans.values())
+    def has_paceable_limits(self) -> bool:
+        """Any plan with limits to pace against — metered vendor quotas
+        or payg self-imposed budgets."""
+        return any(p.mode != "free" and p.limits for p in self.plans.values())
 
     def statuses(self, provider: str | None = None) -> list[LimitStatus]:
         providers = [provider] if provider else None
@@ -62,7 +64,7 @@ class PlanGovernor:
 
     def _decide(self, provider: str) -> Decision:
         plan = plan_for(provider, self.plans)
-        if plan.mode != "metered" or not plan.limits:
+        if plan.mode == "free" or not plan.limits:
             return "ok"
         worst: Decision = "ok"
         for st in self.statuses(provider):

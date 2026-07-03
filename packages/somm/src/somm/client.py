@@ -86,7 +86,7 @@ def _build_plan_governor(config: Config):
         print(f"[somm] plans.toml is invalid — plan pacing disabled: {exc}", file=sys.stderr)
         return None
     governor = PlanGovernor(plans, lambda: fleet_db_paths(include=config.db_path))
-    return governor if governor.has_metered_limits() else None
+    return governor if governor.has_paceable_limits() else None
 
 
 def _warn_if_plans_off_pace(governor) -> None:

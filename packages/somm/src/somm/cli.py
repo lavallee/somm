@@ -621,15 +621,28 @@ def _cmd_plans(args: argparse.Namespace) -> int:
                 "projected_pct": round(st.projected_pct, 1),
                 "window_end": st.window_end.isoformat(),
                 "state": st.state,
+                "mode": st.mode,
             })
-        payg = sorted(p for p, pl in plans.items() if pl.mode == "payg")
-        print(json.dumps({"scope": scope, "metered": out, "payg": payg}, indent=1))
+        from somm_core.plans import payg_burn_rates
+
+        burn = [
+            {
+                "provider": b.provider,
+                "spend_1d": round(b.spend_1d, 4),
+                "spend_7d": round(b.spend_7d, 4),
+                "spend_30d": round(b.spend_30d, 4),
+                "per_day": round(b.per_day, 4),
+                "projected_month": round(b.projected_month, 2),
+            }
+            for b in payg_burn_rates(dbs, plans)
+        ]
+        print(json.dumps({"scope": scope, "limits": out, "payg_burn": burn}, indent=1))
         return 0
 
     print(f"Plan usage — {scope}\n")
     if statuses:
         print(
-            f"{'provider':<12} {'plan':<12} {'window':<7} {'used / quota':>22} "
+            f"{'provider':<12} {'plan/budget':<14} {'window':<7} {'used / quota':>26} "
             f"{'used%':>6} {'elapsed%':>8} {'pace':>6} {'proj%':>6}  state"
         )
         for st in statuses:
@@ -638,11 +651,34 @@ def _cmd_plans(args: argparse.Namespace) -> int:
                 if st.limit.unit == "usd_equiv"
                 else f"{st.used:,.0f} / {st.limit.quota:,.0f} {st.limit.unit}"
             )
+            label = st.plan_name or ("budget" if st.mode == "payg" else "—")
             print(
-                f"{st.provider:<12} {(st.plan_name or '—'):<12} {st.limit.window:<7} "
-                f"{used_s:>22} {st.used_pct:>5.0f}% {st.elapsed_pct:>7.0f}% "
+                f"{st.provider:<12} {label:<14} {st.limit.window:<7} "
+                f"{used_s:>26} {st.used_pct:>5.0f}% {st.elapsed_pct:>7.0f}% "
                 f"{st.pace_ratio:>5.1f}x {st.projected_pct:>5.0f}%  {st.state}"
             )
+
+    # Value multiple: what a metered subscription delivered vs. its price,
+    # in notional list-price dollars this calendar month.
+    from somm_core.plans import PlanLimit as _PL
+    from somm_core.plans import usage_in_window as _usage
+
+    value_lines = []
+    for prov, pl in sorted(plans.items()):
+        if pl.mode != "metered" or pl.price_usd_month <= 0:
+            continue
+        notional = _usage(dbs, prov, _PL(window="month", quota=1, unit="usd_equiv"))
+        if notional > 0:
+            mult = notional / pl.price_usd_month
+            value_lines.append(
+                f"  {prov:<12} ${notional:,.2f} list-price value this month "
+                f"on a ${pl.price_usd_month:,.0f}/mo plan (≈{mult:.1f}x)"
+            )
+    if value_lines:
+        print("\nplan value (notional list-price consumed vs subscription price):")
+        for line in value_lines:
+            print(line)
+
     metered_no_limits = [
         p for p, pl in plans.items() if pl.mode == "metered" and not pl.limits
     ]
@@ -651,17 +687,33 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             f"\nmetered, no limits declared (labelled only): "
             f"{', '.join(sorted(metered_no_limits))}"
         )
-    payg = sorted(p for p, pl in plans.items() if pl.mode == "payg")
-    if payg:
-        print(f"payg (cost_usd = real dollars): {', '.join(payg)}")
+
+    # PAYG burn rates: no vendor window here — the number that matters is
+    # velocity and where it lands by month-end.
+    from somm_core.plans import payg_burn_rates
+
+    burn = payg_burn_rates(dbs, plans)
+    if burn:
+        print("\npayg burn (real dollars):")
+        print(f"  {'provider':<12} {'1d':>9} {'7d':>9} {'30d':>9} {'$/day':>8} {'→month':>9}")
+        for b in burn:
+            print(
+                f"  {b.provider:<12} ${b.spend_1d:>8.2f} ${b.spend_7d:>8.2f} "
+                f"${b.spend_30d:>8.2f} ${b.per_day:>7.2f} "
+                f"${b.projected_month:>8.2f}"
+            )
     free = sorted(p for p, pl in plans.items() if pl.mode == "free")
     if free:
-        print(f"free/local: {', '.join(free)}")
+        print(f"\nfree/local: {', '.join(free)}")
 
     # Empirical ceilings: vendors stopped publishing numeric limits, but
     # every quota-429 in your own telemetry is ground truth.
-    from somm_core.plans import observed_ceilings
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
 
+    from somm_core.plans import observed_ceilings, recent_ok_calls
+
+    all_ceilings: dict[str, list] = {}
     printed_header = False
     for prov, pl in sorted(plans.items()):
         if pl.mode != "metered":
@@ -669,6 +721,7 @@ def _cmd_plans(args: argparse.Namespace) -> int:
         ceilings = observed_ceilings(dbs, prov)
         if not ceilings:
             continue
+        all_ceilings[prov] = ceilings
         if not printed_header:
             print(
                 "\nobserved ceilings — inferred from your own quota errors "
@@ -681,6 +734,46 @@ def _cmd_plans(args: argparse.Namespace) -> int:
                 f"  {prov:<12} ~{est}/{c.window}  "
                 f"(from {c.n_events} event(s), last {c.last_event[:10]})"
             )
+
+    # Quota drift: declared limits are guesses/marketing copy; vendors
+    # reset and resize quotas without notice. Two tell-tales, both from
+    # your own telemetry:
+    #   1. usage exceeds a declared quota while calls keep succeeding
+    #      → the real limit is higher (raised, reset, or wrong guess);
+    #   2. recent 429-derived ceilings diverge >25% from the declared
+    #      quota → the real limit moved.
+    for st in statuses:
+        if st.mode != "metered":
+            continue
+        if st.used_pct >= 100 and recent_ok_calls(dbs, st.provider, hours=24) > 0:
+            print(
+                f"\n⚠ {st.provider}: usage is {st.used_pct:.0f}% of the declared "
+                f"{st.limit.window} quota but calls are still succeeding — the "
+                f"real limit is likely higher (raised or reset). Update the "
+                f"quota in plans.toml, or trust the observed ceilings above."
+            )
+            continue
+        for c in all_ceilings.get(st.provider, []):
+            if c.window != st.limit.window or c.unit != st.limit.unit:
+                continue
+            try:
+                last = _dt.fromisoformat(c.last_event)
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=_UTC)
+                if (_dt.now(_UTC) - last).days > 14:
+                    continue  # stale evidence; don't second-guess with it
+            except ValueError:
+                continue
+            drift = abs(c.estimate - st.limit.quota) / st.limit.quota if st.limit.quota else 0
+            if drift > 0.25:
+                direction = "lower" if c.estimate < st.limit.quota else "higher"
+                print(
+                    f"\n⚠ {st.provider}: recent 429s put the real "
+                    f"{st.limit.window} ceiling ~{drift * 100:.0f}% {direction} "
+                    f"than the declared quota ({c.estimate:,.0f} vs "
+                    f"{st.limit.quota:,.0f} {st.limit.unit}) — the vendor may "
+                    f"have changed it; consider updating plans.toml."
+                )
 
     # Staleness: plan limits are vendor marketing copy, not an API.
     # Nudge re-verification when a referenced catalog entry ages out.

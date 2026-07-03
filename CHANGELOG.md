@@ -4,6 +4,29 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [0.6.0] — 2026-07-03
+
+### Added — payg budgets, burn rates, plan value, quota drift
+
+- **PAYG budgets**: payg plans may now declare limits — self-imposed
+  spend ceilings over calendar or rolling windows (LiteLLM-style
+  budget + duration), denominated in real dollars. Same pacing math,
+  same governor semantics: over-pace deprioritizes the provider,
+  `enforce = true` hard-stops spending at the ceiling.
+- **Burn rates**: `somm plans` reports per-provider real-dollar
+  velocity (1d/7d/30d, smoothed $/day, projected month-end) — for
+  PAYG there is no vendor window, so rate is the number that matters.
+- **Plan value**: metered plans with `price = N` show the value
+  multiple — notional list-price consumed this month vs what the
+  subscription costs.
+- **Quota drift detection**: declared quotas are guesses/marketing
+  copy and vendors reset them without notice. `somm plans` warns when
+  (a) usage exceeds a declared quota while calls keep succeeding (real
+  limit is higher), or (b) recent 429-derived observed ceilings
+  diverge >25% from the declared quota (limit moved).
+- `LimitStatus.mode`, `BurnRate`, `payg_burn_rates`,
+  `recent_ok_calls`, `Plan.price_usd_month` exported from somm-core.
+
 ## [0.5.0] — 2026-07-03
 
 ### Added — plan catalog + observed ceilings (keeping quota data honest)

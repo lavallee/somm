@@ -14,6 +14,7 @@ from somm_core.models import (
     Workload,
 )
 from somm_core.plans import (
+    BurnRate,
     CatalogEntry,
     LimitStatus,
     ObservedCeiling,
@@ -23,7 +24,9 @@ from somm_core.plans import (
     load_catalog,
     load_plans,
     observed_ceilings,
+    payg_burn_rates,
     plan_for,
+    recent_ok_calls,
 )
 from somm_core.pricing import (
     cost_for_call,
@@ -71,6 +74,9 @@ __all__ = [
     "plan_for",
     "limit_statuses",
     "observed_ceilings",
+    "BurnRate",
+    "payg_burn_rates",
+    "recent_ok_calls",
     "register_project",
     "fleet_db_paths",
 ]
