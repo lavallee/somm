@@ -102,6 +102,10 @@ class ShadowEvalWorker:
             "errors": [],
         }
 
+        swept = self._sweep_stale_leases()
+        if swept:
+            _log.info("shadow: swept %d stale grading lease(s)", swept)
+
         candidates = self._fetch_candidates()
         by_workload: dict[str, list[dict]] = {}
         for c in candidates:
@@ -249,12 +253,33 @@ class ShadowEvalWorker:
         return True
 
     def _release_lease(self, call_id: str) -> None:
+        """Delete the lease placeholder outright.
+
+        The shadow_candidates view excludes calls with ANY eval_results
+        row, so a kept-but-released lease would permanently orphan the
+        captured sample — a transient gold failure (429, timeout) must
+        put the candidate back in the pool, not bury it."""
         with self.repo._open() as conn:
             conn.execute(
-                "UPDATE eval_results SET grading_started_at = NULL "
-                "WHERE call_id = ? AND judge_score IS NULL",
+                "DELETE FROM eval_results WHERE call_id = ? "
+                "AND gold_model = 'pending' AND structural_score IS NULL "
+                "AND judge_score IS NULL",
                 (call_id,),
             )
+
+    def _sweep_stale_leases(self) -> int:
+        """Self-heal leases from workers that died mid-grade: a 'pending'
+        placeholder past the lease window is deleted so its candidate
+        resurfaces. Returns rows swept."""
+        stale_before = datetime.now(UTC) - timedelta(seconds=self.lease_window_s)
+        with self.repo._open() as conn:
+            cur = conn.execute(
+                "DELETE FROM eval_results WHERE gold_model = 'pending' "
+                "AND structural_score IS NULL AND judge_score IS NULL "
+                "AND (grading_started_at IS NULL OR grading_started_at < ?)",
+                (stale_before.isoformat(),),
+            )
+            return cur.rowcount
 
     def _write_result(self, call_row: dict, cfg: ShadowConfig, outcome: EvalOutcome) -> None:
         # Repurpose judge_reason as a JSON array with per-signal metadata; the

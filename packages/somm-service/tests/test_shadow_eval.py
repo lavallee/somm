@@ -376,3 +376,42 @@ def test_gold_provider_not_filtered_by_provider_order(tmp_path, monkeypatch):
     worker = build_workers_factory(cfg, repo)("shadow_eval")
     assert "anthropic" in worker.providers
     assert cfg.provider_order == ["ollama"]  # original config untouched
+
+
+def test_failed_grade_releases_candidate_back_to_pool(tmp_path):
+    """A transient gold failure must not permanently orphan the sample:
+    the lease placeholder is deleted, the call is a candidate again."""
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload(name="retryable", project=cfg.project)
+    repo.set_shadow_config(
+        wl.id,
+        {"gold_provider": "gold", "gold_model": "gold-m",
+         "sample_rate": 1.0, "budget_usd_daily": 5.0},
+    )
+    call_id = str(uuid.uuid4())
+    repo.write_call(Call(
+        id=call_id, ts=datetime.now(UTC), project=cfg.project,
+        workload_id=wl.id, prompt_id=None, provider="ollama", model="m",
+        tokens_in=10, tokens_out=5, latency_ms=50, cost_usd=0.0,
+        outcome=Outcome.OK, error_kind=None, prompt_hash="a", response_hash="b",
+    ))
+    repo.write_sample(call_id, "the prompt", "the response")
+
+    class _FailingGold:
+        name = "gold"
+
+        def generate(self, request):
+            raise RuntimeError("simulated 429")
+
+    worker = ShadowEvalWorker(repo, providers=[_FailingGold()])
+    summary = worker.run_once()
+    assert summary["calls_graded"] == 0
+    assert summary["errors"]
+    with repo._open() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM eval_results").fetchone()[0]
+    assert n == 0  # lease deleted, not buried
+
+    # Candidate resurfaces and grades once the gold provider recovers.
+    worker2 = ShadowEvalWorker(repo, providers=[_GoldProvider()])
+    summary2 = worker2.run_once()
+    assert summary2["calls_graded"] == 1
