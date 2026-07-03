@@ -50,9 +50,11 @@ jobs:
         with:
           enable-cache: true
       - name: Build ${{ matrix.package }}
-        run: uv build
-        working-directory: packages/${{ matrix.package }}
+        # NB: in a uv workspace, `uv build` from a member dir writes to the
+        # WORKSPACE ROOT dist/ — pass --out-dir explicitly so the publish
+        # step finds the artifacts.
+        run: uv build --package ${{ matrix.package }} --out-dir dist-${{ matrix.package }}
       - name: Publish ${{ matrix.package }} to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: packages/${{ matrix.package }}/dist/
+          packages-dir: dist-${{ matrix.package }}/

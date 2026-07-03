@@ -187,7 +187,10 @@ def test_embed_raises_when_no_ollama_provider_configured(tmp_path):
 # ---- live ollama (auto-skip when unreachable) -----------------------------
 
 
-def _ollama_reachable(url: str = "http://127.0.0.1:11434", model: str = "nomic-embed-text") -> bool:
+def _ollama_reachable(url: str | None = None, model: str = "nomic-embed-text") -> bool:
+    import os
+
+    url = url or os.environ.get("SOMM_OLLAMA_URL", "http://127.0.0.1:11434")
     import json
     import urllib.error
     import urllib.request
