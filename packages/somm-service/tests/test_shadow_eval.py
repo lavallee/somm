@@ -357,3 +357,22 @@ def test_lease_prevents_duplicate_grading(tmp_path):
     # Run again — should be a no-op (already graded)
     worker.run_once()
     assert gold.called == first_calls
+
+
+def test_gold_provider_not_filtered_by_provider_order(tmp_path, monkeypatch):
+    """SOMM_PROVIDER_ORDER is exclusive for routing, but the shadow worker's
+    gold-model chain must include every keyed provider regardless."""
+    from somm_core.config import Config
+    from somm_service.inprocess import build_workers_factory
+
+    cfg = Config()
+    cfg.db_dir = tmp_path / ".somm"
+    cfg.anthropic_api_key = "test-key"
+    cfg.provider_order = ["ollama"]  # excludes anthropic from routing
+
+    from somm_core.repository import Repository
+
+    repo = Repository(cfg.db_path)
+    worker = build_workers_factory(cfg, repo)("shadow_eval")
+    assert "anthropic" in worker.providers
+    assert cfg.provider_order == ["ollama"]  # original config untouched
