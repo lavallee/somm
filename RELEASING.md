@@ -78,7 +78,16 @@ independent.
    streaming), add a short sub-section to the landing page linking out
    to the corresponding `docs/*.md`.
 
-5. **Refresh the bundled data snapshots.** Two files ship stale unless
+5. **Skill parity check.** `somm-skill` is how coding agents (and any
+   skill-distribution system that brokers it, e.g. ivy's lyra-forge)
+   learn to use somm — it ships stale unless the release keeps it
+   honest. If this release adds or changes a user-facing surface
+   (API, CLI command, env var, MCP tool, billing/plan concept), reflect
+   it in `packages/somm-skill/src/somm_skill/SKILL.md` and, for
+   model-choice-related changes, `SOMMELIER.md`. An agent following an
+   outdated skill writes outdated integrations at fleet scale.
+
+6. **Refresh the bundled data snapshots.** Two files ship stale unless
    a human refreshes them:
    - **Pricing bundle** — regenerate from LiteLLM's price file:
      ```bash
@@ -91,26 +100,26 @@ independent.
      with ages). Vendors change subscription limits far more often than
      token prices — treat unverified entries as suspect.
 
-6. **Run the test suite one more time.** Version bumps occasionally
+7. **Run the test suite one more time.** Version bumps occasionally
    touch version-format tests.
    ```bash
    uv run pytest -q
    ```
 
-6. **Commit the release.** Two commits is the convention when the
+8. **Commit the release.** Two commits is the convention when the
    release bundles work that pre-dates the version bump: one
    `chore(release): X.Y.Z` that is *only* version + changelog + index,
    then the feature commits (or vice versa — whatever keeps the tag
    pointing at a clean state).
 
-7. **Tag and push.**
+9. **Tag and push.**
    ```bash
    git tag -a vX.Y.Z -m "vX.Y.Z — one-line summary"
    git push origin main
    git push origin vX.Y.Z
    ```
 
-8. **Create the GitHub release.** Use `gh release create` with
+10. **Create the GitHub release.** Use `gh release create` with
    `--notes` via a heredoc so Markdown renders cleanly. Keep the
    release notes focused on what users care about: new features,
    breaking changes, migration notes. Link to the full diff:
@@ -134,8 +143,10 @@ independent.
 - Confirm the release at https://github.com/lavallee/somm/releases.
 - If `docs/index.html` changed, wait ~1 minute for GitHub Pages to
   deploy, then verify the version badge updated.
-- If we ever publish to PyPI (not yet as of 0.2.0), the publish step
-  goes between 7 and 8 and requires a trusted-publisher workflow.
+- PyPI publishing is automatic: creating the GitHub release triggers
+  `.github/workflows/publish.yml` (trusted publishing, per-package
+  environments, `skip-existing`). Verify the run went green and the new
+  version shows on https://pypi.org/project/somm/.
 
 ## Release memory
 

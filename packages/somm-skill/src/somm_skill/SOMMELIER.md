@@ -59,7 +59,7 @@ human-readable factors the sommelier weighed. Present them verbatim
 rather than restating in your own words; the reasons are
 tokenisation-light and calibrated.
 
-**0.2.2 constraint knobs (all optional):**
+**Constraint knobs (all optional):**
 
 - `required_output_modalities` — drop candidates whose output modality
   isn't in this set. Pass `["text"]` for captioning / QA workloads to
@@ -79,15 +79,28 @@ tokenisation-light and calibrated.
 **Guidelines for turning the response into a conversation:**
 
 - Show the top 3 with their reasons, not all 8.
-- When shadow-eval data exists (`shadow_score` is not null), lead with
+- When online-eval data exists (`shadow_score` is not null), lead with
   that — it's the only candidate-level quality signal somm has.
+- **Weigh billing mode, not just price.** Candidate reasons distinguish
+  PAYG (listed price = real marginal dollars) from metered plans
+  ("metered plan 62% used, pace 1.3x") where price is notional and the
+  scarce resource is quota headroom. "Cheap but scarce" ranks
+  differently from "cheap": don't recommend a metered provider that's
+  over pace for a high-volume workload — the router will deprioritize
+  it. Run `somm plans` when the stakes justify it; it also reports
+  **observed ceilings** (limits inferred from the user's own quota-429s,
+  more trustworthy than vendor marketing).
+- **The CLI seats are candidates too.** `claude-cli` / `codex-cli`
+  spend a subscription the user already pays for — zero marginal cost
+  and frontier quality, but pinned-only by design: right answer for
+  gold-grading and low-volume quality-critical workloads, wrong answer
+  for hot loops.
 - If `prior_decisions` came back, cite them alongside the live
   candidates: "Candidate X matches what we picked in project Y." Note
-  that as of 0.2.2 the sommelier also *weighs* matching priors into the
-  score — you'll see `prior(<project> <date>): chose — ×1.10` or
+  that the sommelier also *weighs* matching priors into the score — you'll see `prior(<project> <date>): chose — ×1.10` or
   `flagged — ×0.50` in the reasons list. Weight decays with age
   (half-life ~90 days).
-- If `candidates` is empty, read `note` — 0.2.2 returns a filter
+- If `candidates` is empty, read `note` — it carries a filter
   breakdown like "Filtered out: 3 wrong output modality, 2 meta-router"
   that tells you exactly which constraint to loosen.
 

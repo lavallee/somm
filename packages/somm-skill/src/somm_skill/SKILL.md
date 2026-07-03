@@ -1,6 +1,6 @@
 ---
 name: somm
-description: Use when writing or modifying LLM-calling code in a Python project. Guides you to `somm.llm()` instead of raw provider SDKs, keeps telemetry and provenance consistent across projects, and surfaces model recommendations grounded in real local telemetry.
+description: Use when writing or modifying LLM-calling code in a Python project. Guides you to `somm.llm()` instead of raw provider SDKs, keeps telemetry and provenance consistent across projects, wires new workloads into online evaluation and budget/quota pacing, and surfaces model recommendations grounded in real local telemetry.
 ---
 
 # somm — LLM call guidance for coding agents
@@ -12,8 +12,9 @@ useful telemetry and benefits from somm's intelligence loop.
 ## When this applies
 
 Trigger when you are about to:
-- Call an LLM (chat completion, embedding, structured output, streaming).
-- Add a new LLM-using feature or endpoint.
+- Call an LLM (chat completion, tool calling, embedding, structured
+  output, streaming).
+- Add a new LLM-using feature, agent loop, or endpoint.
 - Refactor an existing LLM wrapper in the project.
 - Choose between models or providers.
 - Tune a prompt.
@@ -35,8 +36,10 @@ print(result.text)
 ```
 
 Do **not** reach for `anthropic.Anthropic()`, `openai.OpenAI()`, raw `httpx`,
-or provider-specific SDKs directly in project code. somm wraps them with
-telemetry, routing, cost tracking, and provenance for free.
+or provider-specific SDKs directly in project code. somm wraps ten providers
+(ollama, OpenRouter, DeepSeek, Minimax, Anthropic, Gemini, OpenAI,
+Perplexity, `claude`/`codex` CLI seats) with telemetry, routing, cost
+tracking, and provenance for free.
 
 ### 2. Tag every call with a `workload`
 
@@ -44,7 +47,7 @@ A workload is the *task*, not the call. "extract_contacts_from_article" is a
 workload; "call_anthropic" is not. Use snake_case, lowercase, stable across
 time.
 
-Register workloads before use (outside the hot path):
+Register workloads before use (outside the hot path), with a budget cap:
 
 ```python
 # run once per workload, at app startup or in a migration
@@ -53,13 +56,35 @@ somm.llm().repo.register_workload(
     project="my-project",
     description="Pull person names + emails from unstructured text",
     privacy_class=somm.PrivacyClass.INTERNAL,
+    budget_cap_usd_daily=2.0,      # always set one for paid-provider workloads
 )
 ```
 
 In `observe` mode (default) somm auto-registers unknown workloads and warns.
 In `strict` mode it raises `SommStrictMode`.
 
-### 3. Stamp provenance on stored data
+### 3. Opt quality-sensitive workloads into online evaluation
+
+If output quality matters (extraction, verification, enrichment — anything
+you'd hand-check), attach a shadow config so somm samples production calls,
+captures bodies, and grades them against a gold model in the background:
+
+```python
+wl = llm.repo.workload_by_name("contact_extract", "my-project")
+llm.repo.set_shadow_config(wl.id, {
+    "gold_provider": "claude-cli",   # subscription seat = zero marginal cost gold
+    "gold_model": "sonnet",
+    "sample_rate": 0.03,             # capture+grade 3% of OK calls
+    "budget_usd_daily": 0.5,
+    "max_grades_per_run": 20,
+})
+```
+
+Capture is the documented consent for body storage; `privacy_class=PRIVATE`
+workloads are never captured regardless. Grading needs the workers running
+(see rule 8).
+
+### 4. Stamp provenance on stored data
 
 When an LLM result lands in your project's DB, stamp the provenance on the
 row:
@@ -75,7 +100,7 @@ row["llm_provenance"] = {
 
 This lets you later answer "which model generated this row" without guessing.
 
-### 4. Check outcomes
+### 5. Check outcomes
 
 `somm.Outcome` is a typed enum. Use `result.mark()` to tag quality signals:
 
@@ -89,57 +114,96 @@ else:
     result.mark(somm.Outcome.OK)
 ```
 
-### 5. Before choosing a model, ask somm
+### 6. Before choosing a model, ask somm — and respect billing mode
 
 When `somm_recommend` or `somm_advise` is available, call one of them
 before hand-picking a model. somm has telemetry from your real
-workloads + pricing/capability intel from the provider APIs — it knows
-more than your training data does. Do not default to "Claude because
-that's what the user asked for." Ask which model fits the workload's
-cost/quality profile *as of today*.
+workloads + pricing/capability intel — it knows more than your training
+data does.
 
-For free-form model advice ("what vision model should I use?",
-"cheapest option for long context?"), the dedicated [sommelier
+Providers bill in two shapes, and somm models both (`somm plans`):
+**PAYG** (per-token dollars — the constraint is spend rate) and
+**metered** (subscription quota — the constraint is window headroom;
+`cost_usd` is notional). Candidate reasons include plan headroom and
+pace ("metered plan 62% used, pace 1.3x"). Don't aim a new high-volume
+workload at a metered provider that's already over pace — the router
+will deprioritize it anyway. The `claude-cli`/`codex-cli` seat providers
+are deliberately **pinned-only**: excellent for gold grading and
+quality-sensitive low-volume calls, never for hot loops.
+
+For free-form model advice, the dedicated [sommelier
 skill](./SOMMELIER.md) covers the full recall → advise → record loop
-with cross-project decision memory. Load it when the conversation
-shifts from coding to model choice.
+with cross-project decision memory.
 
-### 6. Streaming and structured output
+### 7. Tool calling, streaming, embeddings, structured output
 
-- `llm.stream(prompt, workload=...)` for streamed responses.
+- **Tool calling** — one neutral schema, every provider translates:
+
+  ```python
+  result = llm.generate(
+      messages=[{"role": "user", "content": "..."}],
+      tools=[{"name": "get_weather", "description": "...",
+              "parameters": {...}}],       # parameters = JSON Schema
+      workload="agent_loop",
+  )
+  for call in result.tool_calls: ...       # result.stop_reason == "tool_use"
+  ```
+
+- `llm.stream(prompt, workload=...)` for streamed responses
+  (`<think>` blocks stripped).
+- `llm.embed(text, workload=...)` for embeddings (telemetry row like
+  any call).
 - `llm.extract_structured(prompt, workload=...)` returns `dict | list`,
   handling markdown fences, brace extraction, and provider quirks.
+  Do **not** implement your own JSON repair loop.
 
-Do **not** implement your own JSON repair loop. somm already has one.
+### 8. Turn the intelligence loop on
 
-### 7. Never ship these patterns
+A project that only records calls gets half of somm. Set
+`SOMM_INPROCESS_WORKERS=1` in the project's environment (requires
+`somm-service` installed) so the scheduler runs model-intel refresh,
+online-eval grading, and the recommendation agent inside the app's own
+processes — no dedicated service needed. Alternatively run `somm serve`.
+somm warns at startup when grading is configured but no worker has ever
+run.
+
+### 9. Never ship these patterns
 
 - **Raw provider SDK imports** (`from anthropic import ...`) in project code.
 - **Hardcoded model names** outside config — route via workload + provider preference.
-- **Inline retry loops** — routing handles cooldowns and fallback.
+- **Inline retry loops** — routing handles cooldowns, fallback, and
+  metered-plan pacing.
 - **Prompt concatenation as strings** for long-lived prompts — use
-  `somm.prompt(workload, version="latest")` (D2+) so versions are tracked.
+  `llm.register_prompt(...)` / `llm.prompt(workload)` so versions are tracked.
 - **API keys in code or logs** — somm's adapters strip auth headers before
   any telemetry write. Keep it that way.
+- **Unbudgeted paid workloads** — set `budget_cap_usd_daily`;
+  `SOMM_BUDGET_FAIL_CLOSED=1` makes it a hard gate.
 
-## When somm-service is running
+## CLI quick reference (for debugging sessions)
 
-If `somm serve` is running (usually `localhost:7878`), you can link to it in
-PR descriptions or error messages: the dashboard shows the current call's
-place in the workload's rollup. The service is optional — the library works
-without it.
+```bash
+somm status --since 7        # per-workload rollup
+somm plans                   # metered quota pacing + payg burn rates (fleet-wide)
+somm spend                   # today's spend vs budget caps
+somm doctor                  # config / db / intel / workers / cooldowns health
+somm backfill-costs          # recompute $0 calls after pricing intel improves
+somm drain-spool             # replay telemetry spooled during db outages
+```
 
 ## When the MCP is connected
 
 If the user has configured `somm-mcp` in this agent, you can call:
 - `somm_stats` — telemetry roll-up for the current project.
-- `somm_recommend` — model recommendations grounded in local shadow-eval
+- `somm_recommend` — model recommendations grounded in local online-eval
   data, with cold-start sommelier fallback when data is sparse.
 - `somm_advise` — free-form candidate ranking over `model_intel` +
-  capability filters + past decisions. See [SOMMELIER.md](./SOMMELIER.md).
+  capability filters + plan headroom + past decisions. See
+  [SOMMELIER.md](./SOMMELIER.md).
 - `somm_record_decision` / `somm_search_decisions` — cross-project
   advisory memory for model choices.
-- `somm_compare` — run a prompt through N models side-by-side.
+- `somm_compare` — run a prompt through N models side-by-side (reaches
+  every configured provider, CLI seats included).
 - `somm_replay` — replay a past call against a different model.
 
 Call these *before* deciding on a model for new LLM code.
@@ -151,3 +215,7 @@ test harness with its own LLM stub), don't force it. But:
 - Note this in a PR comment so the user can decide later.
 - Still stamp `somm.provenance()`-shaped metadata on stored rows if feasible
   — the schema is self-documenting.
+
+External systems that want to observe somm without coupling can attach via
+`somm.hooks` (a correlation-id provider stamps your trace/request id on every
+telemetry row; call observers receive an event per call).
