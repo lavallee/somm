@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from somm.sommelier import (
     AdviseConstraints,
@@ -164,7 +163,7 @@ def test_record_and_get_decision_roundtrip(tmp_path):
         question="vision models",
         candidates=[{"provider": "openrouter", "model": "gemma-3", "score": 3.2}],
         rationale="largest free vision ctx",
-        project="malo",
+        project="captionapp",
         chosen_provider="openrouter",
         chosen_model="google/gemma-3-27b-it:free",
         workload="critique_visual",
@@ -185,7 +184,7 @@ def test_search_decisions_by_question_hash_and_project(tmp_path):
             question="Good free vision models?",
             candidates=[],
             rationale="picked gemma",
-            project="malo",
+            project="captionapp",
             chosen_provider="openrouter",
             chosen_model="google/gemma-3-27b-it:free",
         )
@@ -195,7 +194,7 @@ def test_search_decisions_by_question_hash_and_project(tmp_path):
             question="Cheap long context model?",
             candidates=[],
             rationale="picked haiku",
-            project="malo",
+            project="captionapp",
             chosen_provider="anthropic",
             chosen_model="claude-haiku-4-5-20251001",
         )
@@ -224,7 +223,7 @@ def test_decisions_survive_mirror_to_second_repo(tmp_path):
         question="vision pick",
         candidates=[],
         rationale="x",
-        project="malo",
+        project="captionapp",
         chosen_provider="openrouter",
         chosen_model="google/gemma-3-27b-it:free",
     )
@@ -235,7 +234,7 @@ def test_decisions_survive_mirror_to_second_repo(tmp_path):
     assert global_repo.get_decision(d.id) is not None
 
     # Can search in global for any project.
-    results = global_repo.search_decisions(project="malo")
+    results = global_repo.search_decisions(project="captionapp")
     assert results and results[0].id == d.id
 
 
@@ -260,7 +259,7 @@ def test_mark_decision_outcome(tmp_path):
 
 
 def _seed_intel_022(repo: Repository):
-    """Fixture reflecting the real-world mess from malo's report:
+    """Fixture reflecting the real-world mess from a real captioner-selection report:
     meta-routers, a Lyria-shape audio-out-vision-in model, an unknown-cap
     MiniMax entry, and real vision models.
     """
@@ -452,7 +451,7 @@ def test_consult_prior_decision_positive_annotates_and_boosts(tmp_path):
         question="free vision model for captioning",
         candidates=[],
         rationale="largest free vision ctx",
-        project="malo",
+        project="captionapp",
         chosen_provider="openrouter",
         chosen_model="google/gemma-3-27b-it:free",
     )
@@ -467,7 +466,7 @@ def test_consult_prior_decision_positive_annotates_and_boosts(tmp_path):
         repo,
         question="free vision model for captioning",
         constraints=AdviseConstraints(capabilities=["vision"], free_only=True, limit=20),
-        project="malo",
+        project="captionapp",
     )
     gem = next(c for c in result.candidates if c.model == "google/gemma-3-27b-it:free")
     assert gem.score > baseline   # positive nudge
@@ -481,7 +480,7 @@ def test_consult_prior_decision_negative_penalises(tmp_path):
         question="free vision model",
         candidates=[],
         rationale="picked gemma initially",
-        project="malo",
+        project="captionapp",
         chosen_provider="openrouter",
         chosen_model="google/gemma-3-27b-it:free",
     )
@@ -497,7 +496,7 @@ def test_consult_prior_decision_negative_penalises(tmp_path):
         repo,
         question="free vision model",
         constraints=AdviseConstraints(capabilities=["vision"], free_only=True, limit=20),
-        project="malo",
+        project="captionapp",
     )
     gem = next(c for c in result.candidates if c.model == "google/gemma-3-27b-it:free")
     assert gem.score < baseline   # soft penalty
@@ -512,7 +511,7 @@ def test_consult_prior_decision_decays_with_age(tmp_path):
     # Fresh prior (no outcome note → positive).
     fresh = build_decision(
         question="free vision model",
-        candidates=[], rationale="r", project="malo",
+        candidates=[], rationale="r", project="captionapp",
         chosen_provider="openrouter",
         chosen_model="google/gemma-3-27b-it:free",
     )
@@ -521,7 +520,7 @@ def test_consult_prior_decision_decays_with_age(tmp_path):
         c for c in consult(
             repo, question="free vision model",
             constraints=AdviseConstraints(capabilities=["vision"], free_only=True, limit=20),
-            project="malo",
+            project="captionapp",
         ).candidates
         if c.model == "google/gemma-3-27b-it:free"
     )
@@ -534,7 +533,7 @@ def test_consult_prior_decision_decays_with_age(tmp_path):
         c for c in consult(
             repo, question="free vision model",
             constraints=AdviseConstraints(capabilities=["vision"], free_only=True, limit=20),
-            project="malo",
+            project="captionapp",
         ).candidates
         if c.model == "google/gemma-3-27b-it:free"
     )

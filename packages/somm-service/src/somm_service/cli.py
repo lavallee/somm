@@ -150,7 +150,7 @@ def _cmd_list_intel(args: argparse.Namespace) -> int:
     repo = Repository(cfg.db_path)
     rows = list_intel(repo, provider=args.provider)
     if not rows:
-        print("no model_intel entries. run `somm admin refresh-intel` first.")
+        print("no model_intel entries. run `somm-serve admin refresh-intel` first.")
         return 0
     print(f"{'provider':<14} {'model':<50} {'in $/1M':>10} {'out $/1M':>10} {'ctx':>8}  source")
     for r in rows:

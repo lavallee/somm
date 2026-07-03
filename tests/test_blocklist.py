@@ -42,11 +42,32 @@ BANNED_WORDS = [
     "keel",
     "weaver",
     "crow",
+    "scribe",
+    "malo",
+    "starboard",
+    "orca",
+    "steve",
+    "eno",
+    "delphi",
+    "stetson",
+    "imogene",
+    "trawler",
 ]
 
 # Paths to scan. Anything outside this set is implicitly trusted.
-SCAN_DIRS = ["packages", "examples", "docs", "tests"]
-SCAN_FILES = ["README.md", "CHANGELOG.md", "PLAN.md", "TODOS.md"]
+SCAN_DIRS = ["packages", "examples", "docs", "tests", ".github"]
+SCAN_FILES = [
+    "README.md",
+    "CHANGELOG.md",
+    "PLAN.md",
+    "TODOS.md",
+    "ROADMAP.md",
+    "RELEASING.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "roster.toml",
+    "pyproject.toml",
+]
 
 # File extensions to check. Binary/generated files skipped.
 TEXT_SUFFIXES = {
@@ -70,6 +91,9 @@ TEXT_SUFFIXES = {
 # because it defines the blocklist).
 ALLOW_PATHS = {
     "tests/test_blocklist.py",
+    # Generated third-party data: public model catalog ids can collide with
+    # banned words (e.g. openrouter's "mancer/weaver") without being leaks.
+    "packages/somm-core/src/somm_core/data/pricing_bundle.json",
 }
 
 
@@ -116,7 +140,7 @@ def test_no_banned_exact_names():
 def test_no_banned_words_with_boundaries():
     """Banned standalone words must not appear as whole words."""
     offenders: list[tuple[str, str, int]] = []
-    patterns = [re.compile(rf"\b{re.escape(w)}\b") for w in BANNED_WORDS]
+    patterns = [re.compile(rf"\b{re.escape(w)}\b", re.IGNORECASE) for w in BANNED_WORDS]
     for path in _iter_tracked_files():
         rel = str(path.relative_to(REPO_ROOT))
         if rel in ALLOW_PATHS:
@@ -136,9 +160,14 @@ def test_no_banned_words_with_boundaries():
 
 
 def test_no_personal_paths():
-    """No /home/<someone>/ or /Users/<someone>/ paths should ship."""
+    """No /home/<someone>/, /Users/<someone>/, or /media/… paths should ship."""
     offenders: list[tuple[str, str, int]] = []
-    pattern = re.compile(r"/home/marc\b|/Users/[a-zA-Z_-]+/")
+    pattern = re.compile(
+        r"/home/(?!user\b|you\b)[a-zA-Z0-9_-]+"
+        r"|/Users/(?!you\b)[a-zA-Z0-9_-]+"
+        r"|/media/[a-zA-Z0-9_-]+"
+        r"|~/\.gstack"
+    )
     for path in _iter_tracked_files():
         rel = str(path.relative_to(REPO_ROOT))
         if rel in ALLOW_PATHS:

@@ -505,9 +505,9 @@ def _search_prior_decisions(
     misses: `Repository.search_decisions` uses LIKE '%question%', which
     is empty on anything but near-identical phrasing. If the question
     is long enough to contain distinctive content words, we retry per
-    keyword and dedupe — so "Which free vision model should malo use
+    keyword and dedupe — so "Which free vision model should my project use
     for captioning?" still recalls an earlier decision titled "Which
-    local vision model should malo use for describing data-viz
+    local vision model should my project use for describing data-viz
     artifacts?".
     """
     for candidate in (global_repo, repo):

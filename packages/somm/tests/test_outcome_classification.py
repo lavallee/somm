@@ -2,7 +2,7 @@
 
 The split between capability_* (model unfit) and detractor_* (provider/network
 flaky) is the load-bearing distinction for adequacy queries — verify every
-Outcome value lands in the bucket steve's reporter's-notebook framework
+Outcome value lands in the bucket the field-notebook triage framing
 expects.
 """
 

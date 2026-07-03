@@ -17,7 +17,7 @@
   <div class="wrap">
     <a class="logo" href="./">
       <span class="mark">somm</span>
-      <span class="mark-sub">/ v0.2.2</span>
+      <span class="mark-sub">/ v0.3.0</span>
     </a>
     <nav>
       <a href="#why">why</a>
@@ -69,14 +69,16 @@ print(r.text, r.provider, r.cost_usd)
 
       <div class="row-list">
         <div class="row">
-          <h3>Router across six providers</h3>
+          <h3>Router across ten providers</h3>
           <p>
-            ollama, OpenRouter, Anthropic, OpenAI, Gemini, Minimax —
-            plus any OpenAI-compatible gateway (Groq, Together,
-            Fireworks, vLLM, LM Studio, custom). Preference-ordered
-            fallback overridable via <code>SOMM_PROVIDER_ORDER</code>,
-            per-model cooldowns persisted to SQLite, circuit breaker.
-            Free-tier rate limits stop being a problem.
+            ollama, OpenRouter, DeepSeek, Minimax, Anthropic, Gemini,
+            OpenAI, Perplexity, plus <code>claude</code>/<code>codex</code>
+            CLI executors and any OpenAI-compatible gateway (Groq,
+            Together, Fireworks, vLLM, LM Studio, custom).
+            Preference-ordered fallback overridable via
+            <code>SOMM_PROVIDER_ORDER</code>, per-model cooldowns
+            persisted to SQLite, circuit breaker. Free-tier rate limits
+            stop being a problem.
           </p>
         </div>
         <div class="row">
@@ -112,7 +114,7 @@ print(r.text, r.provider, r.cost_usd)
         <div class="row">
           <h3>Sommelier: cross-project model memory</h3>
           <p>
-            Ask in <code>malo</code>: <em>good free vision models on
+            Ask in one project: <em>good free vision models on
             openrouter?</em> Get a ranked list with capability + price
             reasoning. Pick one. Next week in a different project, ask
             the same thing — somm remembers what you picked and why,
@@ -165,7 +167,8 @@ print(r.text, r.provider, r.cost_usd)
         somm at a local ollama and go. Every commercial provider is
         opt-in via its own env var (<code>ANTHROPIC_API_KEY</code>,
         <code>OPENAI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>,
-        <code>GEMINI_API_KEY</code>, <code>MINIMAX_API_KEY</code>).
+        <code>GEMINI_API_KEY</code>, <code>MINIMAX_API_KEY</code>,
+        <code>DEEPSEEK_API_KEY</code>, <code>PERPLEXITY_API_KEY</code>).
       </p>
 
       <h3 class="sub">Spin up the dashboard</h3>
@@ -274,9 +277,9 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
         </tbody>
       </table>
 
-      <p><a href="https://github.com/lavallee/somm/blob/main/PLAN.md">PLAN.md</a>
-      has the full design doc and 48-row decision audit trail from the
-      CEO / Design / Eng / DX review pipeline.</p>
+      <p><a href="https://github.com/lavallee/somm/blob/main/docs/BLUEPRINT.md">BLUEPRINT.md</a>
+      is the design doc — the load-bearing forces and the data model
+      behind somm.</p>
     </div>
   </section>
 
@@ -284,14 +287,13 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
     <div class="wrap">
       <h2>Status</h2>
       <p class="section-lede">
-        v0.2.2 — sommelier quality release. 276 tests
-        passing. Output-modality filters, meta-router exclusion,
-        unknown-capability penalty, prior-decision weighting with age
-        decay, and an opt-in HuggingFace <code>pipeline_tag</code>
-        enrichment worker. Plan milestones D1–D7 complete, plus
-        multimodal (0.1.1), sommelier (0.2.0), Gemini + error
-        visibility (0.2.1), and sommelier quality (0.2.2). MIT
-        licensed. Post-0.2.2 work tracked in
+        v0.3.0 — see the
+        <a href="https://github.com/lavallee/somm/blob/main/CHANGELOG.md">CHANGELOG</a>
+        for the release log; the test suite runs in CI on every push.
+        Recent releases added multimodal routing (0.1.1), the sommelier
+        (0.2.0), Gemini + error visibility (0.2.1), sommelier quality
+        (0.2.2), and tool calling + the LangChain adapter (unreleased).
+        MIT licensed. Upcoming work is tracked in
         <a href="https://github.com/lavallee/somm/blob/main/ROADMAP.md">ROADMAP.md</a>;
         if you want to build your own take, the
         <a href="https://github.com/lavallee/somm/blob/main/docs/BLUEPRINT.md">BLUEPRINT</a>

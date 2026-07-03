@@ -8,11 +8,10 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from somm.client import SommLLM
-from somm.providers.base import ProviderHealth, SommResponse, ToolCall as ProviderToolCall
+from somm.providers.base import ProviderHealth, SommResponse
+from somm.providers.base import ToolCall as ProviderToolCall
 from somm_core.config import Config
-
 from somm_langchain import SommChatModel
-
 
 # ---------------------------------------------------------------------------
 # Recording fake provider — captures every SommRequest it sees

@@ -8,7 +8,6 @@ Feature 3: generate() warns when daily budget cap is exceeded.
 from __future__ import annotations
 
 import io
-import sys
 from contextlib import redirect_stderr
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -109,7 +108,7 @@ def test_warn_only_once_per_pair():
         cost_for_call(repo, "anthropic", "claude-once-test", 2000, 1000)
 
     # Should only have one warning line
-    lines = [l for l in buf.getvalue().strip().splitlines() if "WARNING" in l]
+    lines = [ln for ln in buf.getvalue().strip().splitlines() if "WARNING" in ln]
     assert len(lines) == 1
 
 

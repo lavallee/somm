@@ -223,9 +223,9 @@ def test_new_model_landed_skips_unknown_pricing_sentinel(tmp_path):
         )
 
     worker = AgentWorker(repo, min_calls_for_consideration=10)
-    summary = worker.run_once()
+    worker.run_once()
     # Should emit exactly one rec — picking Haiku, not openrouter/auto.
-    recs = [r for r in worker.last_run_recs if r.action == "new_model_landed"] \
+    [r for r in worker.last_run_recs if r.action == "new_model_landed"] \
         if hasattr(worker, "last_run_recs") else []
     with repo._open() as conn:
         rows = conn.execute(

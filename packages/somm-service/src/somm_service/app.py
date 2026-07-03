@@ -13,7 +13,7 @@ HTTP surface:
                                 as a library; streaming + /v1/chat/completions
                                 are explicit follow-ups)
 
-Design tokens + a11y spec from PLAN.md Phase 2 applied inline (v0.1 ships
+Design tokens + a11y spec applied inline (v0.1 ships
 tokens in-HTML; `packages/somm-service/web/tokens.css` lands when we extract).
 
 `somm serve` also starts a Scheduler background thread that runs the
@@ -417,11 +417,7 @@ def create_app(config: Config | None = None) -> Starlette:
 
 def _build_workers_factory(cfg: Config, repo: Repository):
     """Create a factory that returns a worker instance for a given job name."""
-    from somm.providers.anthropic import AnthropicProvider
-    from somm.providers.minimax import MinimaxProvider
-    from somm.providers.ollama import OllamaProvider
-    from somm.providers.openai import OpenAIProvider
-    from somm.providers.openrouter import OpenRouterProvider
+    from somm.client import build_default_providers
 
     from somm_service.workers import (
         AgentWorker,
@@ -429,49 +425,34 @@ def _build_workers_factory(cfg: Config, repo: Repository):
         ShadowEvalWorker,
     )
 
-    def _providers_for_shadow() -> list:
-        chain = [OllamaProvider(base_url=cfg.ollama_url, default_model=cfg.ollama_model)]
-        if cfg.openrouter_api_key:
-            chain.append(
-                OpenRouterProvider(
-                    api_key=cfg.openrouter_api_key,
-                    roster=cfg.openrouter_roster,
-                )
-            )
-        if cfg.minimax_api_key:
-            chain.append(
-                MinimaxProvider(
-                    api_key=cfg.minimax_api_key,
-                    default_model=cfg.minimax_model,
-                )
-            )
-        if cfg.anthropic_api_key:
-            chain.append(
-                AnthropicProvider(
-                    api_key=cfg.anthropic_api_key,
-                    default_model=cfg.anthropic_model,
-                )
-            )
-        if cfg.openai_api_key:
-            chain.append(
-                OpenAIProvider(
-                    api_key=cfg.openai_api_key,
-                    base_url=cfg.openai_base_url,
-                    default_model=cfg.openai_model,
-                )
-            )
-        return chain
-
     def factory(job_name: str):
         if job_name == "model_intel":
             return ModelIntelWorker(repo, ollama_url=cfg.ollama_url)
         if job_name == "shadow_eval":
-            return ShadowEvalWorker(repo, providers=_providers_for_shadow())
+            # Same chain SommLLM builds — shadow grading can reach every
+            # provider the library can (gemini, deepseek, CLI executors, …).
+            return ShadowEvalWorker(repo, providers=build_default_providers(cfg))
         if job_name == "agent":
             return AgentWorker(repo)
         return None
 
     return factory
+
+
+def start_inprocess_scheduler(cfg: Config, repo: Repository):
+    """Start the background scheduler inside the current process.
+
+    This is what `somm serve` runs, minus the web server — for library-only
+    deployments that still want the intelligence loop (model-intel refresh,
+    online-eval grading, recommendations) without a dedicated service.
+    Enabled from the library via SOMM_INPROCESS_WORKERS=1. Returns the
+    running Scheduler; caller owns stop().
+    """
+    from somm_service.workers import Scheduler
+
+    scheduler = Scheduler(repo, _build_workers_factory(cfg, repo))
+    scheduler.start()
+    return scheduler
 
 
 def run_server(

@@ -2,7 +2,7 @@
 
 OpenRouter's free tier is heavily subject to rate limits + ephemeral
 availability. Internal roster cycling with per-model cooldowns is the
-pattern battle-tested in prior LLM-heavy codebases (see PLAN.md §0B).
+pattern battle-tested in prior LLM-heavy codebases.
 
 - Iterates through `roster` on each call, skipping models still cooling.
 - Uses the shared ProviderHealthTracker so cooldowns survive restarts.

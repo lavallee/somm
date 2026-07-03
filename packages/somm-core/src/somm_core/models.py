@@ -20,13 +20,13 @@ class Outcome(StrEnum):
     UNKNOWN = "unknown"
 
     @property
-    def failure_class(self) -> "FailureClass":
+    def failure_class(self) -> FailureClass:
         """Adequacy-tier classification — see FailureClass docstring."""
         return _OUTCOME_TO_FAILURE_CLASS.get(self, FailureClass.UNKNOWN)
 
     @property
     def is_capability_signal(self) -> bool:
-        """True when the failure is the model's fault (Tier 2/3 in steve's framing).
+        """True when the failure is the model's fault (capability tier).
 
         Use to ask "is this model unfit for this workload?" — exclude detractors,
         which reflect provider/network state, not model capability.
@@ -57,8 +57,8 @@ class FailureClass(StrEnum):
       evidence — a model is innocent until proven model-fault.
     * ``meta_*`` / ``none`` / ``unknown`` — neither bucket.
 
-    The split mirrors steve's reporter's-notebook framework (timeliness
-    vs. model-traceable error vs. payload error vs. subjective quality).
+    The split follows a field-notebook triage framing: timeliness
+    vs. model-traceable error vs. payload error vs. subjective quality.
     Subjective quality is intentionally absent — it lives in
     ``eval_results``, not in this classification.
     """
@@ -157,9 +157,10 @@ class Call:
     prompt_hash: str
     response_hash: str
     error_detail: str | None = None
-    # 0007: commission_id ties the call to a scribe commission (cross-tool
-    # audit spine); the param fields record what the caller asked for.
-    commission_id: str | None = None
+    # 0007/0009: correlation_id ties the call to an external system's own
+    # record (request id, trace id, job id — supplied via somm.hooks); the
+    # param fields record what the caller asked for.
+    correlation_id: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
     top_p: float | None = None

@@ -40,7 +40,7 @@ def main():
                 gold_provider="anthropic",
                 gold_model="claude-opus-4-7",
             )
-        except somm.SommPrivacyViolation as e:  # type: ignore[attr-defined]
+        except somm.SommPrivacyViolation as e:
             print("correctly refused:", e.code)
     finally:
         llm.close()

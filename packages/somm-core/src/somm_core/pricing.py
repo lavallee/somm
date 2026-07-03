@@ -18,7 +18,9 @@ if TYPE_CHECKING:
     from somm_core.repository import Repository
 
 # Providers known to charge per-token. Missing pricing for these is a bug.
-_PAID_PROVIDERS: frozenset[str] = frozenset({"anthropic", "openai"})
+_PAID_PROVIDERS: frozenset[str] = frozenset(
+    {"anthropic", "openai", "gemini", "deepseek", "minimax", "perplexity"}
+)
 
 # Track which (provider, model) pairs have already emitted a missing-pricing
 # warning so we only warn once per process.
@@ -79,6 +81,129 @@ def seed_known_pricing(repo: Repository) -> None:
         )
 
 
+def sync_bundled_pricing(repo: Repository) -> int:
+    """Sync the wheel's bundled pricing snapshot into `model_intel`.
+
+    The bundle (data/pricing_bundle.json, generated from LiteLLM's price
+    file by scripts/update_pricing_bundle.py) covers every provider somm
+    routes to, so cost tracking works offline out of the box — including
+    on databases that predate the bundle.
+
+    Rules:
+    - Rows missing from `model_intel` are inserted (source="litellm_bundle").
+    - Rows whose source is "somm_seed" or "litellm_bundle" are updated —
+      the bundle is fresher than either.
+    - Rows from any other source (manual edits, live refreshes, workers)
+      are never touched.
+    - A crc32 of the bundle is stored in SQLite's `PRAGMA user_version`;
+      when it matches, the sync is a single-pragma no-op, so calling this
+      on every library init is cheap.
+
+    Returns the number of rows written. Never raises — pricing sync must
+    not break `somm.llm()`.
+    """
+    import json
+    import zlib
+
+    try:
+        from importlib import resources
+
+        data = (
+            resources.files("somm_core") / "data" / "pricing_bundle.json"
+        ).read_bytes()
+    except Exception:
+        return 0
+
+    fingerprint = zlib.crc32(data) & 0x7FFFFFFF  # keep it positive for SQLite
+    try:
+        with repo._open() as conn:
+            if conn.execute("PRAGMA user_version").fetchone()[0] == fingerprint:
+                return 0
+            existing = {
+                (r[0], r[1]): r[2]
+                for r in conn.execute("SELECT provider, model, source FROM model_intel")
+            }
+
+        bundle = json.loads(data)
+        written = 0
+        for m in bundle.get("models", []):
+            key = (m["provider"], m["model"])
+            source = existing.get(key, "")
+            if key in existing and source not in ("somm_seed", "litellm_bundle"):
+                continue
+            write_intel(
+                repo,
+                provider=m["provider"],
+                model=m["model"],
+                price_in_per_1m=m.get("price_in_per_1m"),
+                price_out_per_1m=m.get("price_out_per_1m"),
+                context_window=m.get("context_window"),
+                capabilities=m.get("capabilities"),
+                source="litellm_bundle",
+            )
+            written += 1
+
+        with repo._open() as conn:
+            conn.execute(f"PRAGMA user_version = {fingerprint}")
+        return written
+    except Exception:
+        return 0
+
+
+def backfill_costs(
+    repo: Repository,
+    since_days: int | None = None,
+    dry_run: bool = False,
+) -> tuple[int, float]:
+    """Recompute cost_usd for calls logged at $0 that now have pricing.
+
+    Historical calls made before pricing intel existed for their
+    (provider, model) carry cost_usd=0 forever unless recomputed. This
+    joins those rows against current `model_intel` and rewrites the cost
+    from the recorded token counts. Only rows whose cost is NULL/0 and
+    whose model now has a nonzero price are touched — priced rows and
+    genuinely-free models are left alone.
+
+    Returns (rows_affected, total_usd). With dry_run=True nothing is
+    written; the return value reports what would change.
+    """
+    window = ""
+    params: list = []
+    if since_days is not None:
+        window = " AND c.ts >= datetime('now', ?)"
+        params.append(f"-{int(since_days)} days")
+
+    select_sql = f"""
+        SELECT COUNT(*),
+               COALESCE(SUM((c.tokens_in * mi.price_in_per_1m
+                             + c.tokens_out * mi.price_out_per_1m) / 1000000.0), 0)
+        FROM calls c
+        JOIN model_intel mi ON mi.provider = c.provider AND mi.model = c.model
+        WHERE (c.cost_usd IS NULL OR c.cost_usd = 0)
+          AND (mi.price_in_per_1m > 0 OR mi.price_out_per_1m > 0)
+          AND (c.tokens_in > 0 OR c.tokens_out > 0){window}
+    """
+    with repo._open() as conn:
+        n, total = conn.execute(select_sql, params).fetchone()
+        if dry_run or not n:
+            return (n, round(total or 0.0, 6))
+        conn.execute(
+            f"""
+            UPDATE calls SET cost_usd = ROUND(
+                (calls.tokens_in * mi.price_in_per_1m
+                 + calls.tokens_out * mi.price_out_per_1m) / 1000000.0, 8)
+            FROM model_intel mi
+            WHERE mi.provider = calls.provider AND mi.model = calls.model
+              AND (calls.cost_usd IS NULL OR calls.cost_usd = 0)
+              AND (mi.price_in_per_1m > 0 OR mi.price_out_per_1m > 0)
+              AND (calls.tokens_in > 0 OR calls.tokens_out > 0)
+              {window.replace("c.ts", "calls.ts") if window else ""}
+            """,
+            params,
+        )
+    return (n, round(total or 0.0, 6))
+
+
 def cost_for_call(
     repo: Repository,
     provider: str,
@@ -109,8 +234,8 @@ def cost_for_call(
                 _warned_missing_pricing.add(key)
                 print(
                     f"[somm] WARNING: no pricing data for {provider}/{model} "
-                    f"— cost will be $0. Run `somm intel refresh` or add "
-                    f"pricing via write_intel().",
+                    f"— cost will be $0. Run `somm-serve admin refresh-intel` "
+                    f"or add pricing via write_intel().",
                     file=sys.stderr,
                 )
         return 0.0

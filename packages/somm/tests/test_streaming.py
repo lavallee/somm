@@ -224,7 +224,8 @@ def _ollama_live() -> bool:
 
 def _ollama_test_model() -> str | None:
     """Same as test_smoke._ollama_test_model — pick whatever is installed
-    so the test runs on any dev machine with ollama available."""
+    so the test runs on any dev machine with ollama available. Skips
+    embedding-only models (they 400 on /api/generate)."""
     import os
 
     env = os.environ.get("SOMM_OLLAMA_MODEL")
@@ -234,8 +235,10 @@ def _ollama_test_model() -> str | None:
         r = httpx.get("http://localhost:11434/api/tags", timeout=1.0)
         r.raise_for_status()
         models = r.json().get("models") or []
-        if models:
-            return models[0].get("name") or models[0].get("model")
+        for m in models:
+            name = m.get("name") or m.get("model") or ""
+            if name and "embed" not in name.lower():
+                return name
     except Exception:
         return None
     return None
@@ -259,6 +262,11 @@ def test_ollama_live_stream(tmp_path):
             )
         )
         text = "".join(pieces)
+    except Exception as exc:
+        low = str(exc).lower()
+        if "503" in low or "server busy" in low or "failing after wait" in low:
+            pytest.skip("local ollama contended (busy/503)")
+        raise
     finally:
         llm.close()
 

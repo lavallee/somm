@@ -264,7 +264,7 @@ def build_server(
             workload: optional workload scope.
             constraints: the constraint dict from somm_advise (stored for
               audit / dedup).
-            agent: the caller identifier (e.g. "claude-code-malo").
+            agent: the caller identifier (e.g. "claude-code-myproject").
         """
         from somm.sommelier import build_decision
 

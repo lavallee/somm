@@ -6,8 +6,6 @@ SommProvider Protocol (see base.py).
 
 from somm.providers._openai_compat import OpenAICompatProvider
 from somm.providers.anthropic import AnthropicProvider
-from somm.providers.claude_cli import ClaudeCLIProvider
-from somm.providers.codex_cli import CodexCLIProvider
 from somm.providers.base import (
     ProviderHealth,
     SommChunk,
@@ -16,6 +14,8 @@ from somm.providers.base import (
     SommRequest,
     SommResponse,
 )
+from somm.providers.claude_cli import ClaudeCLIProvider
+from somm.providers.codex_cli import CodexCLIProvider
 from somm.providers.deepseek import DeepSeekProvider
 from somm.providers.gemini import GeminiProvider
 from somm.providers.minimax import MinimaxProvider

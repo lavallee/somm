@@ -9,8 +9,10 @@ the "why we didn't use X" notes are useful too.
 
 | Source | What it's good for | Live today? | Notes |
 |---|---|---|---|
-| OpenRouter `/api/v1/models` | Price, context, modality, vision flags | ✅ `model_intel` worker | Primary source. Stable JSON. |
-| Static pricing table | Anthropic/OpenAI/Minimax pricing | ✅ `model_intel` worker | Hand-curated; refresh on each somm release. |
+| OpenRouter `/api/v1/models` | Price, context, modality, vision flags | ✅ `model_intel` worker | Live source. Stable JSON. |
+| **LiteLLM `model_prices_and_context_window.json`** | Price + context + tools/vision flags for every provider somm routes to | ✅ bundled snapshot (`somm_core/data/pricing_bundle.json`, synced on library init) | De facto community ground truth, MIT. Regenerate per release with `scripts/update_pricing_bundle.py`. |
+| [models.dev](https://models.dev) `api.json` | Capability-rich model catalog (modalities, reasoning, cache pricing, cutoffs), MIT data | ❌ | Strong secondary/cross-check source for the bundle; keyless static JSON. |
+| Static pricing table | Minimal seed rows (offline fallback below the bundle) | ✅ `seed_known_pricing` | Superseded by the bundle for coverage; kept as the zero-dependency floor. |
 | Ollama `/api/tags` | Locally installed models | ✅ `model_intel` worker | No pricing. No context window (not exposed). |
 | **[LMArena](https://lmarena.ai)** | Crowd-sourced Elo rankings — the single best *quality* signal across proprietary + open models | ❌ | See notes below. |
 | **[Artificial Analysis](https://artificialanalysis.ai)** | Composite quality + speed (tokens/s) + price per model | ❌ | Commercial-heavy coverage. Has an API (check terms). |

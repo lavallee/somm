@@ -220,6 +220,15 @@ def drain_spool(repo: Repository, spool_dir: Path) -> int:
                         error_kind=row["error_kind"],
                         prompt_hash=row["prompt_hash"],
                         response_hash=row["response_hash"],
+                        # Optional fields — present in newer spool files; rows
+                        # spilled by pre-0.3 writers carry commission_id
+                        # instead, which replay ignores.
+                        error_detail=row.get("error_detail"),
+                        correlation_id=row.get("correlation_id"),
+                        temperature=row.get("temperature"),
+                        max_tokens=row.get("max_tokens"),
+                        top_p=row.get("top_p"),
+                        stop_sequences_json=row.get("stop_sequences_json"),
                     )
                 )
         try:

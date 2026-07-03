@@ -9,8 +9,8 @@ makes each constraint load-bearing.
 If you take away the wrong piece, the whole thing loses coherence.
 If you take away the right piece, what's left is still useful.
 
-Read alongside [`PLAN.md`](../PLAN.md) for the full context. This
-document is the compressed version.
+This is the canonical design document: the load-bearing forces and the
+data model, without the process history.
 
 ---
 

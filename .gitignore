@@ -27,10 +27,12 @@ sessions.txt
 *.sqlite-shm
 
 # Author-local notes not for open source
-CHARTER.md
+notes/
 .claude/
 
 # Editor
 .vscode/
 .idea/
 *.swp
+
+# Archived internal design/process docs (see docs/BLUEPRINT.md for the public design doc)

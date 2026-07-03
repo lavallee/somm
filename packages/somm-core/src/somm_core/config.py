@@ -5,6 +5,7 @@ Minimal v0.1 surface. Expands as features demand.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -43,6 +44,7 @@ class Config:
     cross_project_path: Path | None = None  # defaults to ~/.somm/global.sqlite
     budget_fail_closed: bool = False  # hard pre-request gate: block calls once a workload's daily cap is reached
     budget_default_cap_usd_daily: float | None = None  # daily cap for workloads with no explicit budget_cap_usd_daily (when fail_closed)
+    inprocess_workers: bool = False  # run the somm-service scheduler inside the library process (SOMM_INPROCESS_WORKERS=1)
 
     @property
     def db_path(self) -> Path:
@@ -98,11 +100,12 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     if "SOMM_BUDGET_FAIL_CLOSED" in os.environ:
         val = os.environ["SOMM_BUDGET_FAIL_CLOSED"].strip().lower()
         cfg.budget_fail_closed = val in ("1", "true", "yes", "on")
+    if "SOMM_INPROCESS_WORKERS" in os.environ:
+        val = os.environ["SOMM_INPROCESS_WORKERS"].strip().lower()
+        cfg.inprocess_workers = val in ("1", "true", "yes", "on")
     if "SOMM_BUDGET_DEFAULT_CAP_USD_DAILY" in os.environ:
-        try:
+        with contextlib.suppress(ValueError):
             cfg.budget_default_cap_usd_daily = float(os.environ["SOMM_BUDGET_DEFAULT_CAP_USD_DAILY"])
-        except ValueError:
-            pass
     if "SOMM_GLOBAL_PATH" in os.environ:
         cfg.cross_project_path = Path(os.environ["SOMM_GLOBAL_PATH"])
     if "SOMM_PROVIDER_ORDER" in os.environ:
@@ -127,10 +130,8 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         if env_var in os.environ:
             setattr(cfg, attr, os.environ[env_var])
     if "SOMM_HTTP_TIMEOUT" in os.environ:
-        try:
+        with contextlib.suppress(ValueError):
             cfg.http_timeout = float(os.environ["SOMM_HTTP_TIMEOUT"])
-        except ValueError:
-            pass
 
     if project is not None:
         cfg.project = project
