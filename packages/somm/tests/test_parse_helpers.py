@@ -86,3 +86,49 @@ def test_extract_json_with_think_block():
 
 def test_extract_json_returns_none_for_non_json():
     assert extract_json('no json here') is None
+
+
+# ---------------------------------------------------------------------------
+# workload_id
+# ---------------------------------------------------------------------------
+
+from somm_core.parse import workload_id, prompt_id
+
+
+def test_workload_id_is_deterministic():
+    assert workload_id('ad_hoc') == workload_id('ad_hoc')
+
+
+def test_workload_id_differs_by_name():
+    assert workload_id('ad_hoc') != workload_id('search')
+
+
+def test_workload_id_schema_affects_id():
+    base = workload_id('w', input_schema=None)
+    with_schema = workload_id('w', input_schema={'k': 'v'})
+    assert base != with_schema
+
+
+def test_workload_id_is_16_hex_chars():
+    wid = workload_id('ad_hoc')
+    assert len(wid) == 16
+    assert all(c in '0123456789abcdef' for c in wid)
+
+
+# ---------------------------------------------------------------------------
+# prompt_id
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_id_is_deterministic():
+    assert prompt_id('hello') == prompt_id('hello')
+
+
+def test_prompt_id_differs_by_body():
+    assert prompt_id('hello') != prompt_id('world')
+
+
+def test_prompt_id_is_16_hex_chars():
+    pid = prompt_id('test prompt')
+    assert len(pid) == 16
+    assert all(c in '0123456789abcdef' for c in pid)
