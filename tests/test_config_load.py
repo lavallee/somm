@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from somm_core.config import load
 
 _SOMM_ENV_VARS = [
