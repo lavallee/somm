@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import sys
 import time
 import uuid
@@ -59,6 +60,10 @@ SommStrictMode = _SommStrictMode  # re-export; new canonical lives in somm.error
 # Track which (workload, date) pairs have already emitted a budget-exceeded
 # warning so we only warn once per workload per day per process.
 _warned_budget_exceeded: set[tuple[str, date]] = set()
+
+# Track which (workload, date) pairs have already emitted an 80%-of-cap
+# near-cap warning so we only warn once per workload per day per process.
+_warned_budget_near_cap: set[tuple[str, date]] = set()
 
 # One in-process scheduler per DB per process (SOMM_INPROCESS_WORKERS=1).
 _inprocess_schedulers: dict[str, object] = {}
@@ -407,6 +412,16 @@ def enforce_workload_budget(
             (workload.id,),
         ).fetchone()
     spent = float(row[0]) if row else 0.0
+    warn_pct = float(os.environ.get('SOMM_BUDGET_WARN_PCT', '80')) / 100.0
+    warn_key = (workload.name, date.today())
+    if cap > 0 and warn_key not in _warned_budget_near_cap and spent >= cap * warn_pct:
+        _warned_budget_near_cap.add(warn_key)
+        print(
+            f'[somm] WARNING: workload {workload.name!r} daily spend ${spent:.4f} '
+            f'is {spent/cap*100:.0f}% of ${float(cap):.2f} cap. '
+            f'Hard gate fires at 100%.',
+            file=sys.stderr,
+        )
     if spent >= cap:
         from somm.errors import SommBudgetExceeded
         raise SommBudgetExceeded(

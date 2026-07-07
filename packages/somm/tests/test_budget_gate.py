@@ -7,10 +7,12 @@ autonomous spend.
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from somm.client import SommLLM
+from somm.client import SommLLM, _warned_budget_near_cap, enforce_workload_budget
 from somm.errors import SommBudgetExceeded
 from somm.providers.base import ProviderHealth, SommResponse
 from somm_core import Outcome
@@ -176,5 +178,59 @@ def test_stream_blocks_when_cap_already_reached(tmp_path):
         assert ei.value.code == "SOMM_BUDGET_EXCEEDED"
         assert ei.value.workload == "capped"
         assert prov.calls == 0  # gate fires pre-dispatch, provider never reached
+    finally:
+        llm.close()
+
+
+def _seed_spend(repo, workload_id: str, project: str, cost_usd: float) -> None:
+    """Insert a synthetic spend row dated today so enforce_workload_budget sees it."""
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO calls (id, ts, project, workload_id, provider, model, "
+            "tokens_in, tokens_out, latency_ms, cost_usd, outcome, prompt_hash, response_hash) "
+            "VALUES (?, datetime('now'), ?, ?, 'fake', 'fake-model', 1, 1, 1, ?, 'ok', 'ph', 'rh')",
+            (str(uuid.uuid4()), project, workload_id, cost_usd),
+        )
+
+
+def test_near_cap_warning_fires_at_85_pct(tmp_path, capsys):
+    """Warning prints to stderr at 85% spend; no SommBudgetExceeded raised."""
+    _warned_budget_near_cap.clear()
+    cfg = _cfg(tmp_path, fail_closed=True)
+    llm = SommLLM(config=cfg, providers=[])
+    try:
+        cap = 1.00
+        workload = llm.repo.register_workload(
+            name="nearwarn", project=cfg.project, budget_cap_usd_daily=cap
+        )
+        _seed_spend(llm.repo, workload.id, cfg.project, 0.85)
+        # Must not raise — we're under the hard gate.
+        enforce_workload_budget(
+            llm.repo, workload, fail_closed=True, default_cap_usd_daily=None
+        )
+        err = capsys.readouterr().err
+        assert "[somm] WARNING" in err
+        assert "nearwarn" in err
+        assert "Hard gate fires at 100%" in err
+    finally:
+        llm.close()
+
+
+def test_near_cap_warning_suppressed_below_threshold(tmp_path, capsys):
+    """No warning at 79% spend — below the 80% threshold."""
+    _warned_budget_near_cap.clear()
+    cfg = _cfg(tmp_path, fail_closed=True)
+    llm = SommLLM(config=cfg, providers=[])
+    try:
+        cap = 1.00
+        workload = llm.repo.register_workload(
+            name="safe", project=cfg.project, budget_cap_usd_daily=cap
+        )
+        _seed_spend(llm.repo, workload.id, cfg.project, 0.79)
+        enforce_workload_budget(
+            llm.repo, workload, fail_closed=True, default_cap_usd_daily=None
+        )
+        err = capsys.readouterr().err
+        assert "[somm] WARNING" not in err
     finally:
         llm.close()
