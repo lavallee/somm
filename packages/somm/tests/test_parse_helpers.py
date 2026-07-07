@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from somm_core.parse import extract_balanced, extract_json, strip_markdown_fence, strip_think_block
+from somm_core.parse import (
+    extract_balanced,
+    extract_json,
+    prompt_id,
+    strip_markdown_fence,
+    strip_think_block,
+    workload_id,
+)
 
 # ---------------------------------------------------------------------------
 # extract_balanced
@@ -91,8 +98,6 @@ def test_extract_json_returns_none_for_non_json():
 # ---------------------------------------------------------------------------
 # workload_id
 # ---------------------------------------------------------------------------
-
-from somm_core.parse import workload_id, prompt_id
 
 
 def test_workload_id_is_deterministic():
