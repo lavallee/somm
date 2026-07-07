@@ -1,10 +1,9 @@
-"""POST /v1/messages — Anthropic Messages-compatible LLM proxy gateway (v1).
+"""POST /v1/messages and POST /v1/chat/completions — LLM proxy gateway (v1).
 
 V1 scope (DECIDED in george, owner archie): the HYBRID — somm owns the
 endpoint + budget gate + telemetry; LiteLLM's Python SDK is used as a
 LIBRARY (no LiteLLM proxy server) to do the provider call + cross-provider
-format translation. NON-STREAMING; streaming + /v1/chat/completions are
-explicit follow-ups.
+format translation. NON-STREAMING; streaming is an explicit follow-up.
 
 Why it exists: lets harness CLIs (claude-cli) route their LLM traffic
 through somm by pointing ``ANTHROPIC_BASE_URL`` at this endpoint, so every
@@ -361,6 +360,234 @@ async def messages_endpoint(request: Request) -> JSONResponse:
         return _anthropic_error(
             error_type="api_error",
             message=error_detail or "upstream provider call failed",
+            status=502,
+        )
+    return JSONResponse(response_body)
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/chat/completions — OpenAI chat.completions-compatible endpoint
+# ---------------------------------------------------------------------------
+
+
+def _openai_to_litellm_params(body: dict) -> dict[str, Any]:
+    """Map an OpenAI chat.completions request body to litellm.completion kwargs.
+
+    OpenAI and litellm share the same field names for the core parameters, so
+    this is mostly a pass-through with validation. ``stream`` is silently
+    dropped (non-streaming only).
+    """
+    model = body.get("model")
+    if not model:
+        raise ValueError("model is required")
+
+    params: dict[str, Any] = {
+        "model": model,
+        "messages": list(body.get("messages") or []),
+    }
+    for key in ("max_tokens", "temperature", "top_p", "stop", "tools", "tool_choice"):
+        if key in body and body[key] is not None:
+            params[key] = body[key]
+    return params
+
+
+def _litellm_to_openai_response(
+    resp: Any,
+    *,
+    requested_model: str,
+) -> dict[str, Any]:
+    """Map a litellm completion response to OpenAI chat.completion JSON.
+
+    litellm already returns an OpenAI-shaped ModelResponse; this function
+    extracts the relevant fields and serialises them as a plain dict with the
+    required ``object: chat.completion`` envelope.
+    """
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        raise ValueError("litellm response had no choices")
+    choice = choices[0]
+    message = getattr(choice, "message", None) or {}
+
+    if isinstance(message, dict):
+        text = message.get("content") or ""
+        tool_calls_raw = message.get("tool_calls") or []
+    else:
+        text = getattr(message, "content", None) or ""
+        tool_calls_raw = getattr(message, "tool_calls", None) or []
+
+    # Normalise tool_calls to plain dicts matching the OpenAI wire format.
+    tool_calls: list[dict[str, Any]] | None = None
+    if tool_calls_raw:
+        tool_calls = []
+        for tc in tool_calls_raw:
+            if isinstance(tc, dict):
+                tool_calls.append(tc)
+            else:
+                fn = getattr(tc, "function", None)
+                tool_calls.append({
+                    "id": getattr(tc, "id", None) or f"call_{uuid.uuid4().hex[:16]}",
+                    "type": "function",
+                    "function": {
+                        "name": getattr(fn, "name", "") if fn is not None else "",
+                        "arguments": getattr(fn, "arguments", "{}") if fn is not None else "{}",
+                    },
+                })
+
+    oai_message: dict[str, Any] = {"role": "assistant", "content": text or None}
+    if tool_calls:
+        oai_message["tool_calls"] = tool_calls
+        oai_message["content"] = None
+
+    finish = getattr(choice, "finish_reason", None) or (
+        choice.get("finish_reason") if isinstance(choice, dict) else None
+    ) or "stop"
+
+    usage_obj = getattr(resp, "usage", None) or {}
+    if isinstance(usage_obj, dict):
+        tokens_in = int(usage_obj.get("prompt_tokens") or 0)
+        tokens_out = int(usage_obj.get("completion_tokens") or 0)
+    else:
+        tokens_in = int(getattr(usage_obj, "prompt_tokens", 0) or 0)
+        tokens_out = int(getattr(usage_obj, "completion_tokens", 0) or 0)
+
+    msg_id = getattr(resp, "id", None) or (
+        resp.get("id") if isinstance(resp, dict) else None
+    ) or f"chatcmpl_{uuid.uuid4().hex[:24]}"
+
+    return {
+        "id": msg_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": requested_model,
+        "choices": [{
+            "index": 0,
+            "message": oai_message,
+            "finish_reason": finish,
+        }],
+        "usage": {
+            "prompt_tokens": tokens_in,
+            "completion_tokens": tokens_out,
+            "total_tokens": tokens_in + tokens_out,
+        },
+    }
+
+
+def _openai_error(*, message: str, error_type: str, status: int) -> JSONResponse:
+    """Build an OpenAI-format error body with the requested HTTP status."""
+    return JSONResponse(
+        {"error": {"message": message, "type": error_type, "param": None, "code": None}},
+        status_code=status,
+    )
+
+
+async def chat_completions_endpoint(request: Request) -> JSONResponse:
+    """POST /v1/chat/completions — OpenAI-compatible proxy.
+
+    Mirrors the messages_endpoint sequence exactly (budget gate → litellm →
+    telemetry), but accepts/returns OpenAI chat.completions shape instead of
+    Anthropic Messages shape. Non-streaming only.
+    """
+    cfg = request.app.state.config
+    repo = request.app.state.repo
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return _openai_error(
+            message=f"invalid JSON body: {exc}",
+            error_type="invalid_request_error",
+            status=400,
+        )
+    if not isinstance(body, dict):
+        return _openai_error(
+            message="request body must be a JSON object",
+            error_type="invalid_request_error",
+            status=400,
+        )
+
+    project = request.headers.get("x-somm-project") or cfg.project
+    workload = _resolve_workload(repo, request, project)
+
+    try:
+        enforce_workload_budget(
+            repo,
+            workload,
+            fail_closed=cfg.budget_fail_closed,
+            default_cap_usd_daily=cfg.budget_default_cap_usd_daily,
+        )
+    except SommBudgetExceeded as exc:
+        return _openai_error(
+            message=str(exc),
+            error_type="rate_limit_error",
+            status=429,
+        )
+
+    try:
+        params = _openai_to_litellm_params(body)
+    except ValueError as exc:
+        return _openai_error(
+            message=str(exc),
+            error_type="invalid_request_error",
+            status=400,
+        )
+
+    requested_model = params["model"]
+    provider, model_only = _provider_from_model(requested_model)
+
+    call_id = str(uuid.uuid4())
+    ts = datetime.now(UTC)
+    t0 = time.monotonic()
+    outcome = Outcome.OK
+    error_kind: str | None = None
+    error_detail: str | None = None
+    tokens_in = tokens_out = 0
+    response_body: dict[str, Any] | None = None
+    try:
+        resp = litellm.completion(**params)
+        response_body = _litellm_to_openai_response(resp, requested_model=requested_model)
+        usage = response_body["usage"]
+        tokens_in = usage["prompt_tokens"]
+        tokens_out = usage["completion_tokens"]
+    except Exception as exc:
+        outcome = Outcome.UPSTREAM_ERROR
+        error_kind = type(exc).__name__
+        error_detail = f"{type(exc).__name__}: {exc}"[:512]
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    cost_usd = cost_for_call(repo, provider, model_only, tokens_in, tokens_out)
+    response_text_for_hash = ""
+    if response_body is not None:
+        for ch in response_body.get("choices", []):
+            msg = ch.get("message") or {}
+            response_text_for_hash += msg.get("content") or ""
+    call = Call(
+        id=call_id,
+        ts=ts,
+        project=project,
+        workload_id=workload.id,
+        prompt_id=None,
+        provider=provider,
+        model=model_only,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        latency_ms=latency_ms,
+        cost_usd=cost_usd,
+        outcome=outcome,
+        error_kind=error_kind,
+        error_detail=error_detail,
+        prompt_hash=stable_hash(body.get("messages")),
+        response_hash=stable_hash(response_text_for_hash),
+        temperature=body.get("temperature"),
+        max_tokens=body.get("max_tokens"),
+        top_p=body.get("top_p"),
+    )
+    repo.write_call(call)
+
+    if response_body is None:
+        return _openai_error(
+            message=error_detail or "upstream provider call failed",
+            error_type="api_error",
             status=502,
         )
     return JSONResponse(response_body)
