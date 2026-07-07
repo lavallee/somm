@@ -104,6 +104,62 @@ def test_home_with_calls_shows_healthy(client, tmp_path):
     assert "svc_end_to_end" in r.text
 
 
+def test_api_spend_empty(client):
+    """GET /api/spend returns valid JSON with empty workloads when no calls exist today."""
+    c, cfg, _ = client
+    r = c.get("/api/spend")
+    assert r.status_code == 200
+    data = r.json()
+    assert "workloads" in data
+    assert "total_usd_today" in data
+    assert "date_utc" in data
+    assert data["workloads"] == {}
+    assert data["total_usd_today"] == 0.0
+    assert "error" not in data
+
+
+def test_api_spend_with_calls(client, tmp_path):
+    """GET /api/spend returns per-workload cost/calls after writing a call."""
+    c, cfg, _ = client
+
+    import uuid
+    from datetime import UTC, datetime
+
+    from somm_core.models import Call, Outcome
+    from somm_core.repository import Repository
+
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="spend-test", project=cfg.project)
+    call = Call(
+        id=str(uuid.uuid4()),
+        ts=datetime.now(UTC),
+        project=cfg.project,
+        workload_id=wl.id,
+        prompt_id=None,
+        provider="fake",
+        model="fake-m",
+        tokens_in=10,
+        tokens_out=5,
+        latency_ms=10,
+        cost_usd=0.001234,
+        outcome=Outcome.OK,
+        error_kind=None,
+        prompt_hash="a",
+        response_hash="b",
+    )
+    repo.write_call(call)
+
+    r = c.get("/api/spend")
+    assert r.status_code == 200
+    data = r.json()
+    assert "spend-test" in data["workloads"]
+    entry = data["workloads"]["spend-test"]
+    assert entry["calls_today"] == 1
+    assert entry["cost_usd_today"] > 0.0
+    assert data["total_usd_today"] > 0.0
+    assert "error" not in data
+
+
 def test_xss_in_workload_name_is_escaped(client, tmp_path):
     """Load-bearing: Jinja autoescape equivalent for the hand-rolled template."""
     c, cfg, _ = client

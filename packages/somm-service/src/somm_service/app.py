@@ -4,6 +4,7 @@ HTTP surface:
   GET /                        HTML dashboard — status line + recs + stats
   GET /health                  JSON liveness probe
   GET /api/stats               JSON roll-up (per-workload × provider × model)
+  GET /api/spend               JSON per-workload daily spend (cost_usd + calls)
   GET /api/version             JSON service + schema version
   GET /api/recommendations     JSON open recs
   POST /api/recommendations/{id}/dismiss
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date
 
 from somm_core import VERSION
 from somm_core.config import Config
@@ -378,6 +380,27 @@ async def _api_rec_apply(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "id": rec_id})
 
 
+async def _api_spend(request: Request) -> JSONResponse:
+    repo: Repository = request.app.state.repo
+    today = str(date.today())
+    try:
+        with repo._open() as conn:
+            rows = conn.execute(
+                "SELECT COALESCE(w.name,'(none)'), ROUND(SUM(c.cost_usd),6), COUNT(*) "
+                "FROM calls c "
+                "LEFT JOIN workloads w ON w.id=c.workload_id "
+                "WHERE date(c.ts)=date('now') "
+                "GROUP BY c.workload_id"
+            ).fetchall()
+        workloads = {r[0]: {"cost_usd_today": r[1], "calls_today": r[2]} for r in rows}
+        total = sum(r[1] for r in rows)
+        return JSONResponse({"workloads": workloads, "total_usd_today": total, "date_utc": today})
+    except Exception as e:
+        return JSONResponse(
+            {"workloads": {}, "total_usd_today": 0.0, "date_utc": today, "error": str(e)[:200]}
+        )
+
+
 async def _api_version(request: Request) -> JSONResponse:
     cfg: Config = request.app.state.config
     try:
@@ -403,6 +426,7 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/", _home),
             Route("/health", _health),
             Route("/api/stats", _api_stats),
+            Route("/api/spend", _api_spend),
             Route("/api/version", _api_version),
             Route("/api/recommendations", _api_recommendations),
             Route("/api/recommendations/{rec_id:int}/dismiss", _api_rec_dismiss, methods=["POST"]),
