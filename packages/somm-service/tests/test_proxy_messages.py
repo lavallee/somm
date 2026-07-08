@@ -414,6 +414,176 @@ def test_messages_route_upstream_provider_error_returns_502(tmp_path):
     assert rows[0][0] == "upstream_error"
 
 
+# -- Streaming tests ---------------------------------------------------------
+
+
+def _fake_stream_chunks(
+    *,
+    text: str = "hello streaming",
+    tokens_in: int = 5,
+    tokens_out: int = 3,
+    finish: str = "stop",
+) -> list:
+    """Build a list of fake litellm streaming chunks (OpenAI delta format)."""
+    return [
+        SimpleNamespace(
+            id="chatcmpl-stream",
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=text, role="assistant"),
+                finish_reason=None,
+            )],
+            usage=None,
+        ),
+        SimpleNamespace(
+            id="chatcmpl-stream",
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=None),
+                finish_reason=finish,
+            )],
+            usage={"prompt_tokens": tokens_in, "completion_tokens": tokens_out},
+        ),
+    ]
+
+
+def test_messages_route_streaming_returns_event_stream(tmp_path):
+    """stream:true → response is text/event-stream with Anthropic SSE events."""
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    chunks = _fake_stream_chunks(text="hi there", tokens_in=4, tokens_out=2)
+    with patch("somm_service.proxy.litellm.completion", return_value=iter(chunks)):
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 32,
+                "stream": True,
+            },
+            headers={"x-somm-workload": "stream_wl"},
+        )
+
+    assert r.status_code == 200
+    assert "text/event-stream" in r.headers["content-type"]
+    body = r.text
+    assert "event: message_start" in body
+    assert "event: content_block_start" in body
+    assert "event: content_block_delta" in body
+    assert "hi there" in body
+    assert "event: content_block_stop" in body
+    assert "event: message_delta" in body
+    assert "event: message_stop" in body
+    # Must NOT be a buffered JSON object
+    assert body.strip()[0] != "{"
+
+
+def test_messages_route_streaming_budget_gate_fires_before_dispatch(tmp_path):
+    """stream:true + over-cap workload → 429 before litellm is called."""
+    cfg = _cfg(tmp_path, fail_closed=True)
+    repo = Repository(cfg.db_path)
+    repo.register_workload(name="capped_stream", project=cfg.project, budget_cap_usd_daily=0.0)
+
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    with patch("somm_service.proxy.litellm.completion") as mock_comp:
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "x"}],
+                "max_tokens": 8,
+                "stream": True,
+            },
+            headers={"x-somm-workload": "capped_stream"},
+        )
+
+    assert r.status_code == 429
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "rate_limit_error"
+    assert "SOMM_BUDGET_EXCEEDED" in body["error"]["message"]
+    mock_comp.assert_not_called()
+
+
+def test_messages_route_streaming_writes_telemetry_row(tmp_path):
+    """Streaming call → telemetry row written with correct token counts."""
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    chunks = _fake_stream_chunks(text="streamed", tokens_in=10, tokens_out=5)
+    with patch("somm_service.proxy.litellm.completion", return_value=iter(chunks)):
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": True,
+            },
+            headers={"x-somm-workload": "stream_tel"},
+        )
+
+    assert r.status_code == 200
+    assert "text/event-stream" in r.headers["content-type"]
+
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT tokens_in, tokens_out, outcome FROM calls"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 10
+    assert rows[0][1] == 5
+    assert rows[0][2] == "ok"
+
+
+def test_messages_route_streaming_passes_stream_true_to_litellm(tmp_path):
+    """litellm.completion is called with stream=True when body has stream:true."""
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    chunks = _fake_stream_chunks()
+    with patch("somm_service.proxy.litellm.completion", return_value=iter(chunks)) as mock_comp:
+        client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "x"}],
+                "stream": True,
+            },
+        )
+
+    mock_comp.assert_called_once()
+    assert mock_comp.call_args.kwargs.get("stream") is True
+
+
+def test_messages_route_non_streaming_unaffected_by_streaming_changes(tmp_path):
+    """Sanity: stream absent → original non-streaming path still returns buffered JSON."""
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    fake = _fake_completion_response(text="buffered", tokens_in=3, tokens_out=1)
+    with patch("somm_service.proxy.litellm.completion", return_value=fake):
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 16,
+            },
+        )
+
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["type"] == "message"
+    assert body["content"] == [{"type": "text", "text": "buffered"}]
+
+
 def test_messages_route_respects_x_somm_project_header(tmp_path):
     """X-Somm-Project header overrides cfg.project for workload registration."""
     cfg = _cfg(tmp_path)

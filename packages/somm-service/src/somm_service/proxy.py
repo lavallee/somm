@@ -3,8 +3,7 @@
 V1 scope (DECIDED in george, owner archie): the HYBRID — somm owns the
 endpoint + budget gate + telemetry; LiteLLM's Python SDK is used as a
 LIBRARY (no LiteLLM proxy server) to do the provider call + cross-provider
-format translation. NON-STREAMING; streaming + /v1/chat/completions are
-explicit follow-ups.
+format translation. Supports both non-streaming and SSE streaming responses.
 
 Why it exists: lets harness CLIs (claude-cli) route their LLM traffic
 through somm by pointing ``ANTHROPIC_BASE_URL`` at this endpoint, so every
@@ -17,15 +16,17 @@ Request shape (Anthropic Messages API):
     X-Somm-Workload: <workload name>   (optional; defaults to config.project default)
     X-Somm-Project:  <project name>    (optional; defaults to config.project)
   Body: standard Anthropic Messages JSON (model, messages, max_tokens,
-        system, tools, tool_choice, temperature, ...).
+        system, tools, tool_choice, temperature, stream, ...).
 
 Response: standard Anthropic Messages JSON (id, type, role, model, content,
-stop_reason, usage). On budget exceeded: 429 with an Anthropic-format error
-body and litellm is NOT called.
+stop_reason, usage) for non-streaming; text/event-stream SSE for streaming.
+On budget exceeded: 429 with an Anthropic-format error body and litellm is
+NOT called (for both paths).
 """
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from datetime import UTC, datetime
@@ -38,7 +39,7 @@ from somm_core import Outcome, cost_for_call
 from somm_core.models import Call
 from somm_core.parse import stable_hash
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
 # Default workload name when no X-Somm-Workload header is provided. Calls
 # from harness CLIs that don't know about somm still get recorded — just
@@ -242,17 +243,140 @@ def _resolve_workload(repo, request: Request, project: str) -> Any:
     return wl
 
 
-async def messages_endpoint(request: Request) -> JSONResponse:
+def _make_streaming_response(
+    params: dict[str, Any],
+    *,
+    requested_model: str,
+    call_id: str,
+    ts: datetime,
+    project: str,
+    workload: Any,
+    provider: str,
+    model_only: str,
+    body: dict[str, Any],
+    repo: Any,
+) -> StreamingResponse:
+    """Pipe litellm streaming chunks to the client as Anthropic-format SSE.
+
+    Emits the standard Anthropic event sequence:
+      message_start → content_block_start → ping → N×content_block_delta
+      → content_block_stop → message_delta → message_stop
+
+    Token counts are extracted from the final chunk's usage field and written
+    to calls.sqlite in the generator's finally block (one ledger, same as the
+    non-streaming path).
+    """
+    def generate():
+        msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+        tokens_in = 0
+        tokens_out = 0
+        stop_reason = "end_turn"
+        outcome = Outcome.OK
+        error_kind: str | None = None
+        error_detail: str | None = None
+        accumulated_text = ""
+        t0 = time.monotonic()
+
+        try:
+            resp_iter = litellm.completion(**params, stream=True)
+
+            yield (
+                "event: message_start\n"
+                f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': requested_model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
+            )
+            yield (
+                "event: content_block_start\n"
+                f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+            )
+            yield f"event: ping\ndata: {json.dumps({'type': 'ping'})}\n\n"
+
+            for chunk in resp_iter:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                text = getattr(delta, "content", "") or "" if delta is not None else ""
+
+                finish = getattr(choice, "finish_reason", None)
+                if finish:
+                    stop_reason = _FINISH_TO_STOP.get(finish, "end_turn")
+
+                # Usage arrives in the last chunk from most providers.
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    if isinstance(usage, dict):
+                        tokens_in = int(usage.get("prompt_tokens") or 0)
+                        tokens_out = int(usage.get("completion_tokens") or 0)
+                    else:
+                        tokens_in = int(getattr(usage, "prompt_tokens", 0) or 0)
+                        tokens_out = int(getattr(usage, "completion_tokens", 0) or 0)
+
+                if text:
+                    accumulated_text += text
+                    yield (
+                        "event: content_block_delta\n"
+                        f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
+                    )
+
+        except Exception as exc:
+            outcome = Outcome.UPSTREAM_ERROR
+            error_kind = type(exc).__name__
+            error_detail = f"{type(exc).__name__}: {exc}"[:512]
+            yield (
+                "event: error\n"
+                f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': error_detail}})}\n\n"
+            )
+        else:
+            yield (
+                "event: content_block_stop\n"
+                f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+            )
+            yield (
+                "event: message_delta\n"
+                f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': tokens_out}})}\n\n"
+            )
+            yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+        finally:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            cost_usd = cost_for_call(repo, provider, model_only, tokens_in, tokens_out)
+            call = Call(
+                id=call_id,
+                ts=ts,
+                project=project,
+                workload_id=workload.id,
+                prompt_id=None,
+                provider=provider,
+                model=model_only,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                latency_ms=latency_ms,
+                cost_usd=cost_usd,
+                outcome=outcome,
+                error_kind=error_kind,
+                error_detail=error_detail,
+                prompt_hash=stable_hash(body.get("messages")),
+                response_hash=stable_hash(accumulated_text),
+                temperature=body.get("temperature"),
+                max_tokens=body.get("max_tokens"),
+                top_p=body.get("top_p"),
+            )
+            repo.write_call(call)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+async def messages_endpoint(request: Request) -> Response:
     """POST /v1/messages — Anthropic Messages-compatible proxy.
 
     Sequence:
       1. parse the Anthropic request body
       2. resolve workload from X-Somm-Workload (auto-register if needed)
       3. apply somm's fail-closed budget gate — on exceeded, return 429
-         + Anthropic-format error and DO NOT call the provider
-      4. dispatch via litellm.completion (handles provider call + format
-         translation)
-      5. write a telemetry row to calls.sqlite (one ledger)
+         + Anthropic-format error and DO NOT call the provider (both paths)
+      4. if stream:true → return SSE StreamingResponse via litellm stream=True;
+         if stream:false/absent → dispatch via litellm.completion and buffer
+      5. write a telemetry row to calls.sqlite (one ledger, both paths)
       6. return the Anthropic-shaped response
     """
     cfg = request.app.state.config
@@ -309,6 +433,21 @@ async def messages_endpoint(request: Request) -> JSONResponse:
 
     call_id = str(uuid.uuid4())
     ts = datetime.now(UTC)
+
+    if body.get("stream"):
+        return _make_streaming_response(
+            params,
+            requested_model=requested_model,
+            call_id=call_id,
+            ts=ts,
+            project=project,
+            workload=workload,
+            provider=provider,
+            model_only=model_only,
+            body=body,
+            repo=repo,
+        )
+
     t0 = time.monotonic()
     outcome = Outcome.OK
     error_kind: str | None = None
