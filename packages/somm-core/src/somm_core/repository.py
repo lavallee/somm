@@ -291,6 +291,7 @@ class Repository:
             version=version,
             hash=pid,
             body=body,
+            parent_prompt_id=None,
         )
 
     # Calls -------------------------------------------------------------------

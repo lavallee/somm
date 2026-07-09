@@ -135,6 +135,7 @@ class Prompt:
     body: str
     created_at: datetime | None = None
     retired_at: datetime | None = None
+    parent_prompt_id: str | None = None
 
 
 @dataclass(slots=True)

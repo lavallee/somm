@@ -42,7 +42,8 @@ from somm import hooks
 from somm._redaction import scrub_text
 from somm.errors import SommProvidersExhausted
 from somm.errors import SommStrictMode as _SommStrictMode
-from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt
+from somm.prompts import fork_prompt as fork_prompt_version
+from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt, set_label
 from somm.providers.base import (
     SommEmbedRequest,
     SommProvider,
@@ -1707,15 +1708,40 @@ class SommLLM:
         self._prompt_ids_cache.pop(wl.id, None)
         return prompt
 
-    def prompt(self, workload: str, version: str = "latest") -> Prompt:
-        """Fetch a prompt by workload + version.
+    def set_prompt_label(self, workload: str, label: str, version: str) -> None:
+        """Move a project-local prompt label to a workload prompt version."""
+        wl = self._require_workload(workload)
+        prompt = get_prompt(self.repo, wl.id, version=version)
+        set_label(self.repo, wl.id, label, prompt.id)
+
+    def prompt(
+        self,
+        workload: str,
+        version: str = "latest",
+        *,
+        label: str | None = None,
+    ) -> Prompt:
+        """Fetch a prompt by workload + version or label.
 
         Use in calling code:
             body = llm.prompt("claim_extract", version="latest").body
+            body = llm.prompt("claim_extract", label="production").body
             result = llm.generate(body, workload="claim_extract")
         """
         wl = self._require_workload(workload)
-        return get_prompt(self.repo, wl.id, version=version)
+        return get_prompt(self.repo, wl.id, version=version, label=label)
+
+    def fork_prompt(
+        self,
+        workload: str,
+        from_version_or_label: str,
+        body: str,
+    ) -> Prompt:
+        """Create a prompt variant in the same workload with lineage recorded."""
+        wl = self._require_workload(workload)
+        prompt = fork_prompt_version(self.repo, wl.id, from_version_or_label, body)
+        self._prompt_ids_cache.pop(wl.id, None)
+        return prompt
 
     def enable_shadow(
         self,
