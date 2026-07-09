@@ -769,11 +769,15 @@ def _shadow_map_for_workload(
         rows = conn.execute(
             """
             SELECT c.provider, c.model,
-                   AVG(COALESCE(er.structural_score, er.embedding_score)) AS score
+                   AVG(COALESCE(er.judge_score, er.embedding_score, er.structural_score)) AS score
             FROM eval_results er
             JOIN calls c ON c.id = er.call_id
             WHERE c.workload_id = ?
-              AND (er.structural_score IS NOT NULL OR er.embedding_score IS NOT NULL)
+              AND (
+                er.judge_score IS NOT NULL
+                OR er.embedding_score IS NOT NULL
+                OR er.structural_score IS NOT NULL
+              )
             GROUP BY c.provider, c.model
             """,
             (wl_row[0],),

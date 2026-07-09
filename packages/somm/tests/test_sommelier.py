@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from somm.sommelier import (
     consult,
 )
 from somm_core.config import Config
+from somm_core.models import Call, Outcome
 from somm_core.parse import stable_hash
 from somm_core.pricing import write_intel
 from somm_core.repository import Repository
@@ -139,6 +141,59 @@ def test_advise_cheaper_wins_all_else_equal(tmp_path):
     # Across vision-capable: free ones should outrank paid sonnet.
     assert cands[0].provider in ("openrouter", "ollama")
     assert (cands[0].price_in_per_1m or 0) == 0
+
+
+def test_advise_uses_judge_eval_score_for_workload(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    for model in ("model-a", "model-b"):
+        write_intel(
+            repo,
+            "openrouter",
+            model,
+            price_in_per_1m=0.0,
+            price_out_per_1m=0.0,
+            context_window=100_000,
+            capabilities=None,
+            source="test",
+        )
+    wl = repo.register_workload(name="qa", project="sm")
+    for model, judge_score in (("model-a", 0.2), ("model-b", 0.9)):
+        call_id = str(uuid.uuid4())
+        repo.write_call(
+            Call(
+                id=call_id,
+                ts=datetime.now(UTC),
+                project="sm",
+                workload_id=wl.id,
+                prompt_id=None,
+                provider="openrouter",
+                model=model,
+                tokens_in=1,
+                tokens_out=1,
+                latency_ms=1,
+                cost_usd=0.0,
+                outcome=Outcome.OK,
+                error_kind=None,
+                prompt_hash="p",
+                response_hash="r",
+            )
+        )
+        with repo._open() as conn:
+            conn.execute(
+                "INSERT INTO eval_results "
+                "(call_id, gold_model, structural_score, embedding_score, judge_score) "
+                "VALUES (?, 'dataset:test', 0.1, 0.1, ?)",
+                (call_id, judge_score),
+            )
+
+    cands = advise(
+        repo,
+        AdviseConstraints(providers=["openrouter"], workload="qa", limit=2),
+    )
+
+    assert [c.model for c in cands] == ["model-b", "model-a"]
+    assert cands[0].shadow_score == 0.9
+    assert any("shadow score 0.90" in reason for reason in cands[0].reasons)
 
 
 # ---------------------------------------------------------------------------
