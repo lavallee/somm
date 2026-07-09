@@ -123,6 +123,7 @@ class Workload:
     max_p95_latency_ms: int | None = None              # Tier 1: timeliness
     max_capability_failure_rate: float | None = None   # Tier 2/3: 0–1 (e.g. 0.05 = 5%)
     max_cost_per_call_usd: float | None = None         # cost ceiling per ok call
+    policy: dict | None = None
     created_at: datetime | None = None
 
 
@@ -135,6 +136,7 @@ class Prompt:
     body: str
     created_at: datetime | None = None
     retired_at: datetime | None = None
+    parent_prompt_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -165,6 +167,12 @@ class Call:
     max_tokens: int | None = None
     top_p: float | None = None
     stop_sequences_json: str | None = None
+    ttft_ms: int | None = None
+    session_id: str | None = None
+    parent_call_id: str | None = None
+    cache_tokens_in: int | None = None
+    cache_tokens_out: int | None = None
+    citations_json: str | None = None
 
 
 @dataclass(slots=True)
@@ -240,6 +248,10 @@ class SommResult:
     # REQUIRES this echoed back on the assistant turn in multi-turn calls, so
     # agent loops must preserve it across turns (see somm_langchain adapter).
     reasoning_content: str = ""
+    ttft_ms: int | None = None
+    cache_tokens_in: int | None = None
+    cache_tokens_out: int | None = None
+    citations: list | None = None
 
     def mark(self, outcome: Outcome) -> SommResult:
         """Post-tag a call's outcome. Returns self for chaining."""

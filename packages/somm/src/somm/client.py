@@ -8,6 +8,8 @@ warning), call_id in result for provenance.
 from __future__ import annotations
 
 import contextlib
+import copy
+import json
 import logging
 import shlex
 import sys
@@ -15,6 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +29,8 @@ from somm_core.models import Call, Prompt
 from somm_core.models import ToolCall as CoreToolCall
 from somm_core.parse import (
     ThinkStreamStripper,
+    extract_cache_tokens,
+    extract_citations,
     extract_json,
     infer_capabilities,
     stable_hash,
@@ -40,9 +45,16 @@ from somm_core.repository import Repository
 
 from somm import hooks
 from somm._redaction import scrub_text
-from somm.errors import SommProvidersExhausted
+from somm.errors import SommProvidersExhausted, SommStructuredError
 from somm.errors import SommStrictMode as _SommStrictMode
-from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt
+from somm.prompts import fork_prompt as fork_prompt_version
+from somm.prompts import (
+    get_prompt,
+    prompt_ids_for_workload,
+    register_prompt,
+    resolve_label,
+    set_label,
+)
 from somm.providers.base import (
     SommEmbedRequest,
     SommProvider,
@@ -79,6 +91,128 @@ _warned_plan_pace: set[str] = set()
 _registered_project_keys: set[tuple[str, str]] = set()
 _registered_project_keys_lock = threading.Lock()
 _WAIT_UNSET: Any = object()
+_STRUCTURED_TEMPERATURE_JITTER = 0.05
+
+
+def _pydantic_base_model():
+    try:
+        from pydantic import BaseModel
+    except ImportError:
+        return None
+    return BaseModel
+
+
+def _looks_like_pydantic_model(schema: Any) -> bool:
+    return (
+        isinstance(schema, type)
+        and hasattr(schema, "model_validate")
+        and hasattr(schema, "model_json_schema")
+    )
+
+
+def _classify_structured_schema(schema: Any) -> tuple[str, Any | None]:
+    if _looks_like_pydantic_model(schema):
+        base_model = _pydantic_base_model()
+        if base_model is None:
+            raise ValueError(
+                "generate_structured(schema=...) received a Pydantic model, "
+                "but pydantic is not installed. Install with: pip install 'somm[pydantic]'"
+            )
+        if issubclass(schema, base_model):
+            return "pydantic", schema.model_json_schema()
+    if isinstance(schema, dict):
+        return "json_schema", schema
+    if callable(schema):
+        return "callable", None
+    raise TypeError(
+        "generate_structured(schema=...) expects a Pydantic BaseModel subclass, "
+        "a JSON Schema dict, or a callable validator"
+    )
+
+
+def _structured_system(system: str, schema_doc: Any | None) -> str:
+    if schema_doc is None:
+        return system
+    schema_text = json.dumps(schema_doc, sort_keys=True, separators=(",", ":"))
+    suffix = f"Respond with ONLY valid JSON matching this schema: {schema_text}"
+    return f"{system.rstrip()}\n\n{suffix}" if system else suffix
+
+
+def _structured_retry_system(system: str, raw: str, error: str) -> str:
+    feedback = (
+        "Your previous response failed: "
+        f"{error}\n\nPrevious raw output:\n{raw}\n\nReturn corrected JSON."
+    )
+    return f"{system.rstrip()}\n\n{feedback}" if system else feedback
+
+
+def _validate_structured_json_schema(parsed: dict | list, schema: dict) -> dict | list:
+    try:
+        import jsonschema
+    except ImportError:
+        _validate_structured_json_schema_light(parsed, schema)
+        return parsed
+
+    jsonschema.validate(instance=parsed, schema=schema)
+    return parsed
+
+
+def _validate_structured_json_schema_light(parsed: dict | list, schema: dict) -> None:
+    expected_type = schema.get("type")
+    if expected_type is None and (
+        "properties" in schema or "required" in schema or "additionalProperties" in schema
+    ):
+        expected_type = "object"
+    if isinstance(expected_type, list):
+        expected_types = set(expected_type)
+    elif isinstance(expected_type, str):
+        expected_types = {expected_type}
+    else:
+        expected_types = set()
+
+    if expected_types & {"object", "array"}:
+        type_matches = (
+            ("object" in expected_types and isinstance(parsed, dict))
+            or ("array" in expected_types and isinstance(parsed, list))
+        )
+        if not type_matches:
+            expected = " or ".join(sorted(expected_types & {"object", "array"}))
+            raise ValueError(
+                f"JSON Schema validation failed: expected top-level {expected}. "
+                "Install somm[jsonschema] for full JSON Schema validation."
+            )
+    if expected_types and expected_types.isdisjoint({"object", "array"}):
+        raise ValueError(
+            "JSON Schema validation failed: extract_json only returns object or array values. "
+            "Install somm[jsonschema] for full JSON Schema validation."
+        )
+
+    required = schema.get("required", [])
+    if required:
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                "JSON Schema validation failed: required keys need a top-level object. "
+                "Install somm[jsonschema] for full JSON Schema validation."
+            )
+        missing = [key for key in required if key not in parsed]
+        if missing:
+            raise ValueError(
+                "JSON Schema validation failed: missing required key(s): "
+                f"{', '.join(map(str, missing))}. Install somm[jsonschema] for full "
+                "JSON Schema validation."
+            )
+
+
+def _format_structured_failure(last_raw: str, last_error: str) -> str:
+    return (
+        "SOMM_STRUCTURED_OUTPUT_FAILED\n\n"
+        "Problem: generate_structured() could not produce JSON matching the supplied schema.\n"
+        f"Cause: Last validation error: {last_error}\n"
+        f"Last raw text: {last_raw}\n"
+        "Fix: Return only valid JSON matching the requested schema, or relax/replace "
+        "the schema validator.\n"
+        "Docs: docs/errors/SOMM_STRUCTURED_OUTPUT_FAILED.md"
+    )
 
 
 def _register_project_once(project: str, db_path: Path) -> None:
@@ -391,6 +525,16 @@ def _scrub_secrets(text: str) -> str:
     return scrub_text(text)
 
 
+def _citations_json(citations: list | None) -> str | None:
+    """Serialize citation metadata for calls.citations_json. Never raises."""
+    if citations is None:
+        return None
+    try:
+        return json.dumps(citations)
+    except Exception:
+        return None
+
+
 def _format_empty_detail(
     *,
     provider: str,
@@ -610,8 +754,42 @@ class SommLLM:
                 pass
         return wl
 
+    def set_workload_policy(self, workload: str, policy: dict | None) -> None:
+        """Attach or clear a workload routing policy."""
+        wl = self._require_workload(workload)
+        self.repo.set_workload_policy(wl.id, policy)
+        if self._mirror_repo is not None:
+            try:
+                mirror_wl = self._mirror_repo.workload_by_name(
+                    workload, self.config.project
+                )
+                if mirror_wl is not None:
+                    self._mirror_repo.set_workload_policy(mirror_wl.id, policy)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _default_providers(self) -> list[SommProvider]:
         return build_default_providers(self.config, tracker=self._tracker)
+
+    def _policy_router(
+        self,
+        policy: dict,
+        *,
+        explicit_model: bool,
+    ) -> Router:
+        providers = _policy_providers(
+            self.providers,
+            policy,
+            explicit_model=explicit_model,
+        )
+        return Router(
+            providers,
+            self._tracker,
+            circuit_break_after=self.router.circuit_break_after,
+            circuit_break_cooldown_s=self.router.circuit_break_cooldown_s,
+            exhausted_sleep_cap_s=self.router.exhausted_sleep_cap_s,
+            plan_governor=self._plan_governor,
+        )
 
     # ------------------------------------------------------------------
 
@@ -746,6 +924,8 @@ class SommLLM:
         messages: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         wait: float | None = _WAIT_UNSET,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -1024,8 +1204,28 @@ class SommLLM:
                         ):
                             raise_after_record = chain_exc
         else:
+            dispatch_raise_exhausted = wait_on_exhausted is not None
             try:
-                router_result = self.router.dispatch(req, wait=wait_on_exhausted)
+                if wl.policy:
+                    retry_cfg = wl.policy.get("retry") or {}
+                    dispatch_raise_exhausted = retry_cfg.get("max") is not None
+                    policy_wait = wait_on_exhausted
+                    if wait is _WAIT_UNSET and retry_cfg.get("deadline_s") is not None:
+                        policy_wait = float(retry_cfg["deadline_s"])
+                    dispatch_raise_exhausted = (
+                        dispatch_raise_exhausted or policy_wait is not None
+                    )
+                    router_result = self._policy_router(
+                        wl.policy,
+                        explicit_model=model is not None,
+                    ).dispatch(
+                        req,
+                        wait=policy_wait,
+                        retry_max=retry_cfg.get("max"),
+                        retry_backoff_s=retry_cfg.get("backoff_s"),
+                    )
+                else:
+                    router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                 resp = router_result.response
                 text = resp.text
                 actual_provider = router_result.provider
@@ -1056,8 +1256,15 @@ class SommLLM:
                 )
                 error_kind = type(exc).__name__
                 error_detail = _format_error_detail(exc, actual_provider, actual_model)
-                if wait_on_exhausted is not None and isinstance(exc, SommProvidersExhausted):
+                if (
+                    dispatch_raise_exhausted
+                    and isinstance(exc, SommProvidersExhausted)
+                ):
                     raise_after_record = exc
+
+        cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
+        citations = extract_citations(raw_out)
+        citations_json = _citations_json(citations)
 
         result = SommResult(
             text=text,
@@ -1079,6 +1286,9 @@ class SommLLM:
             tool_calls=tool_calls_out,
             stop_reason=stop_reason_out,
             reasoning_content=reasoning_content_out,
+            cache_tokens_in=cache_tokens_in,
+            cache_tokens_out=cache_tokens_out,
+            citations=citations,
         )
 
         call = Call(
@@ -1104,6 +1314,11 @@ class SommLLM:
             correlation_id=(correlation_id := hooks.current_correlation_id()),
             temperature=temperature,
             max_tokens=max_tokens,
+            session_id=session_id,
+            parent_call_id=parent_call_id,
+            cache_tokens_in=cache_tokens_in,
+            cache_tokens_out=cache_tokens_out,
+            citations_json=citations_json,
         )
         self._writer.submit(call)
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
@@ -1218,6 +1433,8 @@ class SommLLM:
         *,
         workload: str = "default",
         model: str | None = None,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
     ) -> EmbedResult:
         """Compute one embedding via local ollama. v1 forces ollama with
         no fallback chain (caller asked for "force ollama, no fallbacks").
@@ -1373,6 +1590,8 @@ class SommLLM:
             prompt_hash=stable_hash(text),
             response_hash=response_hash,
             correlation_id=(correlation_id := hooks.current_correlation_id()),
+            session_id=session_id,
+            parent_call_id=parent_call_id,
         )
         self._writer.submit(call)
         _fire_call_hooks(_call_event(
@@ -1422,6 +1641,8 @@ class SommLLM:
         model: str | None = None,
         provider: str | None = None,
         wait: float | None = _WAIT_UNSET,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
     ) -> Iterator[str]:
         """Stream text deltas from the LLM. Yields user-visible text chunks
         (with `<think>` blocks stripped across chunk boundaries).
@@ -1522,6 +1743,8 @@ class SommLLM:
         actual_model = model or ""
         actual_provider = short_circuit.provider if short_circuit is not None else ""
         cost_usd_out: float | None = None
+        ttft_ms: int | None = None
+        raw_out: dict | None = None
 
         try:
             if short_circuit is not None:
@@ -1530,21 +1753,30 @@ class SommLLM:
                 tokens_in = short_circuit.tokens_in
                 tokens_out = short_circuit.tokens_out
                 cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+                raw_out = short_circuit.raw
                 if text:
                     collected.append(text)
+                    ttft_ms = int((time.monotonic() - t0) * 1000)
                     yield text
             else:
                 assert chosen is not None
                 for chunk in chosen.stream(req):
+                    chunk_raw = getattr(chunk, "raw", None)
+                    if isinstance(chunk_raw, dict):
+                        raw_out = chunk_raw
                     if chunk.text:
                         visible = stripper.feed(chunk.text)
                         if visible:
                             collected.append(visible)
+                            if ttft_ms is None:
+                                ttft_ms = int((time.monotonic() - t0) * 1000)
                             yield visible
                     if chunk.done:
                         tail = stripper.flush()
                         if tail:
                             collected.append(tail)
+                            if ttft_ms is None:
+                                ttft_ms = int((time.monotonic() - t0) * 1000)
                             yield tail
                         break
                 # Streaming providers don't always give token counts — estimate
@@ -1578,6 +1810,9 @@ class SommLLM:
             full_text = "".join(collected)
             provider_name = actual_provider or (chosen.name if chosen is not None else "hook")
             model_name = actual_model or provider_name
+            cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
+            citations = extract_citations(raw_out)
+            citations_json = _citations_json(citations)
             cost_usd = (
                 cost_usd_out
                 if cost_usd_out is not None
@@ -1609,6 +1844,12 @@ class SommLLM:
                 correlation_id=(correlation_id := hooks.current_correlation_id()),
                 temperature=temperature,
                 max_tokens=max_tokens,
+                ttft_ms=ttft_ms,
+                session_id=session_id,
+                parent_call_id=parent_call_id,
+                cache_tokens_in=cache_tokens_in,
+                cache_tokens_out=cache_tokens_out,
+                citations_json=citations_json,
             )
             self._writer.submit(call)
             _fire_call_hooks(_call_event(
@@ -1635,6 +1876,81 @@ class SommLLM:
 
     # ------------------------------------------------------------------
     # Structured output
+
+    def generate_structured(
+        self,
+        prompt,
+        *,
+        schema,
+        workload: str = "default",
+        system: str = "",
+        max_tokens: int = 512,
+        temperature: float = 0.1,
+        model: str | None = None,
+        provider: str | None = None,
+        retries: int = 2,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+        wait: float | None = _WAIT_UNSET,
+    ) -> tuple[Any, SommResult]:
+        """Generate JSON, validate it, and return (validated_object, result).
+
+        Unlike extract_structured(), this is strict: it retries with corrective
+        feedback and raises SommStructuredError instead of returning a sentinel
+        dict when the model never produces a valid object.
+        """
+        schema_kind, schema_doc = _classify_structured_schema(schema)
+        base_system = _structured_system(system, schema_doc)
+        last_raw = ""
+        last_error = "no response"
+        last_result: SommResult | None = None
+
+        for attempt in range(retries + 1):
+            attempt_system = base_system
+            if attempt > 0:
+                attempt_system = _structured_retry_system(
+                    base_system,
+                    last_raw,
+                    last_error,
+                )
+            result = self.generate(
+                prompt=prompt,
+                system=attempt_system,
+                workload=workload,
+                max_tokens=max_tokens,
+                temperature=temperature + (attempt * _STRUCTURED_TEMPERATURE_JITTER),
+                model=model,
+                provider=provider,
+                wait=wait,
+                session_id=session_id,
+                parent_call_id=parent_call_id,
+            )
+            last_result = result
+            last_raw = result.text
+
+            parsed = extract_json(result.text)
+            if parsed is None:
+                last_error = "response did not contain a parseable JSON object or array"
+                result.mark(Outcome.BAD_JSON)
+                continue
+
+            try:
+                if schema_kind == "pydantic":
+                    validated = schema.model_validate(parsed)
+                elif schema_kind == "json_schema":
+                    validated = _validate_structured_json_schema(parsed, schema)
+                else:
+                    validated = schema(parsed)
+            except Exception as exc:
+                last_error = str(exc) or type(exc).__name__
+                result.mark(Outcome.BAD_JSON)
+                continue
+
+            return validated, result
+
+        if last_result is not None:
+            last_result.mark(Outcome.BAD_JSON)
+        raise SommStructuredError(_format_structured_failure(last_raw, last_error))
 
     def extract_structured(
         self,
@@ -1707,15 +2023,60 @@ class SommLLM:
         self._prompt_ids_cache.pop(wl.id, None)
         return prompt
 
-    def prompt(self, workload: str, version: str = "latest") -> Prompt:
-        """Fetch a prompt by workload + version.
+    def set_prompt_label(self, workload: str, label: str, version: str) -> None:
+        """Move a project-local prompt label to a workload prompt version."""
+        wl = self._require_workload(workload)
+        prompt = get_prompt(self.repo, wl.id, version=version)
+        set_label(self.repo, wl.id, label, prompt.id)
+
+    def prompt(
+        self,
+        workload: str,
+        version: str = "latest",
+        *,
+        label: str | None = None,
+        bucket_key: str | None = None,
+    ) -> Prompt:
+        """Fetch a prompt by workload + version or label.
 
         Use in calling code:
             body = llm.prompt("claim_extract", version="latest").body
+            body = llm.prompt("claim_extract", label="production").body
             result = llm.generate(body, workload="claim_extract")
+
+        For weighted labels, bucket_key deterministically selects the variant.
+        When omitted, the current correlation id is used so a session resolves
+        to a stable variant. Pass the returned Prompt to generate(); telemetry
+        records the selected prompt_id for per-version scoring.
         """
         wl = self._require_workload(workload)
-        return get_prompt(self.repo, wl.id, version=version)
+        if label is not None:
+            resolved = resolve_label(
+                self.repo,
+                wl.id,
+                label,
+                bucket_key if bucket_key is not None else hooks.current_correlation_id(),
+            )
+            if resolved is None:
+                from somm.prompts import PromptNotFound
+
+                raise PromptNotFound(
+                    f"no prompt label {label!r} for workload {wl.id!r}"
+                )
+            return resolved
+        return get_prompt(self.repo, wl.id, version=version, label=label)
+
+    def fork_prompt(
+        self,
+        workload: str,
+        from_version_or_label: str,
+        body: str,
+    ) -> Prompt:
+        """Create a prompt variant in the same workload with lineage recorded."""
+        wl = self._require_workload(workload)
+        prompt = fork_prompt_version(self.repo, wl.id, from_version_or_label, body)
+        self._prompt_ids_cache.pop(wl.id, None)
+        return prompt
 
     def enable_shadow(
         self,
@@ -1844,6 +2205,74 @@ def _merge_caps(*sources: list[str] | None) -> list[str]:
     return list(seen.keys())
 
 
+class _PolicyProvider:
+    """Per-call provider wrapper for workload policy model/timeout overrides."""
+
+    def __init__(
+        self,
+        provider: SommProvider,
+        *,
+        model: str | None,
+        explicit_model: bool,
+        timeout_s: float | None,
+    ) -> None:
+        if timeout_s is not None and hasattr(provider, "timeout"):
+            provider = copy.copy(provider)
+            provider.timeout = float(timeout_s)
+        self._provider = provider
+        self._model = model
+        self._explicit_model = explicit_model
+        self.name = provider.name
+        default_model = getattr(provider, "default_model", None)
+        self.default_model = model if model is not None and not explicit_model else default_model
+
+    def generate(self, request: SommRequest):
+        req = request
+        if self._model is not None and not self._explicit_model:
+            req = replace(request, model=self._model)
+        return self._provider.generate(req)
+
+    def stream(self, request):  # pragma: no cover - policy routing is generate-only
+        return self._provider.stream(request)
+
+    def health(self):
+        return self._provider.health()
+
+    def models(self):
+        return self._provider.models()
+
+    def estimate_tokens(self, text, model):
+        return self._provider.estimate_tokens(text, model)
+
+
+def _policy_providers(
+    providers: list[SommProvider],
+    policy: dict,
+    *,
+    explicit_model: bool,
+) -> list[SommProvider]:
+    timeout_s = policy.get("timeout_s")
+    fallback = policy.get("fallback")
+    if fallback:
+        by_name = {p.name: p for p in providers}
+        selected: list[tuple[SommProvider, str | None]] = []
+        for entry in fallback:
+            provider = by_name.get(entry["provider"])
+            if provider is not None:
+                selected.append((provider, entry.get("model")))
+    else:
+        selected = [(provider, None) for provider in providers]
+    return [
+        _PolicyProvider(
+            provider,
+            model=model,
+            explicit_model=explicit_model,
+            timeout_s=timeout_s,
+        )
+        for provider, model in selected
+    ]
+
+
 def _mirror_workloads(src: Repository, dst: Repository) -> None:
     """Copy workloads rows from src to dst (idempotent on id). Called once
     on SommLLM init when cross_project_enabled is set."""
@@ -1853,7 +2282,7 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
                 "SELECT id, name, project, description, input_schema_json, "
                 "output_schema_json, quality_criteria_json, budget_cap_usd_daily, "
                 "privacy_class, created_at, shadow_config_json, "
-                "capabilities_required_json FROM workloads"
+                "capabilities_required_json, policy_json FROM workloads"
             ).fetchall()
         if not rows:
             return
@@ -1864,8 +2293,8 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
                     (id, name, project, description,
                      input_schema_json, output_schema_json, quality_criteria_json,
                      budget_cap_usd_daily, privacy_class, created_at, shadow_config_json,
-                     capabilities_required_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     capabilities_required_json, policy_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

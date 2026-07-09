@@ -317,6 +317,12 @@ def drain_spool(repo: Repository, spool_dir: Path) -> int:
                             max_tokens=row.get("max_tokens"),
                             top_p=row.get("top_p"),
                             stop_sequences_json=row.get("stop_sequences_json"),
+                            ttft_ms=row.get("ttft_ms"),
+                            session_id=row.get("session_id"),
+                            parent_call_id=row.get("parent_call_id"),
+                            cache_tokens_in=row.get("cache_tokens_in"),
+                            cache_tokens_out=row.get("cache_tokens_out"),
+                            citations_json=row.get("citations_json"),
                         )
                     )
             repo.write_calls_batch(calls)

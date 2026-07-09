@@ -6,6 +6,41 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — the workload as an atomic unit (Phase 2)
+
+- **Prompt label layer + forking** (schema v11): mutable named pointers
+  (`production`/`staging`/`latest`) over the immutable content-addressed
+  versions. `set_label`/`get_label`/`get_prompt(label=...)`; rollback is a
+  pointer move recorded in append-only `prompt_label_history`; `fork_prompt`
+  records lineage via `prompts.parent_prompt_id`.
+- **Weighted-label A/B** (schema v14): a label can point to a weighted
+  distribution; `SommLLM.prompt(label=, bucket_key=)` buckets
+  deterministically (defaulting the key to the ambient correlation id, so a
+  session sees a stable variant) while traffic splits by weight. `prompt_id`
+  binding records which variant served each call.
+- **`somm prompt` CLI**: `list/show/register/fork/diff/label/promote/score`.
+  `promote` gates a label move on N graded calls above a mean score;
+  `score` reports per-version eval rollups — closing the eval→promotion loop.
+- **`generate_structured(prompt, schema=...)`**: returns
+  `(validated_object, SommResult)` with corrective retry. Accepts a Pydantic
+  v2 model, a JSON Schema dict, or a callable validator (`somm[pydantic]` /
+  `somm[jsonschema]` extras). Raises `SommStructuredError` on exhaustion
+  rather than a sentinel dict. Absorbs four fleet reimplementations.
+- **New telemetry columns** (schema v12): `ttft_ms` (streaming
+  time-to-first-token), `session_id`/`parent_call_id` (trace hierarchy),
+  `cache_tokens_in`/`cache_tokens_out` (Anthropic/OpenAI prompt-cache usage),
+  and `citations_json` (grounded-search citations). Best-effort capture that
+  never affects routing.
+- **Workload config revisions** (schema v13): constraint/shadow/policy
+  changes append a snapshot to `workload_revisions` (the live row stays the
+  router's fast-read path); `workload_revision_diff` and forward-only
+  `rollback_workload`.
+- **Per-workload routing policy** (schema v15): a workload carries its own
+  declarative fallback chain, retry/backoff/deadline, and request timeout
+  (`policy_json`), consumed by `generate()` when the caller doesn't override.
+  The no-policy path is byte-identical. Absorbs the fleet's hand-rolled
+  `generate_resilient`/pin-registry/custom-timeout wrappers.
+
 ### Added — the plugin loop (Phase 1)
 
 - **Named-phase hook bus**: `somm.hooks` grows three lifecycle phases —

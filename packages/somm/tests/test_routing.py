@@ -240,6 +240,52 @@ def test_router_all_cooled_wait_none_is_fail_fast(tmp_path, monkeypatch):
     assert p1.calls == 0
 
 
+def test_router_retry_max_retries_positive_cooldown_without_deadline(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    p1 = ScriptedProvider(
+        "p1",
+        [
+            SommTransientError("flaky", cooldown_s=30),
+            SommTransientError("flaky", cooldown_s=30),
+            _ok(model="p1-m"),
+        ],
+    )
+    r = Router([p1], tr)
+
+    result = r.dispatch(
+        SommRequest(prompt="hi"),
+        retry_max=2,
+        retry_backoff_s=0.0,
+    )
+
+    assert result.provider == "p1"
+    assert p1.calls == 3
+
+
+def test_router_retry_max_exhaustion_without_deadline(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    p1 = ScriptedProvider(
+        "p1",
+        [
+            SommTransientError("flaky", cooldown_s=30),
+            SommTransientError("flaky", cooldown_s=30),
+            SommTransientError("flaky", cooldown_s=30),
+        ],
+    )
+    r = Router([p1], tr)
+
+    with pytest.raises(SommProvidersExhausted):
+        r.dispatch(
+            SommRequest(prompt="hi"),
+            retry_max=2,
+            retry_backoff_s=0.0,
+        )
+
+    assert p1.calls == 3
+
+
 def test_router_waits_until_cooldown_expires_then_succeeds(tmp_path, monkeypatch):
     repo = _tmp_repo(tmp_path)
     tr = ProviderHealthTracker(repo)

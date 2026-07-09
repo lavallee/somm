@@ -233,7 +233,13 @@ class Router:
                 continue
             _sleep_bounded(sleep_for, deadline)
 
-    def dispatch(self, request: SommRequest, wait: float | None = None) -> RouterResult:
+    def dispatch(
+        self,
+        request: SommRequest,
+        wait: float | None = None,
+        retry_max: int | None = None,
+        retry_backoff_s: float | None = None,
+    ) -> RouterResult:
         """Try each provider. Return the first successful response.
 
         Raises:
@@ -269,13 +275,46 @@ class Router:
             wait_started = time.monotonic()
             deadline = wait_started + wait
 
+        retry_rounds = 0
+        retry_policy = retry_max is not None or retry_backoff_s is not None
+        retry_cooldown_s = (
+            (0.0 if retry_backoff_s is None else retry_backoff_s)
+            if retry_policy
+            else None
+        )
         while True:
-            attempt = self._try_once(request, active)
+            attempt = self._try_once(
+                request,
+                active,
+                transient_cooldown_s=retry_cooldown_s,
+            )
             if attempt is not None:
                 return attempt
 
             # All providers cooled or all failed transiently this round.
             next_ok = self.tracker.next_uncool_at([p.name for p in active])
+            if retry_policy:
+                if retry_max is not None and retry_rounds >= retry_max:
+                    raise SommProvidersExhausted("all providers exhausted after policy retries")
+                retry_rounds += 1
+                if deadline is not None and wait_started is not None:
+                    sleep_s = (
+                        (next_ok - datetime.now(UTC)).total_seconds()
+                        if next_ok is not None
+                        else 0.0
+                    )
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        waited = time.monotonic() - wait_started
+                        raise SommProvidersExhausted(
+                            _wait_deadline_exhausted_message(waited, sleep_s),
+                            next_cool_in_s=sleep_s,
+                        )
+                    if retry_backoff_s and retry_backoff_s > 0:
+                        _sleep_bounded(min(retry_backoff_s, remaining), deadline)
+                elif retry_backoff_s and retry_backoff_s > 0:
+                    time.sleep(retry_backoff_s)
+                continue
             if next_ok is None:
                 raise SommProvidersExhausted("no providers configured or all failed fatally")
 
@@ -331,7 +370,10 @@ class Router:
         return capable, skipped
 
     def _try_once(
-        self, request: SommRequest, providers: list[SommProvider] | None = None
+        self,
+        request: SommRequest,
+        providers: list[SommProvider] | None = None,
+        transient_cooldown_s: float | None = None,
     ) -> RouterResult | None:
         for provider in (providers if providers is not None else self.providers):
             health = self.tracker.get(provider.name)
@@ -360,7 +402,8 @@ class Router:
             except SommFatalError:
                 raise
             except SommTransientError as e:
-                rec = self.tracker.mark_failure(provider.name, cooldown_s=e.cooldown_s)
+                cooldown_s = e.cooldown_s if transient_cooldown_s is None else transient_cooldown_s
+                rec = self.tracker.mark_failure(provider.name, cooldown_s=cooldown_s)
                 if rec.consecutive_failures >= self.circuit_break_after:
                     self.tracker.mark_failure(
                         provider.name, cooldown_s=self.circuit_break_cooldown_s
@@ -370,6 +413,8 @@ class Router:
                 cooldown_s, transient = _classify_unknown(exc)
                 if not transient:
                     raise
+                if transient_cooldown_s is not None:
+                    cooldown_s = transient_cooldown_s
                 self.tracker.mark_failure(provider.name, cooldown_s=cooldown_s)
                 continue
         return None

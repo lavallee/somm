@@ -20,6 +20,9 @@ from somm_core.parse import stable_hash
 from somm_core.parse import workload_id as _workload_id
 from somm_core.schema import ensure_schema
 
+_POLICY_KEYS = {"fallback", "retry", "timeout_s"}
+_RETRY_KEYS = {"max", "backoff_s", "deadline_s"}
+
 
 def _percentiles(csv: str | None) -> tuple[int | None, int | None]:
     """Return (p50, p95) of a comma-separated latency_ms list using nearest-rank.
@@ -40,6 +43,95 @@ def _percentiles(csv: str | None) -> tuple[int | None, int | None]:
     p50_idx = max(0, min(n - 1, math.ceil(0.50 * n) - 1))
     p95_idx = max(0, min(n - 1, math.ceil(0.95 * n) - 1))
     return values[p50_idx], values[p95_idx]
+
+
+def _is_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _validate_workload_policy(policy: dict | None) -> dict | None:
+    if policy is None:
+        return None
+    if not isinstance(policy, dict):
+        raise ValueError("workload policy must be a JSON object")
+    unknown = set(policy) - _POLICY_KEYS
+    if unknown:
+        raise ValueError(f"workload policy has unknown key(s): {', '.join(sorted(unknown))}")
+
+    out: dict = {}
+    if "fallback" in policy:
+        fallback = policy["fallback"]
+        if not isinstance(fallback, list):
+            raise ValueError("workload policy fallback must be a list")
+        normalized_fallback: list[dict] = []
+        for idx, item in enumerate(fallback):
+            if not isinstance(item, dict):
+                raise ValueError(f"workload policy fallback[{idx}] must be an object")
+            unknown_item = set(item) - {"provider", "model"}
+            if unknown_item:
+                raise ValueError(
+                    "workload policy fallback["
+                    f"{idx}] has unknown key(s): {', '.join(sorted(unknown_item))}"
+                )
+            provider = item.get("provider")
+            if not isinstance(provider, str) or not provider.strip():
+                raise ValueError(f"workload policy fallback[{idx}].provider must be a string")
+            model = item.get("model")
+            if model is not None and not isinstance(model, str):
+                raise ValueError(f"workload policy fallback[{idx}].model must be a string or null")
+            normalized_fallback.append({"provider": provider, "model": model})
+        out["fallback"] = normalized_fallback
+
+    if "retry" in policy:
+        retry = policy["retry"]
+        if retry is None:
+            out["retry"] = None
+        else:
+            if not isinstance(retry, dict):
+                raise ValueError("workload policy retry must be an object")
+            unknown_retry = set(retry) - _RETRY_KEYS
+            if unknown_retry:
+                raise ValueError(
+                    f"workload policy retry has unknown key(s): {', '.join(sorted(unknown_retry))}"
+                )
+            normalized_retry: dict = {}
+            if "max" in retry:
+                retry_max = retry["max"]
+                if (
+                    not isinstance(retry_max, int)
+                    or isinstance(retry_max, bool)
+                    or not math.isfinite(float(retry_max))
+                    or retry_max < 0
+                ):
+                    raise ValueError(
+                        "workload policy retry.max must be a finite non-negative integer"
+                    )
+                normalized_retry["max"] = retry_max
+            for key in ("backoff_s", "deadline_s"):
+                if key in retry:
+                    value = retry[key]
+                    if not _is_number(value) or float(value) < 0:
+                        raise ValueError(
+                            f"workload policy retry.{key} must be a finite non-negative number"
+                        )
+                    if key == "deadline_s" and float(value) <= 0:
+                        raise ValueError(
+                            "workload policy retry.deadline_s must be a finite number "
+                            "greater than zero"
+                        )
+                    normalized_retry[key] = float(value)
+            out["retry"] = normalized_retry
+
+    if "timeout_s" in policy:
+        timeout_s = policy["timeout_s"]
+        if not _is_number(timeout_s) or float(timeout_s) <= 0:
+            raise ValueError("workload policy timeout_s must be a finite positive number")
+        out["timeout_s"] = float(timeout_s)
+    return out
 
 
 class Repository:
@@ -94,6 +186,80 @@ class Repository:
 
     # Workloads ---------------------------------------------------------------
 
+    @staticmethod
+    def _workload_revision_row(row) -> dict:
+        return {
+            "id": row[0],
+            "workload_id": row[1],
+            "revision": row[2],
+            "config": json.loads(row[3]),
+            "created_at": row[4],
+            "created_by": row[5],
+        }
+
+    def _workload_config_snapshot(
+        self,
+        conn: sqlite3.Connection,
+        workload_id: str,
+    ) -> dict | None:
+        row = conn.execute(
+            "SELECT max_p95_latency_ms, max_capability_failure_rate, "
+            "max_cost_per_call_usd, budget_cap_usd_daily, shadow_config_json, "
+            "policy_json "
+            "FROM workloads WHERE id = ?",
+            (workload_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "max_p95_latency_ms": row[0],
+            "max_capability_failure_rate": row[1],
+            "max_cost_per_call_usd": row[2],
+            "budget_cap_usd_daily": row[3],
+            "shadow_config": json.loads(row[4]) if row[4] else None,
+            "policy": json.loads(row[5]) if row[5] else None,
+        }
+
+    def _record_workload_revision_in_tx(
+        self,
+        conn: sqlite3.Connection,
+        workload_id: str,
+        config: dict,
+        created_by: str | None,
+    ) -> int:
+        revision = conn.execute(
+            "SELECT COALESCE(MAX(revision), 0) + 1 "
+            "FROM workload_revisions WHERE workload_id = ?",
+            (workload_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO workload_revisions "
+            "(workload_id, revision, config_json, created_by) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                workload_id,
+                revision,
+                json.dumps(config, sort_keys=True),
+                created_by,
+            ),
+        )
+        return int(revision)
+
+    def _ensure_initial_workload_revision_in_tx(
+        self,
+        conn: sqlite3.Connection,
+        workload_id: str,
+    ) -> None:
+        has_revision = conn.execute(
+            "SELECT 1 FROM workload_revisions WHERE workload_id = ? LIMIT 1",
+            (workload_id,),
+        ).fetchone()
+        if has_revision is not None:
+            return
+        snapshot = self._workload_config_snapshot(conn, workload_id)
+        if snapshot is not None:
+            self._record_workload_revision_in_tx(conn, workload_id, snapshot, None)
+
     def register_workload(
         self,
         name: str,
@@ -108,34 +274,45 @@ class Repository:
         max_p95_latency_ms: int | None = None,
         max_capability_failure_rate: float | None = None,
         max_cost_per_call_usd: float | None = None,
+        policy: dict | None = None,
     ) -> Workload:
         wid = _workload_id(name, input_schema, output_schema)
+        policy = _validate_workload_policy(policy)
         with self._open() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO workloads (
-                    id, name, project, description,
-                    input_schema_json, output_schema_json, quality_criteria_json,
-                    budget_cap_usd_daily, privacy_class, capabilities_required_json,
-                    max_p95_latency_ms, max_capability_failure_rate, max_cost_per_call_usd
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    wid,
-                    name,
-                    project,
-                    description,
-                    json.dumps(input_schema) if input_schema else None,
-                    json.dumps(output_schema) if output_schema else None,
-                    json.dumps(quality_criteria or []),
-                    budget_cap_usd_daily,
-                    privacy_class.value,
-                    json.dumps(capabilities_required) if capabilities_required else None,
-                    max_p95_latency_ms,
-                    max_capability_failure_rate,
-                    max_cost_per_call_usd,
-                ),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO workloads (
+                        id, name, project, description,
+                        input_schema_json, output_schema_json, quality_criteria_json,
+                        budget_cap_usd_daily, privacy_class, capabilities_required_json,
+                        max_p95_latency_ms, max_capability_failure_rate,
+                        max_cost_per_call_usd, policy_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        wid,
+                        name,
+                        project,
+                        description,
+                        json.dumps(input_schema) if input_schema else None,
+                        json.dumps(output_schema) if output_schema else None,
+                        json.dumps(quality_criteria or []),
+                        budget_cap_usd_daily,
+                        privacy_class.value,
+                        json.dumps(capabilities_required) if capabilities_required else None,
+                        max_p95_latency_ms,
+                        max_capability_failure_rate,
+                        max_cost_per_call_usd,
+                        json.dumps(policy, sort_keys=True) if policy else None,
+                    ),
+                )
+                self._ensure_initial_workload_revision_in_tx(conn, wid)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         return Workload(
             id=wid,
             name=name,
@@ -149,6 +326,7 @@ class Repository:
             max_p95_latency_ms=max_p95_latency_ms,
             max_capability_failure_rate=max_capability_failure_rate,
             max_cost_per_call_usd=max_cost_per_call_usd,
+            policy=policy,
         )
 
     def workload_by_name(self, name: str, project: str) -> Workload | None:
@@ -157,7 +335,8 @@ class Repository:
                 "SELECT id, name, description, input_schema_json, output_schema_json, "
                 "quality_criteria_json, budget_cap_usd_daily, privacy_class, "
                 "capabilities_required_json, "
-                "max_p95_latency_ms, max_capability_failure_rate, max_cost_per_call_usd "
+                "max_p95_latency_ms, max_capability_failure_rate, "
+                "max_cost_per_call_usd, policy_json "
                 "FROM workloads WHERE project = ? AND name = ? "
                 "ORDER BY created_at DESC LIMIT 1",
                 (project, name),
@@ -177,6 +356,7 @@ class Repository:
             max_p95_latency_ms=row[9],
             max_capability_failure_rate=row[10],
             max_cost_per_call_usd=row[11],
+            policy=json.loads(row[12]) if row[12] else None,
         )
 
     def set_workload_constraints(
@@ -188,42 +368,234 @@ class Repository:
         max_cost_per_call_usd: float | None = None,
         clear: bool = False,
     ) -> None:
-        """Update adequacy thresholds on an existing workload row.
+        """Update adequacy thresholds on the live workload row.
 
         Pass ``clear=True`` to set all three back to NULL. Otherwise,
         only fields with a non-None value here are written; existing
         values are preserved (use ``clear`` then re-set if you need to
         null one specifically).
+
+        Dual-write note: the workloads row remains the current source for
+        hot-path routing reads. After each row update, workload_revisions gets
+        an append-only snapshot for audit, diff, and forward-only rollback.
         """
         with self._open() as conn:
-            if clear:
-                conn.execute(
-                    "UPDATE workloads SET "
-                    "max_p95_latency_ms = NULL, "
-                    "max_capability_failure_rate = NULL, "
-                    "max_cost_per_call_usd = NULL "
-                    "WHERE id = ?",
-                    (workload_id,),
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if clear:
+                    self._ensure_initial_workload_revision_in_tx(conn, workload_id)
+                    cursor = conn.execute(
+                        "UPDATE workloads SET "
+                        "max_p95_latency_ms = NULL, "
+                        "max_capability_failure_rate = NULL, "
+                        "max_cost_per_call_usd = NULL "
+                        "WHERE id = ?",
+                        (workload_id,),
+                    )
+                    if cursor.rowcount:
+                        snapshot = self._workload_config_snapshot(conn, workload_id)
+                        if snapshot is not None:
+                            self._record_workload_revision_in_tx(
+                                conn, workload_id, snapshot, None
+                            )
+                    conn.execute("COMMIT")
+                    return
+                sets: list[str] = []
+                values: list[object] = []
+                if max_p95_latency_ms is not None:
+                    sets.append("max_p95_latency_ms = ?")
+                    values.append(max_p95_latency_ms)
+                if max_capability_failure_rate is not None:
+                    sets.append("max_capability_failure_rate = ?")
+                    values.append(max_capability_failure_rate)
+                if max_cost_per_call_usd is not None:
+                    sets.append("max_cost_per_call_usd = ?")
+                    values.append(max_cost_per_call_usd)
+                if not sets:
+                    conn.execute("COMMIT")
+                    return
+                values.append(workload_id)
+                self._ensure_initial_workload_revision_in_tx(conn, workload_id)
+                cursor = conn.execute(
+                    f"UPDATE workloads SET {', '.join(sets)} WHERE id = ?",
+                    values,
                 )
-                return
-            sets: list[str] = []
-            values: list[object] = []
-            if max_p95_latency_ms is not None:
-                sets.append("max_p95_latency_ms = ?")
-                values.append(max_p95_latency_ms)
-            if max_capability_failure_rate is not None:
-                sets.append("max_capability_failure_rate = ?")
-                values.append(max_capability_failure_rate)
-            if max_cost_per_call_usd is not None:
-                sets.append("max_cost_per_call_usd = ?")
-                values.append(max_cost_per_call_usd)
-            if not sets:
-                return
-            values.append(workload_id)
-            conn.execute(
-                f"UPDATE workloads SET {', '.join(sets)} WHERE id = ?",
-                values,
+                if cursor.rowcount:
+                    snapshot = self._workload_config_snapshot(conn, workload_id)
+                    if snapshot is not None:
+                        self._record_workload_revision_in_tx(
+                            conn, workload_id, snapshot, None
+                        )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def record_workload_revision(
+        self,
+        workload_id: str,
+        config: dict,
+        created_by: str | None = None,
+    ) -> int:
+        """Append a workload config snapshot and return its revision number.
+
+        Low-level primitive: this records HISTORY only and does NOT update the
+        live workloads row the router reads. Calling it directly with a config
+        that differs from the live row makes current_workload_revision() and the
+        router disagree. Prefer set_workload_constraints / set_shadow_config /
+        set_workload_policy, which dual-write the live row and a revision.
+        """
+        with self._open() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                revision = self._record_workload_revision_in_tx(
+                    conn, workload_id, config, created_by
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return revision
+
+    def current_workload_revision(self, workload_id: str) -> dict | None:
+        """Return the latest recorded workload config snapshot."""
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT config_json FROM workload_revisions "
+                "WHERE workload_id = ? ORDER BY revision DESC LIMIT 1",
+                (workload_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    def set_workload_policy(
+        self,
+        workload_id: str,
+        policy: dict | None,
+        created_by: str | None = None,
+    ) -> None:
+        """Update the live routing policy and append a workload revision."""
+        policy = _validate_workload_policy(policy)
+        with self._open() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._ensure_initial_workload_revision_in_tx(conn, workload_id)
+                cursor = conn.execute(
+                    "UPDATE workloads SET policy_json = ? WHERE id = ?",
+                    (
+                        json.dumps(policy, sort_keys=True) if policy else None,
+                        workload_id,
+                    ),
+                )
+                if cursor.rowcount:
+                    snapshot = self._workload_config_snapshot(conn, workload_id)
+                    if snapshot is not None:
+                        self._record_workload_revision_in_tx(
+                            conn, workload_id, snapshot, created_by
+                        )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def workload_revisions(self, workload_id: str) -> list[dict]:
+        """Return workload config revision history, oldest first."""
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT id, workload_id, revision, config_json, created_at, created_by "
+                "FROM workload_revisions WHERE workload_id = ? ORDER BY revision",
+                (workload_id,),
+            ).fetchall()
+        return [self._workload_revision_row(row) for row in rows]
+
+    def workload_revision_diff(
+        self,
+        workload_id: str,
+        rev_a: int,
+        rev_b: int,
+    ) -> dict:
+        """Return a simple per-key old/new diff between two config revisions."""
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT revision, config_json FROM workload_revisions "
+                "WHERE workload_id = ? AND revision IN (?, ?)",
+                (workload_id, rev_a, rev_b),
+            ).fetchall()
+        configs = {int(row[0]): json.loads(row[1]) for row in rows}
+        if rev_a not in configs or rev_b not in configs:
+            raise ValueError(
+                f"workload {workload_id!r} does not have revisions "
+                f"{rev_a!r} and {rev_b!r}"
             )
+        old = configs[rev_a]
+        new = configs[rev_b]
+        return {
+            key: {"old": old.get(key), "new": new.get(key)}
+            for key in sorted(set(old) | set(new))
+            if old.get(key) != new.get(key)
+        }
+
+    def rollback_workload(
+        self,
+        workload_id: str,
+        revision: int,
+        created_by: str | None = None,
+    ) -> int:
+        """Re-apply an old config snapshot and append a new revision.
+
+        Rollback is forward-only: the selected snapshot is copied back onto
+        the live workloads row, then recorded as a new workload_revisions row,
+        like a git revert. Router reads still hit workloads directly.
+        """
+        with self._open() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT config_json FROM workload_revisions "
+                    "WHERE workload_id = ? AND revision = ?",
+                    (workload_id, revision),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(
+                        f"workload {workload_id!r} does not have revision {revision!r}"
+                    )
+                config = json.loads(row[0])
+                shadow_config = config.get("shadow_config")
+                cursor = conn.execute(
+                    "UPDATE workloads SET "
+                    "max_p95_latency_ms = ?, "
+                    "max_capability_failure_rate = ?, "
+                    "max_cost_per_call_usd = ?, "
+                    "budget_cap_usd_daily = ?, "
+                    "shadow_config_json = ?, "
+                    "policy_json = ? "
+                    "WHERE id = ?",
+                    (
+                        config.get("max_p95_latency_ms"),
+                        config.get("max_capability_failure_rate"),
+                        config.get("max_cost_per_call_usd"),
+                        config.get("budget_cap_usd_daily"),
+                        json.dumps(shadow_config) if shadow_config is not None else None,
+                        json.dumps(config.get("policy"), sort_keys=True)
+                        if config.get("policy") is not None
+                        else None,
+                        workload_id,
+                    ),
+                )
+                if not cursor.rowcount:
+                    raise ValueError(f"unknown workload {workload_id!r}")
+                snapshot = self._workload_config_snapshot(conn, workload_id)
+                if snapshot is None:
+                    raise ValueError(f"unknown workload {workload_id!r}")
+                new_revision = self._record_workload_revision_in_tx(
+                    conn, workload_id, snapshot, created_by
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return new_revision
 
     # Shadow-eval config ------------------------------------------------------
 
@@ -253,17 +625,33 @@ class Repository:
                     conn.execute("PRAGMA foreign_keys = ON")
 
     def set_shadow_config(self, workload_id: str, config: dict | None) -> None:
-        """Attach (or clear) shadow-eval config for a workload.
+        """Attach (or clear) shadow-eval config on the live workload row.
 
         config = None → shadow disabled.
         config = {"gold_provider": ..., "gold_model": ..., "sample_rate": ...,
                   "budget_usd_daily": ...} → enabled.
+
+        Dual-write note: workloads.shadow_config_json is the hot read path.
+        workload_revisions receives an append-only post-update snapshot.
         """
         with self._open() as conn:
-            conn.execute(
-                "UPDATE workloads SET shadow_config_json = ? WHERE id = ?",
-                (json.dumps(config) if config else None, workload_id),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._ensure_initial_workload_revision_in_tx(conn, workload_id)
+                cursor = conn.execute(
+                    "UPDATE workloads SET shadow_config_json = ? WHERE id = ?",
+                    (json.dumps(config) if config else None, workload_id),
+                )
+                if cursor.rowcount:
+                    snapshot = self._workload_config_snapshot(conn, workload_id)
+                    if snapshot is not None:
+                        self._record_workload_revision_in_tx(
+                            conn, workload_id, snapshot, None
+                        )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
 
     def get_shadow_config(self, workload_id: str) -> dict | None:
         with self._open() as conn:
@@ -291,6 +679,7 @@ class Repository:
             version=version,
             hash=pid,
             body=body,
+            parent_prompt_id=None,
         )
 
     # Calls -------------------------------------------------------------------
@@ -305,8 +694,13 @@ class Repository:
                     provider, model,
                     tokens_in, tokens_out, latency_ms, cost_usd,
                     outcome, error_kind, error_detail, prompt_hash, response_hash,
-                    correlation_id, temperature, max_tokens, top_p, stop_sequences_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    correlation_id, temperature, max_tokens, top_p, stop_sequences_json,
+                    ttft_ms, session_id, parent_call_id, cache_tokens_in,
+                    cache_tokens_out, citations_json
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     call.id,
@@ -330,6 +724,12 @@ class Repository:
                     call.max_tokens,
                     call.top_p,
                     call.stop_sequences_json,
+                    call.ttft_ms,
+                    call.session_id,
+                    call.parent_call_id,
+                    call.cache_tokens_in,
+                    call.cache_tokens_out,
+                    call.citations_json,
                 ),
             )
 
@@ -347,8 +747,13 @@ class Repository:
                         provider, model,
                         tokens_in, tokens_out, latency_ms, cost_usd,
                         outcome, error_kind, error_detail, prompt_hash, response_hash,
-                        correlation_id, temperature, max_tokens, top_p, stop_sequences_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        correlation_id, temperature, max_tokens, top_p, stop_sequences_json,
+                        ttft_ms, session_id, parent_call_id, cache_tokens_in,
+                        cache_tokens_out, citations_json
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     [
                         (
@@ -373,6 +778,12 @@ class Repository:
                             c.max_tokens,
                             c.top_p,
                             c.stop_sequences_json,
+                            c.ttft_ms,
+                            c.session_id,
+                            c.parent_call_id,
+                            c.cache_tokens_in,
+                            c.cache_tokens_out,
+                            c.citations_json,
                         )
                         for c in calls
                     ],
@@ -387,7 +798,10 @@ class Repository:
             row = conn.execute(
                 "SELECT id, ts, project, workload_id, prompt_id, provider, model, "
                 "tokens_in, tokens_out, latency_ms, cost_usd, outcome, error_kind, "
-                "prompt_hash, response_hash, error_detail FROM calls WHERE id = ?",
+                "prompt_hash, response_hash, error_detail, correlation_id, "
+                "temperature, max_tokens, top_p, stop_sequences_json, ttft_ms, "
+                "session_id, parent_call_id, cache_tokens_in, cache_tokens_out, "
+                "citations_json FROM calls WHERE id = ?",
                 (call_id,),
             ).fetchone()
         if not row:
@@ -409,6 +823,17 @@ class Repository:
             prompt_hash=row[13],
             response_hash=row[14],
             error_detail=row[15],
+            correlation_id=row[16],
+            temperature=row[17],
+            max_tokens=row[18],
+            top_p=row[19],
+            stop_sequences_json=row[20],
+            ttft_ms=row[21],
+            session_id=row[22],
+            parent_call_id=row[23],
+            cache_tokens_in=row[24],
+            cache_tokens_out=row[25],
+            citations_json=row[26],
         )
 
     def record_outcome_update(self, call_id: str, outcome: Outcome) -> None:
