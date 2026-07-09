@@ -43,21 +43,16 @@ from somm import hooks
 from somm.errors import SommProvidersExhausted
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt
-from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import (
     SommEmbedRequest,
     SommProvider,
     SommRequest,
 )
-from somm.providers.claude_cli import ClaudeCLIProvider
-from somm.providers.codex_cli import CodexCLIProvider
-from somm.providers.deepseek import DeepSeekProvider
-from somm.providers.gemini import GeminiProvider
-from somm.providers.minimax import MinimaxProvider
-from somm.providers.ollama import OllamaProvider
-from somm.providers.openai import OpenAIProvider
-from somm.providers.openrouter import OpenRouterProvider
-from somm.providers.perplexity import PerplexityProvider
+from somm.providers.registry import (
+    BUILTIN_PROVIDER_SPECS,
+    ProviderSpec,
+    load_entrypoint_provider_specs,
+)
 from somm.routing import ProviderHealthTracker, Router
 from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
@@ -267,69 +262,50 @@ def build_default_providers(
     server so both expose the identical chain.
 
     ``full=True`` returns EVERY available provider, ignoring both
-    SOMM_PROVIDER_ORDER and the pinned-only exclusions (CLI executors,
-    perplexity's last-place rule). Routing preference is about which
-    provider serves production traffic; explicit-selection surfaces —
-    shadow gold models, somm_compare, somm_replay — must reach anything
-    that's configured.
-    """
-    available: dict[str, SommProvider] = {}
-    available["ollama"] = OllamaProvider(
-        base_url=config.ollama_url,
-        default_model=config.ollama_model,
-        enable_think=config.ollama_think,
-        keep_alive=config.ollama_keep_alive,
-    )
-    # CLI executors — subscription-seat `claude -p` / `codex exec`, gated on the binary being
-    # present. Not in default_order (so they don't change existing projects' routing); reach
-    # them by setting provider_order (SOMM_PROVIDER_ORDER) or pinning generate(provider=...).
-    import shutil
+    SOMM_PROVIDER_ORDER and the pinned-only exclusions (CLI executors).
+    Routing preference is about which provider serves production traffic;
+    explicit-selection surfaces — shadow gold models, somm_compare,
+    somm_replay — must reach anything that's configured.
 
-    if shutil.which("claude"):
-        available["claude-cli"] = ClaudeCLIProvider(timeout=max(config.http_timeout, 600.0))
-    if shutil.which("codex"):
-        available["codex-cli"] = CodexCLIProvider(timeout=max(config.http_timeout, 600.0))
-    if config.openrouter_api_key:
-        available["openrouter"] = OpenRouterProvider(
-            api_key=config.openrouter_api_key,
-            roster=config.openrouter_roster,
-            tracker=tracker,
-        )
-    if config.minimax_api_key:
-        available["minimax"] = MinimaxProvider(
-            api_key=config.minimax_api_key,
-            default_model=config.minimax_model,
-            timeout=config.http_timeout,
-        )
-    if config.deepseek_api_key:
-        available["deepseek"] = DeepSeekProvider(
-            api_key=config.deepseek_api_key,
-            default_model=config.deepseek_model,
-            timeout=config.http_timeout,
-        )
-    if config.anthropic_api_key:
-        available["anthropic"] = AnthropicProvider(
-            api_key=config.anthropic_api_key,
-            default_model=config.anthropic_model,
-        )
-    if config.openai_api_key:
-        available["openai"] = OpenAIProvider(
-            api_key=config.openai_api_key,
-            base_url=config.openai_base_url,
-            default_model=config.openai_model,
-            timeout=config.http_timeout,
-        )
-    if config.gemini_api_key:
-        available["gemini"] = GeminiProvider(
-            api_key=config.gemini_api_key,
-            default_model=config.gemini_model,
-        )
-    if config.perplexity_api_key:
-        available["perplexity"] = PerplexityProvider(
-            api_key=config.perplexity_api_key,
-            default_model=config.perplexity_model,
-            timeout=max(config.http_timeout, 300.0),
-        )
+    Third-party entry-point providers are appended after built-ins in the
+    default routing chain when they declare ``default_order_rank``; ranked
+    plugins are ordered by ``(rank, name)`` for deterministic routing.
+    """
+    logger = logging.getLogger("somm.providers")
+    specs: list[ProviderSpec] = list(BUILTIN_PROVIDER_SPECS)
+    builtin_names = {spec.name for spec in specs}
+    seen_names = set(builtin_names)
+    plugin_specs: list[ProviderSpec] = []
+    for spec in load_entrypoint_provider_specs():
+        if spec.name in builtin_names:
+            logger.warning("skipping provider spec %r: provider name is built in", spec.name)
+            continue
+        if spec.name in seen_names:
+            logger.warning("skipping provider spec %r: provider name is already registered", spec.name)
+            continue
+        seen_names.add(spec.name)
+        plugin_specs.append(spec)
+    specs.extend(plugin_specs)
+
+    available: dict[str, SommProvider] = {}
+    spec_by_name: dict[str, ProviderSpec] = {}
+    for spec in specs:
+        try:
+            provider = spec.factory(config, tracker)
+        except Exception as exc:  # noqa: BLE001 - provider plugins must not break startup
+            logger.warning("skipping provider %r: factory failed: %s", spec.name, exc)
+            continue
+        if provider is None:
+            continue
+        if not isinstance(provider, SommProvider):
+            logger.warning(
+                "skipping provider %r: factory returned non-SommProvider %s",
+                spec.name,
+                type(provider).__name__,
+            )
+            continue
+        available[spec.name] = provider
+        spec_by_name[spec.name] = spec
 
     if full:
         return list(available.values())
@@ -342,12 +318,27 @@ def build_default_providers(
         return chain if chain else list(available.values())
 
     # Default order — sovereign-first, then strong-paid (deepseek now in slot 3).
-    # perplexity is pinned-only: it sits last so it's reachable via
-    # `generate(provider="perplexity")` / `_pick_provider`, but the router
-    # only reaches it if every other provider is exhausted — search-grounded
-    # sonar models are a deliberate choice, not a routine fallback target.
-    default_order = ["ollama", "openrouter", "deepseek", "minimax", "anthropic", "gemini", "openai", "perplexity"]
-    return [available[p] for p in default_order if p in available]
+    builtin_order = [
+        spec.name
+        for spec in sorted(
+            BUILTIN_PROVIDER_SPECS,
+            key=lambda spec: spec.default_order_rank if spec.default_order_rank is not None else 10**9,
+        )
+        if spec.default_order_rank is not None
+    ]
+    plugin_order = [
+        spec.name
+        for spec in sorted(
+            plugin_specs,
+            key=lambda spec: (
+                spec.default_order_rank if spec.default_order_rank is not None else 10**9,
+                spec.name,
+            ),
+        )
+        if spec.default_order_rank is not None
+    ]
+    default_order = builtin_order + plugin_order
+    return [available[p] for p in default_order if p in available and p in spec_by_name]
 
 
 def _format_error_detail(exc: Exception, provider: str, model: str | None) -> str:
@@ -1190,10 +1181,10 @@ class SommLLM:
         # routing should look like (different models = different vector
         # spaces; cosine across them is meaningless), so it's a design
         # call we're deferring.
-        provider_obj: OllamaProvider | None = None
+        provider_obj = None
         for p in self.providers:
             if p.name == "ollama":
-                provider_obj = p  # type: ignore[assignment]
+                provider_obj = p
                 break
         if provider_obj is None:
             raise ValueError(

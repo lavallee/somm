@@ -1,7 +1,15 @@
-"""Provider adapters. Built-ins: ollama, openrouter (v0.2). Next: minimax, anthropic, openai.
+"""Provider adapters and public provider protocol.
 
-Third parties register via entry-points group `somm.providers` using the
-SommProvider Protocol (see base.py).
+Built-ins are registered in ``somm.providers.registry.BUILTIN_PROVIDER_SPECS``.
+Third parties register via the ``somm.providers`` entry-point group with a
+``ProviderSpec``:
+
+    [project.entry-points."somm.providers"]
+    acme = "acme_somm:provider_spec"
+
+The entry point resolves to either a ``ProviderSpec`` instance or a zero-arg
+callable returning one. The spec factory receives ``(config, tracker)`` and
+returns a ``SommProvider`` instance, or ``None`` when unavailable.
 """
 
 from somm.providers._openai_compat import OpenAICompatProvider
