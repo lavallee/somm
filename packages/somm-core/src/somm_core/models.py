@@ -180,6 +180,48 @@ class EvalReceipt:
     created_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Campaign:
+    id: str
+    project: str
+    workload_id: str
+    dataset_id: str | None
+    name: str
+    metric: str
+    direction: str
+    threshold: float
+    token_budget: int | None
+    max_rounds: int
+    plateau_window: int
+    min_delta: float
+    status: str
+    best_score: float | None = None
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
+    metadata: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignEvent:
+    id: str
+    campaign_id: str
+    sequence: int
+    run_id: str | None
+    event_type: str
+    action: str
+    metric_score: float | None
+    threshold: float | None
+    tokens_in: int
+    tokens_out: int
+    total_tokens: int
+    cost_usd: float
+    payload: dict[str, Any]
+    created_at: datetime | None = None
+
+
 @dataclass(slots=True)
 class Call:
     """A row in `calls`. Immutable after insert — late data goes in `call_updates`."""

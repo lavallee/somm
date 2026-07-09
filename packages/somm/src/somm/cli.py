@@ -15,6 +15,7 @@ Commands:
   somm prompt          manage prompt versions, labels, and A/B variants
   somm eval            promote calls to datasets and run eval gates
   somm optimize        propose a prompt fork from failing graded calls
+  somm campaign        run durable experiment campaigns
   somm plugin          list and inspect plugins, hooks, and providers
 """
 
@@ -723,6 +724,105 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     if result.rationale:
         print(f"rationale: {result.rationale}")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# somm campaign
+
+
+def _cmd_campaign_run(args: argparse.Namespace) -> int:
+    from somm import SommLLM
+    from somm.campaigns import MetricContract, run_eval_campaign, write_campaign_jsonl
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    direction = args.direction
+    if direction is None:
+        direction = "lte" if args.metric == "error_rate" else "gte"
+    try:
+        contract = MetricContract(
+            metric=args.metric,
+            threshold=args.threshold,
+            direction=direction,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    llm = SommLLM(config=cfg)
+    try:
+        def generate(item):
+            result = llm.generate(
+                prompt=item.prompt_body,
+                workload=args.workload,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                provider=args.provider,
+                model=args.model,
+                no_fallback=bool(args.provider),
+            )
+            writer = getattr(llm, "_writer", None)
+            if writer is not None:
+                writer.flush(timeout=5.0)
+            return result
+
+        try:
+            result = run_eval_campaign(
+                repo,
+                project=cfg.project,
+                workload=args.workload,
+                dataset=args.dataset,
+                generate=generate,
+                contract=contract,
+                name=args.name,
+                max_rounds=args.max_rounds,
+                token_budget=args.token_budget,
+                plateau_window=args.plateau_window,
+                min_delta=args.min_delta,
+                eval_threshold=args.eval_threshold,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    finally:
+        llm.close()
+
+    if args.log:
+        try:
+            write_campaign_jsonl(result, args.log)
+        except OSError as exc:
+            print(f"failed to write campaign log {args.log!r}: {exc}", file=sys.stderr)
+            return 2
+
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2))
+    else:
+        _print_campaign_run(result, log_path=args.log)
+    return 0 if result.passed else 1
+
+
+def _print_campaign_run(result, *, log_path: str | None = None) -> None:
+    campaign = result.campaign
+    status = "PASS" if result.passed else "FAIL"
+    best = "-" if result.best_score is None else f"{result.best_score:.3f}"
+    print(
+        f"{status} campaign {campaign.name} ({campaign.id[:8]}) "
+        f"status={campaign.status} stop={result.stop_reason} best={best}"
+    )
+    print(
+        f"metric: {campaign.metric} {campaign.direction} {campaign.threshold:.3f} "
+        f"tokens={result.total_tokens} cost=${result.total_cost_usd:.6f}"
+    )
+    if log_path:
+        print(f"log: {log_path}")
+    print(f"{'seq':>3} {'event':<18} {'action':<7} {'score':>7} {'tokens':>8} {'run':<10}")
+    for event in result.events:
+        score = "-" if event.metric_score is None else f"{event.metric_score:.3f}"
+        run = (event.run_id or "-")[:8]
+        print(
+            f"{event.sequence:>3} {event.event_type:<18} {event.action:<7} "
+            f"{score:>7} {event.total_tokens:>8} {run:<10}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1895,6 +1995,36 @@ def build_parser() -> argparse.ArgumentParser:
     popt.add_argument("--provider", default=None)
     popt.add_argument("--model", default=None)
     popt.set_defaults(func=_cmd_optimize)
+
+    pcamp = sub.add_parser("campaign", help="run durable experiment campaigns")
+    pcamp_sub = pcamp.add_subparsers(dest="campaign_cmd", required=True)
+    pcamp_run = pcamp_sub.add_parser(
+        "run",
+        help="run repeated eval rounds with keep/revert logging",
+    )
+    pcamp_run.add_argument("--workload", required=True)
+    pcamp_run.add_argument("--dataset", required=True)
+    pcamp_run.add_argument("--project", default=None)
+    pcamp_run.add_argument("--name", default=None)
+    pcamp_run.add_argument(
+        "--metric",
+        choices=("mean_score", "pass_rate", "error_rate"),
+        default="mean_score",
+    )
+    pcamp_run.add_argument("--direction", choices=("gte", "lte"), default=None)
+    pcamp_run.add_argument("--threshold", type=float, default=0.8)
+    pcamp_run.add_argument("--eval-threshold", type=float, default=None)
+    pcamp_run.add_argument("--max-rounds", type=int, default=5)
+    pcamp_run.add_argument("--token-budget", type=int, default=None)
+    pcamp_run.add_argument("--plateau-window", type=int, default=2)
+    pcamp_run.add_argument("--min-delta", type=float, default=0.0)
+    pcamp_run.add_argument("--max-tokens", type=int, default=1024)
+    pcamp_run.add_argument("--temperature", type=float, default=0.0)
+    pcamp_run.add_argument("--provider", default=None)
+    pcamp_run.add_argument("--model", default=None)
+    pcamp_run.add_argument("--log", default=None)
+    pcamp_run.add_argument("--json", action="store_true")
+    pcamp_run.set_defaults(func=_cmd_campaign_run)
 
     pp = sub.add_parser("plugin", help="list and inspect plugins, hooks, and providers")
     pp_sub = pp.add_subparsers(dest="plugin_cmd", required=True)

@@ -11,6 +11,8 @@ from somm_core.graders import (
 from somm_core.models import (
     Call,
     CallOutcome,
+    Campaign,
+    CampaignEvent,
     Dataset,
     DatasetItem,
     Decision,
@@ -60,6 +62,8 @@ __all__ = [
     "current_schema_version",
     "Call",
     "CallOutcome",
+    "Campaign",
+    "CampaignEvent",
     "Dataset",
     "DatasetItem",
     "Decision",

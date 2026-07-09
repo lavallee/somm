@@ -17,6 +17,8 @@ from pathlib import Path
 
 from somm_core.models import (
     Call,
+    Campaign,
+    CampaignEvent,
     Dataset,
     DatasetItem,
     Decision,
@@ -1005,6 +1007,219 @@ class Repository:
                 params,
             ).fetchall()
         return [self._eval_receipt_row(row) for row in rows]
+
+    # Campaigns ---------------------------------------------------------------
+
+    @staticmethod
+    def _campaign_row(row) -> Campaign:
+        return Campaign(
+            id=row[0],
+            project=row[1],
+            workload_id=row[2],
+            dataset_id=row[3],
+            name=row[4],
+            metric=row[5],
+            direction=row[6],
+            threshold=row[7],
+            token_budget=row[8],
+            max_rounds=row[9],
+            plateau_window=row[10],
+            min_delta=row[11],
+            status=row[12],
+            best_score=row[13],
+            total_tokens=row[14],
+            total_cost_usd=row[15],
+            metadata=json.loads(row[16]) if row[16] else None,
+            created_at=datetime.fromisoformat(row[17]) if row[17] else None,
+            updated_at=datetime.fromisoformat(row[18]) if row[18] else None,
+            completed_at=datetime.fromisoformat(row[19]) if row[19] else None,
+        )
+
+    @staticmethod
+    def _campaign_event_row(row) -> CampaignEvent:
+        return CampaignEvent(
+            id=row[0],
+            campaign_id=row[1],
+            sequence=row[2],
+            run_id=row[3],
+            event_type=row[4],
+            action=row[5],
+            metric_score=row[6],
+            threshold=row[7],
+            tokens_in=row[8],
+            tokens_out=row[9],
+            total_tokens=row[10],
+            cost_usd=row[11],
+            payload=json.loads(row[12]),
+            created_at=datetime.fromisoformat(row[13]) if row[13] else None,
+        )
+
+    def create_campaign(
+        self,
+        *,
+        project: str,
+        workload_id: str,
+        dataset_id: str | None,
+        name: str,
+        metric: str,
+        direction: str,
+        threshold: float,
+        token_budget: int | None,
+        max_rounds: int,
+        plateau_window: int,
+        min_delta: float,
+        metadata: dict | None = None,
+    ) -> Campaign:
+        campaign_id = str(uuid.uuid4())
+        payload_json = json.dumps(metadata, sort_keys=True) if metadata is not None else None
+        with self._open() as conn:
+            conn.execute(
+                """
+                INSERT INTO campaigns (
+                    id, project, workload_id, dataset_id, name, metric, direction,
+                    threshold, token_budget, max_rounds, plateau_window,
+                    min_delta, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    campaign_id,
+                    project,
+                    workload_id,
+                    dataset_id,
+                    name,
+                    metric,
+                    direction,
+                    threshold,
+                    token_budget,
+                    max_rounds,
+                    plateau_window,
+                    min_delta,
+                    payload_json,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT id, project, workload_id, dataset_id, name, metric,
+                       direction, threshold, token_budget, max_rounds,
+                       plateau_window, min_delta, status, best_score,
+                       total_tokens, total_cost_usd, metadata_json, created_at,
+                       updated_at, completed_at
+                FROM campaigns WHERE id = ?
+                """,
+                (campaign_id,),
+            ).fetchone()
+        return self._campaign_row(row)
+
+    def finish_campaign(
+        self,
+        campaign_id: str,
+        *,
+        status: str,
+        best_score: float | None,
+        total_tokens: int,
+        total_cost_usd: float,
+    ) -> Campaign:
+        with self._open() as conn:
+            conn.execute(
+                """
+                UPDATE campaigns
+                   SET status = ?,
+                       best_score = ?,
+                       total_tokens = ?,
+                       total_cost_usd = ?,
+                       updated_at = CURRENT_TIMESTAMP,
+                       completed_at = CURRENT_TIMESTAMP
+                 WHERE id = ?
+                """,
+                (status, best_score, total_tokens, total_cost_usd, campaign_id),
+            )
+            row = conn.execute(
+                """
+                SELECT id, project, workload_id, dataset_id, name, metric,
+                       direction, threshold, token_budget, max_rounds,
+                       plateau_window, min_delta, status, best_score,
+                       total_tokens, total_cost_usd, metadata_json, created_at,
+                       updated_at, completed_at
+                FROM campaigns WHERE id = ?
+                """,
+                (campaign_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"campaign {campaign_id!r} not found")
+        return self._campaign_row(row)
+
+    def record_campaign_event(
+        self,
+        campaign_id: str,
+        *,
+        sequence: int,
+        event_type: str,
+        action: str,
+        payload: dict,
+        run_id: str | None = None,
+        metric_score: float | None = None,
+        threshold: float | None = None,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+        total_tokens: int = 0,
+        cost_usd: float = 0.0,
+    ) -> CampaignEvent:
+        event_id = str(uuid.uuid4())
+        payload_json = json.dumps(payload, sort_keys=True)
+        with self._open() as conn:
+            conn.execute(
+                """
+                INSERT INTO campaign_events (
+                    id, campaign_id, sequence, run_id, event_type, action,
+                    metric_score, threshold, tokens_in, tokens_out,
+                    total_tokens, cost_usd, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    campaign_id,
+                    sequence,
+                    run_id,
+                    event_type,
+                    action,
+                    metric_score,
+                    threshold,
+                    tokens_in,
+                    tokens_out,
+                    total_tokens,
+                    cost_usd,
+                    payload_json,
+                ),
+            )
+            conn.execute(
+                "UPDATE campaigns SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (campaign_id,),
+            )
+            row = conn.execute(
+                """
+                SELECT id, campaign_id, sequence, run_id, event_type, action,
+                       metric_score, threshold, tokens_in, tokens_out,
+                       total_tokens, cost_usd, payload_json, created_at
+                FROM campaign_events WHERE id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+        return self._campaign_event_row(row)
+
+    def campaign_events(self, campaign_id: str) -> list[CampaignEvent]:
+        with self._open() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, campaign_id, sequence, run_id, event_type, action,
+                       metric_score, threshold, tokens_in, tokens_out,
+                       total_tokens, cost_usd, payload_json, created_at
+                FROM campaign_events
+                WHERE campaign_id = ?
+                ORDER BY sequence, created_at, id
+                """,
+                (campaign_id,),
+            ).fetchall()
+        return [self._campaign_event_row(row) for row in rows]
 
     # Prompts -----------------------------------------------------------------
 
