@@ -91,3 +91,34 @@ def test_promote_call_to_dataset_rejects_project_mismatch(tmp_path):
 
     with pytest.raises(ValueError, match="belongs to project"):
         repo.promote_call_to_dataset(call_id, "golden", project="other")
+
+
+def test_record_and_filter_eval_receipts(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl = repo.register_workload("extract", "datasets")
+    call_id = _write_call(repo, wl.id)
+    repo.write_sample(call_id, "prompt body", "expected response")
+    dataset, item = repo.promote_call_to_dataset(call_id, "golden", project="datasets")
+    eval_id = repo.record_eval_result(
+        call_id=call_id,
+        gold_model=f"dataset:{dataset.id}",
+        structural_score=1.0,
+    )
+
+    receipt = repo.record_eval_receipt(
+        receipt_type="dataset_run",
+        eval_result_id=eval_id,
+        run_id="run-1",
+        call_id=call_id,
+        dataset_id=dataset.id,
+        dataset_item_id=item.id,
+        source_call_id=item.source_call_id,
+        score=1.0,
+        threshold=0.8,
+        payload={"ok": True},
+    )
+
+    assert receipt.eval_result_id == eval_id
+    assert receipt.payload == {"ok": True}
+    assert repo.eval_receipts(run_id="run-1") == [receipt]
+    assert repo.eval_receipts(dataset_id=dataset.id, receipt_type="dataset_run") == [receipt]

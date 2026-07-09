@@ -20,8 +20,8 @@ def test_v10_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 16
-        assert current_schema_version(conn) == 16
+        assert upgraded == SCHEMA_VERSION == 17
+        assert current_schema_version(conn) == 17
         tables = {
             row[0]
             for row in conn.execute(
@@ -60,8 +60,8 @@ def test_v11_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 16
-        assert current_schema_version(conn) == 16
+        assert upgraded == SCHEMA_VERSION == 17
+        assert current_schema_version(conn) == 17
         call_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
         }
@@ -103,8 +103,8 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 16
-        assert current_schema_version(conn) == 16
+        assert upgraded == SCHEMA_VERSION == 17
+        assert current_schema_version(conn) == 17
 
         tables = {
             row[0]
@@ -151,8 +151,8 @@ def test_v13_database_upgrades_to_v14_prompt_label_weights(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 16
-        assert current_schema_version(conn) == 16
+        assert upgraded == SCHEMA_VERSION == 17
+        assert current_schema_version(conn) == 17
         label_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(prompt_labels)").fetchall()
         }
@@ -173,8 +173,8 @@ def test_v14_database_upgrades_to_v15_workload_policy(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 16
-        assert current_schema_version(conn) == 16
+        assert upgraded == SCHEMA_VERSION == 17
+        assert current_schema_version(conn) == 17
         workload_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
@@ -195,8 +195,8 @@ def test_v15_database_upgrades_to_v16_datasets(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 16
-        assert current_schema_version(conn) == 16
+        assert upgraded == SCHEMA_VERSION == 17
+        assert current_schema_version(conn) == 17
         tables = {
             row[0]
             for row in conn.execute(
@@ -238,6 +238,60 @@ def test_v15_database_upgrades_to_v16_datasets(tmp_path):
         }
         assert "idx_datasets_project_workload_name" in indexes
         assert "idx_dataset_items_dataset" in indexes
+
+
+def test_v16_database_upgrades_to_v17_eval_receipts(tmp_path):
+    db_path = tmp_path / "v16.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 16:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        assert current_schema_version(conn) == 16
+
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 17
+        assert current_schema_version(conn) == 17
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "eval_receipts" in tables
+
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(eval_receipts)").fetchall()
+        }
+        assert {
+            "id",
+            "eval_result_id",
+            "run_id",
+            "receipt_type",
+            "call_id",
+            "dataset_id",
+            "dataset_item_id",
+            "candidate_a_call_id",
+            "candidate_b_call_id",
+            "winner",
+            "score",
+            "threshold",
+            "payload_json",
+            "created_at",
+        }.issubset(columns)
+
+        indexes = {
+            row[1]
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        assert "idx_eval_receipts_eval_result" in indexes
+        assert "idx_eval_receipts_pair" in indexes
 
 
 def test_migration_and_version_stamp_are_atomic(tmp_path, monkeypatch):

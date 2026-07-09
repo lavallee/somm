@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from somm.evals import run_dataset_eval
+from somm.evals import grade_pairwise_ab, run_dataset_eval
 from somm_core.models import Call, Outcome, SommResult
 from somm_core.repository import Repository
 
@@ -86,7 +86,9 @@ def test_run_dataset_eval_passes_and_records_eval_result(tmp_path):
     )
 
     assert result.passed is True
+    assert result.run_id
     assert result.n_passed == 1
+    assert result.items[0].eval_result_id is not None
     assert result.mean_score == 1.0
     with repo._open() as conn:
         row = conn.execute(
@@ -95,6 +97,10 @@ def test_run_dataset_eval_passes_and_records_eval_result(tmp_path):
     assert row[0] == f"dataset:{dataset.id}"
     assert row[1] == 1.0
     assert "somm eval run" in row[2]
+    receipts = repo.eval_receipts(run_id=result.run_id)
+    assert len(receipts) == 1
+    assert receipts[0].eval_result_id == result.items[0].eval_result_id
+    assert receipts[0].payload["dataset_item_id"] == result.items[0].item_id
 
 
 def test_run_dataset_eval_fails_below_threshold(tmp_path):
@@ -134,3 +140,28 @@ def test_run_dataset_eval_reports_generation_errors(tmp_path):
     assert result.passed is False
     assert result.n_errors == 1
     assert "provider down" in result.items[0].error
+
+
+def test_grade_pairwise_ab_records_receipt(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl, dataset, _item = _seed_dataset(repo)
+    item = repo.dataset_items(dataset.id)[0]
+    candidate_a = _generated(repo, "eval-test", wl.id, "gold response")
+    candidate_b = _generated(repo, "eval-test", wl.id, "wrong answer")
+
+    result = grade_pairwise_ab(
+        repo,
+        item=item,
+        candidate_a=candidate_a,
+        candidate_b=candidate_b,
+    )
+
+    assert result.winner == "a"
+    assert result.score_a == 1.0
+    assert result.score_b < result.score_a
+    receipts = repo.eval_receipts(receipt_type="pairwise_ab")
+    assert len(receipts) == 1
+    assert receipts[0].id == result.receipt_id
+    assert receipts[0].candidate_a_call_id == candidate_a.call_id
+    assert receipts[0].candidate_b_call_id == candidate_b.call_id
+    assert receipts[0].payload["winner"] == "a"

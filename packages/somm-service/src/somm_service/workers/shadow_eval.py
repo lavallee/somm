@@ -301,6 +301,7 @@ class ShadowEvalWorker:
         notes.extend({"note": n} for n in outcome.notes)
         if outcome.judge_reason is not None:
             notes.append({"judge": outcome.judge_reason})
+        eval_result_id = None
         with self.repo._open() as conn:
             conn.execute(
                 """
@@ -324,6 +325,37 @@ class ShadowEvalWorker:
                     json.dumps(notes),
                     call_row["call_id"],
                 ),
+            )
+            row = conn.execute(
+                "SELECT id FROM eval_results WHERE call_id = ?",
+                (call_row["call_id"],),
+            ).fetchone()
+            eval_result_id = int(row[0]) if row else None
+        if eval_result_id is not None:
+            score = (
+                outcome.judge_score
+                if outcome.judge_score is not None
+                else outcome.structural_score
+                if outcome.structural_score is not None
+                else outcome.text_similarity_score
+            )
+            self.repo.record_eval_receipt(
+                receipt_type="shadow_eval",
+                eval_result_id=eval_result_id,
+                call_id=call_row["call_id"],
+                score=score,
+                payload={
+                    "source": "shadow_eval",
+                    "call_id": call_row["call_id"],
+                    "gold_provider": cfg.gold_provider,
+                    "gold_model": cfg.gold_model,
+                    "gold_response_hash": outcome.gold_response_hash,
+                    "structural_score": outcome.structural_score,
+                    "text_similarity_score": outcome.text_similarity_score,
+                    "judge_score": outcome.judge_score,
+                    "judge": outcome.judge_reason,
+                    "notes": notes,
+                },
             )
 
     # ------------------------------------------------------------------

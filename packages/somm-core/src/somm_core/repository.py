@@ -11,6 +11,7 @@ import math
 import os
 import sqlite3
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from somm_core.models import (
     Dataset,
     DatasetItem,
     Decision,
+    EvalReceipt,
     Outcome,
     PrivacyClass,
     Prompt,
@@ -893,6 +895,116 @@ class Repository:
                 ),
             )
             return int(cursor.lastrowid)
+
+    @staticmethod
+    def _eval_receipt_row(row) -> EvalReceipt:
+        return EvalReceipt(
+            id=row[0],
+            eval_result_id=row[1],
+            run_id=row[2],
+            receipt_type=row[3],
+            call_id=row[4],
+            dataset_id=row[5],
+            dataset_item_id=row[6],
+            source_call_id=row[7],
+            candidate_a_call_id=row[8],
+            candidate_b_call_id=row[9],
+            winner=row[10],
+            score=row[11],
+            threshold=row[12],
+            payload=json.loads(row[13]),
+            created_at=datetime.fromisoformat(row[14]) if row[14] else None,
+        )
+
+    def record_eval_receipt(
+        self,
+        *,
+        receipt_type: str,
+        payload: dict,
+        eval_result_id: int | None = None,
+        run_id: str | None = None,
+        call_id: str | None = None,
+        dataset_id: str | None = None,
+        dataset_item_id: str | None = None,
+        source_call_id: str | None = None,
+        candidate_a_call_id: str | None = None,
+        candidate_b_call_id: str | None = None,
+        winner: str | None = None,
+        score: float | None = None,
+        threshold: float | None = None,
+    ) -> EvalReceipt:
+        receipt_id = str(uuid.uuid4())
+        payload_json = json.dumps(payload, sort_keys=True)
+        with self._open() as conn:
+            conn.execute(
+                """
+                INSERT INTO eval_receipts (
+                    id, eval_result_id, run_id, receipt_type, call_id,
+                    dataset_id, dataset_item_id, source_call_id,
+                    candidate_a_call_id, candidate_b_call_id,
+                    winner, score, threshold, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt_id,
+                    eval_result_id,
+                    run_id,
+                    receipt_type,
+                    call_id,
+                    dataset_id,
+                    dataset_item_id,
+                    source_call_id,
+                    candidate_a_call_id,
+                    candidate_b_call_id,
+                    winner,
+                    score,
+                    threshold,
+                    payload_json,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id, eval_result_id, run_id, receipt_type, call_id, "
+                "dataset_id, dataset_item_id, source_call_id, "
+                "candidate_a_call_id, candidate_b_call_id, winner, score, "
+                "threshold, payload_json, created_at "
+                "FROM eval_receipts WHERE id = ?",
+                (receipt_id,),
+            ).fetchone()
+        return self._eval_receipt_row(row)
+
+    def eval_receipts(
+        self,
+        *,
+        run_id: str | None = None,
+        call_id: str | None = None,
+        dataset_id: str | None = None,
+        receipt_type: str | None = None,
+    ) -> list[EvalReceipt]:
+        clauses = []
+        params: list[object] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if call_id is not None:
+            clauses.append("call_id = ?")
+            params.append(call_id)
+        if dataset_id is not None:
+            clauses.append("dataset_id = ?")
+            params.append(dataset_id)
+        if receipt_type is not None:
+            clauses.append("receipt_type = ?")
+            params.append(receipt_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT id, eval_result_id, run_id, receipt_type, call_id, "
+                "dataset_id, dataset_item_id, source_call_id, "
+                "candidate_a_call_id, candidate_b_call_id, winner, score, "
+                "threshold, payload_json, created_at "
+                f"FROM eval_receipts {where} ORDER BY created_at, id",
+                params,
+            ).fetchall()
+        return [self._eval_receipt_row(row) for row in rows]
 
     # Prompts -----------------------------------------------------------------
 

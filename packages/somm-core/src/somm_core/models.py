@@ -161,6 +161,25 @@ class DatasetItem:
     created_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class EvalReceipt:
+    id: str
+    receipt_type: str
+    payload: dict[str, Any]
+    eval_result_id: int | None = None
+    run_id: str | None = None
+    call_id: str | None = None
+    dataset_id: str | None = None
+    dataset_item_id: str | None = None
+    source_call_id: str | None = None
+    candidate_a_call_id: str | None = None
+    candidate_b_call_id: str | None = None
+    winner: str | None = None
+    score: float | None = None
+    threshold: float | None = None
+    created_at: datetime | None = None
+
+
 @dataclass(slots=True)
 class Call:
     """A row in `calls`. Immutable after insert — late data goes in `call_updates`."""

@@ -208,7 +208,9 @@ def test_shadow_judge_scores_binary_rubric(tmp_path):
     )
     write_intel(repo, "gold", "gold-m", 1.0, 4.0, None, None, "test")
     write_intel(repo, "judge", "judge-m", 1.0, 1.0, None, None, "test")
-    _insert_call(repo, wl.id, cfg.project, prompt_body="prompt", response_body="candidate")
+    call_id = _insert_call(
+        repo, wl.id, cfg.project, prompt_body="prompt", response_body="candidate"
+    )
 
     judge = _JudgeProvider()
     worker = ShadowEvalWorker(repo, providers=[_GoldProvider("gold"), judge])
@@ -226,6 +228,10 @@ def test_shadow_judge_scores_binary_rubric(tmp_path):
     judge_receipt = [item["judge"] for item in reason if "judge" in item][0]
     assert judge_receipt["mode"] == "single"
     assert judge_receipt["criteria"][1]["pass"] is False
+    receipts = repo.eval_receipts(call_id=call_id, receipt_type="shadow_eval")
+    assert len(receipts) == 1
+    assert receipts[0].payload["judge"]["mode"] == "single"
+    assert receipts[0].score == 0.5
 
 
 def test_shadow_judge_panel_majority_vote(tmp_path):
@@ -248,7 +254,9 @@ def test_shadow_judge_panel_majority_vote(tmp_path):
             },
         },
     )
-    _insert_call(repo, wl.id, cfg.project, prompt_body="prompt", response_body="candidate")
+    call_id = _insert_call(
+        repo, wl.id, cfg.project, prompt_body="prompt", response_body="candidate"
+    )
     pass_vote = {"criteria": [{"name": "correctness", "pass": True, "reason": "ok"}]}
     fail_vote = {"criteria": [{"name": "correctness", "pass": False, "reason": "bad"}]}
 
@@ -273,6 +281,9 @@ def test_shadow_judge_panel_majority_vote(tmp_path):
     assert receipt["mode"] == "panel"
     assert receipt["criteria"][0]["votes_for"] == 2
     assert len(receipt["judges"]) == 3
+    receipts = repo.eval_receipts(call_id=call_id, receipt_type="shadow_eval")
+    assert len(receipts) == 1
+    assert receipts[0].payload["judge"]["mode"] == "panel"
 
 
 def test_private_workloads_are_skipped(tmp_path):
