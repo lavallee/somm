@@ -4,8 +4,6 @@
 -- routing. This table records post-change snapshots for audit, diff, and
 -- forward-only rollback.
 
-BEGIN;
-
 CREATE TABLE workload_revisions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     workload_id TEXT NOT NULL REFERENCES workloads(id),
@@ -20,4 +18,3 @@ CREATE UNIQUE INDEX idx_workload_revisions_wl_rev
 CREATE INDEX idx_workload_revisions_wl
     ON workload_revisions(workload_id, created_at);
 
-COMMIT;

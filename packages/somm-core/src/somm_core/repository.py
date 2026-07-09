@@ -437,7 +437,14 @@ class Repository:
         config: dict,
         created_by: str | None = None,
     ) -> int:
-        """Append a workload config snapshot and return its revision number."""
+        """Append a workload config snapshot and return its revision number.
+
+        Low-level primitive: this records HISTORY only and does NOT update the
+        live workloads row the router reads. Calling it directly with a config
+        that differs from the live row makes current_workload_revision() and the
+        router disagree. Prefer set_workload_constraints / set_shadow_config /
+        set_workload_policy, which dual-write the live row and a revision.
+        """
         with self._open() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:

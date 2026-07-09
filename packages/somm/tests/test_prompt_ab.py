@@ -173,3 +173,20 @@ def test_end_to_end_weighted_prompts_bind_selected_prompt_ids(tmp_path):
     assert set(counts) == {p1.id, p2.id}
     assert 240 <= counts[p1.id] <= 285
     assert 15 <= counts[p2.id] <= 60
+
+
+def test_set_label_weights_rejects_non_finite(tmp_path):
+    import math
+
+    import pytest
+
+    repo = Repository(tmp_path / "calls.sqlite")
+    try:
+        workload = repo.register_workload(name="claims", project="prompt-ab")
+        p1 = register_prompt(repo, workload.id, "body one")
+        p2 = register_prompt(repo, workload.id, "body two")
+        for bad in (math.nan, math.inf):
+            with pytest.raises(ValueError):
+                set_label_weights(repo, workload.id, "prod", {p1.version: bad, p2.version: 10})
+    finally:
+        repo.close()

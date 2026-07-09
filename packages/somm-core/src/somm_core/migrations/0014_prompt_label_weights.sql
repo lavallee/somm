@@ -4,6 +4,4 @@
 -- weighted distribution keyed by prompt id. prompt_id is retained as the
 -- deterministic no-bucket fallback for weighted labels.
 
-BEGIN;
 ALTER TABLE prompt_labels ADD COLUMN weights_json TEXT;
-COMMIT;

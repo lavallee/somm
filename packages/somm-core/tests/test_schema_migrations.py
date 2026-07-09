@@ -179,3 +179,48 @@ def test_v14_database_upgrades_to_v15_workload_policy(tmp_path):
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
         assert "policy_json" in workload_columns
+
+
+def test_migration_and_version_stamp_are_atomic(tmp_path, monkeypatch):
+    """A migration that fails partway must leave neither the schema change nor
+    the version bump — otherwise a re-run hits a duplicate ADD COLUMN and wedges
+    the DB. The DDL and the schema_version stamp share one transaction."""
+    import somm_core.schema as schema_mod
+
+    db = tmp_path / "atomic.sqlite"
+    conn = sqlite3.connect(db)
+    # Bring it to a known good state first.
+    ensure_schema(conn)
+    good_version = current_schema_version(conn)
+
+    # Inject a fake pending migration whose second statement fails.
+    bad_version = good_version + 1
+    bad_sql = (
+        "CREATE TABLE _atomic_probe (x INTEGER);\n"
+        "INSERT INTO _atomic_probe (nonexistent_column) VALUES (1);\n"  # fails
+    )
+
+    class _FakePath:
+        def read_text(self):
+            return bad_sql
+
+    orig = schema_mod._list_migrations
+    monkeypatch.setattr(
+        schema_mod, "_list_migrations", lambda: [(bad_version, _FakePath())]
+    )
+    try:
+        raised = False
+        try:
+            ensure_schema(conn)
+        except Exception:
+            raised = True
+        assert raised
+    finally:
+        monkeypatch.setattr(schema_mod, "_list_migrations", orig)
+
+    # The failed migration rolled back entirely: version unchanged AND the
+    # half-created probe table is gone.
+    assert current_schema_version(conn) == good_version
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "_atomic_probe" not in tables
+    conn.close()

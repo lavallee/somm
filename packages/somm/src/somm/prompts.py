@@ -30,6 +30,7 @@ soft (`retired_at` timestamp) so historical calls stay analyzable.
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -446,8 +447,10 @@ def _normalize_label_weights(
             weight = float(raw_weight)
         except (TypeError, ValueError):
             raise ValueError(f"invalid weight for {ref!r}: {raw_weight!r}") from None
-        if weight <= 0:
-            raise ValueError(f"weight for {ref!r} must be > 0")
+        # Reject NaN/Infinity: NaN slips past `<= 0` and would poison
+        # normalization (total → NaN) and persist non-standard JSON.
+        if not math.isfinite(weight) or weight <= 0:
+            raise ValueError(f"weight for {ref!r} must be a finite number > 0")
         prompt = _prompt_by_id(repo, workload_id, ref)
         if prompt is None:
             prompt = get_prompt(repo, workload_id, version=ref)
