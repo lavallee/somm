@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import shlex
 import sys
 import time
 import uuid
@@ -671,12 +672,13 @@ class SommLLM:
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
             if self.config.mode == "strict":
+                workload_arg = shlex.quote(workload)
                 raise SommStrictMode(
                     f"SOMM_WORKLOAD_UNREGISTERED\n\n"
                     f"Problem: This call used workload {workload!r}, but it is not registered.\n"
                     f"Cause: strict mode requires workload metadata before calls are logged.\n"
                     f"Fix:\n"
-                    f"  somm workload add {workload} --from-example structured-extraction\n"
+                    f"  somm workload add {workload_arg} --from-example structured-extraction\n"
                     f"  # or switch to observe mode:\n"
                     f"  export SOMM_MODE=observe\n"
                     f"Docs: docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"
@@ -1043,12 +1045,13 @@ class SommLLM:
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
             if self.config.mode == "strict":
+                workload_arg = shlex.quote(workload)
                 raise SommStrictMode(
                     f"SOMM_WORKLOAD_UNREGISTERED\n\n"
                     f"Problem: This embed call used workload {workload!r}, "
                     f"but it is not registered.\n"
                     f"Cause: strict mode requires workload metadata.\n"
-                    f"Fix: somm workload add {workload} --from-example structured-extraction\n"
+                    f"Fix: somm workload add {workload_arg} --from-example structured-extraction\n"
                     f"     # or: export SOMM_MODE=observe"
                 )
             wl = self.repo.register_workload(name=workload, project=self.config.project)

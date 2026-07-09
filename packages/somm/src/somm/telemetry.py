@@ -2,7 +2,7 @@
 
 Design (Eng-E1 / Codex refinement): threads enqueue Call objects; one writer
 thread drains in short batched transactions. On repeated SQLITE_BUSY or disk
-pressure, rows spill to JSONL under `.somm/spool/`. `somm admin drain-spool`
+pressure, rows spill to JSONL under `.somm/spool/`. `somm drain-spool`
 replays the spool back into SQLite when pressure clears.
 
 Preserves zero-service hot path: library works without somm serve running.
@@ -168,7 +168,7 @@ class WriterQueue:
             self._mirror_repo.write_calls_batch(batch)
         except Exception:  # noqa: BLE001 — mirror must not poison primary path
             # Don't spill mirror failures (they'd duplicate the primary spool).
-            # Just drop; caller can re-run `somm admin drain-spool --mirror` later.
+            # Just drop; re-run with SOMM_CROSS_PROJECT=1 so future calls mirror.
             pass
 
     def _spill(self, batch: list[Call], reason: str) -> None:
@@ -188,7 +188,7 @@ class WriterQueue:
 def drain_spool(repo: Repository, spool_dir: Path) -> int:
     """Replay every .jsonl in the spool into the DB. Returns rows drained.
 
-    Called by `somm admin drain-spool` (or on service startup).
+    Called by `somm drain-spool` (or on service startup).
     Each file is processed atomically; success deletes it.
     """
     spool_dir = Path(spool_dir)

@@ -10,7 +10,7 @@ Sources:
 Writes to `model_intel` via `somm_core.pricing.write_intel`. Failures on
 any source don't poison the cache — last-good entries remain valid.
 
-Run manually: `somm admin refresh-intel`
+Run manually: `somm-serve admin refresh-intel`
 Or automatically via the service's scheduler loop (D3d).
 """
 

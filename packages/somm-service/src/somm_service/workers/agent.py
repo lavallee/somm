@@ -307,7 +307,7 @@ class AgentWorker:
                         },
                         expected_impact=(
                             f"~{100 * (1 - (cand_in + cand_out) / max(0.001, cur_in + cur_out)):.0f}% "
-                            f"lower cost; quality untested — run `somm admin compare` to verify"
+                            f"lower cost; quality untested — run `somm compare <prompt> --models ...` to verify"
                         ),
                         confidence=0.4,  # untested quality → low confidence
                     )
