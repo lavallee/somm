@@ -6,6 +6,39 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — the plugin loop (Phase 1)
+
+- **Named-phase hook bus**: `somm.hooks` grows three lifecycle phases —
+  `pre_call` (synchronous; may rewrite the request or return a
+  `ShortCircuit` to serve the call without a provider — cache / guardrail
+  territory), `post_call` (observe-only, inline), and `post_process`
+  (observe-only, dispatched to a background worker so graders/exporters
+  add no caller latency). `register_hook(phase, fn, priority)` with
+  WordPress-style integer priority; sync + async hooks; every hook is
+  exception-isolated and gets its own copy of the event; events carry
+  `schema_version=1`. `add_call_observer`/`notify_call_observers` keep
+  working. `somm.hooks` and `somm.plugins` entry-point groups load once
+  per process.
+- **Hooks fire on the call path**: `generate`/`stream`/`embed` fire all
+  three phases. The no-hooks path is byte-identical and allocates nothing
+  extra (guarded by an O(1) `has_hooks` check). A short-circuit records a
+  normal telemetry row and, because it spends nothing, is allowed even for
+  a workload at its daily budget cap.
+- **Provider entry-point registry**: the long-advertised `somm.providers`
+  entry-point group is now real — built-ins are `ProviderSpec`s and third
+  parties register a spec (skipped-with-warning on import failure,
+  built-ins winning name collisions). The default chain, `SOMM_PROVIDER_ORDER`,
+  and `full=True` behavior are unchanged.
+- **Four reference plugins** (`somm.plugins`, opt-in via `register()`):
+  a response cache (`pre_call` short-circuit + `wrap(llm)` to populate),
+  outbound PII/secret redaction (`pre_call`), a Slack/webhook notifier
+  (`post_process`), and an OpenTelemetry span exporter (`post_process`,
+  behind the new `somm[otel]` extra).
+- **`somm plugin list` / `somm plugin info`** show reference plugins,
+  active hooks, and the provider picture. `docs/plugins.md` is the
+  plugin-author guide (phases, priorities, event schema, registration,
+  worked examples, custom providers).
+
 ### Fixed — the scheduler's clock
 
 - **Scheduler timestamp bug**: `due_at`/`locked_until` were written in

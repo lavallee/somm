@@ -336,6 +336,8 @@ def test_corrected_command_hints_parse_against_real_parsers():
         ["workload", "add", "orders", "--from-example", "freeform"],
         ["workload", "list"],
         ["workload", "show", "orders"],
+        ["plugin", "list"],
+        ["plugin", "info", "cache"],
         ["frontier", "--workload", "orders"],
         ["compare", "hello", "--models", "ollama/g"],
         ["doctor", "--project", "my_project"],

@@ -467,6 +467,7 @@ your own process with `SOMM_INPROCESS_WORKERS=1`.
 - 🗺️ [**ROADMAP.md**](./ROADMAP.md) — what's next, what's deferred, what's not planned
 - 📜 [**CHANGELOG.md**](./CHANGELOG.md) — release log
 - 🔧 [**Tool calling**](./docs/tool-calling.md) — neutral schema + per-provider adapters
+- [**Plugins and hooks**](./docs/plugins.md) — hook phases, reference plugins, and provider entry points
 - 🖼️ [**Multimodal prompts**](./docs/multimodal.md) — image blocks +
   capability-aware routing
 - 🍷 [**Sommelier skill**](./packages/somm-skill/src/somm_skill/SOMMELIER.md) —

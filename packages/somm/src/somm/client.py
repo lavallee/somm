@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import re
 import shlex
 import sys
 import threading
@@ -40,24 +39,20 @@ from somm_core.registry import fleet_db_paths, register_project
 from somm_core.repository import Repository
 
 from somm import hooks
+from somm._redaction import scrub_text
 from somm.errors import SommProvidersExhausted
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt
-from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import (
     SommEmbedRequest,
     SommProvider,
     SommRequest,
 )
-from somm.providers.claude_cli import ClaudeCLIProvider
-from somm.providers.codex_cli import CodexCLIProvider
-from somm.providers.deepseek import DeepSeekProvider
-from somm.providers.gemini import GeminiProvider
-from somm.providers.minimax import MinimaxProvider
-from somm.providers.ollama import OllamaProvider
-from somm.providers.openai import OpenAIProvider
-from somm.providers.openrouter import OpenRouterProvider
-from somm.providers.perplexity import PerplexityProvider
+from somm.providers.registry import (
+    BUILTIN_PROVIDER_SPECS,
+    ProviderSpec,
+    load_entrypoint_provider_specs,
+)
 from somm.routing import ProviderHealthTracker, Router
 from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
@@ -228,6 +223,7 @@ def _call_event(
     temperature: float | None = None,
     max_tokens: int | None = None,
     error_kind: str | None = None,
+    short_circuited: str | None = None,
 ) -> dict:
     """Assemble the observer event for one completed call.
 
@@ -249,7 +245,14 @@ def _call_event(
         "temperature": temperature,
         "max_tokens": max_tokens,
         "error_kind": error_kind,
+        "short_circuited": short_circuited,
     }
+
+
+def _fire_call_hooks(event: dict) -> None:
+    stamped = hooks.stamp_event(event)
+    hooks.fire_post_call(stamped)
+    hooks.fire_post_process(stamped)
 
 
 def build_default_providers(
@@ -267,69 +270,62 @@ def build_default_providers(
     server so both expose the identical chain.
 
     ``full=True`` returns EVERY available provider, ignoring both
-    SOMM_PROVIDER_ORDER and the pinned-only exclusions (CLI executors,
-    perplexity's last-place rule). Routing preference is about which
-    provider serves production traffic; explicit-selection surfaces —
-    shadow gold models, somm_compare, somm_replay — must reach anything
-    that's configured.
-    """
-    available: dict[str, SommProvider] = {}
-    available["ollama"] = OllamaProvider(
-        base_url=config.ollama_url,
-        default_model=config.ollama_model,
-        enable_think=config.ollama_think,
-        keep_alive=config.ollama_keep_alive,
-    )
-    # CLI executors — subscription-seat `claude -p` / `codex exec`, gated on the binary being
-    # present. Not in default_order (so they don't change existing projects' routing); reach
-    # them by setting provider_order (SOMM_PROVIDER_ORDER) or pinning generate(provider=...).
-    import shutil
+    SOMM_PROVIDER_ORDER and the pinned-only exclusions (CLI executors).
+    Routing preference is about which provider serves production traffic;
+    explicit-selection surfaces — shadow gold models, somm_compare,
+    somm_replay — must reach anything that's configured.
 
-    if shutil.which("claude"):
-        available["claude-cli"] = ClaudeCLIProvider(timeout=max(config.http_timeout, 600.0))
-    if shutil.which("codex"):
-        available["codex-cli"] = CodexCLIProvider(timeout=max(config.http_timeout, 600.0))
-    if config.openrouter_api_key:
-        available["openrouter"] = OpenRouterProvider(
-            api_key=config.openrouter_api_key,
-            roster=config.openrouter_roster,
-            tracker=tracker,
-        )
-    if config.minimax_api_key:
-        available["minimax"] = MinimaxProvider(
-            api_key=config.minimax_api_key,
-            default_model=config.minimax_model,
-            timeout=config.http_timeout,
-        )
-    if config.deepseek_api_key:
-        available["deepseek"] = DeepSeekProvider(
-            api_key=config.deepseek_api_key,
-            default_model=config.deepseek_model,
-            timeout=config.http_timeout,
-        )
-    if config.anthropic_api_key:
-        available["anthropic"] = AnthropicProvider(
-            api_key=config.anthropic_api_key,
-            default_model=config.anthropic_model,
-        )
-    if config.openai_api_key:
-        available["openai"] = OpenAIProvider(
-            api_key=config.openai_api_key,
-            base_url=config.openai_base_url,
-            default_model=config.openai_model,
-            timeout=config.http_timeout,
-        )
-    if config.gemini_api_key:
-        available["gemini"] = GeminiProvider(
-            api_key=config.gemini_api_key,
-            default_model=config.gemini_model,
-        )
-    if config.perplexity_api_key:
-        available["perplexity"] = PerplexityProvider(
-            api_key=config.perplexity_api_key,
-            default_model=config.perplexity_model,
-            timeout=max(config.http_timeout, 300.0),
-        )
+    Third-party entry-point providers are appended after built-ins in the
+    default routing chain when they declare ``default_order_rank``; ranked
+    plugins are ordered by ``(rank, name)`` for deterministic routing.
+    """
+    logger = logging.getLogger("somm.providers")
+    specs: list[ProviderSpec] = list(BUILTIN_PROVIDER_SPECS)
+    builtin_names = {spec.name for spec in specs}
+    seen_names = set(builtin_names)
+    plugin_specs: list[ProviderSpec] = []
+    for spec in load_entrypoint_provider_specs():
+        if spec.name in builtin_names:
+            logger.warning("skipping provider spec %r: provider name is built in", spec.name)
+            continue
+        if spec.name in seen_names:
+            logger.warning("skipping provider spec %r: provider name is already registered", spec.name)
+            continue
+        seen_names.add(spec.name)
+        plugin_specs.append(spec)
+    specs.extend(plugin_specs)
+
+    available: dict[str, SommProvider] = {}
+    spec_by_name: dict[str, ProviderSpec] = {}
+    for spec in specs:
+        try:
+            provider = spec.factory(config, tracker)
+        except Exception as exc:  # noqa: BLE001 - provider plugins must not break startup
+            logger.warning("skipping provider %r: factory failed: %s", spec.name, exc)
+            continue
+        if provider is None:
+            continue
+        if not isinstance(provider, SommProvider):
+            logger.warning(
+                "skipping provider %r: factory returned non-SommProvider %s",
+                spec.name,
+                type(provider).__name__,
+            )
+            continue
+        # The provider's own .name must match the spec name the registry
+        # keyed/collision-checked on — otherwise a plugin spec "acme" could
+        # return a provider named "ollama" and corrupt health tracking,
+        # telemetry attribution, and generate(provider="acme") lookup.
+        actual_name = getattr(provider, "name", None)
+        if actual_name != spec.name:
+            logger.warning(
+                "skipping provider %r: factory returned a provider named %r",
+                spec.name,
+                actual_name,
+            )
+            continue
+        available[spec.name] = provider
+        spec_by_name[spec.name] = spec
 
     if full:
         return list(available.values())
@@ -342,12 +338,27 @@ def build_default_providers(
         return chain if chain else list(available.values())
 
     # Default order — sovereign-first, then strong-paid (deepseek now in slot 3).
-    # perplexity is pinned-only: it sits last so it's reachable via
-    # `generate(provider="perplexity")` / `_pick_provider`, but the router
-    # only reaches it if every other provider is exhausted — search-grounded
-    # sonar models are a deliberate choice, not a routine fallback target.
-    default_order = ["ollama", "openrouter", "deepseek", "minimax", "anthropic", "gemini", "openai", "perplexity"]
-    return [available[p] for p in default_order if p in available]
+    builtin_order = [
+        spec.name
+        for spec in sorted(
+            BUILTIN_PROVIDER_SPECS,
+            key=lambda spec: spec.default_order_rank if spec.default_order_rank is not None else 10**9,
+        )
+        if spec.default_order_rank is not None
+    ]
+    plugin_order = [
+        spec.name
+        for spec in sorted(
+            plugin_specs,
+            key=lambda spec: (
+                spec.default_order_rank if spec.default_order_rank is not None else 10**9,
+                spec.name,
+            ),
+        )
+        if spec.default_order_rank is not None
+    ]
+    default_order = builtin_order + plugin_order
+    return [available[p] for p in default_order if p in available and p in spec_by_name]
 
 
 def _format_error_detail(exc: Exception, provider: str, model: str | None) -> str:
@@ -375,25 +386,9 @@ def _format_error_detail(exc: Exception, provider: str, model: str | None) -> st
     return _scrub_secrets(" | ".join(parts))[:512]
 
 
-_SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
-    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
-    re.compile(r"xox[a-z]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"AIza[0-9A-Za-z_-]{30,}"),
-)
-_GENERIC_SECRET_PATTERN = re.compile(
-    r"\b(api[_-]?key|authorization|bearer|token)([\"':= ]+)([A-Za-z0-9_.~+/-]{16,})",
-    re.IGNORECASE,
-)
-
-
 def _scrub_secrets(text: str) -> str:
     """Redact common credentials from persisted operator-facing error text."""
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub("[redacted]", text)
-    return _GENERIC_SECRET_PATTERN.sub(r"\1\2[redacted]", text)
+    return scrub_text(text)
 
 
 def _format_empty_detail(
@@ -817,9 +812,6 @@ class SommLLM:
             except Exception:
                 pass  # never let a learned-override lookup break a live call
 
-        # Fail-closed budget gate: refuse before any provider call once the
-        # workload's daily cap is reached (inert unless budget_fail_closed).
-        self._enforce_budget(wl)
         wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
 
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
@@ -844,6 +836,67 @@ class SommLLM:
             tool_choice=tool_choice,
         )
 
+        short_circuit: hooks.ShortCircuit | None = None
+        short_circuited: str | None = None
+        if hooks.has_hooks(hooks.PRE_CALL):
+            original_prompt_text = prompt_text
+            ctx = hooks.PreCallContext(
+                workload=workload,
+                prompt=prompt_text,
+                system=system,
+                messages=messages,
+                model=model,
+                provider=provider,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools or [],
+                tool_choice=tool_choice,
+                project=self.config.project,
+            )
+            short_circuit = hooks.fire_pre_call(ctx)
+            prompt_text = ctx.prompt
+            system = ctx.system
+            messages = ctx.messages
+            model = ctx.model
+            provider = ctx.provider
+            max_tokens = ctx.max_tokens
+            temperature = ctx.temperature
+            tools = ctx.tools
+            tool_choice = ctx.tool_choice
+            if messages is not None:
+                call_prompt_id = None
+            elif isinstance(prompt, Prompt) and prompt_text == original_prompt_text:
+                call_prompt_id = prompt.id
+            else:
+                call_prompt_id = self._resolve_prompt_id(wl.id, prompt_text)
+            effective_caps = _merge_caps(
+                wl.capabilities_required,
+                capabilities_required,
+                infer_capabilities(prompt_text),
+            )
+            req = SommRequest(
+                prompt=prompt_text,
+                system=system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model=model,
+                capabilities_required=effective_caps,
+                allow_empty=allow_empty,
+                tools=tools or [],
+                messages=messages,
+                tool_choice=tool_choice,
+            )
+            if short_circuit is not None:
+                short_circuited = short_circuit.source or short_circuit.provider or "hook"
+
+        # Fail-closed budget gate: refuse before any provider call once the
+        # workload's daily cap is reached (inert unless budget_fail_closed).
+        # Runs AFTER pre_call so a short-circuit (e.g. a cache hit) — which
+        # spends nothing — can still serve a capped workload; a real provider
+        # call is still refused.
+        if short_circuit is None:
+            self._enforce_budget(wl)
+
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
         outcome = Outcome.OK
@@ -857,13 +910,24 @@ class SommLLM:
         stop_reason_out: str = ""
         reasoning_content_out: str = ""
         raw_out: dict | None = None
+        cost_usd_out: float | None = None
 
         # Track whether we took the fallback path so we can fire on_fallback
         # only on the narrow "pinned failed + chain saved us" window.
         fallback_info: dict | None = None
         raise_after_record: Exception | None = None
 
-        if provider is not None:
+        if short_circuit is not None:
+            text = short_circuit.text
+            actual_provider = short_circuit.provider
+            actual_model = short_circuit.model
+            tokens_in = short_circuit.tokens_in
+            tokens_out = short_circuit.tokens_out
+            latency_ms = 0
+            tool_calls_out = _to_core_tool_calls(short_circuit.tool_calls)
+            raw_out = short_circuit.raw
+            cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+        elif provider is not None:
             chosen = self._pick_provider(provider)
             try:
                 resp = chosen.generate(req)
@@ -1002,7 +1066,11 @@ class SommLLM:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=latency_ms,
-            cost_usd=cost_for_call(self.repo, actual_provider, actual_model, tokens_in, tokens_out),
+            cost_usd=(
+                cost_usd_out
+                if cost_usd_out is not None
+                else cost_for_call(self.repo, actual_provider, actual_model, tokens_in, tokens_out)
+            ),
             call_id=call_id,
             outcome=outcome,
             error_kind=error_kind,
@@ -1039,7 +1107,7 @@ class SommLLM:
         )
         self._writer.submit(call)
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
-        hooks.notify_call_observers(_call_event(
+        _fire_call_hooks(_call_event(
             call_id=call_id, correlation_id=correlation_id,
             project=self.config.project, workload=workload,
             provider=actual_provider, model=actual_model,
@@ -1047,6 +1115,7 @@ class SommLLM:
             latency_ms=latency_ms, cost_usd=result.cost_usd,
             temperature=temperature, max_tokens=max_tokens,
             error_kind=error_kind,
+            short_circuited=short_circuited,
         ))
 
         # Fire the on_error alerter whenever the call did not succeed.
@@ -1190,10 +1259,10 @@ class SommLLM:
         # routing should look like (different models = different vector
         # spaces; cosine across them is meaningless), so it's a design
         # call we're deferring.
-        provider_obj: OllamaProvider | None = None
+        provider_obj = None
         for p in self.providers:
             if p.name == "ollama":
-                provider_obj = p  # type: ignore[assignment]
+                provider_obj = p
                 break
         if provider_obj is None:
             raise ValueError(
@@ -1211,26 +1280,66 @@ class SommLLM:
         actual_model = model or provider_obj.default_embed_model
         tokens_in = 0
         latency_ms = 0
+        raw_out: dict | None = None
 
         req = SommEmbedRequest(text=text, model=model)
-        try:
-            resp = provider_obj.embed(req)
-            embedding = resp.embedding
-            actual_model = resp.model
-            tokens_in = resp.tokens_in
-            latency_ms = resp.latency_ms
-        except Exception as exc:
-            outcome = Outcome.UPSTREAM_ERROR
-            error_kind = type(exc).__name__
-            error_detail = _format_error_detail(exc, "ollama", actual_model)
+        short_circuit: hooks.ShortCircuit | None = None
+        short_circuited: str | None = None
+        if hooks.has_hooks(hooks.PRE_CALL):
+            ctx = hooks.PreCallContext(
+                workload=workload,
+                prompt=text,
+                system="",
+                messages=None,
+                model=model,
+                provider="ollama",
+                max_tokens=0,
+                temperature=0.0,
+                tools=[],
+                tool_choice=None,
+                project=self.config.project,
+            )
+            short_circuit = hooks.fire_pre_call(ctx)
+            text = ctx.prompt
+            model = ctx.model
+            actual_model = model or provider_obj.default_embed_model
+            req = SommEmbedRequest(text=text, model=model)
+            if short_circuit is not None:
+                short_circuited = short_circuit.source or short_circuit.provider or "hook"
 
-        # Embeddings bill on input tokens only (no output). Computed once and
-        # shared across the result, the telemetry row, and the observer event.
-        cost_usd = cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0)
+        if short_circuit is not None:
+            raw_embedding = (
+                short_circuit.raw.get("embedding", [])
+                if isinstance(short_circuit.raw, dict)
+                else []
+            )
+            embedding = list(raw_embedding) if raw_embedding is not None else []
+            actual_model = short_circuit.model or actual_model
+            tokens_in = short_circuit.tokens_in
+            latency_ms = 0
+            cost_usd = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+        else:
+            try:
+                resp = provider_obj.embed(req)
+                embedding = resp.embedding
+                actual_model = resp.model
+                tokens_in = resp.tokens_in
+                latency_ms = resp.latency_ms
+                raw_out = resp.raw
+            except Exception as exc:
+                outcome = Outcome.UPSTREAM_ERROR
+                error_kind = type(exc).__name__
+                error_detail = _format_error_detail(exc, "ollama", actual_model)
+
+            # Embeddings bill on input tokens only (no output). Computed once and
+            # shared across the result, the telemetry row, and the observer event.
+            cost_usd = cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0)
+        if short_circuit is not None:
+            raw_out = short_circuit.raw
 
         result = EmbedResult(
             embedding=embedding,
-            provider="ollama",
+            provider=short_circuit.provider if short_circuit is not None else "ollama",
             model=actual_model,
             dim=len(embedding),
             tokens_in=tokens_in,
@@ -1240,6 +1349,7 @@ class SommLLM:
             outcome=outcome,
             error_kind=error_kind,
             error_detail=error_detail,
+            raw=raw_out,
         )
 
         # response_hash: sha256 of the joined float repr. Cheap dedup
@@ -1251,7 +1361,7 @@ class SommLLM:
             project=self.config.project,
             workload_id=wl.id,
             prompt_id=None,
-            provider="ollama",
+            provider=result.provider,
             model=actual_model,
             tokens_in=tokens_in,
             tokens_out=0,
@@ -1265,13 +1375,14 @@ class SommLLM:
             correlation_id=(correlation_id := hooks.current_correlation_id()),
         )
         self._writer.submit(call)
-        hooks.notify_call_observers(_call_event(
+        _fire_call_hooks(_call_event(
             call_id=call_id, correlation_id=correlation_id,
             project=self.config.project, workload=workload,
-            provider="ollama", model=actual_model,
+            provider=result.provider, model=actual_model,
             outcome=outcome.value, tokens_in=tokens_in, tokens_out=0,
             latency_ms=latency_ms, cost_usd=result.cost_usd,
             error_kind=error_kind,
+            short_circuited=short_circuited,
         ))
 
         if outcome != Outcome.OK and self._on_error is not None:
@@ -1331,9 +1442,9 @@ class SommLLM:
         from somm.providers.base import SommRequest
 
         wl = self._require_workload(workload)
-        self._enforce_budget(wl)
         wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
+        messages = None
         call_prompt_id = self._resolve_prompt_id(wl.id, prompt)
         req = SommRequest(
             prompt=prompt_text,
@@ -1343,10 +1454,61 @@ class SommLLM:
             model=model,
         )
 
-        if wait_on_exhausted is not None:
+        short_circuit: hooks.ShortCircuit | None = None
+        short_circuited: str | None = None
+        if hooks.has_hooks(hooks.PRE_CALL):
+            original_prompt_text = prompt_text
+            ctx = hooks.PreCallContext(
+                workload=workload,
+                prompt=prompt_text,
+                system=system,
+                messages=None,
+                model=model,
+                provider=provider,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=[],
+                tool_choice=None,
+                project=self.config.project,
+            )
+            short_circuit = hooks.fire_pre_call(ctx)
+            prompt_text = ctx.prompt
+            system = ctx.system
+            messages = ctx.messages
+            model = ctx.model
+            provider = ctx.provider
+            max_tokens = ctx.max_tokens
+            temperature = ctx.temperature
+            if messages is not None:
+                call_prompt_id = None
+            elif isinstance(prompt, Prompt) and prompt_text == original_prompt_text:
+                call_prompt_id = prompt.id
+            else:
+                call_prompt_id = self._resolve_prompt_id(wl.id, prompt_text)
+            req = SommRequest(
+                prompt=prompt_text,
+                system=system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model=model,
+                tools=ctx.tools or [],
+                messages=messages,
+                tool_choice=ctx.tool_choice,
+            )
+            if short_circuit is not None:
+                short_circuited = short_circuit.source or short_circuit.provider or "hook"
+
+        # Budget gate after pre_call — a short-circuit spends nothing, so a
+        # capped workload may still stream from cache; a real call is refused.
+        if short_circuit is None:
+            self._enforce_budget(wl)
+
+        chosen = None
+        if short_circuit is None and wait_on_exhausted is not None:
             candidates = [self._pick_provider(provider)] if provider else list(self.providers)
             self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
-        chosen = self._pick_stream_provider(provider)
+        if short_circuit is None:
+            chosen = self._pick_stream_provider(provider)
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
         stripper = ThinkStreamStripper()
@@ -1358,40 +1520,54 @@ class SommLLM:
         error_detail: str | None = None
         tokens_in = tokens_out = 0
         actual_model = model or ""
+        actual_provider = short_circuit.provider if short_circuit is not None else ""
+        cost_usd_out: float | None = None
 
         try:
-            for chunk in chosen.stream(req):
-                if chunk.text:
-                    visible = stripper.feed(chunk.text)
-                    if visible:
-                        collected.append(visible)
-                        yield visible
-                if chunk.done:
-                    tail = stripper.flush()
-                    if tail:
-                        collected.append(tail)
-                        yield tail
-                    break
-            # Streaming providers don't always give token counts — estimate
-            # from length as a fallback.
-            text = "".join(collected)
-            if not actual_model:
-                actual_model = chosen.name
-            tokens_in = chosen.estimate_tokens(prompt_text, actual_model) + chosen.estimate_tokens(
-                system, actual_model
-            )
-            tokens_out = chosen.estimate_tokens(text, actual_model)
-            if not text.strip():
-                outcome = Outcome.EMPTY
-                error_kind = "EmptyResponse"
-                # Stream latency is computed in `finally`; pass what we have
-                # so far (since we're between `try` and `finally`, t0 is set).
-                error_detail = _format_empty_detail(
-                    provider=chosen.name,
-                    model=actual_model or chosen.name,
-                    tokens_out=tokens_out,
-                    latency_ms=int((time.monotonic() - t0) * 1000),
+            if short_circuit is not None:
+                text = short_circuit.text
+                actual_model = short_circuit.model
+                tokens_in = short_circuit.tokens_in
+                tokens_out = short_circuit.tokens_out
+                cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+                if text:
+                    collected.append(text)
+                    yield text
+            else:
+                assert chosen is not None
+                for chunk in chosen.stream(req):
+                    if chunk.text:
+                        visible = stripper.feed(chunk.text)
+                        if visible:
+                            collected.append(visible)
+                            yield visible
+                    if chunk.done:
+                        tail = stripper.flush()
+                        if tail:
+                            collected.append(tail)
+                            yield tail
+                        break
+                # Streaming providers don't always give token counts — estimate
+                # from length as a fallback.
+                text = "".join(collected)
+                if not actual_model:
+                    actual_model = chosen.name
+                actual_provider = chosen.name
+                tokens_in = chosen.estimate_tokens(prompt_text, actual_model) + chosen.estimate_tokens(
+                    system, actual_model
                 )
+                tokens_out = chosen.estimate_tokens(text, actual_model)
+                if not text.strip():
+                    outcome = Outcome.EMPTY
+                    error_kind = "EmptyResponse"
+                    # Stream latency is computed in `finally`; pass what we have
+                    # so far (since we're between `try` and `finally`, t0 is set).
+                    error_detail = _format_empty_detail(
+                        provider=chosen.name,
+                        model=actual_model or chosen.name,
+                        tokens_out=tokens_out,
+                        latency_ms=int((time.monotonic() - t0) * 1000),
+                    )
         except Exception as exc:
             outcome = Outcome.UPSTREAM_ERROR
             error_kind = type(exc).__name__
@@ -1400,43 +1576,51 @@ class SommLLM:
         finally:
             latency_ms = int((time.monotonic() - t0) * 1000)
             full_text = "".join(collected)
+            provider_name = actual_provider or (chosen.name if chosen is not None else "hook")
+            model_name = actual_model or provider_name
+            cost_usd = (
+                cost_usd_out
+                if cost_usd_out is not None
+                else cost_for_call(
+                    self.repo,
+                    provider_name,
+                    model_name,
+                    tokens_in,
+                    tokens_out,
+                )
+            )
             call = Call(
                 id=call_id,
                 ts=ts,
                 project=self.config.project,
                 workload_id=wl.id,
                 prompt_id=call_prompt_id,
-                provider=chosen.name,
-                model=actual_model or chosen.name,
+                provider=provider_name,
+                model=model_name,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_ms=latency_ms,
-                cost_usd=cost_for_call(
-                    self.repo,
-                    chosen.name,
-                    actual_model or chosen.name,
-                    tokens_in,
-                    tokens_out,
-                ),
+                cost_usd=cost_usd,
                 outcome=outcome,
                 error_kind=error_kind,
                 error_detail=error_detail,
-                prompt_hash=stable_hash(prompt_text),
+                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
                 response_hash=stable_hash(full_text),
                 correlation_id=(correlation_id := hooks.current_correlation_id()),
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
             self._writer.submit(call)
-            hooks.notify_call_observers(_call_event(
+            _fire_call_hooks(_call_event(
                 call_id=call_id, correlation_id=correlation_id,
                 project=self.config.project, workload=workload,
-                provider=chosen.name, model=actual_model or chosen.name,
+                provider=provider_name, model=model_name,
                 outcome=outcome.value, tokens_in=tokens_in,
                 tokens_out=tokens_out, latency_ms=latency_ms,
                 cost_usd=call.cost_usd,
                 temperature=temperature, max_tokens=max_tokens,
                 error_kind=error_kind,
+                short_circuited=short_circuited,
             ))
 
     def _pick_stream_provider(self, name: str | None):

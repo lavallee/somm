@@ -1,6 +1,16 @@
-"""SommProvider protocol — public, stable, entry-point registerable.
+"""SommProvider protocol — public, stable, entry-point compatible.
 
-Third parties implement this to ship new providers without forking somm.
+Third-party providers return objects satisfying this protocol from a
+``somm.providers.registry.ProviderSpec`` factory. Packages expose that spec
+with the ``somm.providers`` entry-point group, for example:
+
+    [project.entry-points."somm.providers"]
+    acme = "acme_somm:provider_spec"
+
+The entry point resolves to either a ``ProviderSpec`` instance or a zero-arg
+callable returning one. The spec factory is called with ``(config, tracker)``
+and returns a provider instance, or ``None`` when the provider is not
+configured on this machine.
 """
 
 from __future__ import annotations
