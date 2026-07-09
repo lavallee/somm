@@ -23,7 +23,7 @@ from somm.cli import (
 )
 from somm.providers.base import ProviderHealth
 from somm_core.config import Config
-from somm_core.models import Call, Outcome
+from somm_core.models import Call, Outcome, SommResult
 from somm_core.repository import Repository
 
 
@@ -379,6 +379,101 @@ def test_eval_promote_call_creates_dataset(tmp_path, capsys, monkeypatch):
     assert items[0].expected_response_body == "expected response"
 
 
+def test_eval_run_uses_dataset_and_returns_gate_status(tmp_path, capsys, monkeypatch):
+    import somm as somm_pkg
+
+    monkeypatch.chdir(tmp_path)
+    repo = Repository(tmp_path / ".somm" / "calls.sqlite")
+    wl = repo.register_workload(name="eval_w", project="cli-eval")
+    source_call_id = str(uuid.uuid4())
+    repo.write_call(
+        Call(
+            id=source_call_id,
+            ts=datetime.now(UTC),
+            project="cli-eval",
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="ollama",
+            model="g",
+            tokens_in=1,
+            tokens_out=1,
+            latency_ms=1,
+            cost_usd=0.0,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="a",
+            response_hash="b",
+        )
+    )
+    repo.write_sample(source_call_id, "prompt body", "expected response")
+    repo.promote_call_to_dataset(source_call_id, "golden", project="cli-eval")
+
+    class _FakeEvalLLM:
+        def __init__(self, config):
+            self.config = config
+            self.repo = Repository(config.db_path)
+
+        def generate(self, prompt, workload, **_kwargs):
+            call_id = str(uuid.uuid4())
+            wl_row = self.repo.workload_by_name(workload, self.config.project)
+            self.repo.write_call(
+                Call(
+                    id=call_id,
+                    ts=datetime.now(UTC),
+                    project=self.config.project,
+                    workload_id=wl_row.id,
+                    prompt_id=None,
+                    provider="fake",
+                    model="eval",
+                    tokens_in=1,
+                    tokens_out=1,
+                    latency_ms=1,
+                    cost_usd=0.0,
+                    outcome=Outcome.OK,
+                    error_kind=None,
+                    prompt_hash="a",
+                    response_hash="b",
+                )
+            )
+            return SommResult(
+                text="expected response",
+                provider="fake",
+                model="eval",
+                tokens_in=1,
+                tokens_out=1,
+                latency_ms=1,
+                cost_usd=0.0,
+                call_id=call_id,
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(somm_pkg, "SommLLM", _FakeEvalLLM)
+
+    rc = main(
+        [
+            "eval",
+            "run",
+            "--workload",
+            "eval_w",
+            "--dataset",
+            "golden",
+            "--project",
+            "cli-eval",
+            "--threshold",
+            "0.9",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "PASS eval cli-eval/eval_w/golden" in out
+    with repo._open() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM eval_results").fetchone()[0]
+    assert n == 1
+
+
 def test_corrected_command_hints_parse_against_real_parsers():
     parser = build_parser()
     for argv in (
@@ -405,6 +500,7 @@ def test_corrected_command_hints_parse_against_real_parsers():
         ["prompt", "promote", "--workload", "orders", "--version", "v1", "--to", "production"],
         ["prompt", "score", "--workload", "orders", "--label", "production"],
         ["eval", "promote-call", "abc", "--dataset", "golden"],
+        ["eval", "run", "--workload", "orders", "--dataset", "golden"],
         ["plugin", "list"],
         ["plugin", "info", "cache"],
         ["frontier", "--workload", "orders"],

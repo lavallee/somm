@@ -861,6 +861,39 @@ class Repository:
                 raise
         return self._dataset_row(dataset_row), self._dataset_item_row(item_row)
 
+    def record_eval_result(
+        self,
+        *,
+        call_id: str,
+        gold_model: str,
+        gold_response_hash: str | None = None,
+        structural_score: float | None = None,
+        embedding_score: float | None = None,
+        judge_score: float | None = None,
+        judge_reason: str | None = None,
+    ) -> int:
+        """Append one eval_results row and return its integer id."""
+
+        with self._open() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO eval_results (
+                    call_id, gold_model, gold_response_hash, structural_score,
+                    embedding_score, judge_score, judge_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    call_id,
+                    gold_model,
+                    gold_response_hash,
+                    structural_score,
+                    embedding_score,
+                    judge_score,
+                    judge_reason,
+                ),
+            )
+            return int(cursor.lastrowid)
+
     # Prompts -----------------------------------------------------------------
 
     def register_prompt(self, workload_id: str, body: str, version: str = "v1") -> Prompt:

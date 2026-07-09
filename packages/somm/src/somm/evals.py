@@ -1,0 +1,238 @@
+"""Synchronous dataset eval runner."""
+
+from __future__ import annotations
+
+import json
+import time
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+
+from somm_core.graders import GradeScores, grade_response_pair
+from somm_core.models import DatasetItem, Outcome, SommResult
+from somm_core.parse import stable_hash
+from somm_core.repository import Repository
+
+
+@dataclass(frozen=True, slots=True)
+class EvalItemResult:
+    item_id: str
+    source_call_id: str | None
+    generated_call_id: str | None
+    score: float
+    passed: bool
+    structural_score: float | None
+    text_similarity_score: float | None
+    judge_score: float | None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EvalRunResult:
+    project: str
+    workload: str
+    workload_id: str
+    dataset: str
+    dataset_id: str
+    threshold: float
+    n_items: int
+    n_passed: int
+    n_errors: int
+    mean_score: float
+    passed: bool
+    items: list[EvalItemResult]
+
+    def as_dict(self) -> dict:
+        return {
+            "project": self.project,
+            "workload": self.workload,
+            "workload_id": self.workload_id,
+            "dataset": self.dataset,
+            "dataset_id": self.dataset_id,
+            "threshold": self.threshold,
+            "n_items": self.n_items,
+            "n_passed": self.n_passed,
+            "n_errors": self.n_errors,
+            "mean_score": self.mean_score,
+            "passed": self.passed,
+            "items": [asdict(item) for item in self.items],
+        }
+
+
+GenerateDatasetItem = Callable[[DatasetItem], SommResult]
+
+
+def run_dataset_eval(
+    repo: Repository,
+    *,
+    project: str,
+    workload: str,
+    dataset: str,
+    generate: GenerateDatasetItem,
+    threshold: float = 0.8,
+    record_timeout_s: float = 5.0,
+) -> EvalRunResult:
+    """Run a workload against a durable dataset and persist eval_results rows."""
+
+    if threshold < 0 or threshold > 1:
+        raise ValueError("threshold must be between 0 and 1")
+    wl = repo.workload_by_name(workload, project)
+    if wl is None:
+        raise ValueError(f"workload {workload!r} not registered in project {project!r}")
+    ds = repo.get_dataset(project=project, workload_id=wl.id, name=dataset)
+    if ds is None:
+        raise ValueError(
+            f"dataset {dataset!r} not found for workload {workload!r} "
+            f"in project {project!r}"
+        )
+    dataset_items = repo.dataset_items(ds.id)
+    if not dataset_items:
+        raise ValueError(f"dataset {dataset!r} has no items")
+
+    results: list[EvalItemResult] = []
+    for item in dataset_items:
+        try:
+            generated = generate(item)
+            if not _wait_for_call(repo, generated.call_id, timeout_s=record_timeout_s):
+                raise RuntimeError(
+                    f"generated call {generated.call_id!r} was not committed before timeout"
+                )
+            if generated.outcome != Outcome.OK:
+                _record_dataset_eval(
+                    repo,
+                    item=item,
+                    generated=generated,
+                    scores=None,
+                    score=0.0,
+                    passed=False,
+                    error=f"outcome={generated.outcome.value}",
+                )
+                results.append(
+                    EvalItemResult(
+                        item_id=item.id,
+                        source_call_id=item.source_call_id,
+                        generated_call_id=generated.call_id,
+                        score=0.0,
+                        passed=False,
+                        structural_score=None,
+                        text_similarity_score=None,
+                        judge_score=None,
+                        error=f"outcome={generated.outcome.value}",
+                    )
+                )
+                continue
+            scores = grade_response_pair(generated.text, item.expected_response_body)
+            score = _combined_score(scores)
+            passed = score >= threshold
+            _record_dataset_eval(
+                repo,
+                item=item,
+                generated=generated,
+                scores=scores,
+                score=score,
+                passed=passed,
+                error=None,
+            )
+            results.append(
+                EvalItemResult(
+                    item_id=item.id,
+                    source_call_id=item.source_call_id,
+                    generated_call_id=generated.call_id,
+                    score=score,
+                    passed=passed,
+                    structural_score=scores.structural_score,
+                    text_similarity_score=scores.text_similarity_score,
+                    judge_score=scores.judge_score,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad item should not hide the run summary
+            results.append(
+                EvalItemResult(
+                    item_id=item.id,
+                    source_call_id=item.source_call_id,
+                    generated_call_id=None,
+                    score=0.0,
+                    passed=False,
+                    structural_score=None,
+                    text_similarity_score=None,
+                    judge_score=None,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+
+    mean_score = sum(item.score for item in results) / len(results)
+    n_errors = sum(1 for item in results if item.error)
+    n_passed = sum(1 for item in results if item.passed)
+    return EvalRunResult(
+        project=project,
+        workload=workload,
+        workload_id=wl.id,
+        dataset=dataset,
+        dataset_id=ds.id,
+        threshold=threshold,
+        n_items=len(results),
+        n_passed=n_passed,
+        n_errors=n_errors,
+        mean_score=mean_score,
+        passed=mean_score >= threshold and n_errors == 0,
+        items=results,
+    )
+
+
+def _combined_score(scores: GradeScores) -> float:
+    if scores.judge_score is not None:
+        return float(scores.judge_score)
+    if scores.structural_score is not None:
+        return float(scores.structural_score)
+    if scores.text_similarity_score is not None:
+        return float(scores.text_similarity_score)
+    return 0.0
+
+
+def _wait_for_call(repo: Repository, call_id: str, timeout_s: float) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        if repo.get_call(call_id) is not None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+
+
+def _record_dataset_eval(
+    repo: Repository,
+    *,
+    item: DatasetItem,
+    generated: SommResult,
+    scores: GradeScores | None,
+    score: float,
+    passed: bool,
+    error: str | None,
+) -> None:
+    reason = [
+        {
+            "source": "somm eval run",
+            "dataset_id": item.dataset_id,
+            "dataset_item_id": item.id,
+            "source_call_id": item.source_call_id,
+            "score": score,
+            "passed": passed,
+            "error": error,
+        }
+    ]
+    repo.record_eval_result(
+        call_id=generated.call_id,
+        gold_model=f"dataset:{item.dataset_id}",
+        gold_response_hash=stable_hash(item.expected_response_body),
+        structural_score=scores.structural_score if scores else None,
+        embedding_score=scores.text_similarity_score if scores else None,
+        judge_score=scores.judge_score if scores else None,
+        judge_reason=json.dumps(reason, sort_keys=True),
+    )
+
+
+__all__ = [
+    "EvalItemResult",
+    "EvalRunResult",
+    "GenerateDatasetItem",
+    "run_dataset_eval",
+]

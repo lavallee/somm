@@ -600,6 +600,66 @@ def _cmd_eval_promote_call(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval_run(args: argparse.Namespace) -> int:
+    from somm import SommLLM
+    from somm.evals import run_dataset_eval
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    llm = SommLLM(config=cfg)
+    try:
+        def generate(item):
+            result = llm.generate(
+                prompt=item.prompt_body,
+                workload=args.workload,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                provider=args.provider,
+                model=args.model,
+                no_fallback=bool(args.provider),
+            )
+            writer = getattr(llm, "_writer", None)
+            if writer is not None:
+                writer.flush(timeout=5.0)
+            return result
+
+        try:
+            result = run_dataset_eval(
+                repo,
+                project=cfg.project,
+                workload=args.workload,
+                dataset=args.dataset,
+                generate=generate,
+                threshold=args.threshold,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    finally:
+        llm.close()
+
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2))
+    else:
+        _print_eval_run(result)
+    return 0 if result.passed else 1
+
+
+def _print_eval_run(result) -> None:
+    status = "PASS" if result.passed else "FAIL"
+    print(
+        f"{status} eval {result.project}/{result.workload}/{result.dataset} "
+        f"mean={result.mean_score:.3f} threshold={result.threshold:.3f} "
+        f"passed={result.n_passed}/{result.n_items} errors={result.n_errors}"
+    )
+    print(f"{'item':<10} {'call':<10} {'score':>7} {'status':<6} error")
+    for item in result.items:
+        call = (item.generated_call_id or "-")[:8]
+        score = f"{item.score:.3f}"
+        item_status = "PASS" if item.passed else "FAIL"
+        print(f"{item.item_id[:8]:<10} {call:<10} {score:>7} {item_status:<6} {item.error or ''}")
+
+
 # ---------------------------------------------------------------------------
 # somm plugin
 
@@ -1739,6 +1799,21 @@ def build_parser() -> argparse.ArgumentParser:
     peval_promote.add_argument("--dataset", required=True)
     peval_promote.add_argument("--description", default="")
     peval_promote.set_defaults(func=_cmd_eval_promote_call)
+
+    peval_run = peval_sub.add_parser(
+        "run",
+        help="run a workload against a durable eval dataset",
+    )
+    peval_run.add_argument("--workload", required=True)
+    peval_run.add_argument("--dataset", required=True)
+    peval_run.add_argument("--project", default=None)
+    peval_run.add_argument("--threshold", type=float, default=0.8)
+    peval_run.add_argument("--max-tokens", type=int, default=1024)
+    peval_run.add_argument("--temperature", type=float, default=0.0)
+    peval_run.add_argument("--provider", default=None)
+    peval_run.add_argument("--model", default=None)
+    peval_run.add_argument("--json", action="store_true")
+    peval_run.set_defaults(func=_cmd_eval_run)
 
     pp = sub.add_parser("plugin", help="list and inspect plugins, hooks, and providers")
     pp_sub = pp.add_subparsers(dest="plugin_cmd", required=True)
