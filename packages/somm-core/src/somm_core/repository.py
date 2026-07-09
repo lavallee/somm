@@ -23,6 +23,7 @@ from somm_core.models import (
     DatasetItem,
     Decision,
     EvalReceipt,
+    ModelAlias,
     Outcome,
     PrivacyClass,
     Prompt,
@@ -1649,6 +1650,91 @@ class Repository:
                 "UPDATE decisions SET outcome_note = ? WHERE id = ?",
                 (note, decision_id),
             )
+
+    # Model aliases (sommelier canonicalization) ------------------------------
+
+    @staticmethod
+    def model_id(provider: str, model: str) -> str:
+        """Return the canonical string shape used by sommelier aliases."""
+        return f"{provider}/{model}"
+
+    def set_model_alias(
+        self,
+        canonical_id: str,
+        provider: str,
+        model: str,
+        *,
+        source: str = "manual",
+    ) -> None:
+        """Map a concrete provider/model route to a canonical model ID."""
+        canonical = canonical_id.strip()
+        if not canonical:
+            raise ValueError("canonical_id is required")
+        if not provider.strip():
+            raise ValueError("provider is required")
+        if not model.strip():
+            raise ValueError("model is required")
+        src = source.strip() or "manual"
+        with self._open() as conn:
+            conn.execute(
+                """
+                INSERT INTO model_aliases
+                    (provider, model, canonical_id, source)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(provider, model) DO UPDATE SET
+                    canonical_id = excluded.canonical_id,
+                    source = excluded.source,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (provider, model, canonical, src),
+            )
+
+    def canonical_model_id(self, provider: str, model: str) -> str:
+        """Return alias canonical_id, or provider/model when no alias exists."""
+        with self._open() as conn:
+            row = conn.execute(
+                """
+                SELECT canonical_id FROM model_aliases
+                WHERE provider = ? AND model = ?
+                """,
+                (provider, model),
+            ).fetchone()
+        if row and row[0]:
+            return row[0]
+        return self.model_id(provider, model)
+
+    def model_aliases(self, canonical_id: str | None = None) -> list[ModelAlias]:
+        clauses: list[str] = []
+        params: list = []
+        if canonical_id is not None:
+            clauses.append("canonical_id = ?")
+            params.append(canonical_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT provider, model, canonical_id, source, created_at, updated_at "
+                f"FROM model_aliases {where} ORDER BY canonical_id, provider, model",
+                params,
+            ).fetchall()
+        return [
+            ModelAlias(
+                provider=r[0],
+                model=r[1],
+                canonical_id=r[2],
+                source=r[3],
+                created_at=datetime.fromisoformat(r[4]) if r[4] else None,
+                updated_at=datetime.fromisoformat(r[5]) if r[5] else None,
+            )
+            for r in rows
+        ]
+
+    def model_alias_map(self) -> dict[tuple[str, str], str]:
+        """Return {(provider, model): canonical_id} for hot ranking paths."""
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT provider, model, canonical_id FROM model_aliases"
+            ).fetchall()
+        return {(r[0], r[1]): r[2] for r in rows if r[2]}
 
     # Learned parameter overrides (self-healing) ------------------------------
 

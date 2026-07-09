@@ -68,6 +68,7 @@ class Candidate:
 
     provider: str
     model: str
+    canonical_id: str
     price_in_per_1m: float | None
     price_out_per_1m: float | None
     context_window: int | None
@@ -75,17 +76,20 @@ class Candidate:
     last_seen: str | None
     score: float
     reasons: list[str]
+    score_breakdown: dict
     shadow_score: float | None = None   # set when shadow-eval data exists
 
     def as_dict(self) -> dict:
         return {
             "provider": self.provider,
             "model": self.model,
+            "canonical_id": self.canonical_id,
             "price_in_per_1m": self.price_in_per_1m,
             "price_out_per_1m": self.price_out_per_1m,
             "context_window": self.context_window,
             "last_seen": self.last_seen,
             "score": round(self.score, 3),
+            "score_breakdown": _rounded_breakdown(self.score_breakdown),
             "shadow_score": self.shadow_score,
             "reasons": self.reasons,
         }
@@ -212,9 +216,12 @@ def _plan_annotation(provider: str) -> str:
 def _advise_with_reasons(
     repo: Repository,
     constraints: AdviseConstraints,
+    *,
+    apply_limit: bool = True,
 ) -> _AdviseResult:
     rows = _fetch_intel(repo, constraints)
-    shadow_map = _shadow_map_for_workload(repo, constraints.workload)
+    alias_map = _safe_model_alias_map(repo)
+    shadow_map = _shadow_map_for_workload(repo, constraints.workload, alias_map)
     required_out = [
         m.lower() for m in (constraints.required_output_modalities or [])
     ]
@@ -228,6 +235,7 @@ def _advise_with_reasons(
     for r in rows:
         provider, model = r["provider"], r["model"]
         pm = f"{provider}/{model}"
+        canonical_id = _canonical_model_id(provider, model, alias_map)
 
         if exclude_patterns and _fnmatches_any(pm, exclude_patterns):
             filter_stats["excluded"] += 1
@@ -283,11 +291,11 @@ def _advise_with_reasons(
             elif verdict is None:
                 reasons.append(f"{cap}?")
 
-        shadow_score = shadow_map.get((provider, model))
+        shadow_score = shadow_map.get(canonical_id)
         if shadow_score is not None:
             reasons.insert(0, f"shadow score {shadow_score:.2f}")
 
-        score = _score(
+        score, score_breakdown = _score(
             price_in, price_out, ctx, r.get("last_seen"), shadow_score
         )
         # Unknown-capability penalty — once per unknown capability so that
@@ -295,13 +303,23 @@ def _advise_with_reasons(
         # lower than (vision✓). Clamp so 0.0 actually hides rather than
         # leaving as a floating-point fuzz of zero.
         penalty = constraints.unknown_capability_penalty
+        unknown_factor = 1.0
         if unknown_caps and 0.0 <= penalty < 1.0:
-            score *= penalty ** len(unknown_caps)
+            unknown_factor = penalty ** len(unknown_caps)
+            score *= unknown_factor
+        score_breakdown["unknown_capability_count"] = len(unknown_caps)
+        score_breakdown["unknown_capability_factor"] = unknown_factor
+        score_breakdown["prior_positive_weight"] = 0.0
+        score_breakdown["prior_negative_weight"] = 0.0
+        score_breakdown["prior_factor"] = 1.0
+        score_breakdown["aliases_considered"] = 1
+        score_breakdown["final"] = score
 
         candidates.append(
             Candidate(
                 provider=provider,
                 model=model,
+                canonical_id=canonical_id,
                 price_in_per_1m=r["price_in_per_1m"],
                 price_out_per_1m=r["price_out_per_1m"],
                 context_window=ctx,
@@ -309,9 +327,12 @@ def _advise_with_reasons(
                 last_seen=r.get("last_seen"),
                 score=score,
                 reasons=reasons,
+                score_breakdown=score_breakdown,
                 shadow_score=shadow_score,
             )
         )
+
+    candidates = _dedupe_canonical_candidates(candidates)
 
     # Deterministic sort — same inputs produce the same ranking across runs.
     # Primary: score desc. Tiebreakers: shadow_score desc, last_seen desc,
@@ -321,9 +342,82 @@ def _advise_with_reasons(
     candidates.sort(key=lambda c: _ts_epoch(c.last_seen), reverse=True)  # 3rd key
     candidates.sort(key=lambda c: c.shadow_score or 0.0, reverse=True)   # 2nd key
     candidates.sort(key=lambda c: c.score, reverse=True)                 # primary
+    returned_candidates = candidates[: constraints.limit] if apply_limit else candidates
     return _AdviseResult(
-        candidates=candidates[: constraints.limit],
+        candidates=returned_candidates,
         filter_stats=filter_stats,
+    )
+
+
+def _rounded_breakdown(breakdown: dict) -> dict:
+    out: dict = {}
+    for key, value in breakdown.items():
+        if isinstance(value, float):
+            out[key] = round(value, 6)
+        else:
+            out[key] = value
+    return out
+
+
+def _safe_model_alias_map(repo: Repository) -> dict[tuple[str, str], str]:
+    try:
+        return repo.model_alias_map()
+    except Exception:  # noqa: BLE001 - aliases must not break cold-start advice
+        return {}
+
+
+def _canonical_model_id(
+    provider: str,
+    model: str,
+    alias_map: dict[tuple[str, str], str],
+) -> str:
+    return alias_map.get((provider, model)) or f"{provider}/{model}"
+
+
+def _candidate_rank_key(candidate: Candidate) -> tuple:
+    return (
+        candidate.score,
+        candidate.shadow_score or 0.0,
+        _ts_epoch(candidate.last_seen),
+        candidate.provider,
+        candidate.model,
+    )
+
+
+def _dedupe_canonical_candidates(candidates: list[Candidate]) -> list[Candidate]:
+    """Collapse multiple provider/model rows for the same canonical model.
+
+    The kept candidate remains a concrete route that callers can execute. The
+    alternate route is preserved as a reason and in aliases_considered.
+    """
+    by_canonical: dict[str, Candidate] = {}
+    for cand in candidates:
+        existing = by_canonical.get(cand.canonical_id)
+        if existing is None:
+            by_canonical[cand.canonical_id] = cand
+            continue
+        if _candidate_rank_key(cand) > _candidate_rank_key(existing):
+            kept, dropped = cand, existing
+            by_canonical[cand.canonical_id] = kept
+        else:
+            kept, dropped = existing, cand
+        _merge_alias_metadata(kept, dropped)
+    return list(by_canonical.values())
+
+
+def _merge_alias_metadata(kept: Candidate, dropped: Candidate) -> None:
+    dropped_label = f"{dropped.provider}/{dropped.model}"
+    kept_label = f"{kept.provider}/{kept.model}"
+    if dropped_label != kept_label:
+        reason = f"also seen as {dropped_label}"
+        if reason not in kept.reasons:
+            kept.reasons.append(reason)
+    for reason in dropped.reasons:
+        if reason.startswith("also seen as ") and reason not in kept.reasons:
+            kept.reasons.append(reason)
+    kept.score_breakdown["aliases_considered"] = (
+        int(kept.score_breakdown.get("aliases_considered", 1))
+        + int(dropped.score_breakdown.get("aliases_considered", 1))
     )
 
 
@@ -371,13 +465,13 @@ def consult(
     The returned `prior_decisions` have the same shape the MCP tool
     emits so code can switch between surfaces without reshaping data.
     """
-    result = _advise_with_reasons(repo, constraints)
+    result = _advise_with_reasons(repo, constraints, apply_limit=False)
     cands = result.candidates
     priors = _search_prior_decisions(
         repo, question=question, workload=constraints.workload,
         limit=priors_limit, global_repo=global_repo,
     )
-    cands = _apply_prior_decision_signals(cands, priors)
+    cands = _apply_prior_decision_signals(cands, priors, _safe_model_alias_map(repo))
     # Re-sort in case prior signals changed the order — stable on primary.
     cands.sort(key=lambda c: c.score, reverse=True)
     cands = cands[: constraints.limit]
@@ -420,69 +514,86 @@ _NEGATIVE_OUTCOME_KEYWORDS: tuple[str, ...] = (
 # matches the "model intel changes" warning in SOMMELIER.md.
 _PRIOR_DECISION_HALF_LIFE_DAYS = 90.0
 
-# Base multipliers applied at age=0. Decay pulls them toward 1.0 over time.
-_PRIOR_NEGATIVE_FACTOR = 0.5
-_PRIOR_POSITIVE_FACTOR = 1.1
-
-
 def _apply_prior_decision_signals(
     candidates: list[Candidate],
     priors: list[dict],
+    alias_map: dict[tuple[str, str], str] | None = None,
 ) -> list[Candidate]:
     """Annotate and nudge candidates based on matching prior decisions.
 
-    For each candidate, find priors whose `chosen_provider`/`chosen_model`
-    match. Add a reason tag so the agent sees the connection. If the
-    outcome_note (or rationale, as a fallback) contains a negative
-    keyword, multiply score by `_PRIOR_NEGATIVE_FACTOR`; otherwise multiply
-    by `_PRIOR_POSITIVE_FACTOR`. Both factors decay toward 1.0 with age
-    via an exponential half-life.
+    Prior choices are grouped by canonical model ID. Positive/negative
+    outcomes become age-decayed pseudo-observations in a beta prior, which
+    produces a score multiplier centered at 1.0 for no evidence.
     """
     if not priors or not candidates:
         return candidates
 
-    # Group priors by (provider, model) for O(1) lookup.
-    by_pm: dict[tuple[str, str], list[dict]] = {}
+    aliases = alias_map or {}
+    by_canonical: dict[str, list[dict]] = {}
     for p in priors:
         prov = p.get("chosen_provider")
         mdl = p.get("chosen_model")
         if not prov or not mdl:
             continue
-        by_pm.setdefault((prov, mdl), []).append(p)
+        canonical_id = _canonical_model_id(prov, mdl, aliases)
+        by_canonical.setdefault(canonical_id, []).append(p)
 
     for cand in candidates:
-        matches = by_pm.get((cand.provider, cand.model))
+        matches = by_canonical.get(cand.canonical_id)
         if not matches:
             continue
-        # Use the most recent matching prior for the score nudge.
+        positive_weight = 0.0
+        negative_weight = 0.0
+        for prior in matches:
+            age_days = _prior_age_days(prior.get("ts"))
+            decay = (
+                2.0 ** (-age_days / _PRIOR_DECISION_HALF_LIFE_DAYS)
+                if age_days >= 0
+                else 1.0
+            )
+            if _prior_is_negative(prior):
+                negative_weight += decay
+            else:
+                positive_weight += decay
+
+        effective = _bayesian_prior_factor(positive_weight, negative_weight)
+        cand.score *= effective
+        cand.score_breakdown["prior_positive_weight"] = positive_weight
+        cand.score_breakdown["prior_negative_weight"] = negative_weight
+        cand.score_breakdown["prior_factor"] = effective
+        cand.score_breakdown["final"] = cand.score
+
         matches.sort(key=lambda d: d.get("ts") or "", reverse=True)
         top = matches[0]
-        age_days = _prior_age_days(top.get("ts"))
-        decay = 2.0 ** (-age_days / _PRIOR_DECISION_HALF_LIFE_DAYS) if age_days >= 0 else 1.0
-
-        outcome = (top.get("outcome_note") or "").lower()
-        rationale = (top.get("rationale") or "").lower()
-        negative = any(
-            kw in outcome or kw in rationale
-            for kw in _NEGATIVE_OUTCOME_KEYWORDS
-        )
-
-        # Decayed factor — interpolate from base toward 1.0 by `decay`.
-        base = _PRIOR_NEGATIVE_FACTOR if negative else _PRIOR_POSITIVE_FACTOR
-        effective = 1.0 + (base - 1.0) * decay
-        cand.score *= effective
-
         ts_label = (top.get("ts") or "")[:10] or "prior"
         proj_label = top.get("project") or "?"
-        if negative:
+        if negative_weight > positive_weight or _prior_is_negative(top):
             cand.reasons.append(
-                f"prior({proj_label} {ts_label}): flagged — ×{effective:.2f}"
+                f"prior({proj_label} {ts_label}): flagged — beta ×{effective:.2f}"
             )
         else:
             cand.reasons.append(
-                f"prior({proj_label} {ts_label}): chose — ×{effective:.2f}"
+                f"prior({proj_label} {ts_label}): chose — beta ×{effective:.2f}"
             )
     return candidates
+
+
+def _prior_is_negative(prior: dict) -> bool:
+    outcome = (prior.get("outcome_note") or "").lower()
+    rationale = (prior.get("rationale") or "").lower()
+    return any(
+        kw in outcome or kw in rationale
+        for kw in _NEGATIVE_OUTCOME_KEYWORDS
+    )
+
+
+def _bayesian_prior_factor(positive_weight: float, negative_weight: float) -> float:
+    # Beta(1,1) neutral prior. Divide by neutral mean (0.5) so no evidence is
+    # 1.0, positive evidence boosts, and negative evidence penalizes.
+    posterior_mean = (1.0 + positive_weight) / (
+        2.0 + positive_weight + negative_weight
+    )
+    return max(0.5, min(1.5, posterior_mean / 0.5))
 
 
 def _prior_age_days(ts: str | None) -> float:
@@ -755,8 +866,10 @@ def _fetch_intel(repo: Repository, c: AdviseConstraints) -> list[dict]:
 
 
 def _shadow_map_for_workload(
-    repo: Repository, workload: str | None
-) -> dict[tuple[str, str], float]:
+    repo: Repository,
+    workload: str | None,
+    alias_map: dict[tuple[str, str], str],
+) -> dict[str, float]:
     if not workload:
         return {}
     with repo._open() as conn:
@@ -769,7 +882,8 @@ def _shadow_map_for_workload(
         rows = conn.execute(
             """
             SELECT c.provider, c.model,
-                   AVG(COALESCE(er.judge_score, er.embedding_score, er.structural_score)) AS score
+                   AVG(COALESCE(er.judge_score, er.embedding_score, er.structural_score)) AS score,
+                   COUNT(*) AS n
             FROM eval_results er
             JOIN calls c ON c.id = er.call_id
             WHERE c.workload_id = ?
@@ -782,7 +896,18 @@ def _shadow_map_for_workload(
             """,
             (wl_row[0],),
         ).fetchall()
-    return {(r[0], r[1]): r[2] for r in rows if r[2] is not None}
+    totals: dict[str, tuple[float, int]] = {}
+    for provider, model, score, n in rows:
+        if score is None:
+            continue
+        canonical_id = _canonical_model_id(provider, model, alias_map)
+        total, count = totals.get(canonical_id, (0.0, 0))
+        totals[canonical_id] = (total + float(score) * int(n), count + int(n))
+    return {
+        canonical_id: total / count
+        for canonical_id, (total, count) in totals.items()
+        if count
+    }
 
 
 def _score(
@@ -791,7 +916,7 @@ def _score(
     ctx: int | None,
     last_seen: str | None,
     shadow_score: float | None,
-) -> float:
+) -> tuple[float, dict]:
     """Composite score. Higher = better.
 
     Weights are tuned so shadow-eval evidence dominates pricing deltas when
@@ -799,20 +924,30 @@ def _score(
     workload just because it's slightly pricier than an untested one.
     """
     score = 0.0
+    breakdown: dict = {
+        "shadow": 0.0,
+        "price": 0.0,
+        "context": 0.0,
+        "recency": 0.0,
+    }
     if shadow_score is not None:
-        score += 100.0 * shadow_score
+        breakdown["shadow"] = 100.0 * shadow_score
+        score += breakdown["shadow"]
 
     # Cheaper wins. Use log-like penalty so $0 vs $0.15 is a small nudge but
     # $0.15 vs $15 is significant.
     total = price_in + price_out
     if total == 0:
-        score += 50.0
+        breakdown["price"] = 50.0
+        score += breakdown["price"]
     else:
         # 50 at $0.01 total, ~35 at $0.30, ~20 at $1, ~10 at $5, 5 at $20
-        score += max(0.0, 50.0 - 15.0 * (total**0.5))
+        breakdown["price"] = max(0.0, 50.0 - 15.0 * (total**0.5))
+        score += breakdown["price"]
 
     if ctx:
-        score += min(20.0, ctx / 10_000)
+        breakdown["context"] = min(20.0, ctx / 10_000)
+        score += breakdown["context"]
 
     # Recency bonus — favour fresh entries; model_intel last_seen is ISO.
     if last_seen:
@@ -822,13 +957,16 @@ def _score(
                 seen = seen.replace(tzinfo=UTC)
             days_old = (datetime.now(UTC) - seen).days
             if days_old < 7:
-                score += 5.0
+                breakdown["recency"] = 5.0
+                score += breakdown["recency"]
             elif days_old > 90:
-                score -= 5.0
+                breakdown["recency"] = -5.0
+                score += breakdown["recency"]
         except ValueError:
             pass
 
-    return score
+    breakdown["base"] = score
+    return score, breakdown
 
 
 def _normalise_question(q: str) -> str:

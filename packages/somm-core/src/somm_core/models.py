@@ -284,6 +284,18 @@ class Decision:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelAlias:
+    """Canonical ID for a provider/model alias in model_intel."""
+
+    provider: str
+    model: str
+    canonical_id: str
+    source: str = "manual"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCall:
     """A tool invocation requested by the model.
 

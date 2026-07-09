@@ -134,6 +134,19 @@ def test_advise_reasons_surface_price_and_capability(tmp_path):
     assert any("vision" in r for r in gem.reasons)
 
 
+def test_advise_candidate_exposes_canonical_id_and_score_breakdown(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    _seed_intel(repo)
+
+    cand = advise(repo, AdviseConstraints(capabilities=["vision"], limit=1))[0]
+    payload = cand.as_dict()
+
+    assert payload["canonical_id"] == f"{cand.provider}/{cand.model}"
+    assert payload["score_breakdown"]["price"] >= 0
+    assert "unknown_capability_factor" in payload["score_breakdown"]
+    assert abs(payload["score_breakdown"]["final"] - payload["score"]) < 0.001
+
+
 def test_advise_cheaper_wins_all_else_equal(tmp_path):
     repo = _tmp_repo(tmp_path)
     _seed_intel(repo)
@@ -194,6 +207,101 @@ def test_advise_uses_judge_eval_score_for_workload(tmp_path):
     assert [c.model for c in cands] == ["model-b", "model-a"]
     assert cands[0].shadow_score == 0.9
     assert any("shadow score 0.90" in reason for reason in cands[0].reasons)
+
+
+def test_advise_canonical_aliases_collapse_to_one_candidate(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    write_intel(
+        repo,
+        "google-ai",
+        "gemma-3-27b-it",
+        price_in_per_1m=0.0,
+        price_out_per_1m=0.0,
+        context_window=128_000,
+        capabilities={"vision": True, "modality": "text+image->text"},
+        source="test",
+    )
+    write_intel(
+        repo,
+        "openrouter",
+        "google/gemma-3-27b-it:free",
+        price_in_per_1m=0.0,
+        price_out_per_1m=0.0,
+        context_window=262_144,
+        capabilities={"modality": "text+image->text"},
+        source="test",
+    )
+    repo.set_model_alias(
+        "google-ai/gemma-3-27b-it",
+        "openrouter",
+        "google/gemma-3-27b-it:free",
+        source="test",
+    )
+
+    cands = advise(repo, AdviseConstraints(capabilities=["vision"], limit=20))
+
+    canonical = [
+        c for c in cands if c.canonical_id == "google-ai/gemma-3-27b-it"
+    ]
+    assert len(canonical) == 1
+    assert canonical[0].score_breakdown["aliases_considered"] == 2
+    assert any("also seen as" in reason for reason in canonical[0].reasons)
+
+
+def test_advise_shadow_scores_follow_canonical_alias(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    write_intel(
+        repo,
+        "google-ai",
+        "gemma-3",
+        price_in_per_1m=0.0,
+        price_out_per_1m=0.0,
+        context_window=128_000,
+        capabilities={"modality": "text+image->text"},
+        source="test",
+    )
+    repo.set_model_alias(
+        "google-ai/gemma-3",
+        "openrouter",
+        "google/gemma-3:free",
+        source="test",
+    )
+    wl = repo.register_workload(name="qa", project="sm")
+    call_id = str(uuid.uuid4())
+    repo.write_call(
+        Call(
+            id=call_id,
+            ts=datetime.now(UTC),
+            project="sm",
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="openrouter",
+            model="google/gemma-3:free",
+            tokens_in=1,
+            tokens_out=1,
+            latency_ms=1,
+            cost_usd=0.0,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="p",
+            response_hash="r",
+        )
+    )
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO eval_results "
+            "(call_id, gold_model, structural_score, embedding_score, judge_score) "
+            "VALUES (?, 'dataset:test', 0.1, 0.1, 0.88)",
+            (call_id,),
+        )
+
+    cands = advise(
+        repo,
+        AdviseConstraints(providers=["google-ai"], workload="qa", limit=1),
+    )
+
+    assert cands[0].canonical_id == "google-ai/gemma-3"
+    assert cands[0].shadow_score == 0.88
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +634,8 @@ def test_consult_prior_decision_positive_annotates_and_boosts(tmp_path):
     gem = next(c for c in result.candidates if c.model == "google/gemma-3-27b-it:free")
     assert gem.score > baseline   # positive nudge
     assert any("prior" in r and "chose" in r for r in gem.reasons)
+    assert gem.score_breakdown["prior_positive_weight"] > 0
+    assert gem.score_breakdown["prior_factor"] > 1.0
 
 
 def test_consult_prior_decision_negative_penalises(tmp_path):
@@ -556,6 +666,8 @@ def test_consult_prior_decision_negative_penalises(tmp_path):
     gem = next(c for c in result.candidates if c.model == "google/gemma-3-27b-it:free")
     assert gem.score < baseline   # soft penalty
     assert any("prior" in r and "flagged" in r for r in gem.reasons)
+    assert gem.score_breakdown["prior_negative_weight"] > 0
+    assert gem.score_breakdown["prior_factor"] < 1.0
 
 
 def test_consult_prior_decision_decays_with_age(tmp_path):
@@ -602,6 +714,98 @@ def test_consult_prior_decision_decays_with_age(tmp_path):
         if c.model == "google/gemma-3-27b-it:free"
     )
     assert aged_gem.score > baseline
+
+
+def test_consult_prior_decision_matches_canonical_alias(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    write_intel(
+        repo,
+        "openrouter",
+        "google/gemma-3:free",
+        price_in_per_1m=0.0,
+        price_out_per_1m=0.0,
+        context_window=128_000,
+        capabilities={"modality": "text+image->text"},
+        source="test",
+    )
+    repo.set_model_alias(
+        "google-ai/gemma-3",
+        "openrouter",
+        "google/gemma-3:free",
+        source="test",
+    )
+    repo.record_decision(
+        build_decision(
+            question="free vision model for charts",
+            candidates=[],
+            rationale="native gemma route worked",
+            project="other-project",
+            chosen_provider="google-ai",
+            chosen_model="gemma-3",
+        )
+    )
+    baseline = next(
+        c.score for c in advise(
+            repo, AdviseConstraints(capabilities=["vision"], free_only=True, limit=20)
+        )
+        if c.model == "google/gemma-3:free"
+    )
+
+    result = consult(
+        repo,
+        question="free vision model for charts",
+        constraints=AdviseConstraints(capabilities=["vision"], free_only=True, limit=20),
+        project="captionapp",
+    )
+
+    gem = next(c for c in result.candidates if c.model == "google/gemma-3:free")
+    assert gem.canonical_id == "google-ai/gemma-3"
+    assert gem.score > baseline
+    assert any("prior" in reason for reason in gem.reasons)
+
+
+def test_consult_prior_can_lift_candidate_into_limited_result(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    write_intel(
+        repo,
+        "openrouter",
+        "best-cold-score:free",
+        price_in_per_1m=0.0,
+        price_out_per_1m=0.0,
+        context_window=262_144,
+        capabilities={"modality": "text+image->text"},
+        source="test",
+    )
+    write_intel(
+        repo,
+        "openrouter",
+        "prior-backed:free",
+        price_in_per_1m=0.0,
+        price_out_per_1m=0.0,
+        context_window=50_000,
+        capabilities={"modality": "text+image->text"},
+        source="test",
+    )
+    repo.record_decision(
+        build_decision(
+            question="free vision model for small charts",
+            candidates=[],
+            rationale="prior-backed behaved better on this workload",
+            project="other-project",
+            chosen_provider="openrouter",
+            chosen_model="prior-backed:free",
+        )
+    )
+
+    result = consult(
+        repo,
+        question="free vision model for small charts",
+        constraints=AdviseConstraints(capabilities=["vision"], free_only=True, limit=1),
+        project="captionapp",
+    )
+
+    assert [c.model for c in result.candidates] == ["prior-backed:free"]
+    assert result.candidates[0].score_breakdown["prior_factor"] > 1.0
 
 
 def test_advise_output_modality_via_openrouter_architecture(tmp_path):

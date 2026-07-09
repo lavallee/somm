@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from somm_core.repository import Repository
 from somm_core.schema import _list_migrations, current_schema_version, ensure_schema
 from somm_core.version import SCHEMA_VERSION
 
@@ -20,8 +21,8 @@ def test_v10_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 18
-        assert current_schema_version(conn) == 18
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
         tables = {
             row[0]
             for row in conn.execute(
@@ -60,8 +61,8 @@ def test_v11_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 18
-        assert current_schema_version(conn) == 18
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
         call_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
         }
@@ -103,8 +104,8 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 18
-        assert current_schema_version(conn) == 18
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
 
         tables = {
             row[0]
@@ -151,8 +152,8 @@ def test_v13_database_upgrades_to_v14_prompt_label_weights(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 18
-        assert current_schema_version(conn) == 18
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
         label_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(prompt_labels)").fetchall()
         }
@@ -173,8 +174,8 @@ def test_v14_database_upgrades_to_v15_workload_policy(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 18
-        assert current_schema_version(conn) == 18
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
         workload_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
@@ -195,8 +196,8 @@ def test_v15_database_upgrades_to_v16_datasets(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 18
-        assert current_schema_version(conn) == 18
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
         tables = {
             row[0]
             for row in conn.execute(
@@ -254,8 +255,8 @@ def test_v16_database_upgrades_to_v17_eval_receipts(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 18
-        assert current_schema_version(conn) == 18
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
         tables = {
             row[0]
             for row in conn.execute(
@@ -308,8 +309,8 @@ def test_v17_database_upgrades_to_v18_campaigns(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 18
-        assert current_schema_version(conn) == 18
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
         tables = {
             row[0]
             for row in conn.execute(
@@ -357,6 +358,75 @@ def test_v17_database_upgrades_to_v18_campaigns(tmp_path):
         }
         assert "idx_campaigns_project_workload" in indexes
         assert "idx_campaign_events_campaign" in indexes
+
+
+def test_v18_database_upgrades_to_v19_model_aliases(tmp_path):
+    db_path = tmp_path / "v18.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 18:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        assert current_schema_version(conn) == 18
+
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 19
+        assert current_schema_version(conn) == 19
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "model_aliases" in tables
+        alias_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(model_aliases)").fetchall()
+        }
+        assert {
+            "provider",
+            "model",
+            "canonical_id",
+            "source",
+            "created_at",
+            "updated_at",
+        }.issubset(alias_columns)
+        indexes = {
+            row[1]
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        assert "idx_model_aliases_canonical" in indexes
+
+
+def test_repository_model_alias_roundtrip(tmp_path):
+    repo = Repository(tmp_path / "aliases.sqlite")
+
+    repo.set_model_alias(
+        "google/gemini-2.5-flash",
+        "openrouter",
+        "google/gemini-2.5-flash",
+        source="test",
+    )
+
+    assert (
+        repo.canonical_model_id("openrouter", "google/gemini-2.5-flash")
+        == "google/gemini-2.5-flash"
+    )
+    assert repo.canonical_model_id("anthropic", "claude-sonnet") == (
+        "anthropic/claude-sonnet"
+    )
+    assert repo.model_alias_map()[
+        ("openrouter", "google/gemini-2.5-flash")
+    ] == "google/gemini-2.5-flash"
+    aliases = repo.model_aliases("google/gemini-2.5-flash")
+    assert len(aliases) == 1
+    assert aliases[0].provider == "openrouter"
+    assert aliases[0].source == "test"
 
 
 def test_migration_and_version_stamp_are_atomic(tmp_path, monkeypatch):
