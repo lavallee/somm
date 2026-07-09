@@ -8,6 +8,7 @@ HTTP surface:
   GET /api/calls               JSON recent calls, filterable
   GET /api/sessions            JSON session/trace groups
   GET /api/version             JSON service + schema version
+  GET /api/spend/today         JSON per-workload daily spend vs daily cap
   GET /api/recommendations     JSON open recs
   POST /api/recommendations/{id}/dismiss
   POST /api/recommendations/{id}/apply
@@ -41,6 +42,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
+from somm.cli import spend_today
 from somm.recommendations import (
     apply_recommendation,
     dismiss_recommendation,
@@ -1196,6 +1198,12 @@ async def _api_version(request: Request) -> JSONResponse:
     )
 
 
+async def _api_spend_today(request: Request) -> JSONResponse:
+    cfg: Config = request.app.state.config
+    rows = spend_today(cfg.db_path, cfg.project, cfg.budget_default_cap_usd_daily)
+    return JSONResponse({'project': cfg.project, 'rows': rows})
+
+
 def create_app(config: Config | None = None) -> Starlette:
     cfg = config or load_config()
     repo = Repository(cfg.db_path)
@@ -1210,6 +1218,7 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/api/calls", _api_calls),
             Route("/api/sessions", _api_sessions),
             Route("/api/version", _api_version),
+            Route("/api/spend/today", _api_spend_today),
             Route("/api/recommendations", _api_recommendations),
             Route("/api/recommendations/{rec_id:int}/dismiss", _api_rec_dismiss, methods=["POST"]),
             Route("/api/recommendations/{rec_id:int}/apply", _api_rec_apply, methods=["POST"]),

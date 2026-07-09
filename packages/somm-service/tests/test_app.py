@@ -345,3 +345,12 @@ def test_host_is_loopback_rejects_rebinding_names(host, ok):
     from somm_service.app import _host_is_loopback
 
     assert _host_is_loopback(host) is ok
+
+
+def test_api_spend_today_empty(client):
+    c, cfg, _ = client
+    r = c.get('/api/spend/today')
+    assert r.status_code == 200
+    data = r.json()
+    assert data['project'] == cfg.project
+    assert data['rows'] == []
