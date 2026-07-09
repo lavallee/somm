@@ -223,6 +223,7 @@ def _call_event(
     temperature: float | None = None,
     max_tokens: int | None = None,
     error_kind: str | None = None,
+    short_circuited: str | None = None,
 ) -> dict:
     """Assemble the observer event for one completed call.
 
@@ -244,7 +245,14 @@ def _call_event(
         "temperature": temperature,
         "max_tokens": max_tokens,
         "error_kind": error_kind,
+        "short_circuited": short_circuited,
     }
+
+
+def _fire_call_hooks(event: dict) -> None:
+    stamped = hooks.stamp_event(event)
+    hooks.fire_post_call(stamped)
+    hooks.fire_post_process(stamped)
 
 
 def build_default_providers(
@@ -835,6 +843,59 @@ class SommLLM:
             tool_choice=tool_choice,
         )
 
+        short_circuit: hooks.ShortCircuit | None = None
+        short_circuited: str | None = None
+        if hooks.has_hooks(hooks.PRE_CALL):
+            original_prompt_text = prompt_text
+            ctx = hooks.PreCallContext(
+                workload=workload,
+                prompt=prompt_text,
+                system=system,
+                messages=messages,
+                model=model,
+                provider=provider,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools or [],
+                tool_choice=tool_choice,
+                project=self.config.project,
+            )
+            short_circuit = hooks.fire_pre_call(ctx)
+            prompt_text = ctx.prompt
+            system = ctx.system
+            messages = ctx.messages
+            model = ctx.model
+            provider = ctx.provider
+            max_tokens = ctx.max_tokens
+            temperature = ctx.temperature
+            tools = ctx.tools
+            tool_choice = ctx.tool_choice
+            if messages is not None:
+                call_prompt_id = None
+            elif isinstance(prompt, Prompt) and prompt_text == original_prompt_text:
+                call_prompt_id = prompt.id
+            else:
+                call_prompt_id = self._resolve_prompt_id(wl.id, prompt_text)
+            effective_caps = _merge_caps(
+                wl.capabilities_required,
+                capabilities_required,
+                infer_capabilities(prompt_text),
+            )
+            req = SommRequest(
+                prompt=prompt_text,
+                system=system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model=model,
+                capabilities_required=effective_caps,
+                allow_empty=allow_empty,
+                tools=tools or [],
+                messages=messages,
+                tool_choice=tool_choice,
+            )
+            if short_circuit is not None:
+                short_circuited = short_circuit.source or short_circuit.provider or "hook"
+
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
         outcome = Outcome.OK
@@ -848,13 +909,24 @@ class SommLLM:
         stop_reason_out: str = ""
         reasoning_content_out: str = ""
         raw_out: dict | None = None
+        cost_usd_out: float | None = None
 
         # Track whether we took the fallback path so we can fire on_fallback
         # only on the narrow "pinned failed + chain saved us" window.
         fallback_info: dict | None = None
         raise_after_record: Exception | None = None
 
-        if provider is not None:
+        if short_circuit is not None:
+            text = short_circuit.text
+            actual_provider = short_circuit.provider
+            actual_model = short_circuit.model
+            tokens_in = short_circuit.tokens_in
+            tokens_out = short_circuit.tokens_out
+            latency_ms = 0
+            tool_calls_out = _to_core_tool_calls(short_circuit.tool_calls)
+            raw_out = short_circuit.raw
+            cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+        elif provider is not None:
             chosen = self._pick_provider(provider)
             try:
                 resp = chosen.generate(req)
@@ -993,7 +1065,11 @@ class SommLLM:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=latency_ms,
-            cost_usd=cost_for_call(self.repo, actual_provider, actual_model, tokens_in, tokens_out),
+            cost_usd=(
+                cost_usd_out
+                if cost_usd_out is not None
+                else cost_for_call(self.repo, actual_provider, actual_model, tokens_in, tokens_out)
+            ),
             call_id=call_id,
             outcome=outcome,
             error_kind=error_kind,
@@ -1030,7 +1106,7 @@ class SommLLM:
         )
         self._writer.submit(call)
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
-        hooks.notify_call_observers(_call_event(
+        _fire_call_hooks(_call_event(
             call_id=call_id, correlation_id=correlation_id,
             project=self.config.project, workload=workload,
             provider=actual_provider, model=actual_model,
@@ -1038,6 +1114,7 @@ class SommLLM:
             latency_ms=latency_ms, cost_usd=result.cost_usd,
             temperature=temperature, max_tokens=max_tokens,
             error_kind=error_kind,
+            short_circuited=short_circuited,
         ))
 
         # Fire the on_error alerter whenever the call did not succeed.
@@ -1202,26 +1279,66 @@ class SommLLM:
         actual_model = model or provider_obj.default_embed_model
         tokens_in = 0
         latency_ms = 0
+        raw_out: dict | None = None
 
         req = SommEmbedRequest(text=text, model=model)
-        try:
-            resp = provider_obj.embed(req)
-            embedding = resp.embedding
-            actual_model = resp.model
-            tokens_in = resp.tokens_in
-            latency_ms = resp.latency_ms
-        except Exception as exc:
-            outcome = Outcome.UPSTREAM_ERROR
-            error_kind = type(exc).__name__
-            error_detail = _format_error_detail(exc, "ollama", actual_model)
+        short_circuit: hooks.ShortCircuit | None = None
+        short_circuited: str | None = None
+        if hooks.has_hooks(hooks.PRE_CALL):
+            ctx = hooks.PreCallContext(
+                workload=workload,
+                prompt=text,
+                system="",
+                messages=None,
+                model=model,
+                provider="ollama",
+                max_tokens=0,
+                temperature=0.0,
+                tools=[],
+                tool_choice=None,
+                project=self.config.project,
+            )
+            short_circuit = hooks.fire_pre_call(ctx)
+            text = ctx.prompt
+            model = ctx.model
+            actual_model = model or provider_obj.default_embed_model
+            req = SommEmbedRequest(text=text, model=model)
+            if short_circuit is not None:
+                short_circuited = short_circuit.source or short_circuit.provider or "hook"
 
-        # Embeddings bill on input tokens only (no output). Computed once and
-        # shared across the result, the telemetry row, and the observer event.
-        cost_usd = cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0)
+        if short_circuit is not None:
+            raw_embedding = (
+                short_circuit.raw.get("embedding", [])
+                if isinstance(short_circuit.raw, dict)
+                else []
+            )
+            embedding = list(raw_embedding) if raw_embedding is not None else []
+            actual_model = short_circuit.model or actual_model
+            tokens_in = short_circuit.tokens_in
+            latency_ms = 0
+            cost_usd = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+        else:
+            try:
+                resp = provider_obj.embed(req)
+                embedding = resp.embedding
+                actual_model = resp.model
+                tokens_in = resp.tokens_in
+                latency_ms = resp.latency_ms
+                raw_out = resp.raw
+            except Exception as exc:
+                outcome = Outcome.UPSTREAM_ERROR
+                error_kind = type(exc).__name__
+                error_detail = _format_error_detail(exc, "ollama", actual_model)
+
+            # Embeddings bill on input tokens only (no output). Computed once and
+            # shared across the result, the telemetry row, and the observer event.
+            cost_usd = cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0)
+        if short_circuit is not None:
+            raw_out = short_circuit.raw
 
         result = EmbedResult(
             embedding=embedding,
-            provider="ollama",
+            provider=short_circuit.provider if short_circuit is not None else "ollama",
             model=actual_model,
             dim=len(embedding),
             tokens_in=tokens_in,
@@ -1231,6 +1348,7 @@ class SommLLM:
             outcome=outcome,
             error_kind=error_kind,
             error_detail=error_detail,
+            raw=raw_out,
         )
 
         # response_hash: sha256 of the joined float repr. Cheap dedup
@@ -1242,7 +1360,7 @@ class SommLLM:
             project=self.config.project,
             workload_id=wl.id,
             prompt_id=None,
-            provider="ollama",
+            provider=result.provider,
             model=actual_model,
             tokens_in=tokens_in,
             tokens_out=0,
@@ -1256,13 +1374,14 @@ class SommLLM:
             correlation_id=(correlation_id := hooks.current_correlation_id()),
         )
         self._writer.submit(call)
-        hooks.notify_call_observers(_call_event(
+        _fire_call_hooks(_call_event(
             call_id=call_id, correlation_id=correlation_id,
             project=self.config.project, workload=workload,
-            provider="ollama", model=actual_model,
+            provider=result.provider, model=actual_model,
             outcome=outcome.value, tokens_in=tokens_in, tokens_out=0,
             latency_ms=latency_ms, cost_usd=result.cost_usd,
             error_kind=error_kind,
+            short_circuited=short_circuited,
         ))
 
         if outcome != Outcome.OK and self._on_error is not None:
@@ -1325,6 +1444,7 @@ class SommLLM:
         self._enforce_budget(wl)
         wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
+        messages = None
         call_prompt_id = self._resolve_prompt_id(wl.id, prompt)
         req = SommRequest(
             prompt=prompt_text,
@@ -1334,10 +1454,56 @@ class SommLLM:
             model=model,
         )
 
-        if wait_on_exhausted is not None:
+        short_circuit: hooks.ShortCircuit | None = None
+        short_circuited: str | None = None
+        if hooks.has_hooks(hooks.PRE_CALL):
+            original_prompt_text = prompt_text
+            ctx = hooks.PreCallContext(
+                workload=workload,
+                prompt=prompt_text,
+                system=system,
+                messages=None,
+                model=model,
+                provider=provider,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=[],
+                tool_choice=None,
+                project=self.config.project,
+            )
+            short_circuit = hooks.fire_pre_call(ctx)
+            prompt_text = ctx.prompt
+            system = ctx.system
+            messages = ctx.messages
+            model = ctx.model
+            provider = ctx.provider
+            max_tokens = ctx.max_tokens
+            temperature = ctx.temperature
+            if messages is not None:
+                call_prompt_id = None
+            elif isinstance(prompt, Prompt) and prompt_text == original_prompt_text:
+                call_prompt_id = prompt.id
+            else:
+                call_prompt_id = self._resolve_prompt_id(wl.id, prompt_text)
+            req = SommRequest(
+                prompt=prompt_text,
+                system=system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model=model,
+                tools=ctx.tools or [],
+                messages=messages,
+                tool_choice=ctx.tool_choice,
+            )
+            if short_circuit is not None:
+                short_circuited = short_circuit.source or short_circuit.provider or "hook"
+
+        chosen = None
+        if short_circuit is None and wait_on_exhausted is not None:
             candidates = [self._pick_provider(provider)] if provider else list(self.providers)
             self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
-        chosen = self._pick_stream_provider(provider)
+        if short_circuit is None:
+            chosen = self._pick_stream_provider(provider)
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
         stripper = ThinkStreamStripper()
@@ -1349,40 +1515,54 @@ class SommLLM:
         error_detail: str | None = None
         tokens_in = tokens_out = 0
         actual_model = model or ""
+        actual_provider = short_circuit.provider if short_circuit is not None else ""
+        cost_usd_out: float | None = None
 
         try:
-            for chunk in chosen.stream(req):
-                if chunk.text:
-                    visible = stripper.feed(chunk.text)
-                    if visible:
-                        collected.append(visible)
-                        yield visible
-                if chunk.done:
-                    tail = stripper.flush()
-                    if tail:
-                        collected.append(tail)
-                        yield tail
-                    break
-            # Streaming providers don't always give token counts — estimate
-            # from length as a fallback.
-            text = "".join(collected)
-            if not actual_model:
-                actual_model = chosen.name
-            tokens_in = chosen.estimate_tokens(prompt_text, actual_model) + chosen.estimate_tokens(
-                system, actual_model
-            )
-            tokens_out = chosen.estimate_tokens(text, actual_model)
-            if not text.strip():
-                outcome = Outcome.EMPTY
-                error_kind = "EmptyResponse"
-                # Stream latency is computed in `finally`; pass what we have
-                # so far (since we're between `try` and `finally`, t0 is set).
-                error_detail = _format_empty_detail(
-                    provider=chosen.name,
-                    model=actual_model or chosen.name,
-                    tokens_out=tokens_out,
-                    latency_ms=int((time.monotonic() - t0) * 1000),
+            if short_circuit is not None:
+                text = short_circuit.text
+                actual_model = short_circuit.model
+                tokens_in = short_circuit.tokens_in
+                tokens_out = short_circuit.tokens_out
+                cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+                if text:
+                    collected.append(text)
+                    yield text
+            else:
+                assert chosen is not None
+                for chunk in chosen.stream(req):
+                    if chunk.text:
+                        visible = stripper.feed(chunk.text)
+                        if visible:
+                            collected.append(visible)
+                            yield visible
+                    if chunk.done:
+                        tail = stripper.flush()
+                        if tail:
+                            collected.append(tail)
+                            yield tail
+                        break
+                # Streaming providers don't always give token counts — estimate
+                # from length as a fallback.
+                text = "".join(collected)
+                if not actual_model:
+                    actual_model = chosen.name
+                actual_provider = chosen.name
+                tokens_in = chosen.estimate_tokens(prompt_text, actual_model) + chosen.estimate_tokens(
+                    system, actual_model
                 )
+                tokens_out = chosen.estimate_tokens(text, actual_model)
+                if not text.strip():
+                    outcome = Outcome.EMPTY
+                    error_kind = "EmptyResponse"
+                    # Stream latency is computed in `finally`; pass what we have
+                    # so far (since we're between `try` and `finally`, t0 is set).
+                    error_detail = _format_empty_detail(
+                        provider=chosen.name,
+                        model=actual_model or chosen.name,
+                        tokens_out=tokens_out,
+                        latency_ms=int((time.monotonic() - t0) * 1000),
+                    )
         except Exception as exc:
             outcome = Outcome.UPSTREAM_ERROR
             error_kind = type(exc).__name__
@@ -1391,43 +1571,51 @@ class SommLLM:
         finally:
             latency_ms = int((time.monotonic() - t0) * 1000)
             full_text = "".join(collected)
+            provider_name = actual_provider or (chosen.name if chosen is not None else "hook")
+            model_name = actual_model or provider_name
+            cost_usd = (
+                cost_usd_out
+                if cost_usd_out is not None
+                else cost_for_call(
+                    self.repo,
+                    provider_name,
+                    model_name,
+                    tokens_in,
+                    tokens_out,
+                )
+            )
             call = Call(
                 id=call_id,
                 ts=ts,
                 project=self.config.project,
                 workload_id=wl.id,
                 prompt_id=call_prompt_id,
-                provider=chosen.name,
-                model=actual_model or chosen.name,
+                provider=provider_name,
+                model=model_name,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_ms=latency_ms,
-                cost_usd=cost_for_call(
-                    self.repo,
-                    chosen.name,
-                    actual_model or chosen.name,
-                    tokens_in,
-                    tokens_out,
-                ),
+                cost_usd=cost_usd,
                 outcome=outcome,
                 error_kind=error_kind,
                 error_detail=error_detail,
-                prompt_hash=stable_hash(prompt_text),
+                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
                 response_hash=stable_hash(full_text),
                 correlation_id=(correlation_id := hooks.current_correlation_id()),
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
             self._writer.submit(call)
-            hooks.notify_call_observers(_call_event(
+            _fire_call_hooks(_call_event(
                 call_id=call_id, correlation_id=correlation_id,
                 project=self.config.project, workload=workload,
-                provider=chosen.name, model=actual_model or chosen.name,
+                provider=provider_name, model=model_name,
                 outcome=outcome.value, tokens_in=tokens_in,
                 tokens_out=tokens_out, latency_ms=latency_ms,
                 cost_usd=call.cost_usd,
                 temperature=temperature, max_tokens=max_tokens,
                 error_kind=error_kind,
+                short_circuited=short_circuited,
             ))
 
     def _pick_stream_provider(self, name: str | None):
