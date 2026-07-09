@@ -21,6 +21,7 @@ from somm.cli import (
     build_parser,
     main,
 )
+from somm.providers.base import ProviderHealth
 from somm_core.config import Config
 from somm_core.models import Call, Outcome
 from somm_core.repository import Repository
@@ -365,3 +366,29 @@ def test_doctor_reports_schema_and_no_db(tmp_path, capsys, monkeypatch):
     assert "project: doctor-test" in out
     # db shouldn't exist at this path yet
     assert "exists:" in out
+
+
+def test_doctor_reports_worker_heartbeats(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO worker_heartbeat "
+            "(worker_name, last_run_at, last_success_at, consecutive_failures) "
+            "VALUES ('shadow_eval', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)"
+        )
+
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr(
+        "somm.cli.OllamaProvider.health",
+        lambda self: ProviderHealth(available=True, detail="ok"),
+    )
+
+    rc = main(["doctor"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "worker_heartbeat:" in out
+    assert "shadow_eval" in out
+    assert "last_run_at" in out
+    assert "last_success_at" in out

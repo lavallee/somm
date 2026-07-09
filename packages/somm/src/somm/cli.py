@@ -597,22 +597,25 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             age = _age_since(latest) if latest else "—"
             print(f"  {src:<16} {len(entries):>5} models   latest {age}")
 
-    # Worker heartbeats (from `jobs` table)
+    # Worker heartbeats
     with repo._open() as conn:
-        jobs_rows = conn.execute(
-            "SELECT job_name, last_started_at, last_success_at, "
-            "       consecutive_failures, interval_seconds, due_at, locked_until "
-            "FROM jobs ORDER BY job_name"
+        heartbeat_rows = conn.execute(
+            "SELECT worker_name, last_run_at, last_success_at, consecutive_failures "
+            "FROM worker_heartbeat ORDER BY worker_name"
         ).fetchall()
-    if not jobs_rows:
-        print("workers: not yet started (start `somm serve` to seed + run)")
+    if not heartbeat_rows:
+        print("worker_heartbeat: no heartbeats recorded")
     else:
-        print("workers:")
-        for r in jobs_rows:
-            name, started, success, failures, interval, due_at, locked_until = r
-            status = "ok" if failures == 0 else f"WARN ({failures} failures)"
-            last_ok = _age_since(success) if success else "never"
-            print(f"  {name:<14} last_ok={last_ok:<20} interval={interval}s  {status}")
+        print("worker_heartbeat:")
+        print(
+            f"  {'worker_name':<16} {'last_run_at':<19} "
+            f"{'last_success_at':<19} consecutive_failures"
+        )
+        for name, last_run_at, last_success_at, failures in heartbeat_rows:
+            print(
+                f"  {name[:15]:<16} {(last_run_at or 'never'):<19} "
+                f"{(last_success_at or 'never'):<19} {failures}"
+            )
 
     # Cooldowns
     with repo._open() as conn:

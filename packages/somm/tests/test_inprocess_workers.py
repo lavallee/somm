@@ -86,6 +86,54 @@ def test_dormant_loop_warning_fires_once(tmp_path, monkeypatch):
     assert len(warnings) == 1  # once per DB per process
 
 
+def test_dormant_loop_warning_silent_with_fresh_heartbeat(tmp_path, monkeypatch):
+    monkeypatch.setattr(client_mod, "_warned_dormant_loop", set())
+    cfg = _tmp_config(tmp_path)
+
+    llm = SommLLM(providers=[FakeProvider()], config=cfg)
+    wl = llm.repo.register_workload(name="graded", project=cfg.project)
+    with llm.repo._open() as conn:
+        conn.execute(
+            "UPDATE workloads SET shadow_config_json = '{}' WHERE id = ?", (wl.id,)
+        )
+        conn.execute(
+            "INSERT INTO worker_heartbeat "
+            "(worker_name, last_run_at, last_success_at, consecutive_failures) "
+            "VALUES ('shadow_eval', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)"
+        )
+
+    monkeypatch.setattr(client_mod, "_warned_dormant_loop", set())
+    buf = io.StringIO()
+    with redirect_stderr(buf):
+        SommLLM(providers=[FakeProvider()], config=cfg)
+    assert "online eval is configured" not in buf.getvalue()
+
+
+def test_dormant_loop_warning_fires_for_stale_heartbeat(tmp_path, monkeypatch):
+    monkeypatch.setattr(client_mod, "_warned_dormant_loop", set())
+    cfg = _tmp_config(tmp_path)
+
+    llm = SommLLM(providers=[FakeProvider()], config=cfg)
+    wl = llm.repo.register_workload(name="graded", project=cfg.project)
+    with llm.repo._open() as conn:
+        conn.execute(
+            "UPDATE workloads SET shadow_config_json = '{}' WHERE id = ?", (wl.id,)
+        )
+        conn.execute(
+            "INSERT INTO worker_heartbeat "
+            "(worker_name, last_run_at, last_success_at, consecutive_failures) "
+            "VALUES ('shadow_eval', datetime('now', '-8 days'), NULL, 0)"
+        )
+
+    monkeypatch.setattr(client_mod, "_warned_dormant_loop", set())
+    buf = io.StringIO()
+    with redirect_stderr(buf):
+        SommLLM(providers=[FakeProvider()], config=cfg)
+    warning = buf.getvalue()
+    assert "online eval is configured" in warning
+    assert "workers have not run since" in warning
+
+
 def test_no_warning_without_shadow_config(tmp_path, monkeypatch):
     monkeypatch.setattr(client_mod, "_warned_dormant_loop", set())
     cfg = _tmp_config(tmp_path)

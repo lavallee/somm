@@ -20,6 +20,8 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from somm_service.workers._heartbeat import beat
+
 if TYPE_CHECKING:
     from somm_core.repository import Repository
 
@@ -105,6 +107,7 @@ class Scheduler:
 
     def tick(self) -> list[str]:
         """Run one scheduling pass. Returns the list of job_names executed."""
+        beat(self.repo, "scheduler", None)
         executed: list[str] = []
         for job_name in self._fetch_due():
             if not self._claim(job_name):
@@ -117,10 +120,12 @@ class Scheduler:
             try:
                 worker.run_once()
                 self._mark_success(job_name)
+                beat(self.repo, job_name, True)
                 executed.append(job_name)
             except Exception as e:
                 _log.warning("scheduler: %s failed: %s", job_name, e)
                 self._mark_failure(job_name)
+                beat(self.repo, job_name, False)
         return executed
 
     # ------------------------------------------------------------------

@@ -12,6 +12,7 @@ from somm_core.config import load as load_config
 from somm_core.repository import Repository
 
 from somm_service.app import run_server
+from somm_service.workers._heartbeat import beat
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,7 +63,12 @@ def _cmd_refresh_intel(args: argparse.Namespace) -> int:
     repo = Repository(cfg.db_path)
     worker = ModelIntelWorker(repo, ollama_url=cfg.ollama_url)
     print(f"refreshing model_intel (db={cfg.db_path})...")
-    summary = worker.run_once()
+    try:
+        summary = worker.run_once()
+    except Exception:
+        beat(repo, "model_intel", False)
+        raise
+    beat(repo, "model_intel", not bool(summary["errors"]))
     print(f"  openrouter: {summary['openrouter']} models")
     print(f"  ollama:     {summary['ollama']} models")
     print(f"  static:     {summary['static']} models")
@@ -75,7 +81,12 @@ def _cmd_refresh_intel(args: argparse.Namespace) -> int:
     # fresh rows. Off by default; opt in via --hf or SOMM_ENABLE_HF_INTEL=1.
     hf_worker = HuggingFaceIntelWorker(repo, enabled=args.hf or None)
     if hf_worker.enabled:
-        hf_summary = hf_worker.run_once()
+        try:
+            hf_summary = hf_worker.run_once()
+        except Exception:
+            beat(repo, "hf_intel", False)
+            raise
+        beat(repo, "hf_intel", not bool(hf_summary["errors"]))
         print(
             f"  hf:         {hf_summary['enriched']} enriched, "
             f"{hf_summary['skipped']} skipped, {hf_summary['errors']} errored"
@@ -89,7 +100,12 @@ def _cmd_run_agent(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
     repo = Repository(cfg.db_path)
     worker = AgentWorker(repo, window_days=args.window_days)
-    summary = worker.run_once()
+    try:
+        summary = worker.run_once()
+    except Exception:
+        beat(repo, "agent", False)
+        raise
+    beat(repo, "agent", True)
     print(f"agent: considered {summary['considered']}, wrote {summary['written']} rec(s)")
     for action, count in summary["by_action"].items():
         print(f"  {action}: {count}")
@@ -104,7 +120,12 @@ def _cmd_run_shadow(args: argparse.Namespace) -> int:
     # Same worker the scheduler builds — full gold chain (all keyed
     # providers + CLI executors), SOMM_PROVIDER_ORDER deliberately ignored.
     worker = build_workers_factory(cfg, repo)("shadow_eval")
-    summary = worker.run_once()
+    try:
+        summary = worker.run_once()
+    except Exception:
+        beat(repo, "shadow_eval", False)
+        raise
+    beat(repo, "shadow_eval", not bool(summary["errors"]))
     print(f"shadow-eval: graded {summary['calls_graded']} call(s)")
     for k, v in summary.items():
         if k == "errors":

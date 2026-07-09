@@ -162,15 +162,29 @@ def _warn_if_intelligence_loop_dormant(config: Config, repo: Repository) -> None
             ).fetchone()[0]
             if not shadow_n:
                 return
-            heartbeat_n = conn.execute(
-                "SELECT COUNT(*) FROM worker_heartbeat"
-            ).fetchone()[0]
+            heartbeat_n, newest_run_at, is_stale = conn.execute(
+                "SELECT COUNT(*), MAX(last_run_at), "
+                "       CASE "
+                "         WHEN MAX(last_run_at) IS NOT NULL "
+                "          AND julianday('now') - julianday(MAX(last_run_at)) > 7 "
+                "         THEN 1 ELSE 0 "
+                "       END "
+                "FROM worker_heartbeat"
+            ).fetchone()
         if heartbeat_n == 0:
             print(
                 f"[somm] online eval is configured for {shadow_n} workload(s) "
                 f"but no worker has ever run — sampled calls are piling up "
                 f"ungraded. Run `somm serve`, `somm-serve admin run-shadow`, "
                 f"or set SOMM_INPROCESS_WORKERS=1.",
+                file=sys.stderr,
+            )
+        elif is_stale:
+            print(
+                f"[somm] online eval is configured for {shadow_n} workload(s) "
+                f"but workers have not run since {newest_run_at} — sampled "
+                f"calls may be piling up ungraded. Run `somm serve`, "
+                f"`somm-serve admin run-shadow`, or set SOMM_INPROCESS_WORKERS=1.",
                 file=sys.stderr,
             )
     except Exception:

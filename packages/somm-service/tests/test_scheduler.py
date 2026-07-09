@@ -90,6 +90,49 @@ def test_tick_runs_due_workers(tmp_path):
     assert w.runs == 1
 
 
+def test_tick_writes_scheduler_and_worker_heartbeats(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    w = _RecordingWorker("model_intel")
+    sched = Scheduler(repo, _workers_factory({"model_intel": w}))
+    sched.seed([("model_intel", 3600)])
+
+    executed = sched.tick()
+
+    assert executed == ["model_intel"]
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT worker_name, last_run_at, last_success_at, consecutive_failures "
+            "FROM worker_heartbeat ORDER BY worker_name"
+        ).fetchall()
+    by_name = {r[0]: r for r in rows}
+    assert set(by_name) == {"model_intel", "scheduler"}
+    assert by_name["scheduler"][1] is not None
+    assert by_name["scheduler"][2] is None
+    assert by_name["scheduler"][3] == 0
+    assert by_name["model_intel"][1] is not None
+    assert by_name["model_intel"][2] is not None
+    assert by_name["model_intel"][3] == 0
+
+
+def test_tick_failure_writes_failed_worker_heartbeat(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    w = _RecordingWorker("model_intel", should_raise=True)
+    sched = Scheduler(repo, _workers_factory({"model_intel": w}))
+    sched.seed([("model_intel", 3600)])
+
+    assert sched.tick() == []
+    assert sched.tick() == []
+
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT last_run_at, last_success_at, consecutive_failures "
+            "FROM worker_heartbeat WHERE worker_name = 'model_intel'"
+        ).fetchone()
+    assert row[0] is not None
+    assert row[1] is None
+    assert row[2] == 1
+
+
 def test_tick_doesnt_run_not_due_jobs(tmp_path):
     repo = _tmp_repo(tmp_path)
     w = _RecordingWorker("agent")
