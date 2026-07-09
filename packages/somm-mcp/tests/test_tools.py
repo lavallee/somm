@@ -341,6 +341,46 @@ async def test_recommend_with_open_rec(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_mcp_inbox_apply_records_decision_and_policy(tmp_path):
+    from somm_mcp.server import build_server
+
+    cfg = _tmp_cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="w_apply", project=cfg.project)
+    evidence = {
+        "workload": "w_apply",
+        "current": {"provider": "ollama", "model": "slow"},
+        "candidate": {"provider": "openrouter", "model": "fast"},
+    }
+    with repo._open() as conn:
+        rec_id = conn.execute(
+            "INSERT INTO recommendations "
+            "(workload_id, action, evidence_json, expected_impact, confidence) "
+            "VALUES (?, 'switch_model', ?, 'better quality', 0.8)",
+            (wl.id, json.dumps(evidence)),
+        ).lastrowid
+
+    server = build_server(cfg)
+    inbox = await _call(server, "somm_inbox")
+    assert inbox["count"] == 1
+    assert inbox["recommendations"][0]["id"] == rec_id
+
+    applied = await _call(server, "somm_apply_recommendation", recommendation_id=rec_id)
+    assert applied["ok"] is True
+    assert applied["revision"] == 2
+    assert applied["policy"]["fallback"][0] == {
+        "provider": "openrouter",
+        "model": "fast",
+    }
+    refreshed = repo.workload_by_name("w_apply", cfg.project)
+    assert refreshed.policy == applied["policy"]
+    assert repo.search_decisions(workload="w_apply")[0].chosen_model == "fast"
+
+    after = await _call(server, "somm_inbox")
+    assert after["count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_recommend_shadow_ranking(tmp_path):
     from somm_mcp.server import build_server
 

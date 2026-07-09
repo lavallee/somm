@@ -124,7 +124,8 @@ def test_apply_rec(client_with_rec):
     )
     assert blocked_rebind.status_code == 403
 
-    # Verify applied_at set
+    # Verify applied_at set and that apply wrote the workload policy revision
+    # plus a decision row; this is not a mere "mark read" endpoint.
     repo = app.state.repo
     with repo._open() as conn:
         row = conn.execute(
@@ -132,6 +133,12 @@ def test_apply_rec(client_with_rec):
             (rec_id,),
         ).fetchone()
     assert row[0] is not None
+    refreshed = repo.workload_by_name("demo_w", cfg.project)
+    assert refreshed.policy["fallback"][0] == {"provider": "ollama", "model": "fast"}
+    decisions = repo.search_decisions(workload="demo_w")
+    assert len(decisions) == 1
+    assert decisions[0].chosen_provider == "ollama"
+    assert decisions[0].chosen_model == "fast"
 
 
 def test_xss_in_recommendation_evidence_is_escaped(tmp_path):

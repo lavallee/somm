@@ -34,6 +34,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from somm.recommendations import (
+    apply_recommendation,
+    dismiss_recommendation,
+    list_recommendations,
+)
 from somm_core import VERSION
 from somm_core.config import Config
 from somm_core.config import load as load_config
@@ -411,33 +416,11 @@ def _esc(s: str) -> str:
 
 def _list_recommendations(repo: Repository) -> list[dict]:
     """Open (undismissed, unapplied) recommendations, newest first."""
-    with repo._open() as conn:
-        rows = conn.execute(
-            "SELECT r.id, r.workload_id, w.name, r.action, r.evidence_json, "
-            "       r.expected_impact, r.confidence, r.created_at "
-            "FROM recommendations r "
-            "LEFT JOIN workloads w ON w.id = r.workload_id "
-            "WHERE r.dismissed_at IS NULL AND r.applied_at IS NULL "
-            "ORDER BY r.created_at DESC LIMIT 10"
-        ).fetchall()
     out = []
-    for r in rows:
-        try:
-            evidence = json.loads(r[4]) if r[4] else {}
-        except json.JSONDecodeError:
-            evidence = {}
-        out.append(
-            {
-                "id": r[0],
-                "workload_id": r[1],
-                "workload": r[2] or "(unknown)",
-                "action": r[3],
-                "evidence": evidence,
-                "expected_impact": r[5] or "",
-                "confidence": r[6] or 0,
-                "created_at": r[7],
-            }
-        )
+    for rec in list_recommendations(repo, open_only=True)[:10]:
+        row = rec.as_dict()
+        row["confidence"] = row["confidence"] or 0
+        out.append(row)
     return out
 
 
@@ -603,25 +586,33 @@ async def _api_recommendations(request: Request) -> JSONResponse:
 async def _api_rec_dismiss(request: Request) -> JSONResponse:
     repo: Repository = request.app.state.repo
     rec_id = int(request.path_params["rec_id"])
-    with repo._open() as conn:
-        conn.execute(
-            "UPDATE recommendations SET dismissed_at = CURRENT_TIMESTAMP "
-            "WHERE id = ? AND dismissed_at IS NULL",
-            (rec_id,),
-        )
+    try:
+        dismiss_recommendation(repo, rec_id)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     return JSONResponse({"ok": True, "id": rec_id})
 
 
 async def _api_rec_apply(request: Request) -> JSONResponse:
     repo: Repository = request.app.state.repo
     rec_id = int(request.path_params["rec_id"])
-    with repo._open() as conn:
-        conn.execute(
-            "UPDATE recommendations SET applied_at = CURRENT_TIMESTAMP "
-            "WHERE id = ? AND applied_at IS NULL",
-            (rec_id,),
+    cfg: Config = request.app.state.config
+    mirror_repo = None
+    if cfg.cross_project_enabled:
+        try:
+            mirror_repo = Repository(cfg.global_db_path)
+        except Exception:
+            mirror_repo = None
+    try:
+        result = apply_recommendation(
+            repo,
+            rec_id,
+            actor="somm web",
+            mirror_repo=mirror_repo,
         )
-    return JSONResponse({"ok": True, "id": rec_id})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse(result.as_dict())
 
 
 async def _api_version(request: Request) -> JSONResponse:

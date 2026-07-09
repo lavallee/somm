@@ -1,10 +1,15 @@
-"""FastMCP server — exposes 11 tools to coding agents.
+"""FastMCP server — exposes 14 tools to coding agents.
 
 Tool catalog:
   somm_stats              — rolled-up call counts per (workload, provider, model)
   somm_search_calls       — query the call log by filters
   somm_recommend          — open recommendations + shadow-eval ranking
                             (+ cold-start sommelier candidates when sparse)
+  somm_inbox              — list recommendation inbox items
+  somm_apply_recommendation
+                          — apply a recommendation and record a decision
+  somm_dismiss_recommendation
+                          — dismiss a recommendation
   somm_advise             — sommelier: free-form candidate ranking by
                             capability / price / provider / workload
   somm_record_decision    — persist the outcome of a sommelier conversation
@@ -162,6 +167,63 @@ def build_server(
             if not ranked
             else None,
         }
+
+    # ------------------------------------------------------------------
+    # somm_inbox / recommendation consumption
+
+    @server.tool()
+    def somm_inbox(workload: str | None = None, include_closed: bool = False) -> dict:
+        """List recommendation inbox items for the current project.
+
+        Args:
+            workload: optional workload name or workload id.
+            include_closed: include dismissed/applied items when true.
+        """
+        from somm.recommendations import list_recommendations
+
+        recs = list_recommendations(
+            repo,
+            project=cfg.project,
+            workload=workload,
+            open_only=not include_closed,
+        )
+        return {
+            "project": cfg.project,
+            "count": len(recs),
+            "recommendations": [rec.as_dict() for rec in recs],
+        }
+
+    @server.tool()
+    def somm_apply_recommendation(recommendation_id: int) -> dict:
+        """Apply one recommendation.
+
+        Successful applies update the workload routing policy when the
+        recommendation has a concrete candidate, stamp `applied_at`, and record
+        a mirrored decision so future `somm_advise` calls can cite it.
+        """
+        from somm.recommendations import apply_recommendation
+
+        try:
+            result = apply_recommendation(
+                repo,
+                recommendation_id,
+                actor="mcp:somm_apply_recommendation",
+                mirror_repo=_global_repo(cfg),
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "id": recommendation_id}
+        return result.as_dict()
+
+    @server.tool()
+    def somm_dismiss_recommendation(recommendation_id: int) -> dict:
+        """Dismiss one recommendation without changing workload policy."""
+        from somm.recommendations import dismiss_recommendation
+
+        try:
+            rec = dismiss_recommendation(repo, recommendation_id)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "id": recommendation_id}
+        return {"ok": True, "id": rec.id, "workload": rec.workload}
 
     # ------------------------------------------------------------------
     # somm_advise  (sommelier — free-form candidate ranking)

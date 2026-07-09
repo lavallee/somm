@@ -16,6 +16,7 @@ Commands:
   somm eval            promote calls to datasets and run eval gates
   somm optimize        propose a prompt fork from failing graded calls
   somm campaign        run durable experiment campaigns
+  somm inbox           list, apply, and dismiss recommendations
   somm plugin          list and inspect plugins, hooks, and providers
 """
 
@@ -823,6 +824,100 @@ def _print_campaign_run(result, *, log_path: str | None = None) -> None:
             f"{event.sequence:>3} {event.event_type:<18} {event.action:<7} "
             f"{score:>7} {event.total_tokens:>8} {run:<10}"
         )
+
+
+# ---------------------------------------------------------------------------
+# somm inbox
+
+
+def _decision_mirror_repo(cfg):
+    if not getattr(cfg, "cross_project_enabled", False):
+        return None
+    try:
+        return Repository(cfg.global_db_path)
+    except Exception:
+        return None
+
+
+def _cmd_inbox_list(args: argparse.Namespace) -> int:
+    from somm.recommendations import list_recommendations
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    recs = list_recommendations(
+        repo,
+        project=cfg.project,
+        workload=args.workload,
+        open_only=not args.all,
+    )
+    if args.json:
+        print(json.dumps([rec.as_dict() for rec in recs], indent=2))
+        return 0
+    if not recs:
+        print("no recommendations")
+        return 0
+    print(
+        f"{'id':>5} {'workload':<24} {'action':<18} "
+        f"{'conf':>6} {'state':<9} impact"
+    )
+    for rec in recs:
+        if rec.applied_at:
+            state = "applied"
+        elif rec.dismissed_at:
+            state = "dismissed"
+        else:
+            state = "open"
+        confidence = "-" if rec.confidence is None else f"{rec.confidence:.2f}"
+        print(
+            f"{rec.id:>5} {rec.workload[:23]:<24} {rec.action:<18} "
+            f"{confidence:>6} {state:<9} {rec.expected_impact}"
+        )
+    return 0
+
+
+def _cmd_inbox_apply(args: argparse.Namespace) -> int:
+    from somm.recommendations import apply_recommendation
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    try:
+        result = apply_recommendation(
+            repo,
+            args.recommendation_id,
+            actor="somm inbox",
+            mirror_repo=_decision_mirror_repo(cfg),
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2))
+    else:
+        print(
+            f"applied recommendation {result.recommendation.id} "
+            f"for {result.recommendation.workload}"
+        )
+        print(f"decision_id: {result.decision.id}")
+        if result.revision is not None:
+            print(f"workload_revision: {result.revision}")
+    return 0
+
+
+def _cmd_inbox_dismiss(args: argparse.Namespace) -> int:
+    from somm.recommendations import dismiss_recommendation
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    try:
+        rec = dismiss_recommendation(repo, args.recommendation_id)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(rec.as_dict(), indent=2))
+    else:
+        print(f"dismissed recommendation {rec.id} for {rec.workload}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -2025,6 +2120,27 @@ def build_parser() -> argparse.ArgumentParser:
     pcamp_run.add_argument("--log", default=None)
     pcamp_run.add_argument("--json", action="store_true")
     pcamp_run.set_defaults(func=_cmd_campaign_run)
+
+    pinbox = sub.add_parser("inbox", help="list, apply, and dismiss recommendations")
+    pinbox_sub = pinbox.add_subparsers(dest="inbox_cmd", required=True)
+    pinbox_list = pinbox_sub.add_parser("list", help="list recommendations")
+    pinbox_list.add_argument("--project", default=None)
+    pinbox_list.add_argument("--workload", default=None)
+    pinbox_list.add_argument("--all", action="store_true")
+    pinbox_list.add_argument("--json", action="store_true")
+    pinbox_list.set_defaults(func=_cmd_inbox_list)
+
+    pinbox_apply = pinbox_sub.add_parser("apply", help="apply a recommendation")
+    pinbox_apply.add_argument("recommendation_id", type=int)
+    pinbox_apply.add_argument("--project", default=None)
+    pinbox_apply.add_argument("--json", action="store_true")
+    pinbox_apply.set_defaults(func=_cmd_inbox_apply)
+
+    pinbox_dismiss = pinbox_sub.add_parser("dismiss", help="dismiss a recommendation")
+    pinbox_dismiss.add_argument("recommendation_id", type=int)
+    pinbox_dismiss.add_argument("--project", default=None)
+    pinbox_dismiss.add_argument("--json", action="store_true")
+    pinbox_dismiss.set_defaults(func=_cmd_inbox_dismiss)
 
     pp = sub.add_parser("plugin", help="list and inspect plugins, hooks, and providers")
     pp_sub = pp.add_subparsers(dest="plugin_cmd", required=True)
