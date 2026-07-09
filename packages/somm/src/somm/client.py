@@ -28,6 +28,9 @@ from somm_core.parse import (
     infer_capabilities,
     stable_hash,
 )
+from somm_core.parse import (
+    prompt_id as _prompt_id,
+)
 from somm_core.plans import load_plans
 from somm_core.pricing import seed_known_pricing, sync_bundled_pricing
 from somm_core.registry import fleet_db_paths, register_project
@@ -35,7 +38,7 @@ from somm_core.repository import Repository
 
 from somm import hooks
 from somm.errors import SommStrictMode as _SommStrictMode
-from somm.prompts import get_prompt, register_prompt
+from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt
 from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import (
     SommEmbedRequest,
@@ -483,6 +486,7 @@ class SommLLM:
 
         self.repo = Repository(self.config.db_path)
         self._shadow_cfg_cache: dict[str, tuple[float, dict | None]] = {}
+        self._prompt_ids_cache: dict[str, tuple[float, set[str]]] = {}
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
         self._plan_governor = _build_plan_governor(self.config)
@@ -575,6 +579,35 @@ class SommLLM:
         self._shadow_cfg_cache[workload_id] = (now + 300.0, cfg)
         return cfg
 
+    def _known_prompt_ids_cached(self, workload_id: str) -> set[str]:
+        """Registered prompt ids with a 5-minute in-process cache.
+
+        Plain-string prompt binding runs on the call path; cache misses cost
+        one indexed workload lookup per TTL window and failures degrade empty.
+        """
+        now = time.monotonic()
+        cached = self._prompt_ids_cache.get(workload_id)
+        if cached and cached[0] > now:
+            return cached[1]
+        try:
+            ids = prompt_ids_for_workload(self.repo, workload_id)
+        except Exception:
+            ids = set()
+        self._prompt_ids_cache[workload_id] = (now + 300.0, ids)
+        return ids
+
+    def _resolve_prompt_id(self, workload_id: str | None, prompt) -> str | None:
+        """Best-effort call-row prompt binding. Never raises."""
+        try:
+            if isinstance(prompt, Prompt):
+                return prompt.id
+            if workload_id is None or not isinstance(prompt, str):
+                return None
+            pid = _prompt_id(prompt)
+            return pid if pid in self._known_prompt_ids_cached(workload_id) else None
+        except Exception:
+            return None
+
     def _maybe_capture_sample(
         self, wl, call_id: str, prompt, messages, text: str, outcome
     ) -> None:
@@ -632,7 +665,7 @@ class SommLLM:
 
     def generate(
         self,
-        prompt: str | list[dict],
+        prompt: str | list[dict] | Prompt,
         system: str = "",
         workload: str = "default",
         max_tokens: int = 256,
@@ -651,6 +684,9 @@ class SommLLM:
 
         demo mode: auto-registers unknown workloads as 'ad_hoc' equivalents.
         strict mode: raises SommStrictMode if workload isn't registered.
+        ``prompt`` may be a string, multimodal prompt list, or registered
+        ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
+        that prompt version on the telemetry row.
 
         ``no_fallback``: when a ``provider`` is pinned, suppress the normal
         rescue path through the router chain. The pinned (provider, model)
@@ -708,14 +744,17 @@ class SommLLM:
         # workload's daily cap is reached (inert unless budget_fail_closed).
         self._enforce_budget(wl)
 
+        prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
+        call_prompt_id = None if messages is not None else self._resolve_prompt_id(wl.id, prompt)
+
         effective_caps = _merge_caps(
             wl.capabilities_required,
             capabilities_required,
-            infer_capabilities(prompt),
+            infer_capabilities(prompt_text),
         )
 
         req = SommRequest(
-            prompt=prompt,
+            prompt=prompt_text,
             system=system,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -893,7 +932,7 @@ class SommLLM:
             ts=ts,
             project=self.config.project,
             workload_id=wl.id,
-            prompt_id=None,  # D2b: prompt versioning lands with register_prompt
+            prompt_id=call_prompt_id,
             provider=actual_provider,
             model=actual_model,
             tokens_in=tokens_in,
@@ -906,14 +945,14 @@ class SommLLM:
             # Multi-turn calls pass `messages` and a placeholder `prompt`;
             # hash the actual conversation so replay/cache/dedup keys off
             # real content rather than an ignored arg.
-            prompt_hash=stable_hash(messages if messages is not None else prompt),
+            prompt_hash=stable_hash(messages if messages is not None else prompt_text),
             response_hash=stable_hash(text),
             correlation_id=(correlation_id := hooks.current_correlation_id()),
             temperature=temperature,
             max_tokens=max_tokens,
         )
         self._writer.submit(call)
-        self._maybe_capture_sample(wl, call_id, prompt, messages, text, outcome)
+        self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
         hooks.notify_call_observers(_call_event(
             call_id=call_id, correlation_id=correlation_id,
             project=self.config.project, workload=workload,
@@ -1175,7 +1214,7 @@ class SommLLM:
 
     def stream(
         self,
-        prompt: str | list[dict],
+        prompt: str | list[dict] | Prompt,
         system: str = "",
         workload: str = "default",
         max_tokens: int = 256,
@@ -1189,6 +1228,9 @@ class SommLLM:
         Telemetry is written after the stream completes. No mid-stream
         router fallback in v0.1 — first non-cooled provider handles the
         whole stream or errors out.
+        ``prompt`` may be a string, multimodal prompt list, or registered
+        ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
+        that prompt version on the telemetry row.
 
         Usage:
             for piece in llm.stream("tell a story", workload="story"):
@@ -1198,8 +1240,10 @@ class SommLLM:
 
         wl = self._require_workload(workload)
         self._enforce_budget(wl)
+        prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
+        call_prompt_id = self._resolve_prompt_id(wl.id, prompt)
         req = SommRequest(
-            prompt=prompt,
+            prompt=prompt_text,
             system=system,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -1237,7 +1281,7 @@ class SommLLM:
             text = "".join(collected)
             if not actual_model:
                 actual_model = chosen.name
-            tokens_in = chosen.estimate_tokens(prompt, actual_model) + chosen.estimate_tokens(
+            tokens_in = chosen.estimate_tokens(prompt_text, actual_model) + chosen.estimate_tokens(
                 system, actual_model
             )
             tokens_out = chosen.estimate_tokens(text, actual_model)
@@ -1265,7 +1309,7 @@ class SommLLM:
                 ts=ts,
                 project=self.config.project,
                 workload_id=wl.id,
-                prompt_id=None,
+                prompt_id=call_prompt_id,
                 provider=chosen.name,
                 model=actual_model or chosen.name,
                 tokens_in=tokens_in,
@@ -1281,7 +1325,7 @@ class SommLLM:
                 outcome=outcome,
                 error_kind=error_kind,
                 error_detail=error_detail,
-                prompt_hash=stable_hash(prompt),
+                prompt_hash=stable_hash(prompt_text),
                 response_hash=stable_hash(full_text),
                 correlation_id=(correlation_id := hooks.current_correlation_id()),
                 temperature=temperature,
@@ -1314,7 +1358,7 @@ class SommLLM:
 
     def extract_structured(
         self,
-        prompt: str,
+        prompt: str | Prompt,
         system: str = "",
         workload: str = "default",
         max_tokens: int = 512,
@@ -1329,6 +1373,9 @@ class SommLLM:
         Handles markdown fences, bracket-balanced extraction, qwen2.5 double-
         quote quirk, `<think>` blocks (already stripped by adapters), control
         chars, and unescaped newlines.
+        ``prompt`` may be a string or registered ``Prompt`` object; the
+        generate call records the prompt version when one is provided or
+        hash-matched.
 
         On parse failure, retries up to `retries` more times. Each retry bumps
         temperature by `temperature_jitter` to break deterministic bad output.
@@ -1372,7 +1419,9 @@ class SommLLM:
             bump: "minor" (default), "major", or an explicit version "vN".
         """
         wl = self._require_workload(workload)
-        return register_prompt(self.repo, wl.id, body, bump=bump)
+        prompt = register_prompt(self.repo, wl.id, body, bump=bump)
+        self._prompt_ids_cache.pop(wl.id, None)
+        return prompt
 
     def prompt(self, workload: str, version: str = "latest") -> Prompt:
         """Fetch a prompt by workload + version.

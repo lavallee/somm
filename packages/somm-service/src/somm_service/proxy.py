@@ -339,6 +339,7 @@ async def messages_endpoint(request: Request) -> JSONResponse:
         ts=ts,
         project=project,
         workload_id=workload.id,
+        # Anthropic messages bodies do not correspond to registered prompt bodies; binding is a library-path feature.
         prompt_id=None,
         provider=provider,
         model=model_only,
