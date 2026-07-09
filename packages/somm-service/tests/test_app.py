@@ -182,3 +182,41 @@ def test_service_token_env_override_takes_precedence(tmp_path, monkeypatch):
     assert service_token.value == "env-token"
     assert service_token.source == "env"
     assert token_path.read_text(encoding="utf-8").strip() == "file-token"
+
+
+def test_service_token_never_empty_on_zero_byte_file(tmp_path, monkeypatch):
+    """A pre-existing empty token file must not yield an empty token — a
+    bare 'Bearer ' would otherwise authenticate."""
+    monkeypatch.delenv("SOMM_SERVICE_TOKEN", raising=False)
+    cfg = _tmp_config(tmp_path)
+    token_path = cfg.db_dir / "service_token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("", encoding="utf-8")  # zero-byte: a half-written race
+
+    service_token = load_service_token(cfg)
+
+    assert service_token.value  # non-empty
+    assert token_path.read_text(encoding="utf-8").strip() == service_token.value
+
+
+@pytest.mark.parametrize(
+    "host,ok",
+    [
+        ("localhost", True),
+        ("localhost:7878", True),
+        ("127.0.0.1", True),
+        ("127.0.0.1:7878", True),
+        ("127.5.5.5", True),
+        ("[::1]", True),
+        ("[::1]:7878", True),
+        ("127.0.0.1.attacker.com", False),  # the rebinding-name bypass
+        ("localhost.attacker.com", False),
+        ("attacker.example", False),
+        ("10.0.0.5", False),
+        ("", False),
+    ],
+)
+def test_host_is_loopback_rejects_rebinding_names(host, ok):
+    from somm_service.app import _host_is_loopback
+
+    assert _host_is_loopback(host) is ok

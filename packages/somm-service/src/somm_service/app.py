@@ -22,11 +22,14 @@ model_intel / shadow_eval / agent workers on their cadences.
 
 from __future__ import annotations
 
+import contextlib
 import html
+import ipaddress
 import json
 import os
 import secrets
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -73,28 +76,52 @@ def load_service_token(cfg: Config) -> ServiceToken:
     if env_token:
         return ServiceToken(value=env_token, path=token_path, source="env")
 
-    if token_path.exists():
-        return ServiceToken(
-            value=token_path.read_text(encoding="utf-8").strip(),
-            path=token_path,
-            source="file",
-        )
-
     token_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    token = secrets.token_urlsafe(32)
-    try:
-        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        # Another process (e.g. a second uvicorn worker) created it between
-        # our exists() check and here — read theirs rather than crashing.
-        return ServiceToken(
-            value=token_path.read_text(encoding="utf-8").strip(),
-            path=token_path,
-            source="file",
-        )
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(token + "\n")
-    return ServiceToken(value=token, path=token_path, source="file", created=True)
+    # Claim creation with O_EXCL. The winner writes+fsyncs immediately while
+    # holding the fd; a loser (FileExistsError) reads the winner's token,
+    # retrying briefly to cover the microscopic window between create and
+    # write. A file that stays empty is corrupt/leftover, not a live race —
+    # remove it and re-claim so we never return "" (which authorizes a bare
+    # `Bearer ` header).
+    for _ in range(3):
+        try:
+            fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            existing = _read_existing_token(token_path)
+            if existing is not None:
+                return ServiceToken(value=existing, path=token_path, source="file")
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(token_path)
+            continue
+        token = secrets.token_urlsafe(32)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(token + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        return ServiceToken(value=token, path=token_path, source="file", created=True)
+    # Couldn't stabilize a file token (persistent contention/corruption) —
+    # fall back to an in-memory token so the service still starts securely.
+    return ServiceToken(
+        value=secrets.token_urlsafe(32), path=token_path, source="file", created=True
+    )
+
+
+def _read_existing_token(token_path: Path) -> str | None:
+    """Return a non-empty token from an already-published file, or None.
+
+    Retries briefly: a peer may have created the file (O_EXCL) an instant
+    before it wrote the token, so a single read could momentarily see
+    nothing. Never returns "" — an empty token would authorize a bare
+    `Bearer ` header."""
+    for _ in range(50):  # ~0.5s worst case
+        try:
+            value = token_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        if value:
+            return value
+        time.sleep(0.01)
+    return None
 
 
 def _log_service_token(token: ServiceToken, *, host: str, port: int) -> None:
@@ -119,11 +146,28 @@ def _host_is_loopback(host: str) -> bool:
     resolves to attacker.example (or a LAN IP), whose Host is never
     loopback, so a rebound page can't ride the same-origin bypass to a
     service bound on 0.0.0.0.
+
+    Matching is exact: `localhost`, or an IP literal whose address is
+    loopback (127.0.0.0/8, ::1). A prefix check would wrongly accept
+    attacker-controlled names like `127.0.0.1.attacker.com`.
     """
-    hostname = host.rsplit(":", 1)[0].strip("[]").lower() if host else ""
-    if hostname in ("localhost", "127.0.0.1", "::1"):
+    if not host:
+        return False
+    host = host.strip()
+    if host.startswith("["):  # bracketed IPv6, optional :port after ']'
+        end = host.find("]")
+        hostname = host[1:end] if end != -1 else host[1:]
+    elif host.count(":") == 1:  # host:port
+        hostname = host.rsplit(":", 1)[0]
+    else:  # bare hostname or bare IPv6 (no port)
+        hostname = host
+    hostname = hostname.lower()
+    if hostname == "localhost":
         return True
-    return hostname.startswith("127.")
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def _origin_matches_host(origin: str, host: str) -> bool:
