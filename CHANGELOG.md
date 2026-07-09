@@ -2,9 +2,43 @@
 
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 `somm` uses a single unified version across all workspace packages
-(`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
+(`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
+`somm-skill`).
 
 ## [Unreleased]
+
+## [1.0.0] — 2026-07-09
+
+### Added — the brain and launch surface (Phases 4/5)
+
+- **Recommendation inbox apply loop**: CLI, MCP, and web actions can list,
+  apply, and dismiss routing recommendations. Applying a recommendation now
+  writes a workload policy revision, records the decision, marks the
+  recommendation applied, and mirrors the decision to the global store when
+  configured.
+- **Plan/quota learning**: `somm plans --learn` derives observed ceilings from
+  quota errors, records learned limit metadata in `plans.toml`, and lets the
+  plan governor block providers whose learned limits are exhausted.
+- **Model aliasing and canonical ranking** (schema v19): `model_aliases`
+  canonicalizes equivalent model IDs across providers, dedupes sommelier
+  candidates, carries score breakdowns, and applies prior decisions against
+  the canonical model rather than one spelling.
+- **Cross-project sommelier recall**: MCP-recorded decisions from one project
+  can be cited by `somm_advise` in another project through the shared decision
+  store.
+- **Service read API and trace ingest**: the service exposes supported JSON
+  status, calls, and sessions endpoints plus authenticated OTLP trace ingest
+  for `gen_ai` spans. The dashboard also gained no-JS filters, session/trace
+  depth, and recent-call listings.
+- **Adoption CLI**: `somm status --json` emits a stable machine-readable
+  status envelope, and `somm generate` provides a one-shot generation command
+  with JSON success and error envelopes.
+- **Postgres packaging extra**: `somm[postgres]` installs the Postgres driver
+  dependency for shared deployments.
+- **Security and performance gates**: CI now runs `pip-audit`, `zizmor`, and a
+  performance budget script covering sub-30ms top-level import and sub-1ms
+  warmed hot-path p50. CLI executors use a private per-call temp cwd, and
+  parse/spool fuzz coverage exercises malformed input paths.
 
 ### Added — evals and the closed loop (Phase 3)
 

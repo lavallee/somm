@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import random
+import string
+
 from somm_core.parse import (
     extract_balanced,
     extract_cache_tokens,
@@ -95,6 +99,26 @@ def test_extract_json_with_think_block():
 
 def test_extract_json_returns_none_for_non_json():
     assert extract_json('no json here') is None
+
+
+def test_extract_json_fuzz_noise_never_raises():
+    rng = random.Random(1337)
+    alphabet = string.printable + "\x00\x07\x0b"
+    for _ in range(200):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 300)))
+        result = extract_json(text)
+        assert result is None or isinstance(result, (dict, list))
+
+
+def test_extract_json_fuzz_embedded_objects_roundtrip():
+    rng = random.Random(4242)
+    alphabet = string.ascii_letters + string.digits + " .,;:_-"
+    for idx in range(75):
+        value = "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 40)))
+        payload = {"idx": idx, "value": value}
+        prefix = "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 25)))
+        suffix = "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 25)))
+        assert extract_json(f"{prefix}\n{json.dumps(payload)}\n{suffix}") == payload
 
 
 # ---------------------------------------------------------------------------

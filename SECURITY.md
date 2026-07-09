@@ -44,3 +44,6 @@ relevant attack surfaces are:
 Out of scope: vulnerabilities that require an attacker to already have
 arbitrary code execution on the machine running somm, or that require
 physical access to the host.
+
+The detailed local threat model lives in
+[`docs/threat-model.md`](./docs/threat-model.md).

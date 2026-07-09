@@ -6,6 +6,9 @@ status-code classification, body-error handling, think-strip, auth path.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import httpx
 import pytest
 from somm.errors import (
@@ -31,6 +34,57 @@ def _patch_client(handler):
             super().__init__(*args, transport=transport, **kwargs)
 
     return _MockedClient
+
+
+def test_claude_cli_runs_in_private_temp_cwd(monkeypatch):
+    from somm.providers.claude_cli import ClaudeCLIProvider
+
+    captured: dict[str, Path] = {}
+
+    def fake_run(cmd, *, input, capture_output, text, timeout, cwd, env):
+        run_cwd = Path(cwd)
+        assert run_cwd.is_dir()
+        assert run_cwd.name.startswith("somm-claude-cli-")
+        assert "ANTHROPIC_API_KEY" not in env
+        captured["cwd"] = run_cwd
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"result":"ok","usage":{"input_tokens":1,"output_tokens":1}}',
+            stderr="",
+        )
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-pass-through")
+    monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", fake_run)
+
+    resp = ClaudeCLIProvider(binary="claude").generate(SommRequest(prompt="hi"))
+
+    assert resp.text == "ok"
+    assert captured["cwd"]
+    assert not captured["cwd"].exists()
+
+
+def test_codex_cli_runs_in_private_temp_cwd(monkeypatch):
+    from somm.providers.codex_cli import CodexCLIProvider
+
+    captured: dict[str, Path] = {}
+
+    def fake_run(cmd, *, input, capture_output, text, timeout, cwd, env):
+        run_cwd = Path(cwd)
+        assert run_cwd.is_dir()
+        assert run_cwd.name.startswith("somm-codex-cli-")
+        assert "OPENAI_API_KEY" not in env
+        captured["cwd"] = run_cwd
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "should-not-pass-through")
+    monkeypatch.setattr("somm.providers.codex_cli.subprocess.run", fake_run)
+
+    resp = CodexCLIProvider(binary="codex").generate(SommRequest(prompt="hi"))
+
+    assert resp.text == "ok"
+    assert captured["cwd"]
+    assert not captured["cwd"].exists()
 
 
 # ---------------------------------------------------------------------------

@@ -185,8 +185,12 @@ These are guardrails, not style preferences — DO NOT weaken or remove them.
 ## CLI quick reference (for debugging sessions)
 
 ```bash
-somm status --since 7        # per-workload rollup
-somm plans                   # metered quota pacing + payg burn rates (fleet-wide)
+somm status --json           # machine-readable project/global status
+somm generate "prompt" --workload ad_hoc --json
+somm plans --learn           # metered quota pacing + learned ceilings
+somm inbox list              # recommendation inbox
+somm inbox apply <id>        # apply a recommendation + record decision
+somm eval run --workload W --dataset D
 somm spend                   # today's spend vs budget caps
 somm doctor                  # config / db / intel / workers / cooldowns health
 somm backfill-costs          # recompute $0 calls after pricing intel improves
@@ -197,13 +201,21 @@ somm drain-spool             # replay telemetry spooled during db outages
 
 If the user has configured `somm-mcp` in this agent, you can call:
 - `somm_stats` — telemetry roll-up for the current project.
+- `somm_search_calls` — query the call log by filters.
 - `somm_recommend` — model recommendations grounded in local online-eval
   data, with cold-start sommelier fallback when data is sparse.
+- `somm_inbox` / `somm_apply_recommendation` /
+  `somm_dismiss_recommendation` — inspect and action routing
+  recommendations.
 - `somm_advise` — free-form candidate ranking over `model_intel` +
-  capability filters + plan headroom + past decisions. See
-  [SOMMELIER.md](./SOMMELIER.md).
+  capability filters + plan headroom + canonicalized past decisions.
+  See [SOMMELIER.md](./SOMMELIER.md).
 - `somm_record_decision` / `somm_search_decisions` — cross-project
   advisory memory for model choices.
+- `somm_register_workload` / `somm_register_prompt` — commit workload
+  definitions and prompt versions.
+- `somm_eval_promote_call` — copy a sampled call into a durable eval
+  dataset.
 - `somm_compare` — run a prompt through N models side-by-side (reaches
   every configured provider, CLI seats included).
 - `somm_replay` — replay a past call against a different model.

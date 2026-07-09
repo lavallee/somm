@@ -27,22 +27,21 @@ v1, in six phases. Three are shipped.
   `somm prompt` CLI, `generate_structured()`, trace/cache/citation
   telemetry columns, workload config revisions, and per-workload routing
   policy. Schema v10→v15, migration engine made crash-atomic.
-- **0.11 — The Proof (next).** Evals + the closed loop: graders shared
+- **0.11 — The Proof (shipped).** Evals + the closed loop: graders shared
   between the background worker and a `somm eval run` CI gate, a durable
   datasets table, a binary-rubric LLM judge, eval→selection wiring, and a
   propose-only prompt optimizer.
-- **0.12 — The Brain.** Close the intelligence loop: recommendation
+- **0.12 — The Brain (shipped).** Close the intelligence loop: recommendation
   delivery + one-command apply, plan/quota learning, sommelier ranking
   quality (model-id aliasing, decision-aware scoring, score breakdown),
   and cross-project decision recall in `advise`.
-- **1.0 — Table stakes + launch.** Session/trace UI, OTLP ingest, a
+- **1.0 — Table stakes + launch (shipped).** Session/trace UI, OTLP ingest, a
   supported JSON read API, an optional Postgres backend, and the public
   release.
 
-Cross-cutting throughout: a hot-path overhead benchmark and sub-30ms
-import target (perf), a threat-model doc and CI supply-chain checks
-(security), and a PyPI release cadence with a one-shot `somm generate`
-CLI and an installable agent skill (adoption).
+Cross-cutting 1.0 work shipped the hot-path/import performance budget,
+the threat-model doc, CI supply-chain checks, the one-shot
+`somm generate` CLI, and the installable `somm-skill` package.
 
 ## Recommendation quality
 

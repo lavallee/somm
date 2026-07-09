@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from somm_core import SCHEMA_VERSION, VERSION
 from somm_core.config import Config
 from somm_core.models import Call, Outcome
 from somm_core.repository import Repository
@@ -66,8 +67,8 @@ def test_api_version(client):
     r = c.get("/api/version")
     assert r.status_code == 200
     data = r.json()
-    assert data["version"].startswith("0.")
-    assert data["schema_version"] >= 1
+    assert data["version"] == VERSION
+    assert data["schema_version"] == SCHEMA_VERSION
 
 
 def test_api_stats_empty(client):

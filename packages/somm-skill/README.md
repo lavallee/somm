@@ -1,30 +1,35 @@
 # somm-skill
 
-Onboarding guidance for coding agents working in projects that use `somm`.
+Onboarding guidance for coding agents working in projects that use
+`somm`.
 
-`SKILL.md` is the canonical content — a Claude Code skill. Agent-specific
-variants (Codex, Cursor, Windsurf, …) live under `templates/` and are derived
-from the same core guidance.
+The package ships two markdown resources:
+
+- `SKILL.md` — general LLM-call guidance for agents editing Python code.
+- `SOMMELIER.md` — model-selection guidance for agents using `somm-mcp`.
 
 ## Installation
 
-For Claude Code:
+Install the package with the rest of the workspace:
 
 ```bash
-mkdir -p ~/.claude/skills/somm
-cp packages/somm-skill/SKILL.md ~/.claude/skills/somm/SKILL.md
+pip install somm-skill
 ```
 
-Or, once `somm mcp install --client=claude-code` lands in D2:
+For Claude Code, copy the canonical skill into the local skill folder:
 
 ```bash
-somm mcp install --client=claude-code   # installs MCP + skill in one step
+python - <<'PY'
+from importlib.resources import files
+from pathlib import Path
+import shutil
+
+target = Path.home() / ".claude" / "skills" / "somm"
+target.mkdir(parents=True, exist_ok=True)
+for name in ("SKILL.md", "SOMMELIER.md"):
+    shutil.copyfile(files("somm_skill") / name, target / name)
+PY
 ```
 
-For other agents:
-
-- **Cursor:** copy `templates/cursor.md` into `.cursor/rules/` in your project.
-- **Windsurf:** copy `templates/windsurf.md` into `.windsurf/rules/`.
-- **Codex:** copy `templates/codex.md` into your project's Codex config.
-
-(Agent-specific templates ship in D2+; v0.1 has only the canonical `SKILL.md`.)
+For other agents, use the same two markdown files as the source of
+truth and adapt only the surrounding packaging format.

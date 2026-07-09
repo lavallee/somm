@@ -314,6 +314,53 @@ def test_spool_drain_roundtrip(tmp_path):
     assert got.provider == "fake"
 
 
+def test_spool_drain_preserves_malformed_fuzz_files(tmp_path):
+    """Malformed spool files should not block valid files or disappear."""
+    import json
+    import uuid
+    from datetime import datetime
+
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    spool = cfg.spool_dir
+    spool.mkdir(parents=True, exist_ok=True)
+
+    malformed = {
+        "20260101T000000000000-bad-json.jsonl": "{not json",
+        "20260101T000000000001-string.jsonl": json.dumps("not an object"),
+        "20260101T000000000002-missing-fields.jsonl": json.dumps({"id": "missing"}),
+    }
+    for name, payload in malformed.items():
+        (spool / name).write_text(payload + "\n", encoding="utf-8")
+
+    call_id = str(uuid.uuid4())
+    row = {
+        "id": call_id,
+        "ts": datetime.now(UTC).isoformat(),
+        "project": "smoke",
+        "workload_id": None,
+        "prompt_id": None,
+        "provider": "fake",
+        "model": "fake-1",
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "latency_ms": 1,
+        "cost_usd": 0.0,
+        "outcome": "ok",
+        "error_kind": None,
+        "prompt_hash": "abcdef0123456789",
+        "response_hash": "fedcba9876543210",
+    }
+    valid = spool / "20260101T000000000003-valid.jsonl"
+    valid.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    assert drain_spool(repo, spool) == 1
+    assert repo.get_call(call_id) is not None
+    assert not valid.exists()
+    for name in malformed:
+        assert (spool / name).exists()
+
+
 def test_writer_startup_drains_existing_spool(tmp_path):
     """WriterQueue opportunistically replays existing spool before new writes."""
     import json

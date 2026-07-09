@@ -17,7 +17,7 @@
   <div class="wrap">
     <a class="logo" href="./">
       <span class="mark">somm</span>
-      <span class="mark-sub">/ v0.7.1</span>
+      <span class="mark-sub">/ v1.0.0</span>
     </a>
     <nav>
       <a href="#why">why</a>
@@ -266,13 +266,14 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
        │                    │
        └── skill (onboarding) ─── MCP (interface for coding agents)</pre>
 
-      <p>Five packages:</p>
+      <p>Six packages:</p>
       <table class="pkg-tbl">
         <tbody>
-          <tr><th>somm-core</th><td>schema v5, migrations, repository, config, parse helpers</td></tr>
+          <tr><th>somm-core</th><td>schema v19, migrations, repository, config, parse helpers</td></tr>
           <tr><th>somm</th><td>library — <code>SommLLM</code>, providers, routing, streaming, compat shims, CLI</td></tr>
           <tr><th>somm-service</th><td>starlette web admin + HTTP API + scheduler + three workers</td></tr>
-          <tr><th>somm-mcp</th><td>stdio MCP server with ten tools</td></tr>
+          <tr><th>somm-mcp</th><td>stdio MCP server with 14 tools</td></tr>
+          <tr><th>somm-langchain</th><td><code>SommChatModel</code> adapter for LangChain/LangGraph/deepagents</td></tr>
           <tr><th>somm-skill</th><td>onboarding templates for Claude / Codex / Cursor / Windsurf</td></tr>
         </tbody>
       </table>
@@ -287,12 +288,12 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
     <div class="wrap">
       <h2>Status</h2>
       <p class="section-lede">
-        v0.7.1 — see the
+        v1.0.0 — see the
         <a href="https://github.com/lavallee/somm/blob/main/CHANGELOG.md">CHANGELOG</a>
         for the release log; the test suite runs in CI on every push.
         Recent releases added multimodal routing (0.1.1), the sommelier
         (0.2.0), Gemini + error visibility (0.2.1), sommelier quality
-        (0.2.2), and tool calling + the LangChain adapter (unreleased).
+        (0.2.2), tool calling + the LangChain adapter, eval gates, the recommendation loop, OTLP ingest, and the 1.0 service API.
         MIT licensed. Upcoming work is tracked in
         <a href="https://github.com/lavallee/somm/blob/main/ROADMAP.md">ROADMAP.md</a>;
         if you want to build your own take, the

@@ -55,9 +55,12 @@ somm_advise(
 ```
 
 The response carries ranked candidates with `reasons` — a list of
-human-readable factors the sommelier weighed. Present them verbatim
-rather than restating in your own words; the reasons are
-tokenisation-light and calibrated.
+human-readable factors the sommelier weighed. Candidates also include a
+`canonical_id` and `score_breakdown`; use those when explaining why two
+provider-specific model IDs are really the same underlying model, or
+why price, capability, plan headroom, evals, and priors moved the rank.
+Present reasons verbatim rather than restating in your own words; the
+reasons are tokenisation-light and calibrated.
 
 **Constraint knobs (all optional):**
 

@@ -71,10 +71,11 @@ class ClaudeCLIProvider:
         }
         t0 = time.monotonic()
         try:
-            proc = subprocess.run(
-                cmd, input=self._prompt_text(request), capture_output=True, text=True,
-                timeout=self.timeout, cwd=tempfile.gettempdir(), env=env,
-            )
+            with tempfile.TemporaryDirectory(prefix="somm-claude-cli-") as cwd:
+                proc = subprocess.run(
+                    cmd, input=self._prompt_text(request), capture_output=True, text=True,
+                    timeout=self.timeout, cwd=cwd, env=env,
+                )
         except subprocess.TimeoutExpired as e:
             raise SommTimeout(f"claude -p timed out after {self.timeout:.0f}s") from e
         latency_ms = int((time.monotonic() - t0) * 1000)

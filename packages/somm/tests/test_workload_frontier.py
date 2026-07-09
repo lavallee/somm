@@ -70,6 +70,8 @@ def test_frontier_splits_capability_from_detractor(repo: Repository) -> None:
     assert row["n_detractors"] == 1
     assert row["capability_failure_rate"] == 0.25
     assert row["detractor_rate"] == 0.25
+    assert row["p50_latency_ms"] == 100
+    assert row["p95_latency_ms"] == 200
 
 
 def test_frontier_fitness_unset_when_constraint_unset(repo: Repository) -> None:

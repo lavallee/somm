@@ -1485,23 +1485,62 @@ class Repository:
             }
             rows = conn.execute(
                 """
+                WITH rollup AS (
+                    SELECT
+                        provider, model,
+                        COUNT(*) AS n_calls,
+                        SUM(CASE WHEN outcome = 'ok' THEN 1 ELSE 0 END) AS n_ok,
+                        SUM(is_capability_signal) AS n_capability_failures,
+                        SUM(is_detractor) AS n_detractors,
+                        AVG(CASE WHEN outcome = 'ok' THEN cost_usd END) AS mean_cost_per_ok_call,
+                        SUM(cost_usd) AS total_cost_usd
+                    FROM v_calls_classified
+                    WHERE workload_id = ?
+                      AND ts >= datetime('now', ?)
+                    GROUP BY provider, model
+                ),
+                ok_latencies AS (
+                    SELECT
+                        provider,
+                        model,
+                        latency_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY provider, model
+                            ORDER BY latency_ms ASC
+                        ) AS rn,
+                        COUNT(*) OVER (
+                            PARTITION BY provider, model
+                        ) AS n
+                    FROM v_calls_classified
+                    WHERE workload_id = ?
+                      AND ts >= datetime('now', ?)
+                      AND outcome = 'ok'
+                ),
+                latency_percentiles AS (
+                    SELECT
+                        provider,
+                        model,
+                        MAX(CASE WHEN rn = ((50 * n + 99) / 100) THEN latency_ms END) AS p50_latency_ms,
+                        MAX(CASE WHEN rn = ((95 * n + 99) / 100) THEN latency_ms END) AS p95_latency_ms
+                    FROM ok_latencies
+                    GROUP BY provider, model
+                )
                 SELECT
-                    provider, model,
-                    COUNT(*) AS n_calls,
-                    SUM(CASE WHEN outcome = 'ok' THEN 1 ELSE 0 END) AS n_ok,
-                    SUM(is_capability_signal) AS n_capability_failures,
-                    SUM(is_detractor) AS n_detractors,
-                    AVG(CASE WHEN outcome = 'ok' THEN cost_usd END) AS mean_cost_per_ok_call,
-                    SUM(cost_usd) AS total_cost_usd,
-                    GROUP_CONCAT(
-                        CASE WHEN outcome = 'ok' THEN latency_ms END
-                    ) AS ok_latencies_csv
-                FROM v_calls_classified
-                WHERE workload_id = ?
-                  AND ts >= datetime('now', ?)
-                GROUP BY provider, model
+                    r.provider, r.model,
+                    r.n_calls,
+                    r.n_ok,
+                    r.n_capability_failures,
+                    r.n_detractors,
+                    r.mean_cost_per_ok_call,
+                    r.total_cost_usd,
+                    lp.p50_latency_ms,
+                    lp.p95_latency_ms
+                FROM rollup r
+                LEFT JOIN latency_percentiles lp
+                  ON lp.provider = r.provider
+                 AND lp.model = r.model
                 """,
-                (workload_id, f"-{since_days} days"),
+                (workload_id, f"-{since_days} days", workload_id, f"-{since_days} days"),
             ).fetchall()
 
         out: list[dict] = []
@@ -1512,7 +1551,8 @@ class Repository:
             n_det = r[5] or 0
             cap_rate = (n_cap / n_calls) if n_calls else 0.0
             det_rate = (n_det / n_calls) if n_calls else 0.0
-            p50, p95 = _percentiles(r[8])
+            p50 = r[8]
+            p95 = r[9]
             mean_cost = r[6]
             fitness = {
                 "exceeds_max_p95_latency_ms": (

@@ -32,7 +32,7 @@ platform doesn't.
   everywhere
 - 🟢 **Loud on failure** — `calls.error_detail` + inline `on_error`
   callback so crashes don't hide
-- 🟢 **MCP** (10 tools) for Claude Code / Cursor / Windsurf to query
+- 🟢 **MCP** (14 tools) for Claude Code / Cursor / Windsurf to query
   your real telemetry
 
 ## Install
@@ -43,6 +43,9 @@ pip install somm
 
 # + web admin + scheduled workers + MCP server:
 pip install somm somm-service somm-mcp
+
+# optional shared-deployment driver dependency:
+pip install "somm[postgres]"
 ```
 
 Requires Python 3.12+. The library (`somm` + `somm-core`) is all you
@@ -75,8 +78,34 @@ That call just landed a row in `./.somm/calls.sqlite`. Inspect:
 
 ```bash
 somm status --project my_app --since 1
+somm status --project my_app --since 1 --json
+somm generate "Reply with exactly: pong" --project my_app --workload ping --json
 somm serve --project my_app   # → dashboard at localhost:7878
 ```
+
+## Quickstart ladder
+
+**L0 — one call.** `import somm`, create `somm.llm(project="my_app")`,
+and call `.generate(..., workload="ping")`. This creates
+`./.somm/calls.sqlite` and gives you `somm status --json` immediately.
+
+**L1 — named workloads.** Register stable workload names with
+`somm workload add claim_extract` or pass `workload="claim_extract"` from
+code. Workload names are the unit for spend, failures, policies, and
+recommendations.
+
+**L2 — policies and budgets.** Add per-workload constraints with the
+workload CLI and configure `~/.somm/plans.toml` for PAYG budgets or
+metered coding-plan quotas. The router uses those limits before calling a
+provider.
+
+**L3 — online evaluation.** Enable sample capture and shadow eval on
+non-private workloads, then run `somm-serve admin run-shadow`. Graded
+samples feed `somm frontier`, recommendations, and eval datasets.
+
+**L4 — agent loop.** Install `somm-mcp`, point your coding agent at it,
+and use `somm_advise` / `somm_record_decision` / `somm_inbox` so model
+choices and recommendations become cross-project memory.
 
 ## Why somm
 
@@ -270,13 +299,16 @@ every call) — explicitly via `somm.hooks`, or automatically through the
 
 ### MCP — talk to your telemetry from the agent's side
 
-`somm-mcp` ships **11 stdio tools** any MCP-capable agent can call:
+`somm-mcp` ships **14 stdio tools** any MCP-capable agent can call:
 
 | tool | what it does |
 |---|---|
 | `somm_stats` | rollup by workload × provider × model |
 | `somm_search_calls` | filter calls by workload / provider / model / outcome |
 | `somm_recommend` | open recs + shadow-ranked models per workload |
+| `somm_inbox` | list open/applied/dismissed recommendations |
+| `somm_apply_recommendation` | apply a recommendation and record a decision |
+| `somm_dismiss_recommendation` | dismiss a recommendation |
 | `somm_register_workload` | commit a workload with privacy class + required capabilities |
 | `somm_register_prompt` | commit prompt versions (minor/major/explicit) |
 | `somm_compare` | run a prompt through N models side-by-side |
@@ -298,7 +330,9 @@ Add to Claude Code / Cursor / Windsurf:
 ## CLI
 
 ```bash
-somm status [--project P] [--since N] [--global]   # rollup (per-project / cross-project)
+somm status [--project P] [--since N] [--global] [--json]
+                                                    # rollup (per-project / cross-project)
+somm generate <prompt> [--workload W] [--json]      # one-shot LLM call through somm
 somm tail [--workload NAME] [--poll-interval S]    # live call stream
 somm compare <prompt> --models p/m,p/m             # side-by-side N-model comparison
 somm frontier --workload NAME [--since N]          # adequacy frontier per (provider, model)
@@ -314,6 +348,44 @@ somm campaign run --workload NAME --dataset NAME   # repeated eval campaign with
 somm doctor                                        # config, ollama, db, intel, workers, cooldowns
 somm serve [--host H] [--port N]                   # web admin + scheduler + workers
 ```
+
+JSON-mode command failures use a stable stderr envelope:
+
+```json
+{"ok": false, "error": {"type": "ValueError", "message": "...", "exit_code": 2}}
+```
+
+Exit codes are stable for JSON-mode automation: `0` success, `1`
+unexpected runtime failure, `2` usage/value error, `66` missing input
+file, and `77` permission error.
+
+### Stable local read API and OTLP ingest
+
+With `somm-service` installed, the dashboard also exposes supported JSON
+read endpoints:
+
+```text
+GET /api/status
+GET /api/stats?window=7
+GET /api/calls?window=7&q=gemma&limit=100
+GET /api/sessions?window=7
+GET /api/recommendations
+```
+
+Polyglot apps can send OpenTelemetry JSON traces without importing the
+Python SDK:
+
+```bash
+curl -H "Authorization: Bearer $SOMM_SERVICE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @traces.json \
+  http://127.0.0.1:7878/api/otlp/v1/traces
+```
+
+The OTLP parser is lenient about `gen_ai` semantic-convention drift and
+stores accepted spans as ordinary `calls` rows. SQLite remains the
+default backend; the `somm[postgres]` extra installs the Postgres driver
+dependency for shared-deployment experiments.
 
 With `somm-service` installed:
 
@@ -468,7 +540,7 @@ Six packages:
 - **`somm`** — `SommLLM`, providers, routing, streaming, embeddings,
   tool calling, sommelier, compat shims, hooks, CLI
 - **`somm-service`** — starlette web admin + HTTP API + scheduler + 3 workers
-- **`somm-mcp`** — stdio MCP server with 10 tools
+- **`somm-mcp`** — stdio MCP server with 14 tools
 - **`somm-langchain`** — `SommChatModel` adapter for LangChain/LangGraph/deepagents
 - **`somm-skill`** — onboarding markdown templates for coding agents
 
@@ -513,5 +585,5 @@ internal names or personal paths.
 
 ## Status
 
-**v0.7.1.** See [CHANGELOG](./CHANGELOG.md) for the release log and
+**v1.0.0.** See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

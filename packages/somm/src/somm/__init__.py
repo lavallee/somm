@@ -1,10 +1,7 @@
 """somm — self-hosted LLM telemetry, routing, and intelligence loop."""
 
-from somm_core import EmbedResult, Outcome, PrivacyClass, SommResult
-from somm_core.parse import extract_json
+import importlib
 
-from somm import hooks
-from somm.client import SommLLM, llm
 from somm.errors import (
     SommBadRequest,
     SommBudgetExceeded,
@@ -14,7 +11,41 @@ from somm.errors import (
     SommProvidersExhausted,
     SommStrictMode,
 )
-from somm.provenance import provenance
+
+_CORE_MODEL_EXPORTS = {"EmbedResult", "Outcome", "PrivacyClass", "SommResult"}
+
+
+def llm(*args, **kwargs):
+    from somm.client import llm as _llm
+
+    return _llm(*args, **kwargs)
+
+
+def extract_json(*args, **kwargs):
+    from somm_core.parse import extract_json as _extract_json
+
+    return _extract_json(*args, **kwargs)
+
+
+def __getattr__(name: str):
+    if name == "SommLLM":
+        from somm.client import SommLLM
+
+        globals()[name] = SommLLM
+        return SommLLM
+    if name in _CORE_MODEL_EXPORTS:
+        module = importlib.import_module("somm_core.models")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name == "hooks":
+        return importlib.import_module("somm.hooks")
+    if name == "provenance":
+        from somm.provenance import provenance
+
+        globals()[name] = provenance
+        return provenance
+    raise AttributeError(f"module 'somm' has no attribute {name!r}")
 
 __all__ = [
     "SommLLM",
