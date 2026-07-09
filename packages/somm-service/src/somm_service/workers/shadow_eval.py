@@ -34,7 +34,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from somm_core.parse import extract_json
+from somm_core.graders import (
+    grade_response_pair,
+)
 
 if TYPE_CHECKING:
     from somm.providers.base import SommProvider
@@ -346,18 +348,21 @@ class ShadowEvalWorker:
         )
         gold_text = gold.text
 
-        structural = _structural_score(response, gold_text)
-        text_sim = _text_similarity(response, gold_text)
+        scores = grade_response_pair(response, gold_text, judge=cfg.judge)
 
         from somm_core.parse import stable_hash
 
         return EvalOutcome(
             call_id=call_row["call_id"],
-            structural_score=structural,
-            text_similarity_score=text_sim,
-            judge_score=None,  # v0.3b+1
+            structural_score=scores.structural_score,
+            text_similarity_score=scores.text_similarity_score,
+            judge_score=scores.judge_score,
             gold_response_hash=stable_hash(gold_text),
-            notes=[f"gold_tokens_in={gold.tokens_in}", f"gold_tokens_out={gold.tokens_out}"],
+            notes=[
+                f"gold_tokens_in={gold.tokens_in}",
+                f"gold_tokens_out={gold.tokens_out}",
+                *scores.notes,
+            ],
         )
 
     def _fetch_bodies(self, call_id: str) -> tuple[str | None, str | None]:
@@ -369,64 +374,6 @@ class ShadowEvalWorker:
         if not row:
             return None, None
         return row[0], row[1]
-
-
-# ---------------------------------------------------------------------------
-# Graders — lightweight, no model dependencies
-
-
-def _structural_score(prod_text: str, gold_text: str) -> float | None:
-    """Score based on JSON shape overlap. Returns None if neither parses."""
-    prod = extract_json(prod_text)
-    gold = extract_json(gold_text)
-    if prod is None and gold is None:
-        return None
-    if prod is None or gold is None:
-        return 0.0
-    return _json_overlap(prod, gold)
-
-
-def _json_overlap(a, b) -> float:
-    """Recursive structural similarity. Dict: key overlap + per-key value match.
-    List: length match + element-wise (string-compare). Else: equality 1.0/0.0.
-    """
-    if type(a) is not type(b):
-        return 0.0
-    if isinstance(a, dict):
-        if not a and not b:
-            return 1.0
-        keys = set(a) & set(b)
-        if not keys:
-            return 0.0
-        per_key = sum(_json_overlap(a[k], b[k]) for k in keys) / len(keys)
-        jaccard = len(keys) / max(1, len(set(a) | set(b)))
-        return (per_key + jaccard) / 2.0
-    if isinstance(a, list):
-        if not a and not b:
-            return 1.0
-        if not a or not b:
-            return 0.0
-        n = min(len(a), len(b))
-        elem_score = sum(_json_overlap(a[i], b[i]) for i in range(n)) / max(len(a), len(b))
-        return elem_score
-    if isinstance(a, str):
-        return 1.0 if a.strip() == b.strip() else _text_similarity(a, b)
-    return 1.0 if a == b else 0.0
-
-
-def _text_similarity(a: str, b: str) -> float:
-    """Word-bigram Jaccard similarity. 0..1. Cheap, deterministic, no deps."""
-
-    def bigrams(s: str) -> set[tuple[str, str]]:
-        words = s.lower().split()
-        return {(words[i], words[i + 1]) for i in range(len(words) - 1)}
-
-    ga, gb = bigrams(a), bigrams(b)
-    if not ga and not gb:
-        return 1.0 if a.strip() == b.strip() else 0.0
-    if not ga or not gb:
-        return 0.0
-    return len(ga & gb) / len(ga | gb)
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,13 @@
 """somm-core — shared schema, repository, config, parse, version across all somm packages."""
 
+from somm_core.graders import (
+    GradeScores,
+    grade_response_pair,
+    json_overlap,
+    judge_score,
+    structural_score,
+    text_similarity,
+)
 from somm_core.models import (
     Call,
     CallOutcome,
@@ -58,6 +66,12 @@ __all__ = [
     "SommResult",
     "ToolCall",
     "Workload",
+    "GradeScores",
+    "grade_response_pair",
+    "judge_score",
+    "json_overlap",
+    "structural_score",
+    "text_similarity",
     "cost_for_call",
     "list_intel",
     "merge_intel_capabilities",

@@ -14,50 +14,7 @@ from somm_core.config import Config
 from somm_core.models import Call, Outcome, PrivacyClass
 from somm_core.pricing import write_intel
 from somm_core.repository import Repository
-from somm_service.workers.shadow_eval import (
-    ShadowEvalWorker,
-    _structural_score,
-    _text_similarity,
-)
-
-# ---------------------------------------------------------------------------
-# Grader unit tests
-
-
-def test_text_similarity_identical_strings_are_one():
-    assert _text_similarity("the cat sat on the mat", "the cat sat on the mat") == 1.0
-
-
-def test_text_similarity_disjoint_strings_are_low():
-    assert _text_similarity("quick brown fox", "slow purple bear") < 0.5
-
-
-def test_text_similarity_empty_strings():
-    assert _text_similarity("", "") == 1.0
-    assert _text_similarity("hello", "") == 0.0
-
-
-def test_structural_score_matching_json():
-    prod = '{"name": "alice", "age": 30}'
-    gold = '{"name": "alice", "age": 30}'
-    assert _structural_score(prod, gold) == 1.0
-
-
-def test_structural_score_partial_match():
-    prod = '{"name": "alice", "age": 30}'
-    gold = '{"name": "bob", "age": 30}'
-    # Two keys overlap, ages match (1.0) but names differ.
-    score = _structural_score(prod, gold)
-    assert 0.0 < score < 1.0
-
-
-def test_structural_score_prose_returns_none():
-    assert _structural_score("not json", "not json either") is None
-
-
-def test_structural_score_one_parses_other_doesnt():
-    assert _structural_score('{"a": 1}', "prose") == 0.0
-
+from somm_service.workers.shadow_eval import ShadowEvalWorker
 
 # ---------------------------------------------------------------------------
 # Fixtures for worker
