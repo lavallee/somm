@@ -6,7 +6,7 @@ from somm_core.schema import _list_migrations, current_schema_version, ensure_sc
 from somm_core.version import SCHEMA_VERSION
 
 
-def test_v10_database_upgrades_through_prompt_labels(tmp_path):
+def test_v10_database_upgrades_to_current_schema(tmp_path):
     db_path = tmp_path / "v10.sqlite"
     with sqlite3.connect(db_path) as conn:
         for version, path in _list_migrations():
@@ -20,8 +20,8 @@ def test_v10_database_upgrades_through_prompt_labels(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 12
-        assert current_schema_version(conn) == 12
+        assert upgraded == SCHEMA_VERSION == 13
+        assert current_schema_version(conn) == 13
         tables = {
             row[0]
             for row in conn.execute(
@@ -46,7 +46,7 @@ def test_v10_database_upgrades_through_prompt_labels(tmp_path):
         assert "idx_prompts_parent_prompt_id" in indexes
 
 
-def test_v11_database_upgrades_to_v12_call_telemetry(tmp_path):
+def test_v11_database_upgrades_to_current_schema(tmp_path):
     db_path = tmp_path / "v11.sqlite"
     with sqlite3.connect(db_path) as conn:
         for version, path in _list_migrations():
@@ -60,8 +60,8 @@ def test_v11_database_upgrades_to_v12_call_telemetry(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 12
-        assert current_schema_version(conn) == 12
+        assert upgraded == SCHEMA_VERSION == 13
+        assert current_schema_version(conn) == 13
         call_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
         }
@@ -82,3 +82,56 @@ def test_v11_database_upgrades_to_v12_call_telemetry(tmp_path):
         }
         assert "idx_calls_session_ts" in indexes
         assert "idx_calls_parent_call" in indexes
+
+
+def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
+    db_path = tmp_path / "v12.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 12:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        conn.execute(
+            "INSERT INTO workloads (id, name, project) VALUES ('w1', 'work', 'proj')"
+        )
+        conn.commit()
+
+        assert current_schema_version(conn) == 12
+
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 13
+        assert current_schema_version(conn) == 13
+
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "workload_revisions" in tables
+
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(workload_revisions)").fetchall()
+        }
+        assert {
+            "id",
+            "workload_id",
+            "revision",
+            "config_json",
+            "created_at",
+            "created_by",
+        }.issubset(columns)
+
+        indexes = {
+            row[1]
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        assert "idx_workload_revisions_wl_rev" in indexes
+        assert "idx_workload_revisions_wl" in indexes

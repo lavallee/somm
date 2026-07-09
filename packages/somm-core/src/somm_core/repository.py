@@ -94,6 +94,79 @@ class Repository:
 
     # Workloads ---------------------------------------------------------------
 
+    @staticmethod
+    def _workload_revision_row(row) -> dict:
+        return {
+            "id": row[0],
+            "workload_id": row[1],
+            "revision": row[2],
+            "config": json.loads(row[3]),
+            "created_at": row[4],
+            "created_by": row[5],
+        }
+
+    def _workload_config_snapshot(
+        self,
+        conn: sqlite3.Connection,
+        workload_id: str,
+    ) -> dict | None:
+        row = conn.execute(
+            "SELECT max_p95_latency_ms, max_capability_failure_rate, "
+            "max_cost_per_call_usd, budget_cap_usd_daily, shadow_config_json "
+            "FROM workloads WHERE id = ?",
+            (workload_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "max_p95_latency_ms": row[0],
+            "max_capability_failure_rate": row[1],
+            "max_cost_per_call_usd": row[2],
+            "budget_cap_usd_daily": row[3],
+            "shadow_config": json.loads(row[4]) if row[4] else None,
+            "policy": None,
+        }
+
+    def _record_workload_revision_in_tx(
+        self,
+        conn: sqlite3.Connection,
+        workload_id: str,
+        config: dict,
+        created_by: str | None,
+    ) -> int:
+        revision = conn.execute(
+            "SELECT COALESCE(MAX(revision), 0) + 1 "
+            "FROM workload_revisions WHERE workload_id = ?",
+            (workload_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO workload_revisions "
+            "(workload_id, revision, config_json, created_by) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                workload_id,
+                revision,
+                json.dumps(config, sort_keys=True),
+                created_by,
+            ),
+        )
+        return int(revision)
+
+    def _ensure_initial_workload_revision_in_tx(
+        self,
+        conn: sqlite3.Connection,
+        workload_id: str,
+    ) -> None:
+        has_revision = conn.execute(
+            "SELECT 1 FROM workload_revisions WHERE workload_id = ? LIMIT 1",
+            (workload_id,),
+        ).fetchone()
+        if has_revision is not None:
+            return
+        snapshot = self._workload_config_snapshot(conn, workload_id)
+        if snapshot is not None:
+            self._record_workload_revision_in_tx(conn, workload_id, snapshot, None)
+
     def register_workload(
         self,
         name: str,
@@ -111,31 +184,38 @@ class Repository:
     ) -> Workload:
         wid = _workload_id(name, input_schema, output_schema)
         with self._open() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO workloads (
-                    id, name, project, description,
-                    input_schema_json, output_schema_json, quality_criteria_json,
-                    budget_cap_usd_daily, privacy_class, capabilities_required_json,
-                    max_p95_latency_ms, max_capability_failure_rate, max_cost_per_call_usd
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    wid,
-                    name,
-                    project,
-                    description,
-                    json.dumps(input_schema) if input_schema else None,
-                    json.dumps(output_schema) if output_schema else None,
-                    json.dumps(quality_criteria or []),
-                    budget_cap_usd_daily,
-                    privacy_class.value,
-                    json.dumps(capabilities_required) if capabilities_required else None,
-                    max_p95_latency_ms,
-                    max_capability_failure_rate,
-                    max_cost_per_call_usd,
-                ),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO workloads (
+                        id, name, project, description,
+                        input_schema_json, output_schema_json, quality_criteria_json,
+                        budget_cap_usd_daily, privacy_class, capabilities_required_json,
+                        max_p95_latency_ms, max_capability_failure_rate, max_cost_per_call_usd
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        wid,
+                        name,
+                        project,
+                        description,
+                        json.dumps(input_schema) if input_schema else None,
+                        json.dumps(output_schema) if output_schema else None,
+                        json.dumps(quality_criteria or []),
+                        budget_cap_usd_daily,
+                        privacy_class.value,
+                        json.dumps(capabilities_required) if capabilities_required else None,
+                        max_p95_latency_ms,
+                        max_capability_failure_rate,
+                        max_cost_per_call_usd,
+                    ),
+                )
+                self._ensure_initial_workload_revision_in_tx(conn, wid)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         return Workload(
             id=wid,
             name=name,
@@ -188,42 +268,193 @@ class Repository:
         max_cost_per_call_usd: float | None = None,
         clear: bool = False,
     ) -> None:
-        """Update adequacy thresholds on an existing workload row.
+        """Update adequacy thresholds on the live workload row.
 
         Pass ``clear=True`` to set all three back to NULL. Otherwise,
         only fields with a non-None value here are written; existing
         values are preserved (use ``clear`` then re-set if you need to
         null one specifically).
+
+        Dual-write note: the workloads row remains the current source for
+        hot-path routing reads. After each row update, workload_revisions gets
+        an append-only snapshot for audit, diff, and forward-only rollback.
         """
         with self._open() as conn:
-            if clear:
-                conn.execute(
-                    "UPDATE workloads SET "
-                    "max_p95_latency_ms = NULL, "
-                    "max_capability_failure_rate = NULL, "
-                    "max_cost_per_call_usd = NULL "
-                    "WHERE id = ?",
-                    (workload_id,),
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if clear:
+                    self._ensure_initial_workload_revision_in_tx(conn, workload_id)
+                    cursor = conn.execute(
+                        "UPDATE workloads SET "
+                        "max_p95_latency_ms = NULL, "
+                        "max_capability_failure_rate = NULL, "
+                        "max_cost_per_call_usd = NULL "
+                        "WHERE id = ?",
+                        (workload_id,),
+                    )
+                    if cursor.rowcount:
+                        snapshot = self._workload_config_snapshot(conn, workload_id)
+                        if snapshot is not None:
+                            self._record_workload_revision_in_tx(
+                                conn, workload_id, snapshot, None
+                            )
+                    conn.execute("COMMIT")
+                    return
+                sets: list[str] = []
+                values: list[object] = []
+                if max_p95_latency_ms is not None:
+                    sets.append("max_p95_latency_ms = ?")
+                    values.append(max_p95_latency_ms)
+                if max_capability_failure_rate is not None:
+                    sets.append("max_capability_failure_rate = ?")
+                    values.append(max_capability_failure_rate)
+                if max_cost_per_call_usd is not None:
+                    sets.append("max_cost_per_call_usd = ?")
+                    values.append(max_cost_per_call_usd)
+                if not sets:
+                    conn.execute("COMMIT")
+                    return
+                values.append(workload_id)
+                self._ensure_initial_workload_revision_in_tx(conn, workload_id)
+                cursor = conn.execute(
+                    f"UPDATE workloads SET {', '.join(sets)} WHERE id = ?",
+                    values,
                 )
-                return
-            sets: list[str] = []
-            values: list[object] = []
-            if max_p95_latency_ms is not None:
-                sets.append("max_p95_latency_ms = ?")
-                values.append(max_p95_latency_ms)
-            if max_capability_failure_rate is not None:
-                sets.append("max_capability_failure_rate = ?")
-                values.append(max_capability_failure_rate)
-            if max_cost_per_call_usd is not None:
-                sets.append("max_cost_per_call_usd = ?")
-                values.append(max_cost_per_call_usd)
-            if not sets:
-                return
-            values.append(workload_id)
-            conn.execute(
-                f"UPDATE workloads SET {', '.join(sets)} WHERE id = ?",
-                values,
+                if cursor.rowcount:
+                    snapshot = self._workload_config_snapshot(conn, workload_id)
+                    if snapshot is not None:
+                        self._record_workload_revision_in_tx(
+                            conn, workload_id, snapshot, None
+                        )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def record_workload_revision(
+        self,
+        workload_id: str,
+        config: dict,
+        created_by: str | None = None,
+    ) -> int:
+        """Append a workload config snapshot and return its revision number."""
+        with self._open() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                revision = self._record_workload_revision_in_tx(
+                    conn, workload_id, config, created_by
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return revision
+
+    def current_workload_revision(self, workload_id: str) -> dict | None:
+        """Return the latest recorded workload config snapshot."""
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT config_json FROM workload_revisions "
+                "WHERE workload_id = ? ORDER BY revision DESC LIMIT 1",
+                (workload_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    def workload_revisions(self, workload_id: str) -> list[dict]:
+        """Return workload config revision history, oldest first."""
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT id, workload_id, revision, config_json, created_at, created_by "
+                "FROM workload_revisions WHERE workload_id = ? ORDER BY revision",
+                (workload_id,),
+            ).fetchall()
+        return [self._workload_revision_row(row) for row in rows]
+
+    def workload_revision_diff(
+        self,
+        workload_id: str,
+        rev_a: int,
+        rev_b: int,
+    ) -> dict:
+        """Return a simple per-key old/new diff between two config revisions."""
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT revision, config_json FROM workload_revisions "
+                "WHERE workload_id = ? AND revision IN (?, ?)",
+                (workload_id, rev_a, rev_b),
+            ).fetchall()
+        configs = {int(row[0]): json.loads(row[1]) for row in rows}
+        if rev_a not in configs or rev_b not in configs:
+            raise ValueError(
+                f"workload {workload_id!r} does not have revisions "
+                f"{rev_a!r} and {rev_b!r}"
             )
+        old = configs[rev_a]
+        new = configs[rev_b]
+        return {
+            key: {"old": old.get(key), "new": new.get(key)}
+            for key in sorted(set(old) | set(new))
+            if old.get(key) != new.get(key)
+        }
+
+    def rollback_workload(
+        self,
+        workload_id: str,
+        revision: int,
+        created_by: str | None = None,
+    ) -> int:
+        """Re-apply an old config snapshot and append a new revision.
+
+        Rollback is forward-only: the selected snapshot is copied back onto
+        the live workloads row, then recorded as a new workload_revisions row,
+        like a git revert. Router reads still hit workloads directly.
+        """
+        with self._open() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT config_json FROM workload_revisions "
+                    "WHERE workload_id = ? AND revision = ?",
+                    (workload_id, revision),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(
+                        f"workload {workload_id!r} does not have revision {revision!r}"
+                    )
+                config = json.loads(row[0])
+                shadow_config = config.get("shadow_config")
+                cursor = conn.execute(
+                    "UPDATE workloads SET "
+                    "max_p95_latency_ms = ?, "
+                    "max_capability_failure_rate = ?, "
+                    "max_cost_per_call_usd = ?, "
+                    "budget_cap_usd_daily = ?, "
+                    "shadow_config_json = ? "
+                    "WHERE id = ?",
+                    (
+                        config.get("max_p95_latency_ms"),
+                        config.get("max_capability_failure_rate"),
+                        config.get("max_cost_per_call_usd"),
+                        config.get("budget_cap_usd_daily"),
+                        json.dumps(shadow_config) if shadow_config is not None else None,
+                        workload_id,
+                    ),
+                )
+                if not cursor.rowcount:
+                    raise ValueError(f"unknown workload {workload_id!r}")
+                snapshot = self._workload_config_snapshot(conn, workload_id)
+                if snapshot is None:
+                    raise ValueError(f"unknown workload {workload_id!r}")
+                new_revision = self._record_workload_revision_in_tx(
+                    conn, workload_id, snapshot, created_by
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return new_revision
 
     # Shadow-eval config ------------------------------------------------------
 
@@ -253,17 +484,33 @@ class Repository:
                     conn.execute("PRAGMA foreign_keys = ON")
 
     def set_shadow_config(self, workload_id: str, config: dict | None) -> None:
-        """Attach (or clear) shadow-eval config for a workload.
+        """Attach (or clear) shadow-eval config on the live workload row.
 
         config = None → shadow disabled.
         config = {"gold_provider": ..., "gold_model": ..., "sample_rate": ...,
                   "budget_usd_daily": ...} → enabled.
+
+        Dual-write note: workloads.shadow_config_json is the hot read path.
+        workload_revisions receives an append-only post-update snapshot.
         """
         with self._open() as conn:
-            conn.execute(
-                "UPDATE workloads SET shadow_config_json = ? WHERE id = ?",
-                (json.dumps(config) if config else None, workload_id),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._ensure_initial_workload_revision_in_tx(conn, workload_id)
+                cursor = conn.execute(
+                    "UPDATE workloads SET shadow_config_json = ? WHERE id = ?",
+                    (json.dumps(config) if config else None, workload_id),
+                )
+                if cursor.rowcount:
+                    snapshot = self._workload_config_snapshot(conn, workload_id)
+                    if snapshot is not None:
+                        self._record_workload_revision_in_tx(
+                            conn, workload_id, snapshot, None
+                        )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
 
     def get_shadow_config(self, workload_id: str) -> dict | None:
         with self._open() as conn:
