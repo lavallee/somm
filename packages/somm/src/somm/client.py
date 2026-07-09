@@ -11,6 +11,7 @@ import contextlib
 import logging
 import shlex
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -72,6 +73,19 @@ _warned_dormant_loop: set[str] = set()
 
 # Providers we've already emitted a plan-pacing warning for this process.
 _warned_plan_pace: set[str] = set()
+
+# Project registry entries already announced by this client process.
+_registered_project_keys: set[tuple[str, str]] = set()
+_registered_project_keys_lock = threading.Lock()
+
+
+def _register_project_once(project: str, db_path: Path) -> None:
+    key = (project, str(Path(db_path).resolve()))
+    with _registered_project_keys_lock:
+        if key in _registered_project_keys:
+            return
+        register_project(project, db_path)
+        _registered_project_keys.add(key)
 
 
 def _build_plan_governor(config: Config):
@@ -556,7 +570,7 @@ class SommLLM:
         # Fleet registry + metered-plan pacing: quotas are shared across
         # every project on this machine, so announce this DB and warn (once
         # per process) when a metered plan is burning faster than its window.
-        register_project(self.config.project, self.config.db_path)
+        _register_project_once(self.config.project, self.config.db_path)
         _warn_if_plans_off_pace(self._plan_governor)
 
     def register_workload(self, **kwargs):

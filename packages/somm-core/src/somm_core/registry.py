@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
+
+_registered_projects: set[tuple[str, str]] = set()
+_registered_projects_lock = threading.Lock()
 
 
 def registry_path() -> Path:
@@ -38,17 +42,23 @@ def register_project(project: str, db_path: Path) -> None:
     """Upsert this project's DB location. Never raises — registry
     maintenance must not break `somm.llm()`."""
     try:
-        path = registry_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = _load(path)
-        data["projects"][project] = {
-            "db_path": str(Path(db_path).resolve()),
-            "last_seen": datetime.now(UTC).isoformat(),
-        }
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
-        tmp.chmod(0o600)
-        tmp.replace(path)
+        db_key = str(Path(db_path).resolve())
+        key = (project, db_key)
+        with _registered_projects_lock:
+            if key in _registered_projects:
+                return
+            path = registry_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = _load(path)
+            data["projects"][project] = {
+                "db_path": db_key,
+                "last_seen": datetime.now(UTC).isoformat(),
+            }
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+            tmp.chmod(0o600)
+            tmp.replace(path)
+            _registered_projects.add(key)
     except Exception:
         pass
 
