@@ -1,6 +1,12 @@
 """Config loading: env > pyproject.toml > runtime override > defaults.
 
 Minimal v0.1 surface. Expands as features demand.
+
+SOMM_WAIT_ON_EXHAUSTED can set a process default wait deadline, in seconds,
+for calls whose routed provider set is entirely cooling down. Per-call
+``wait`` arguments on ``generate()``, ``stream()``, and
+``extract_structured()`` take precedence; ``wait=None`` and ``wait=0`` mean
+fail fast.
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ class Config:
     budget_fail_closed: bool = False  # hard pre-request gate: block calls once a workload's daily cap is reached
     budget_default_cap_usd_daily: float | None = None  # daily cap for workloads with no explicit budget_cap_usd_daily (when fail_closed)
     inprocess_workers: bool = False  # run the somm-service scheduler inside the library process (SOMM_INPROCESS_WORKERS=1)
+    wait_on_exhausted: float | None = None  # default generate/stream wait deadline when all routed providers are cooling
 
     @property
     def db_path(self) -> Path:
@@ -106,6 +113,9 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     if "SOMM_BUDGET_DEFAULT_CAP_USD_DAILY" in os.environ:
         with contextlib.suppress(ValueError):
             cfg.budget_default_cap_usd_daily = float(os.environ["SOMM_BUDGET_DEFAULT_CAP_USD_DAILY"])
+    if "SOMM_WAIT_ON_EXHAUSTED" in os.environ:
+        with contextlib.suppress(ValueError):
+            cfg.wait_on_exhausted = float(os.environ["SOMM_WAIT_ON_EXHAUSTED"])
     if "SOMM_GLOBAL_PATH" in os.environ:
         cfg.cross_project_path = Path(os.environ["SOMM_GLOBAL_PATH"])
     if "SOMM_PROVIDER_ORDER" in os.environ:

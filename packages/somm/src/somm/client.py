@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 from somm_core import EmbedResult, Outcome, SommResult, cost_for_call
 from somm_core.config import Config
@@ -38,6 +39,7 @@ from somm_core.registry import fleet_db_paths, register_project
 from somm_core.repository import Repository
 
 from somm import hooks
+from somm.errors import SommProvidersExhausted
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt
 from somm.providers.anthropic import AnthropicProvider
@@ -77,6 +79,7 @@ _warned_plan_pace: set[str] = set()
 # Project registry entries already announced by this client process.
 _registered_project_keys: set[tuple[str, str]] = set()
 _registered_project_keys_lock = threading.Lock()
+_WAIT_UNSET: Any = object()
 
 
 def _register_project_once(project: str, db_path: Path) -> None:
@@ -691,6 +694,17 @@ class SommLLM:
             default_cap_usd_daily=self.config.budget_default_cap_usd_daily,
         )
 
+    def _resolve_wait_on_exhausted(self, wait) -> float | None:
+        if wait is _WAIT_UNSET:
+            wait = self.config.wait_on_exhausted
+        if wait is None:
+            return None
+        try:
+            wait_s = float(wait)
+        except (TypeError, ValueError):
+            return None
+        return wait_s if wait_s > 0 else None
+
     def generate(
         self,
         prompt: str | list[dict] | Prompt,
@@ -707,6 +721,7 @@ class SommLLM:
         tools: list[dict] | None = None,
         messages: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        wait: float | None = _WAIT_UNSET,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -732,6 +747,11 @@ class SommLLM:
         A response with non-empty ``tool_calls`` and no text is NOT
         treated as Outcome.EMPTY — it is the expected shape of a
         tool-use turn.
+
+        ``wait`` controls admission when every routed provider candidate is
+        cooling down. Omit it to use ``SOMM_WAIT_ON_EXHAUSTED`` when set.
+        Pass ``None`` or ``0`` to fail fast; pass positive seconds to wait up
+        to that deadline before recording and raising final exhaustion.
         """
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
@@ -771,6 +791,7 @@ class SommLLM:
         # Fail-closed budget gate: refuse before any provider call once the
         # workload's daily cap is reached (inert unless budget_fail_closed).
         self._enforce_budget(wl)
+        wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
 
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
         call_prompt_id = None if messages is not None else self._resolve_prompt_id(wl.id, prompt)
@@ -811,6 +832,7 @@ class SommLLM:
         # Track whether we took the fallback path so we can fire on_fallback
         # only on the narrow "pinned failed + chain saved us" window.
         fallback_info: dict | None = None
+        raise_after_record: Exception | None = None
 
         if provider is not None:
             chosen = self._pick_provider(provider)
@@ -872,7 +894,7 @@ class SommLLM:
                     # model name (e.g. "qwen3:14b" on Minimax) guarantees a 404.
                     req.model = None
                     try:
-                        router_result = self.router.dispatch(req)
+                        router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                         resp = router_result.response
                         text = resp.text
                         actual_provider = router_result.provider
@@ -893,19 +915,24 @@ class SommLLM:
                                 tokens_out=tokens_out,
                                 latency_ms=latency_ms,
                             )
-                    except Exception:
+                    except Exception as chain_exc:
                         # Total failure — clear fallback_info so on_fallback
                         # doesn't fire; on_error handles final-failure signal.
                         fallback_info = None
                         outcome = Outcome.UPSTREAM_ERROR
-                        error_kind = type(exc).__name__
-                        error_detail = _format_error_detail(exc, chosen.name, model)
+                        error_kind = type(chain_exc).__name__
+                        error_detail = _format_error_detail(chain_exc, chosen.name, model)
                         actual_provider = chosen.name
-                        if hasattr(exc, "model") and exc.model:
-                            actual_model = exc.model
+                        if hasattr(chain_exc, "model") and chain_exc.model:
+                            actual_model = chain_exc.model
+                        if (
+                            wait_on_exhausted is not None
+                            and isinstance(chain_exc, SommProvidersExhausted)
+                        ):
+                            raise_after_record = chain_exc
         else:
             try:
-                router_result = self.router.dispatch(req)
+                router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                 resp = router_result.response
                 text = resp.text
                 actual_provider = router_result.provider
@@ -936,6 +963,8 @@ class SommLLM:
                 )
                 error_kind = type(exc).__name__
                 error_detail = _format_error_detail(exc, actual_provider, actual_model)
+                if wait_on_exhausted is not None and isinstance(exc, SommProvidersExhausted):
+                    raise_after_record = exc
 
         result = SommResult(
             text=text,
@@ -1039,6 +1068,9 @@ class SommLLM:
             except Exception:
                 # Hook must not break the caller.
                 pass
+
+        if raise_after_record is not None:
+            raise raise_after_record
 
         # Feature 3: warn if daily budget cap is exceeded.
         if wl.budget_cap_usd_daily is not None and result.cost_usd > 0:
@@ -1249,6 +1281,7 @@ class SommLLM:
         temperature: float = 0.2,
         model: str | None = None,
         provider: str | None = None,
+        wait: float | None = _WAIT_UNSET,
     ) -> Iterator[str]:
         """Stream text deltas from the LLM. Yields user-visible text chunks
         (with `<think>` blocks stripped across chunk boundaries).
@@ -1259,6 +1292,8 @@ class SommLLM:
         ``prompt`` may be a string, multimodal prompt list, or registered
         ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
         that prompt version on the telemetry row.
+        Omit ``wait`` to use ``SOMM_WAIT_ON_EXHAUSTED`` when set; pass
+        ``None`` or ``0`` to fail fast when all stream candidates are cooling.
 
         Usage:
             for piece in llm.stream("tell a story", workload="story"):
@@ -1268,6 +1303,7 @@ class SommLLM:
 
         wl = self._require_workload(workload)
         self._enforce_budget(wl)
+        wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
         call_prompt_id = self._resolve_prompt_id(wl.id, prompt)
         req = SommRequest(
@@ -1278,6 +1314,9 @@ class SommLLM:
             model=model,
         )
 
+        if wait_on_exhausted is not None:
+            candidates = [self._pick_provider(provider)] if provider else list(self.providers)
+            self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
         chosen = self._pick_stream_provider(provider)
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
@@ -1395,6 +1434,7 @@ class SommLLM:
         provider: str | None = None,
         retries: int = 2,
         temperature_jitter: float = 0.05,
+        wait: float | None = _WAIT_UNSET,
     ) -> dict | list:
         """Call the LLM and extract JSON from the response.
 
@@ -1410,6 +1450,8 @@ class SommLLM:
         After total exhaustion, returns `{"raw": <last text>,
         "_somm_parse_err": True}` so the caller can distinguish between "LLM
         said nothing parseable" and "LLM said something parseable".
+        Omit ``wait`` to use ``SOMM_WAIT_ON_EXHAUSTED`` when set; pass
+        ``None`` or ``0`` to fail fast on provider exhaustion.
         """
         last_text = ""
         for attempt in range(retries + 1):
@@ -1422,6 +1464,7 @@ class SommLLM:
                 temperature=temp,
                 model=model,
                 provider=provider,
+                wait=wait,
             )
             last_text = result.text
             parsed = extract_json(result.text)
