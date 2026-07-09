@@ -15,7 +15,7 @@ import httpx
 import pytest
 from somm.client import SommLLM, SommStrictMode
 from somm.providers.base import ProviderHealth, SommResponse
-from somm.telemetry import drain_spool
+from somm.telemetry import WriterQueue, drain_spool
 from somm_core import Outcome
 from somm_core.config import Config
 from somm_core.repository import Repository
@@ -312,6 +312,109 @@ def test_spool_drain_roundtrip(tmp_path):
     got = repo.get_call(call_id)
     assert got is not None
     assert got.provider == "fake"
+
+
+def test_writer_startup_drains_existing_spool(tmp_path):
+    """WriterQueue opportunistically replays existing spool before new writes."""
+    import json
+    import time
+    import uuid
+    from datetime import datetime
+
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    spool = cfg.spool_dir
+    spool.mkdir(parents=True, exist_ok=True)
+
+    call_id = str(uuid.uuid4())
+    row = {
+        "id": call_id,
+        "ts": datetime.now(UTC).isoformat(),
+        "project": "smoke",
+        "workload_id": None,
+        "prompt_id": None,
+        "provider": "fake",
+        "model": "fake-1",
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "latency_ms": 1,
+        "cost_usd": 0.0,
+        "outcome": "ok",
+        "error_kind": None,
+        "prompt_hash": "abcdef0123456789",
+        "response_hash": "fedcba9876543210",
+    }
+    spill = spool / "20260101T000000000000.jsonl"
+    spill.write_text(json.dumps(row) + "\n")
+
+    writer = WriterQueue(repo, spool)
+    writer.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while repo.get_call(call_id) is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        writer.stop(timeout=2.0)
+
+    assert repo.get_call(call_id) is not None
+    assert not spill.exists()
+
+
+def test_spool_concurrent_drains_claim_file_once(tmp_path):
+    """Two drainers racing the same file should not crash or leave duplicates."""
+    import json
+    import threading
+    import uuid
+    from datetime import datetime
+
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    spool = cfg.spool_dir
+    spool.mkdir(parents=True, exist_ok=True)
+
+    call_id = str(uuid.uuid4())
+    row = {
+        "id": call_id,
+        "ts": datetime.now(UTC).isoformat(),
+        "project": "smoke",
+        "workload_id": None,
+        "prompt_id": None,
+        "provider": "fake",
+        "model": "fake-1",
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "latency_ms": 1,
+        "cost_usd": 0.0,
+        "outcome": "ok",
+        "error_kind": None,
+        "prompt_hash": "abcdef0123456789",
+        "response_hash": "fedcba9876543210",
+    }
+    (spool / "20260101T000000000000.jsonl").write_text(json.dumps(row) + "\n")
+
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+    drained: list[int] = []
+
+    def run() -> None:
+        try:
+            barrier.wait(timeout=2.0)
+            drained.append(drain_spool(repo, spool))
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run), threading.Thread(target=run)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+
+    assert errors == []
+    assert sorted(drained) == [0, 1]
+    with repo._open() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM calls WHERE id = ?", (call_id,)).fetchone()[0]
+    assert count == 1
+    assert list(spool.glob("*.jsonl*")) == []
 
 
 # ---------------------------------------------------------------------------

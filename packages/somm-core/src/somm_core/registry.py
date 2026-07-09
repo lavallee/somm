@@ -38,26 +38,77 @@ def _load(path: Path) -> dict:
     return {"projects": {}}
 
 
+def _write(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+
+
+def _is_pytest_tmp_path(path: Path) -> bool:
+    raw = str(path)
+    return "/pytest-" in raw or "/tmp/pytest" in raw
+
+
+def _tmp_registration_allowed() -> bool:
+    return os.environ.get("SOMM_REGISTRY_ALLOW_TMP") == "1"
+
+
+def prune_registry() -> int:
+    """Drop registry entries whose db_path no longer exists. Never raises."""
+    try:
+        path = registry_path()
+        data = _load(path)
+        projects = data.get("projects", {})
+        kept = {
+            project: entry
+            for project, entry in projects.items()
+            if entry.get("db_path") and Path(entry["db_path"]).exists()
+        }
+        pruned = len(projects) - len(kept)
+        if pruned:
+            data["projects"] = kept
+            _write(path, data)
+        return pruned
+    except Exception:
+        return 0
+
+
+def registered_db_path(project: str) -> Path | None:
+    """Return an existing registered DB path for project, if one is known."""
+    try:
+        entry = _load(registry_path()).get("projects", {}).get(project)
+        if not entry:
+            return None
+        raw = entry.get("db_path")
+        if not raw:
+            return None
+        path = Path(raw)
+        return path if path.exists() else None
+    except Exception:
+        return None
+
+
 def register_project(project: str, db_path: Path) -> None:
     """Upsert this project's DB location. Never raises — registry
     maintenance must not break `somm.llm()`."""
     try:
         db_key = str(Path(db_path).resolve())
+        prune_registry()
+        if _is_pytest_tmp_path(Path(db_key)) and not _tmp_registration_allowed():
+            return
         key = (project, db_key)
         with _registered_projects_lock:
             if key in _registered_projects:
                 return
             path = registry_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
             data = _load(path)
             data["projects"][project] = {
                 "db_path": db_key,
                 "last_seen": datetime.now(UTC).isoformat(),
             }
-            tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
-            tmp.chmod(0o600)
-            tmp.replace(path)
+            _write(path, data)
             _registered_projects.add(key)
     except Exception:
         pass

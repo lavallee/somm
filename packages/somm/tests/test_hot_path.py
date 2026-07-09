@@ -54,6 +54,7 @@ def _clear_registry_guards() -> None:
 
 def test_sommllm_registers_project_once_per_process(tmp_path, monkeypatch):
     _clear_registry_guards()
+    monkeypatch.setenv("SOMM_REGISTRY_ALLOW_TMP", "1")
     original_replace = Path.replace
     registry_rewrites = 0
 

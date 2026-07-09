@@ -73,6 +73,9 @@ _inprocess_schedulers: dict[str, object] = {}
 # DBs we've already warned about a configured-but-dormant intelligence loop.
 _warned_dormant_loop: set[str] = set()
 
+# Global mirror paths we've already warned about when setup failed.
+_warned_mirror_unavailable: set[str] = set()
+
 # Providers we've already emitted a plan-pacing warning for this process.
 _warned_plan_pace: set[str] = set()
 
@@ -541,10 +544,14 @@ class SommLLM:
 
         mirror_repo: Repository | None = None
         if self.config.cross_project_enabled:
-            mirror_repo = Repository(self.config.global_db_path)
-            # Mirror workload registrations as well so global rollups can
-            # resolve names rather than showing "(unregistered)".
-            _mirror_workloads(self.repo, mirror_repo)
+            try:
+                mirror_repo = Repository(self.config.global_db_path)
+                # Mirror workload registrations as well so global rollups can
+                # resolve names rather than showing "(unregistered)".
+                _mirror_workloads(self.repo, mirror_repo)
+            except Exception as exc:  # noqa: BLE001 — mirror must not break primary telemetry
+                _warn_mirror_unavailable(self.config.global_db_path, exc)
+                mirror_repo = None
 
         self._writer = WriterQueue(self.repo, self.config.spool_dir, mirror_repo=mirror_repo)
         self._writer.start()
@@ -767,7 +774,7 @@ class SommLLM:
                     f"  export SOMM_MODE=observe\n"
                     f"Docs: docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"
                 )
-            wl = self.repo.register_workload(name=workload, project=self.config.project)
+            wl = self.register_workload(name=workload)
 
         # Self-healing: apply any learned parameter override for this
         # (workload, model). The agent worker writes these when it detects a
@@ -1153,7 +1160,7 @@ class SommLLM:
                     f"Fix: somm workload add {workload_arg} --from-example structured-extraction\n"
                     f"     # or: export SOMM_MODE=observe"
                 )
-            wl = self.repo.register_workload(name=workload, project=self.config.project)
+            wl = self.register_workload(name=workload)
 
         # v1: pin to ollama. No router involvement — `force ollama, no
         # fallbacks` is the explicit posture embeddings callers asked for.
@@ -1559,7 +1566,7 @@ class SommLLM:
                     f"  somm.llm().repo.register_workload(name={name!r}, project=...)\n"
                     f"Docs: docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"
                 )
-            wl = self.repo.register_workload(name=name, project=self.config.project)
+            wl = self.register_workload(name=name)
         return wl
 
     # ------------------------------------------------------------------
@@ -1658,3 +1665,11 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
             )
     except Exception:  # noqa: BLE001 — best-effort mirror
         pass
+
+
+def _warn_mirror_unavailable(path: Path, exc: Exception) -> None:
+    key = str(Path(path).resolve())
+    if key in _warned_mirror_unavailable:
+        return
+    _warned_mirror_unavailable.add(key)
+    print(f"[somm] global mirror unavailable at {key}: {exc}; continuing without it", file=sys.stderr)

@@ -11,9 +11,12 @@ Preserves zero-service hot path: library works without somm serve running.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
+import os
 import queue
 import sqlite3
+import sys
 import threading
 import time
 from dataclasses import asdict
@@ -26,6 +29,10 @@ from somm_core.repository import Repository
 _BATCH_MAX = 100
 _BATCH_MS = 100
 _MAX_BUSY_RETRIES = 3
+_SPOOL_DRAIN_INTERVAL_S = 600
+_SPOOL_CLAIM_MARKER = ".claimed-"
+_auto_drain_warned = False
+_auto_drain_warned_lock = threading.Lock()
 
 
 class WriterQueue:
@@ -54,6 +61,7 @@ class WriterQueue:
         self._started = False
         self._stopping = False
         self._atexit_registered = False
+        self._next_spool_drain_at = 0.0
 
     def start(self) -> None:
         if not self._started:
@@ -107,7 +115,10 @@ class WriterQueue:
     def _run(self) -> None:
         batch: list[Call] = []
         last_flush = time.monotonic()
+        self._auto_drain_spool()
         while True:
+            if time.monotonic() >= self._next_spool_drain_at:
+                self._auto_drain_spool()
             # Floor at 1ms so an idle queue can't fall through to a 0-timeout
             # poll: when batch is empty and no flush happened for >_BATCH_MS,
             # the budget would otherwise clamp to 0 and busy-spin the writer.
@@ -141,6 +152,19 @@ class WriterQueue:
                 # Idle tick — reset the budget so the next get() blocks for the
                 # full _BATCH_MS window instead of waking every millisecond.
                 last_flush = time.monotonic()
+
+    def _auto_drain_spool(self) -> None:
+        self._next_spool_drain_at = time.monotonic() + _SPOOL_DRAIN_INTERVAL_S
+        if not _spool_has_files(self._spool_dir):
+            return
+        try:
+            drain_spool(self._repo, self._spool_dir)
+        except Exception as exc:  # noqa: BLE001 — telemetry must never break callers
+            global _auto_drain_warned
+            with _auto_drain_warned_lock:
+                if not _auto_drain_warned:
+                    print(f"[somm] spool auto-drain failed; will retry later: {exc}", file=sys.stderr)
+                    _auto_drain_warned = True
 
     def _drain(self, batch: list[Call]) -> None:
         for attempt in range(_MAX_BUSY_RETRIES):
@@ -185,57 +209,124 @@ class WriterQueue:
         path.chmod(0o600)
 
 
+def _spool_has_files(spool_dir: Path) -> bool:
+    spool_dir = Path(spool_dir)
+    return spool_dir.exists() and (
+        any(spool_dir.glob("*.jsonl"))
+        or any(spool_dir.glob(f"*.jsonl{_SPOOL_CLAIM_MARKER}*"))
+    )
+
+
+def _claimed_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}{_SPOOL_CLAIM_MARKER}{os.getpid()}-{threading.get_ident()}")
+
+
+def _claim_spool_file(path: Path) -> Path | None:
+    claimed = _claimed_path(path)
+    try:
+        path.rename(claimed)
+        return claimed
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def _original_spool_path(claimed: Path) -> Path:
+    return claimed.with_name(claimed.name.split(_SPOOL_CLAIM_MARKER, 1)[0])
+
+
+def _claim_pid(claimed: Path) -> int | None:
+    if _SPOOL_CLAIM_MARKER not in claimed.name:
+        return None
+    raw = claimed.name.split(_SPOOL_CLAIM_MARKER, 1)[1].split("-", 1)[0]
+    with contextlib.suppress(ValueError):
+        return int(raw)
+    return None
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _recover_orphaned_claims(spool_dir: Path) -> None:
+    for claimed in sorted(spool_dir.glob(f"*.jsonl{_SPOOL_CLAIM_MARKER}*")):
+        pid = _claim_pid(claimed)
+        if pid is not None and _pid_is_running(pid):
+            continue
+        original = _original_spool_path(claimed)
+        if original.exists():
+            continue
+        with contextlib.suppress(OSError):
+            claimed.rename(original)
+
+
 def drain_spool(repo: Repository, spool_dir: Path) -> int:
     """Replay every .jsonl in the spool into the DB. Returns rows drained.
 
     Called by `somm drain-spool` (or on service startup).
-    Each file is processed atomically; success deletes it.
+    Each file is claimed with an atomic rename before replay so concurrent
+    drainers cannot double-insert the same rows; success deletes the claim.
     """
     spool_dir = Path(spool_dir)
     if not spool_dir.exists():
         return 0
+    _recover_orphaned_claims(spool_dir)
     total = 0
     for path in sorted(spool_dir.glob("*.jsonl")):
+        claimed = _claim_spool_file(path)
+        if claimed is None:
+            continue
         calls: list[Call] = []
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                row = json.loads(line)
-                row.pop("_spill_reason", None)
-                from somm_core.models import Outcome
-
-                calls.append(
-                    Call(
-                        id=row["id"],
-                        ts=datetime.fromisoformat(row["ts"]),
-                        project=row["project"],
-                        workload_id=row["workload_id"],
-                        prompt_id=row["prompt_id"],
-                        provider=row["provider"],
-                        model=row["model"],
-                        tokens_in=row["tokens_in"],
-                        tokens_out=row["tokens_out"],
-                        latency_ms=row["latency_ms"],
-                        cost_usd=row["cost_usd"],
-                        outcome=Outcome(row["outcome"]),
-                        error_kind=row["error_kind"],
-                        prompt_hash=row["prompt_hash"],
-                        response_hash=row["response_hash"],
-                        # Optional fields — present in newer spool files; rows
-                        # spilled by pre-0.3 writers carry commission_id
-                        # instead, which replay ignores.
-                        error_detail=row.get("error_detail"),
-                        correlation_id=row.get("correlation_id"),
-                        temperature=row.get("temperature"),
-                        max_tokens=row.get("max_tokens"),
-                        top_p=row.get("top_p"),
-                        stop_sequences_json=row.get("stop_sequences_json"),
-                    )
-                )
         try:
+            with claimed.open(encoding="utf-8") as f:
+                for line in f:
+                    row = json.loads(line)
+                    row.pop("_spill_reason", None)
+                    from somm_core.models import Outcome
+
+                    calls.append(
+                        Call(
+                            id=row["id"],
+                            ts=datetime.fromisoformat(row["ts"]),
+                            project=row["project"],
+                            workload_id=row["workload_id"],
+                            prompt_id=row["prompt_id"],
+                            provider=row["provider"],
+                            model=row["model"],
+                            tokens_in=row["tokens_in"],
+                            tokens_out=row["tokens_out"],
+                            latency_ms=row["latency_ms"],
+                            cost_usd=row["cost_usd"],
+                            outcome=Outcome(row["outcome"]),
+                            error_kind=row["error_kind"],
+                            prompt_hash=row["prompt_hash"],
+                            response_hash=row["response_hash"],
+                            # Optional fields — present in newer spool files; rows
+                            # spilled by pre-0.3 writers carry commission_id
+                            # instead, which replay ignores.
+                            error_detail=row.get("error_detail"),
+                            correlation_id=row.get("correlation_id"),
+                            temperature=row.get("temperature"),
+                            max_tokens=row.get("max_tokens"),
+                            top_p=row.get("top_p"),
+                            stop_sequences_json=row.get("stop_sequences_json"),
+                        )
+                    )
             repo.write_calls_batch(calls)
         except Exception:
             # Leave spool file in place; try again later.
+            original = _original_spool_path(claimed)
+            if not original.exists():
+                with contextlib.suppress(OSError):
+                    claimed.rename(original)
             continue
         total += len(calls)
-        path.unlink()
+        claimed.unlink()
     return total
