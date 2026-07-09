@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import shlex
 import sys
 import threading
@@ -366,12 +367,33 @@ def _format_error_detail(exc: Exception, provider: str, model: str | None) -> st
         if status is not None:
             parts.append(f"http_status={status}")
         if body:
-            parts.append(f"body={body.strip()[:200]}")
+            parts.append(f"body={_scrub_secrets(body.strip())[:200]}")
     if provider:
         parts.append(f"provider={provider}")
     if model:
         parts.append(f"model={model}")
-    return " | ".join(parts)[:512]
+    return _scrub_secrets(" | ".join(parts))[:512]
+
+
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"xox[a-z]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"AIza[0-9A-Za-z_-]{30,}"),
+)
+_GENERIC_SECRET_PATTERN = re.compile(
+    r"\b(api[_-]?key|authorization|bearer|token)([\"':= ]+)([A-Za-z0-9_.~+/-]{16,})",
+    re.IGNORECASE,
+)
+
+
+def _scrub_secrets(text: str) -> str:
+    """Redact common credentials from persisted operator-facing error text."""
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    return _GENERIC_SECRET_PATTERN.sub(r"\1\2[redacted]", text)
 
 
 def _format_empty_detail(
