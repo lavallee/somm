@@ -19,6 +19,12 @@ class GradeScores:
     notes: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class BinaryCriterion:
+    name: str
+    description: str = ""
+
+
 def grade_response_pair(
     production_text: str,
     gold_text: str,
@@ -37,6 +43,106 @@ def grade_response_pair(
         text_similarity_score=text_similarity(production_text, gold_text),
         judge_score=judge_score(production_text, gold_text, judge=judge),
     )
+
+
+def normalize_binary_criteria(raw: Any) -> list[BinaryCriterion]:
+    """Normalize judge rubric criteria from config JSON."""
+
+    if raw is None:
+        return [BinaryCriterion("correctness", "Response is correct relative to the gold answer.")]
+    if not isinstance(raw, list):
+        raise ValueError("judge criteria must be a list")
+    out: list[BinaryCriterion] = []
+    for idx, item in enumerate(raw):
+        if isinstance(item, str):
+            name = item.strip()
+            description = ""
+        elif isinstance(item, Mapping):
+            name = str(item.get("name") or "").strip()
+            description = str(item.get("description") or "").strip()
+        else:
+            raise ValueError(f"judge criteria[{idx}] must be a string or object")
+        if not name:
+            raise ValueError(f"judge criteria[{idx}] needs a non-empty name")
+        out.append(BinaryCriterion(name=name, description=description))
+    if not out:
+        raise ValueError("judge criteria must not be empty")
+    return out
+
+
+def build_binary_judge_prompt(
+    *,
+    original_prompt: str,
+    production_text: str,
+    gold_text: str,
+    criteria: list[BinaryCriterion],
+) -> str:
+    """Build a binary-rubric judge prompt with a strict JSON contract."""
+
+    criteria_lines = []
+    for criterion in criteria:
+        if criterion.description:
+            criteria_lines.append(f"- {criterion.name}: {criterion.description}")
+        else:
+            criteria_lines.append(f"- {criterion.name}")
+    return "\n".join(
+        [
+            "Judge the candidate LLM response against the gold response.",
+            "For each criterion, choose true or false. Do not use numeric ratings.",
+            "Return only JSON with this shape:",
+            '{"criteria":[{"name":"<criterion>","pass":true,"reason":"short reason"}]}',
+            "",
+            "Criteria:",
+            *criteria_lines,
+            "",
+            "Original prompt:",
+            original_prompt,
+            "",
+            "Gold response:",
+            gold_text,
+            "",
+            "Candidate response:",
+            production_text,
+        ]
+    )
+
+
+def parse_binary_judge_response(
+    text: str,
+    criteria: list[BinaryCriterion],
+) -> dict:
+    """Parse a judge's binary-rubric JSON response into a receipt dict."""
+
+    parsed = extract_json(text)
+    by_name: dict[str, Any] = {}
+    if isinstance(parsed, dict):
+        raw_items = parsed.get("criteria")
+        if isinstance(raw_items, list):
+            for item in raw_items:
+                if isinstance(item, Mapping):
+                    name = str(item.get("name") or "").strip()
+                    if name:
+                        by_name[name] = item
+        else:
+            by_name = parsed
+    elif isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, Mapping):
+                name = str(item.get("name") or "").strip()
+                if name:
+                    by_name[name] = item
+
+    rows = []
+    for criterion in criteria:
+        raw = by_name.get(criterion.name)
+        passed = False
+        reason = "missing judge result"
+        if isinstance(raw, Mapping):
+            passed = _coerce_bool(raw.get("pass", raw.get("passed")))
+            reason = str(raw.get("reason") or "").strip() or reason
+        rows.append({"name": criterion.name, "pass": passed, "reason": reason})
+    score = sum(1 for row in rows if row["pass"]) / len(rows)
+    return {"criteria": rows, "score": score}
 
 
 def structural_score(prod_text: str, gold_text: str) -> float | None:
@@ -92,6 +198,16 @@ def text_similarity(a: str, b: str) -> float:
     return len(ga & gb) / len(ga | gb)
 
 
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "pass", "passed", "1"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
 def judge_score(
     production_text: str,
     gold_text: str,
@@ -110,10 +226,14 @@ def judge_score(
 
 
 __all__ = [
+    "BinaryCriterion",
     "GradeScores",
+    "build_binary_judge_prompt",
     "grade_response_pair",
     "structural_score",
     "json_overlap",
+    "normalize_binary_criteria",
+    "parse_binary_judge_response",
     "text_similarity",
     "judge_score",
 ]

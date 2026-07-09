@@ -32,10 +32,13 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from somm_core.graders import (
+    build_binary_judge_prompt,
     grade_response_pair,
+    normalize_binary_criteria,
+    parse_binary_judge_response,
 )
 
 if TYPE_CHECKING:
@@ -76,6 +79,8 @@ class EvalOutcome:
     text_similarity_score: float | None
     judge_score: float | None
     gold_response_hash: str | None
+    judge_reason: dict | None = None
+    extra_cost_usd: float = 0.0
     notes: list[str] = field(default_factory=list)
 
 
@@ -287,8 +292,15 @@ class ShadowEvalWorker:
         # Repurpose judge_reason as a JSON array with per-signal metadata; the
         # `cost_usd` used for budget accounting lives inside it. Not beautiful
         # but avoids another migration for v0.3b.
-        notes = [{"cost_usd": _latest_cost(self.repo, call_row["call_id"], cfg)}]
+        notes = [
+            {
+                "cost_usd": _latest_cost(self.repo, call_row["call_id"], cfg)
+                + outcome.extra_cost_usd
+            }
+        ]
         notes.extend({"note": n} for n in outcome.notes)
+        if outcome.judge_reason is not None:
+            notes.append({"judge": outcome.judge_reason})
         with self.repo._open() as conn:
             conn.execute(
                 """
@@ -349,6 +361,17 @@ class ShadowEvalWorker:
         gold_text = gold.text
 
         scores = grade_response_pair(response, gold_text, judge=cfg.judge)
+        judge_score = scores.judge_score
+        judge_reason = None
+        judge_cost_usd = 0.0
+        judge_notes: list[str] = []
+        if cfg.judge:
+            judge_score, judge_reason, judge_cost_usd, judge_notes = self._run_judge(
+                original_prompt=prompt,
+                production_text=response,
+                gold_text=gold_text,
+                judge_cfg=cfg.judge,
+            )
 
         from somm_core.parse import stable_hash
 
@@ -356,12 +379,15 @@ class ShadowEvalWorker:
             call_id=call_row["call_id"],
             structural_score=scores.structural_score,
             text_similarity_score=scores.text_similarity_score,
-            judge_score=scores.judge_score,
+            judge_score=judge_score,
             gold_response_hash=stable_hash(gold_text),
+            judge_reason=judge_reason,
+            extra_cost_usd=judge_cost_usd,
             notes=[
                 f"gold_tokens_in={gold.tokens_in}",
                 f"gold_tokens_out={gold.tokens_out}",
                 *scores.notes,
+                *judge_notes,
             ],
         )
 
@@ -374,6 +400,93 @@ class ShadowEvalWorker:
         if not row:
             return None, None
         return row[0], row[1]
+
+    def _run_judge(
+        self,
+        *,
+        original_prompt: str,
+        production_text: str,
+        gold_text: str,
+        judge_cfg: dict,
+    ) -> tuple[float | None, dict | None, float, list[str]]:
+        from somm.providers.base import SommRequest
+        from somm_core.pricing import cost_for_call
+
+        try:
+            criteria = normalize_binary_criteria(judge_cfg.get("criteria"))
+            specs = _judge_specs(judge_cfg)
+        except ValueError as exc:
+            return None, {"error": str(exc)}, 0.0, [f"judge_config_error={exc}"]
+
+        prompt = build_binary_judge_prompt(
+            original_prompt=original_prompt,
+            production_text=production_text,
+            gold_text=gold_text,
+            criteria=criteria,
+        )
+        receipts: list[dict[str, Any]] = []
+        cost_usd = 0.0
+        notes: list[str] = []
+        for spec in specs:
+            provider_name = spec.get("provider")
+            model = spec.get("model")
+            if not provider_name or not model:
+                receipts.append({"error": "judge provider and model are required", "spec": spec})
+                continue
+            provider = self.providers.get(str(provider_name))
+            if provider is None:
+                receipts.append(
+                    {
+                        "provider": provider_name,
+                        "model": model,
+                        "error": f"judge_provider {provider_name!r} not configured",
+                    }
+                )
+                continue
+            try:
+                response = provider.generate(
+                    SommRequest(
+                        prompt=prompt,
+                        model=str(model),
+                        temperature=0.0,
+                        max_tokens=int(spec.get("max_tokens") or judge_cfg.get("max_tokens") or 512),
+                    )
+                )
+                parsed = parse_binary_judge_response(response.text, criteria)
+                cost_usd += cost_for_call(
+                    self.repo,
+                    str(provider_name),
+                    str(model),
+                    response.tokens_in,
+                    response.tokens_out,
+                )
+                receipts.append(
+                    {
+                        "provider": provider_name,
+                        "model": model,
+                        "tokens_in": response.tokens_in,
+                        "tokens_out": response.tokens_out,
+                        "result": parsed,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 — a judge failure should not drop base grades
+                notes.append(f"judge_error={type(exc).__name__}: {exc}")
+                receipts.append(
+                    {
+                        "provider": provider_name,
+                        "model": model,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+
+        usable = [r for r in receipts if isinstance(r.get("result"), dict)]
+        if not usable:
+            return None, {"criteria": [c.name for c in criteria], "judges": receipts}, cost_usd, notes
+
+        aggregate = _aggregate_judge_votes(criteria, usable)
+        aggregate["mode"] = "panel" if len(usable) > 1 else "single"
+        aggregate["judges"] = receipts
+        return float(aggregate["score"]), aggregate, cost_usd, notes
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +510,80 @@ def _deterministic_sample(calls: list[dict], rate: float, cap: int) -> list[dict
             if len(picked) >= cap:
                 break
     return picked
+
+
+def _judge_specs(judge_cfg: dict) -> list[dict]:
+    """Return one or more judge model specs.
+
+    Supported shapes:
+      {"provider": "openrouter", "model": "..."}
+      {"panel": [{"provider": "ollama", "model": "a"}, ...]}
+
+    A panel lets cheap judges vote before the user reaches for a frontier
+    judge. Each panel item inherits top-level max_tokens when unset.
+    """
+
+    panel = judge_cfg.get("panel") or judge_cfg.get("ensemble")
+    if panel is None:
+        return [
+            {
+                "provider": judge_cfg.get("provider"),
+                "model": judge_cfg.get("model"),
+                "max_tokens": judge_cfg.get("max_tokens"),
+            }
+        ]
+    if not isinstance(panel, list) or not panel:
+        raise ValueError("judge panel must be a non-empty list")
+    out: list[dict] = []
+    for idx, item in enumerate(panel):
+        if not isinstance(item, dict):
+            raise ValueError(f"judge panel[{idx}] must be an object")
+        spec = dict(item)
+        if "max_tokens" not in spec and "max_tokens" in judge_cfg:
+            spec["max_tokens"] = judge_cfg["max_tokens"]
+        out.append(spec)
+    return out
+
+
+def _aggregate_judge_votes(criteria, receipts: list[dict[str, Any]]) -> dict:
+    rows = []
+    for criterion in criteria:
+        votes = []
+        reasons = []
+        for receipt in receipts:
+            result = receipt["result"]
+            by_name = {
+                row["name"]: row
+                for row in result.get("criteria", [])
+                if isinstance(row, dict) and "name" in row
+            }
+            row = by_name.get(criterion.name)
+            if row is None:
+                continue
+            passed = bool(row.get("pass"))
+            votes.append(passed)
+            if row.get("reason"):
+                reasons.append(
+                    {
+                        "provider": receipt.get("provider"),
+                        "model": receipt.get("model"),
+                        "pass": passed,
+                        "reason": row.get("reason"),
+                    }
+                )
+        votes_for = sum(1 for vote in votes if vote)
+        votes_total = len(votes)
+        rows.append(
+            {
+                "name": criterion.name,
+                "pass": votes_total > 0 and votes_for > votes_total / 2,
+                "votes_for": votes_for,
+                "votes_total": votes_total,
+                "reasons": reasons,
+            }
+        )
+    score = sum(1 for row in rows if row["pass"]) / len(rows)
+    return {"criteria": rows, "score": score}
 
 
 def _parse_ts(raw: str | None) -> datetime | None:

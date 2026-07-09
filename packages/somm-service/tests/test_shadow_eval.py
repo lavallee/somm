@@ -4,6 +4,7 @@ privacy defense-in-depth, budget ceiling, lease semantics.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -101,6 +102,41 @@ class _GoldProvider:
         return 1
 
 
+class _JudgeProvider:
+    def __init__(self, name: str = "judge", response: str | dict | None = None):
+        self.name = name
+        self.response = response or {
+            "criteria": [
+                {"name": "correctness", "pass": True, "reason": "matches"},
+                {"name": "completeness", "pass": False, "reason": "missing detail"},
+            ]
+        }
+        self.called = 0
+
+    def generate(self, request):
+        self.called += 1
+        text = self.response if isinstance(self.response, str) else json.dumps(self.response)
+        return SommResponse(
+            text=text,
+            model=request.model,
+            tokens_in=12,
+            tokens_out=6,
+            latency_ms=10,
+        )
+
+    def stream(self, request):  # pragma: no cover
+        yield
+
+    def health(self):
+        return ProviderHealth(available=True)
+
+    def models(self):
+        return []
+
+    def estimate_tokens(self, text, model):
+        return 1
+
+
 # ---------------------------------------------------------------------------
 # Worker behavior
 
@@ -150,6 +186,93 @@ def test_shadow_enabled_grades_sampled_call(tmp_path):
     assert structural == 1.0
     assert text_sim == 1.0
     assert gold_model == "gold-m"
+
+
+def test_shadow_judge_scores_binary_rubric(tmp_path):
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload(name="judge_shadow", project=cfg.project)
+    repo.set_shadow_config(
+        wl.id,
+        {
+            "gold_provider": "gold",
+            "gold_model": "gold-m",
+            "sample_rate": 1.0,
+            "budget_usd_daily": 5.0,
+            "max_grades_per_run": 5,
+            "judge": {
+                "provider": "judge",
+                "model": "judge-m",
+                "criteria": ["correctness", "completeness"],
+            },
+        },
+    )
+    write_intel(repo, "gold", "gold-m", 1.0, 4.0, None, None, "test")
+    write_intel(repo, "judge", "judge-m", 1.0, 1.0, None, None, "test")
+    _insert_call(repo, wl.id, cfg.project, prompt_body="prompt", response_body="candidate")
+
+    judge = _JudgeProvider()
+    worker = ShadowEvalWorker(repo, providers=[_GoldProvider("gold"), judge])
+    summary = worker.run_once()
+
+    assert summary["calls_graded"] == 1
+    assert judge.called == 1
+    with repo._open() as conn:
+        judge_score, reason_json = conn.execute(
+            "SELECT judge_score, judge_reason FROM eval_results"
+        ).fetchone()
+    assert judge_score == 0.5
+    reason = json.loads(reason_json)
+    assert reason[0]["cost_usd"] > 0
+    judge_receipt = [item["judge"] for item in reason if "judge" in item][0]
+    assert judge_receipt["mode"] == "single"
+    assert judge_receipt["criteria"][1]["pass"] is False
+
+
+def test_shadow_judge_panel_majority_vote(tmp_path):
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload(name="judge_panel", project=cfg.project)
+    repo.set_shadow_config(
+        wl.id,
+        {
+            "gold_provider": "gold",
+            "gold_model": "gold-m",
+            "sample_rate": 1.0,
+            "budget_usd_daily": 5.0,
+            "judge": {
+                "criteria": ["correctness"],
+                "panel": [
+                    {"provider": "judge-a", "model": "a"},
+                    {"provider": "judge-b", "model": "b"},
+                    {"provider": "judge-c", "model": "c"},
+                ],
+            },
+        },
+    )
+    _insert_call(repo, wl.id, cfg.project, prompt_body="prompt", response_body="candidate")
+    pass_vote = {"criteria": [{"name": "correctness", "pass": True, "reason": "ok"}]}
+    fail_vote = {"criteria": [{"name": "correctness", "pass": False, "reason": "bad"}]}
+
+    worker = ShadowEvalWorker(
+        repo,
+        providers=[
+            _GoldProvider("gold"),
+            _JudgeProvider("judge-a", pass_vote),
+            _JudgeProvider("judge-b", pass_vote),
+            _JudgeProvider("judge-c", fail_vote),
+        ],
+    )
+    summary = worker.run_once()
+
+    assert summary["calls_graded"] == 1
+    with repo._open() as conn:
+        judge_score, reason_json = conn.execute(
+            "SELECT judge_score, judge_reason FROM eval_results"
+        ).fetchone()
+    assert judge_score == 1.0
+    receipt = [item["judge"] for item in json.loads(reason_json) if "judge" in item][0]
+    assert receipt["mode"] == "panel"
+    assert receipt["criteria"][0]["votes_for"] == 2
+    assert len(receipt["judges"]) == 3
 
 
 def test_private_workloads_are_skipped(tmp_path):

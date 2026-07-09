@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from somm_core.graders import grade_response_pair, structural_score, text_similarity
+from somm_core.graders import (
+    build_binary_judge_prompt,
+    grade_response_pair,
+    normalize_binary_criteria,
+    parse_binary_judge_response,
+    structural_score,
+    text_similarity,
+)
 
 
 def test_text_similarity_identical_strings_are_one():
@@ -42,3 +49,42 @@ def test_grade_response_pair_runs_deterministic_graders_without_judge():
     assert scores.structural_score == 1.0
     assert scores.text_similarity_score == 1.0
     assert scores.judge_score is None
+
+
+def test_binary_judge_prompt_and_parse_response():
+    criteria = normalize_binary_criteria(
+        [
+            {"name": "correctness", "description": "Facts match the gold response."},
+            "completeness",
+        ]
+    )
+    prompt = build_binary_judge_prompt(
+        original_prompt="Question?",
+        production_text="Candidate",
+        gold_text="Gold",
+        criteria=criteria,
+    )
+    assert "Do not use numeric ratings" in prompt
+    assert "correctness" in prompt
+
+    parsed = parse_binary_judge_response(
+        '{"criteria": ['
+        '{"name": "correctness", "pass": true, "reason": "matches"},'
+        '{"name": "completeness", "pass": false, "reason": "missing detail"}'
+        "]}",
+        criteria,
+    )
+    assert parsed["score"] == 0.5
+    assert parsed["criteria"][0]["pass"] is True
+    assert parsed["criteria"][1]["reason"] == "missing detail"
+
+
+def test_binary_judge_missing_criterion_counts_as_false():
+    criteria = normalize_binary_criteria(["correctness", "completeness"])
+    parsed = parse_binary_judge_response(
+        '{"criteria": [{"name": "correctness", "pass": "yes"}]}',
+        criteria,
+    )
+    assert parsed["score"] == 0.5
+    assert parsed["criteria"][1]["pass"] is False
+    assert parsed["criteria"][1]["reason"] == "missing judge result"
