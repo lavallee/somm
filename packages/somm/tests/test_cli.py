@@ -6,6 +6,7 @@ by stubbing the providers list directly.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -121,6 +122,102 @@ def test_status_with_rows(tmp_path, capsys, monkeypatch):
     assert rc == 0
     assert "cli_stat" in out
     assert "ollama" in out
+
+
+def test_status_json_with_rows(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="cli_stat_json", project=cfg.project)
+    repo.write_call(
+        Call(
+            id=str(uuid.uuid4()),
+            ts=datetime.now(UTC),
+            project=cfg.project,
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="ollama",
+            model="gemma4:e4b",
+            tokens_in=10,
+            tokens_out=5,
+            latency_ms=50,
+            cost_usd=0.01,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="a",
+            response_hash="b",
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", cfg.project)
+
+    rc = main(["status", "--since", "1", "--json"])
+    data = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert data["scope"] == "project"
+    assert data["count"] == 1
+    assert data["rows"][0]["workload"] == "cli_stat_json"
+
+
+def test_generate_json_uses_somm_llm(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", cfg.project)
+
+    class FakeLLM:
+        def __init__(self, config):
+            self.config = config
+
+        def generate(self, prompt, **kwargs):
+            assert prompt == "hello"
+            assert kwargs["workload"] == "cli_generate"
+            assert kwargs["provider"] == "fake"
+            return SommResult(
+                text="world",
+                provider="fake",
+                model="fake-model",
+                tokens_in=1,
+                tokens_out=1,
+                latency_ms=5,
+                cost_usd=0.0,
+                call_id="call-1",
+            )
+
+        def close(self):
+            pass
+
+    import somm.client as client_mod
+
+    monkeypatch.setattr(client_mod, "SommLLM", FakeLLM)
+
+    rc = main(
+        [
+            "generate",
+            "hello",
+            "--workload",
+            "cli_generate",
+            "--provider",
+            "fake",
+            "--json",
+        ]
+    )
+    data = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert data["ok"] is True
+    assert data["text"] == "world"
+    assert data["call_id"] == "call-1"
+
+
+def test_generate_json_error_envelope(capsys):
+    rc = main(["generate", "--json"])
+    captured = capsys.readouterr()
+    data = json.loads(captured.err)
+
+    assert rc == 2
+    assert data["ok"] is False
+    assert data["error"]["type"] == "ValueError"
+    assert "prompt is required" in data["error"]["message"]
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,9 @@
 """somm CLI entry point — grouped subcommands.
 
 Commands:
-  somm status          roll-up per (workload, provider, model)
-  somm tail            live call stream
+    somm status          roll-up per (workload, provider, model)
+    somm generate        one-shot LLM call through somm
+    somm tail            live call stream
   somm compare         run a prompt through N models side-by-side
   somm frontier        adequacy frontier per (provider, model) for a workload
   somm doctor          health check (config, ollama, db, model_intel, workers, cooldowns)
@@ -1026,6 +1027,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
     if getattr(args, "global_view", False):
         db_path = cfg.global_db_path
         if not db_path.exists():
+            if getattr(args, "json", False):
+                print(
+                    json.dumps(
+                        {
+                            "scope": "global",
+                            "project": cfg.project,
+                            "db_path": str(db_path),
+                            "window_days": args.since,
+                            "count": 0,
+                            "rows": [],
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
             print(f"No global mirror at {db_path}.")
             print("Enable via SOMM_CROSS_PROJECT=1 and run a project with somm.")
             return 0
@@ -1033,6 +1049,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
         # Global status sums across projects; call with project=None semantics
         # via a single-table query.
         stats = _stats_global(repo, since_days=args.since)
+        if getattr(args, "json", False):
+            print(
+                json.dumps(
+                    {
+                        "scope": "global",
+                        "project": cfg.project,
+                        "db_path": str(db_path),
+                        "window_days": args.since,
+                        "count": len(stats),
+                        "rows": stats,
+                    },
+                    indent=2,
+                )
+            )
+            return 0
         if not stats:
             print(f"Global mirror at {db_path} has no rows in the last {args.since} days.")
             return 0
@@ -1052,6 +1083,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
     repo = Repository(cfg.db_path)
     stats = repo.stats_by_workload(cfg.project, since_days=args.since)
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "scope": "project",
+                    "project": cfg.project,
+                    "db_path": str(cfg.db_path),
+                    "window_days": args.since,
+                    "count": len(stats),
+                    "rows": stats,
+                },
+                indent=2,
+            )
+        )
+        return 0
     if not stats:
         print(f"No calls yet for project {cfg.project!r} in the last {args.since} days.")
         print(f"Run `somm.llm({cfg.project!r}).generate(...)` in your Python code.")
@@ -1068,6 +1114,59 @@ def _cmd_status(args: argparse.Namespace) -> int:
             f"{s['n_calls']:>6} {(s['tokens_in'] or 0):>8} {(s['tokens_out'] or 0):>8} "
             f"{cost_s:>10} {s['n_failed']:>6}"
         )
+    return 0
+
+
+def _cmd_generate(args: argparse.Namespace) -> int:
+    if args.prompt_file and args.prompt:
+        raise ValueError("pass either PROMPT or --prompt-file, not both")
+    if args.prompt_file:
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+    elif args.prompt == "-":
+        prompt = sys.stdin.read()
+    else:
+        prompt = args.prompt
+    if not prompt:
+        raise ValueError("prompt is required (pass PROMPT, --prompt-file, or '-')")
+
+    cfg = load_config(project=args.project)
+    from somm.client import SommLLM
+
+    llm = SommLLM(config=cfg)
+    try:
+        result = llm.generate(
+            prompt,
+            system=args.system,
+            workload=args.workload,
+            provider=args.provider,
+            model=args.model,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+        )
+    finally:
+        llm.close()
+
+    payload = {
+        "ok": result.outcome == Outcome.OK,
+        "text": result.text,
+        "provider": result.provider,
+        "model": result.model,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "latency_ms": result.latency_ms,
+        "cost_usd": result.cost_usd,
+        "call_id": result.call_id,
+        "outcome": result.outcome.value,
+        "error_kind": result.error_kind,
+        "ttft_ms": result.ttft_ms,
+        "cache_tokens_in": result.cache_tokens_in,
+        "cache_tokens_out": result.cache_tokens_out,
+        "citations": result.citations,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(result.text)
     return 0
 
 
@@ -1957,6 +2056,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("status", help="show call roll-up for the current project")
     ps.add_argument("--project", default=None)
     ps.add_argument("--since", type=int, default=7, help="window in days (default 7)")
+    ps.add_argument("--json", action="store_true", help="emit stable JSON")
     ps.add_argument(
         "--global",
         dest="global_view",
@@ -1964,6 +2064,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="read from ~/.somm/global.sqlite (requires SOMM_CROSS_PROJECT)",
     )
     ps.set_defaults(func=_cmd_status)
+
+    pg = sub.add_parser("generate", help="one-shot LLM call through somm")
+    pg.add_argument("prompt", nargs="?", help="prompt text, or '-' to read stdin")
+    pg.add_argument("--prompt-file", default=None, help="read prompt text from a file")
+    pg.add_argument("--project", default=None)
+    pg.add_argument("--workload", default="generate")
+    pg.add_argument("--system", default="")
+    pg.add_argument("--provider", default=None)
+    pg.add_argument("--model", default=None)
+    pg.add_argument("--max-tokens", type=int, default=1024)
+    pg.add_argument("--temperature", type=float, default=0.0)
+    pg.add_argument("--json", action="store_true", help="emit a machine-readable result")
+    pg.set_defaults(func=_cmd_generate)
 
     pt = sub.add_parser("tail", help="stream new calls as they land")
     pt.add_argument("--project", default=None)
@@ -2278,7 +2391,37 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except Exception as exc:
+        if getattr(args, "json", False):
+            code = _json_error_exit_code(exc)
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {
+                            "type": exc.__class__.__name__,
+                            "message": str(exc),
+                            "exit_code": code,
+                        },
+                    },
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            return code
+        raise
+
+
+def _json_error_exit_code(exc: Exception) -> int:
+    if isinstance(exc, (ValueError, argparse.ArgumentError)):
+        return 2
+    if isinstance(exc, FileNotFoundError):
+        return 66
+    if isinstance(exc, PermissionError):
+        return 77
+    return 1
 
 
 if __name__ == "__main__":
