@@ -4,6 +4,81 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 `somm` uses a single unified version across all workspace packages
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-skill`).
 
+## [Unreleased]
+
+### Fixed — the scheduler's clock
+
+- **Scheduler timestamp bug**: `due_at`/`locked_until` were written in
+  SQLite's space-separated format but compared against Python
+  `isoformat()` strings — lexicographically, `' ' < 'T'`, so any
+  same-day future job read as due *now*. Same-day jobs re-fired every
+  poll tick, leases never excluded concurrent runners within a day,
+  and comparisons flipped at UTC day rollover. All comparisons now run
+  in SQL with `datetime()` normalization (legacy-format rows still
+  parse).
+- **`worker_heartbeat` is real**: the table was never written, so the
+  dormant-loop warning fired even while workers ran. Every scheduler
+  tick, job execution, and manual `somm-serve admin` run now beats;
+  the warning adds a staleness variant; `somm doctor` shows the table.
+
+### Security
+
+- **Web service auth**: `POST /v1/messages` (which spends real provider
+  money) and recommendation dismiss/apply now require a bearer token
+  (generated `0600` at `.somm/service_token`; `SOMM_SERVICE_TOKEN`
+  overrides) or same-origin + `X-Somm-Local: 1` custom-header evidence.
+  Previously any web page could `fetch()` these routes cross-origin —
+  localhost binding does not stop CSRF-class requests. HTML responses
+  gain a Content-Security-Policy; all responses gain nosniff/referrer
+  headers.
+- **MCP trust boundary**: recorded prompt/response bodies returned by
+  `somm_replay`/`somm_compare` are wrapped in explicit
+  untrusted-content envelopes (capped, truncation-marked) so a
+  poisoned recorded response can't steer the calling agent unlabeled.
+- **Secret scrubbing**: `calls.error_detail` redacts common credential
+  shapes (OpenAI/Anthropic `sk-*`, AWS, GitHub, Slack, Google, generic
+  api-key/bearer assignments) before persisting upstream error bodies.
+
+### Added
+
+- **Prompt→call binding**: `generate()`/`stream()`/`extract_structured()`
+  accept `Prompt` objects, and plain-string prompts hash-match against
+  the workload's registered versions (prompt ids are content-addressed),
+  stamping `calls.prompt_id`. Grades and costs can finally attribute to
+  prompt versions.
+- **Wait-with-deadline on exhaustion**: `generate(..., wait=<seconds>)`
+  (or `SOMM_WAIT_ON_EXHAUSTED`) sleeps with jitter until the routed
+  chain's earliest cooldown expiry instead of instantly raising
+  `SommProvidersExhausted` — cooldown storms stop producing failure
+  storms. Default stays fail-fast, and the router's old implicit
+  sleep-up-to-300s-without-opt-in is gone.
+- **`somm workload add/list/show`**: workload registration from the
+  shell, with `--from-example` templates — the command strict-mode
+  error hints always promised. Every CLI hint now references a command
+  that exists (regression-tested against the real parsers).
+
+### Changed
+
+- **Cross-project mirror on by default**: the local-only replication of
+  calls/workloads into `~/.somm/global.sqlite` was opt-in and
+  effectively dead (and auto-registered workloads were never mirrored
+  at all — fixed). Env-resolved configs now default it on;
+  `SOMM_CROSS_PROJECT=0` disables. Nothing leaves the machine.
+- **Telemetry integrity**: spool files auto-drain at writer startup and
+  every 10 minutes (rename-claimed, safe under concurrent drainers);
+  the fleet registry self-prunes dead entries and refuses pytest tmp
+  paths; projects run from a fresh cwd resolve their registered DB
+  instead of fragmenting telemetry into a new `.somm`.
+
+### Performance
+
+- **Hot path**: `Repository` reuses one SQLite connection per thread
+  (PRAGMAs once, fork-safe) instead of opening ~5 fresh connections per
+  call; model prices are cached in-process for 10 minutes; registry
+  writes throttle to once per process. Full-suite wall time dropped
+  ~40% from connection reuse alone. somm-core gains its first dedicated
+  test suite, including a zero-new-connections-per-call regression test.
+
 ## [0.7.1] — 2026-07-03
 
 ### Fixed — in-process workers no longer require the web stack
