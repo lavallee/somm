@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import stat
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from somm_core.config import Config
+from somm_core.models import Call, Outcome
+from somm_core.repository import Repository
 from somm_service.app import create_app, load_service_token
 from starlette.testclient import TestClient
 
@@ -33,6 +37,8 @@ def test_home_renders_empty_state(client):
     assert "somm" in r.text
     assert cfg.project in r.text
     assert "NO DATA YET" in r.text or "HEALTHY" in r.text
+    assert "Sessions and traces" in r.text
+    assert "Recent calls" in r.text
 
 
 def test_home_has_html_security_headers(client):
@@ -71,6 +77,120 @@ def test_api_stats_empty(client):
     data = r.json()
     assert data["project"] == cfg.project
     assert data["rows"] == []
+
+
+def test_status_calls_and_sessions_api(client):
+    c, cfg, _ = client
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="trace_work", project=cfg.project)
+    parent_id = str(uuid.uuid4())
+    child_id = str(uuid.uuid4())
+    for call_id, model, parent in (
+        (parent_id, "parent-model", None),
+        (child_id, "child-model", parent_id),
+    ):
+        repo.write_call(
+            Call(
+                id=call_id,
+                ts=datetime.now(UTC),
+                project=cfg.project,
+                workload_id=wl.id,
+                prompt_id=None,
+                provider="fake",
+                model=model,
+                tokens_in=2,
+                tokens_out=3,
+                latency_ms=10,
+                cost_usd=0.0,
+                outcome=Outcome.OK,
+                error_kind=None,
+                prompt_hash=f"p-{model}",
+                response_hash=f"r-{model}",
+                session_id="session-1",
+                parent_call_id=parent,
+            )
+        )
+
+    status = c.get("/api/status").json()
+    assert status["total_calls"] == 2
+    assert status["health"] == "healthy"
+
+    calls = c.get("/api/calls", params={"q": "child-model"}).json()
+    assert calls["count"] == 1
+    assert calls["calls"][0]["parent_call_id"] == parent_id
+
+    sessions = c.get("/api/sessions").json()
+    assert sessions["count"] == 1
+    assert sessions["sessions"][0]["session_id"] == "session-1"
+    assert sessions["sessions"][0]["n_calls"] == 2
+
+
+def test_otlp_trace_ingest_records_call(client):
+    c, cfg, app = client
+    now_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
+    payload = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "svc"}},
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "traceId": "trace-otlp-1",
+                                "spanId": "span-otlp-1",
+                                "name": "chat",
+                                "startTimeUnixNano": str(now_ns),
+                                "endTimeUnixNano": str(now_ns + 25_000_000),
+                                "attributes": [
+                                    {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+                                    {
+                                        "key": "gen_ai.request.model",
+                                        "value": {"stringValue": "gpt-4o-mini"},
+                                    },
+                                    {
+                                        "key": "gen_ai.usage.input_tokens",
+                                        "value": {"intValue": "7"},
+                                    },
+                                    {
+                                        "key": "gen_ai.usage.output_tokens",
+                                        "value": {"intValue": "3"},
+                                    },
+                                    {"key": "somm.workload", "value": {"stringValue": "otlp_chat"}},
+                                    {"key": "somm.session_id", "value": {"stringValue": "sess-otlp"}},
+                                ],
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+
+    unauth = c.post("/api/otlp/v1/traces", json=payload)
+    assert unauth.status_code == 403
+
+    token = app.state.service_token.value
+    res = c.post(
+        "/api/otlp/v1/traces",
+        json=payload,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 200
+    assert res.json()["ingested"] == 1
+
+    calls = c.get("/api/calls", params={"q": "trace-otlp-1"}).json()["calls"]
+    assert len(calls) == 1
+    assert calls[0]["workload"] == "otlp_chat"
+    assert calls[0]["provider"] == "openai"
+    assert calls[0]["model"] == "gpt-4o-mini"
+    assert calls[0]["tokens_in"] == 7
+    assert calls[0]["tokens_out"] == 3
+    assert calls[0]["latency_ms"] == 25
+    assert calls[0]["session_id"] == "sess-otlp"
 
 
 def test_home_with_calls_shows_healthy(client, tmp_path):

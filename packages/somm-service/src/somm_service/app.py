@@ -3,11 +3,16 @@
 HTTP surface:
   GET /                        HTML dashboard — status line + recs + stats
   GET /health                  JSON liveness probe
+  GET /api/status              JSON dashboard summary
   GET /api/stats               JSON roll-up (per-workload × provider × model)
+  GET /api/calls               JSON recent calls, filterable
+  GET /api/sessions            JSON session/trace groups
   GET /api/version             JSON service + schema version
   GET /api/recommendations     JSON open recs
   POST /api/recommendations/{id}/dismiss
   POST /api/recommendations/{id}/apply
+  POST /api/otlp/v1/traces     Lenient OTLP JSON trace ingest
+  POST /v1/traces              Alias for OTLP JSON trace ingest
   POST /v1/messages            Anthropic Messages-compatible LLM proxy
                                 (non-streaming v1; budget-gated; uses litellm
                                 as a library; streaming + /v1/chat/completions
@@ -31,8 +36,10 @@ import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import NAMESPACE_URL, uuid5
 
 from somm.recommendations import (
     apply_recommendation,
@@ -42,6 +49,8 @@ from somm.recommendations import (
 from somm_core import VERSION
 from somm_core.config import Config
 from somm_core.config import load as load_config
+from somm_core.models import Call, Outcome
+from somm_core.parse import stable_hash
 from somm_core.repository import Repository
 from somm_core.schema import current_schema_version
 from starlette.applications import Starlette
@@ -205,18 +214,25 @@ class LocalSecurityMiddleware:
         path = scope["path"]
         protected_admin = method == "POST" and path.startswith("/api/recommendations/")
         protected_messages = method == "POST" and path == "/v1/messages"
+        protected_otlp = method == "POST" and path in (
+            "/api/otlp/v1/traces",
+            "/v1/traces",
+        )
 
-        if protected_admin or protected_messages:
+        if protected_admin or protected_messages or protected_otlp:
             if not self._is_authorized(headers):
                 response = self._forbidden(protected_messages)
                 self._set_security_headers(response)
                 await response(scope, receive, send)
                 return
-            if protected_messages and not self._is_json_request(headers):
+            if (protected_messages or protected_otlp) and not self._is_json_request(headers):
                 response = _anthropic_error(
                     error_type="invalid_request_error",
-                    message="POST /v1/messages requires Content-Type: application/json",
+                    message=f"POST {path} requires Content-Type: application/json",
                     status=415,
+                ) if protected_messages else JSONResponse(
+                    {"ok": False, "error": f"POST {path} requires Content-Type: application/json"},
+                    status_code=415,
                 )
                 self._set_security_headers(response)
                 await response(scope, receive, send)
@@ -320,13 +336,22 @@ _HTML_SHELL = """<!DOCTYPE html>
            border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }}
   header h1 {{ font-size: 20px; margin: 0; font-weight: 600; }}
   header .meta {{ font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }}
-  .status {{ font-size: 16px; padding: 16px; border: 1px solid var(--border);
-            border-radius: var(--radius); background: var(--bg-alt); margin-bottom: 24px; }}
-  .status strong {{ color: var(--ok); font-family: var(--font-mono); }}
-  .status.warn strong {{ color: var(--warn); }}
-  .status.err strong {{ color: var(--danger); }}
-  h2 {{ font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em;
-        color: var(--fg-muted); margin: 24px 0 12px; }}
+    .status {{ font-size: 16px; padding: 16px; border: 1px solid var(--border);
+              border-radius: var(--radius); background: var(--bg-alt); margin-bottom: 24px; }}
+    .status strong {{ color: var(--ok); font-family: var(--font-mono); }}
+    .status.warn strong {{ color: var(--warn); }}
+    .status.err strong {{ color: var(--danger); }}
+    .filters {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+                gap: 8px; margin: 0 0 20px; align-items: end; }}
+    .filters label {{ display: grid; gap: 4px; color: var(--fg-muted); font-size: 11px;
+                      font-family: var(--font-mono); }}
+    .filters input {{ width: 100%; border: 1px solid var(--border); border-radius: var(--radius);
+                      background: var(--bg-alt); color: var(--fg); padding: 8px; }}
+    .filters button {{ border: 1px solid var(--border); border-radius: var(--radius);
+                        background: var(--fg); color: var(--bg); padding: 8px 10px;
+                        font-weight: 600; cursor: pointer; }}
+    h2 {{ font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em;
+          color: var(--fg-muted); margin: 24px 0 12px; }}
   ol.recs {{ list-style: none; padding: 0; margin: 0; display: flex;
             flex-direction: column; gap: 12px; }}
   .rec {{ padding: 16px; border: 1px solid var(--border); border-radius: var(--radius);
@@ -339,17 +364,27 @@ _HTML_SHELL = """<!DOCTYPE html>
   .rec-evidence summary {{ color: var(--accent); cursor: pointer; font-size: 12px;
                           font-family: var(--font-mono); }}
   .rec-evidence[open] summary {{ margin-bottom: 8px; }}
-  .evidence-tbl {{ margin-top: 4px; font-size: 12px; }}
-  .evidence-tbl th {{ color: var(--fg-muted); font-weight: 500; padding: 4px 10px; }}
-  .evidence-tbl td {{ padding: 4px 10px; border-bottom: 1px solid var(--border); }}
-  table {{ width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 13px; }}
-  th, td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }}
+    .evidence-tbl {{ margin-top: 4px; font-size: 12px; }}
+    .evidence-tbl th {{ color: var(--fg-muted); font-weight: 500; padding: 4px 10px; }}
+    .evidence-tbl td {{ padding: 4px 10px; border-bottom: 1px solid var(--border); }}
+    .trace {{ border: 1px solid var(--border); border-radius: var(--radius);
+              background: var(--bg-alt); padding: 10px 12px; margin-bottom: 8px; }}
+    .trace summary {{ cursor: pointer; font-family: var(--font-mono); font-size: 12px; }}
+    .trace[open] summary {{ margin-bottom: 8px; color: var(--accent); }}
+    .trace-tbl {{ font-size: 12px; }}
+    table {{ width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 13px; }}
+    th, td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }}
   th {{ color: var(--fg-muted); font-weight: 500; }}
   td.num {{ text-align: right; }}
   .empty {{ padding: 16px; color: var(--fg-muted); font-style: italic; }}
-  footer {{ margin-top: 48px; color: var(--fg-muted); font-family: var(--font-mono);
-            font-size: 12px; }}
-</style>
+    footer {{ margin-top: 48px; color: var(--fg-muted); font-family: var(--font-mono);
+              font-size: 12px; }}
+    @media (max-width: 820px) {{
+      body {{ padding: 16px; }}
+      header {{ display: block; }}
+      .filters {{ grid-template-columns: 1fr 1fr; }}
+    }}
+  </style>
 </head>
 <body>
 <header>
@@ -357,26 +392,45 @@ _HTML_SHELL = """<!DOCTYPE html>
   <div class="meta">project: {project} · v{version} · schema v{schema} · {window}d window</div>
 </header>
 
-<section aria-label="System status" role="status" aria-live="polite">
-  <div class="status {status_class}">
-    <strong>{status_label}</strong> · {hero_line}
-  </div>
-</section>
+  <section aria-label="System status" role="status" aria-live="polite">
+    <div class="status {status_class}">
+      <strong>{status_label}</strong> · {hero_line}
+    </div>
+  </section>
 
-<section aria-label="Recommendations">
-  <h2>Top recommendations</h2>
-  {recs_html}
-</section>
+  <form class="filters" action="/" method="get" aria-label="Dashboard filters">
+    <label>window days<input name="window" value="{window}" inputmode="numeric"></label>
+    <label>search<input name="q" value="{q}" placeholder="session, model, call"></label>
+    <label>workload<input name="workload" value="{workload}"></label>
+    <label>provider<input name="provider" value="{provider}"></label>
+    <label>model<input name="model" value="{model}"></label>
+    <button type="submit">Filter</button>
+  </form>
 
-<section aria-label="Evidence">
-  <h2>Calls by workload</h2>
+  <section aria-label="Recommendations">
+    <h2>Top recommendations</h2>
+    {recs_html}
+  </section>
+
+  <section aria-label="Sessions">
+    <h2>Sessions and traces</h2>
+    {sessions_html}
+  </section>
+
+  <section aria-label="Recent calls">
+    <h2>Recent calls</h2>
+    {calls_html}
+  </section>
+
+  <section aria-label="Evidence">
+    <h2>Calls by workload</h2>
   {table_html}
 </section>
 
 <footer>
-  somm is self-hosted. Binds <code>localhost</code> only by default. Data stays on disk.
-  <br>Endpoints: <a href="/health">/health</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/version">/api/version</a>
-</footer>
+    somm is self-hosted. Binds <code>localhost</code> only by default. Data stays on disk.
+    <br>Endpoints: <a href="/health">/health</a> · <a href="/api/status">/api/status</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/calls">/api/calls</a> · <a href="/api/sessions">/api/sessions</a>
+  </footer>
 </body>
 </html>
 """
@@ -412,6 +466,207 @@ def _render_table(stats: list[dict]) -> str:
 
 def _esc(s: str) -> str:
     return html.escape(str(s), quote=True)
+
+
+def _parse_positive_int(value: str | None, default: int, *, max_value: int) -> int:
+    try:
+        parsed = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(max_value, parsed))
+
+
+def _status_payload(cfg: Config, repo: Repository, *, window: int) -> dict:
+    stats = repo.stats_by_workload(cfg.project, since_days=window)
+    total_calls = sum(s["n_calls"] for s in stats)
+    total_failed = sum(s["n_failed"] for s in stats)
+    total_cost = sum((s.get("cost_usd") or 0.0) for s in stats)
+    if total_calls == 0:
+        health = "no_data"
+    elif total_failed == 0:
+        health = "healthy"
+    elif (total_failed / total_calls) < 0.2:
+        health = "warning"
+    else:
+        health = "critical"
+    return {
+        "project": cfg.project,
+        "window_days": window,
+        "health": health,
+        "total_calls": total_calls,
+        "total_failed": total_failed,
+        "failure_rate": 0.0 if total_calls == 0 else total_failed / total_calls,
+        "total_cost_usd": total_cost,
+        "active_workloads": len({s["workload"] for s in stats}),
+    }
+
+
+def _query_calls(
+    repo: Repository,
+    cfg: Config,
+    *,
+    window: int,
+    limit: int,
+    q: str | None = None,
+    workload: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> list[dict]:
+    clauses = ["c.project = ?", "c.ts >= datetime('now', ?)"]
+    params: list[object] = [cfg.project, f"-{window} days"]
+    if workload:
+        clauses.append("(w.name = ? OR c.workload_id = ?)")
+        params.extend([workload, workload])
+    if provider:
+        clauses.append("c.provider = ?")
+        params.append(provider)
+    if model:
+        clauses.append("c.model = ?")
+        params.append(model)
+    if q:
+        like = f"%{q}%"
+        clauses.append(
+            "("
+            "c.id LIKE ? OR c.provider LIKE ? OR c.model LIKE ? OR "
+            "COALESCE(w.name, '') LIKE ? OR COALESCE(c.session_id, '') LIKE ? OR "
+            "COALESCE(c.correlation_id, '') LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like, like, like, like])
+    where = " AND ".join(clauses)
+    params.append(limit)
+    with repo._open() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT c.id, c.ts, COALESCE(w.name, 'ad_hoc') AS workload,
+                   c.provider, c.model, c.tokens_in, c.tokens_out,
+                   c.latency_ms, c.cost_usd, c.outcome, c.error_kind,
+                   c.session_id, c.parent_call_id, c.correlation_id,
+                   c.ttft_ms, c.cache_tokens_in, c.cache_tokens_out
+            FROM calls c
+            LEFT JOIN workloads w ON w.id = c.workload_id
+            WHERE {where}
+            ORDER BY c.ts DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "ts": r[1],
+            "workload": r[2],
+            "provider": r[3],
+            "model": r[4],
+            "tokens_in": r[5],
+            "tokens_out": r[6],
+            "latency_ms": r[7],
+            "cost_usd": r[8] or 0.0,
+            "outcome": r[9],
+            "error_kind": r[10],
+            "session_id": r[11],
+            "parent_call_id": r[12],
+            "correlation_id": r[13],
+            "ttft_ms": r[14],
+            "cache_tokens_in": r[15],
+            "cache_tokens_out": r[16],
+        }
+        for r in rows
+    ]
+
+
+def _session_groups(calls: list[dict]) -> list[dict]:
+    groups: dict[str, dict] = {}
+    for call in calls:
+        session_id = call.get("session_id") or call["id"]
+        group = groups.setdefault(
+            session_id,
+            {
+                "session_id": session_id,
+                "first_ts": call["ts"],
+                "last_ts": call["ts"],
+                "n_calls": 0,
+                "n_failed": 0,
+                "total_tokens": 0,
+                "total_cost_usd": 0.0,
+                "calls": [],
+            },
+        )
+        group["n_calls"] += 1
+        group["n_failed"] += 0 if call["outcome"] == "ok" else 1
+        group["total_tokens"] += (call["tokens_in"] or 0) + (call["tokens_out"] or 0)
+        group["total_cost_usd"] += call["cost_usd"] or 0.0
+        group["first_ts"] = min(group["first_ts"], call["ts"])
+        group["last_ts"] = max(group["last_ts"], call["ts"])
+        group["calls"].append(call)
+    for group in groups.values():
+        group["calls"].sort(key=lambda c: (c["ts"], c["id"]))
+    return sorted(groups.values(), key=lambda g: g["last_ts"], reverse=True)
+
+
+def _render_calls(calls: list[dict]) -> str:
+    if not calls:
+        return '<div class="empty">No calls match the current filters.</div>'
+    rows = []
+    for c in calls[:50]:
+        session = c.get("session_id") or ""
+        parent = c.get("parent_call_id") or ""
+        rows.append(
+            "<tr>"
+            f"<td><code>{_esc(c['id'][:8])}</code></td>"
+            f"<td>{_esc(c['workload'])}</td>"
+            f"<td>{_esc(c['provider'])}</td>"
+            f"<td>{_esc(c['model'])}</td>"
+            f"<td>{_esc(c['outcome'])}</td>"
+            f"<td class='num'>{c['latency_ms']}</td>"
+            f"<td><code>{_esc(str(session)[:12])}</code></td>"
+            f"<td><code>{_esc(str(parent)[:8])}</code></td>"
+            "</tr>"
+        )
+    return (
+        "<table>"
+        "<thead><tr><th>call</th><th>workload</th><th>provider</th><th>model</th>"
+        "<th>outcome</th><th class='num'>latency</th><th>session</th><th>parent</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    )
+
+
+def _render_sessions(groups: list[dict]) -> str:
+    if not groups:
+        return '<div class="empty">No sessions or traces match the current filters.</div>'
+    items = []
+    for group in groups[:12]:
+        calls = group["calls"]
+        rows = []
+        for c in calls[:25]:
+            parent = c.get("parent_call_id") or ""
+            rows.append(
+                "<tr>"
+                f"<td><code>{_esc(c['id'][:8])}</code></td>"
+                f"<td><code>{_esc(str(parent)[:8])}</code></td>"
+                f"<td>{_esc(c['workload'])}</td>"
+                f"<td>{_esc(c['provider'])}/{_esc(c['model'])}</td>"
+                f"<td>{_esc(c['outcome'])}</td>"
+                f"<td class='num'>{c['latency_ms']}</td>"
+                "</tr>"
+            )
+        summary = (
+            f"{_esc(group['session_id'][:24])} · {group['n_calls']} calls · "
+            f"{group['n_failed']} failed · {group['total_tokens']} tokens"
+        )
+        items.append(
+            "<details class='trace'>"
+            f"<summary>{summary}</summary>"
+            "<table class='trace-tbl'><thead><tr>"
+            "<th>call</th><th>parent</th><th>workload</th><th>model</th>"
+            "<th>outcome</th><th class='num'>latency</th>"
+            "</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+            "</details>"
+        )
+    return "".join(items)
 
 
 def _list_recommendations(repo: Repository) -> list[dict]:
@@ -511,8 +766,23 @@ def _evidence_table(rows: list[tuple]) -> str:
 async def _home(request: Request) -> HTMLResponse:
     cfg: Config = request.app.state.config
     repo: Repository = request.app.state.repo
-    window = int(request.query_params.get("window", "7"))
+    window = _parse_positive_int(request.query_params.get("window"), 7, max_value=365)
+    q = request.query_params.get("q") or None
+    workload = request.query_params.get("workload") or None
+    provider = request.query_params.get("provider") or None
+    model = request.query_params.get("model") or None
     stats = repo.stats_by_workload(cfg.project, since_days=window)
+    calls = _query_calls(
+        repo,
+        cfg,
+        window=window,
+        limit=100,
+        q=q,
+        workload=workload,
+        provider=provider,
+        model=model,
+    )
+    sessions = _session_groups(calls)
 
     total_calls = sum(s["n_calls"] for s in stats)
     total_failed = sum(s["n_failed"] for s in stats)
@@ -549,10 +819,16 @@ async def _home(request: Request) -> HTMLResponse:
         version=_esc(VERSION),
         schema=schema_ver,
         window=window,
+        q=_esc(q or ""),
+        workload=_esc(workload or ""),
+        provider=_esc(provider or ""),
+        model=_esc(model or ""),
         status_class=status_class,
         status_label=_esc(status_label),
         hero_line=_esc(hero),
         recs_html=_render_recommendations(recs),
+        sessions_html=_render_sessions(sessions),
+        calls_html=_render_calls(calls),
         table_html=_render_table(stats),
     )
     return HTMLResponse(html)
@@ -573,9 +849,67 @@ async def _health(request: Request) -> JSONResponse:
 async def _api_stats(request: Request) -> JSONResponse:
     cfg: Config = request.app.state.config
     repo: Repository = request.app.state.repo
-    window = int(request.query_params.get("window", "7"))
+    window = _parse_positive_int(request.query_params.get("window"), 7, max_value=365)
     stats = repo.stats_by_workload(cfg.project, since_days=window)
     return JSONResponse({"project": cfg.project, "window_days": window, "rows": stats})
+
+
+async def _api_status(request: Request) -> JSONResponse:
+    cfg: Config = request.app.state.config
+    repo: Repository = request.app.state.repo
+    window = _parse_positive_int(request.query_params.get("window"), 7, max_value=365)
+    return JSONResponse(_status_payload(cfg, repo, window=window))
+
+
+async def _api_calls(request: Request) -> JSONResponse:
+    cfg: Config = request.app.state.config
+    repo: Repository = request.app.state.repo
+    window = _parse_positive_int(request.query_params.get("window"), 7, max_value=365)
+    limit = _parse_positive_int(request.query_params.get("limit"), 100, max_value=1000)
+    calls = _query_calls(
+        repo,
+        cfg,
+        window=window,
+        limit=limit,
+        q=request.query_params.get("q") or None,
+        workload=request.query_params.get("workload") or None,
+        provider=request.query_params.get("provider") or None,
+        model=request.query_params.get("model") or None,
+    )
+    return JSONResponse(
+        {
+            "project": cfg.project,
+            "window_days": window,
+            "count": len(calls),
+            "calls": calls,
+        }
+    )
+
+
+async def _api_sessions(request: Request) -> JSONResponse:
+    cfg: Config = request.app.state.config
+    repo: Repository = request.app.state.repo
+    window = _parse_positive_int(request.query_params.get("window"), 7, max_value=365)
+    limit = _parse_positive_int(request.query_params.get("limit"), 500, max_value=2000)
+    calls = _query_calls(
+        repo,
+        cfg,
+        window=window,
+        limit=limit,
+        q=request.query_params.get("q") or None,
+        workload=request.query_params.get("workload") or None,
+        provider=request.query_params.get("provider") or None,
+        model=request.query_params.get("model") or None,
+    )
+    sessions = _session_groups(calls)
+    return JSONResponse(
+        {
+            "project": cfg.project,
+            "window_days": window,
+            "count": len(sessions),
+            "sessions": sessions,
+        }
+    )
 
 
 async def _api_recommendations(request: Request) -> JSONResponse:
@@ -615,6 +949,237 @@ async def _api_rec_apply(request: Request) -> JSONResponse:
     return JSONResponse(result.as_dict())
 
 
+def _otel_value(raw: dict) -> object:
+    if "stringValue" in raw:
+        return raw["stringValue"]
+    if "intValue" in raw:
+        try:
+            return int(raw["intValue"])
+        except (TypeError, ValueError):
+            return raw["intValue"]
+    if "doubleValue" in raw:
+        try:
+            return float(raw["doubleValue"])
+        except (TypeError, ValueError):
+            return raw["doubleValue"]
+    if "boolValue" in raw:
+        return bool(raw["boolValue"])
+    if "arrayValue" in raw:
+        values = raw.get("arrayValue", {}).get("values", [])
+        return [_otel_value(v) for v in values if isinstance(v, dict)]
+    if "kvlistValue" in raw:
+        return _otel_attrs(raw.get("kvlistValue", {}).get("values", []))
+    return None
+
+
+def _otel_attrs(items: list | None) -> dict[str, object]:
+    attrs: dict[str, object] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        value = item.get("value")
+        if isinstance(key, str) and isinstance(value, dict):
+            attrs[key] = _otel_value(value)
+    return attrs
+
+
+def _iter_otlp_spans(payload: dict):
+    for resource_span in payload.get("resourceSpans", []) or []:
+        if not isinstance(resource_span, dict):
+            continue
+        resource_attrs = _otel_attrs(
+            (resource_span.get("resource") or {}).get("attributes")
+        )
+        span_groups = []
+        span_groups.extend(resource_span.get("scopeSpans", []) or [])
+        span_groups.extend(resource_span.get("instrumentationLibrarySpans", []) or [])
+        for span_group in span_groups:
+            if not isinstance(span_group, dict):
+                continue
+            scope = span_group.get("scope") or span_group.get("instrumentationLibrary") or {}
+            scope_attrs = _otel_attrs(scope.get("attributes"))
+            for span in span_group.get("spans", []) or []:
+                if not isinstance(span, dict):
+                    continue
+                attrs = dict(resource_attrs)
+                attrs.update(scope_attrs)
+                attrs.update(_otel_attrs(span.get("attributes")))
+                yield span, attrs
+    for span in payload.get("spans", []) or []:
+        if isinstance(span, dict):
+            yield span, _otel_attrs(span.get("attributes"))
+
+
+def _attr(attrs: dict[str, object], *keys: str, default=None):
+    for key in keys:
+        value = attrs.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _span_time(value: object) -> datetime:
+    nanos = _as_int(value, 0)
+    if nanos <= 0:
+        return datetime.now(UTC)
+    return datetime.fromtimestamp(nanos / 1_000_000_000, UTC)
+
+
+def _latency_ms(span: dict, attrs: dict[str, object]) -> int:
+    explicit = _attr(attrs, "somm.latency_ms", "gen_ai.latency_ms", "llm.latency_ms")
+    if explicit is not None:
+        return max(0, _as_int(explicit, 0))
+    start = _as_int(span.get("startTimeUnixNano"), 0)
+    end = _as_int(span.get("endTimeUnixNano"), 0)
+    if start > 0 and end >= start:
+        return int((end - start) / 1_000_000)
+    return 0
+
+
+def _call_id_for_span(trace_id: str, span_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"somm-otlp:{trace_id}:{span_id}"))
+
+
+def _outcome_for_span(span: dict) -> tuple[Outcome, str | None]:
+    status = span.get("status") or {}
+    code = status.get("code") if isinstance(status, dict) else None
+    if code in ("STATUS_CODE_ERROR", "ERROR", 2):
+        return Outcome.ERROR, str(status.get("message") or "otel_status_error")
+    return Outcome.OK, None
+
+
+def _call_from_otlp_span(
+    repo: Repository,
+    cfg: Config,
+    span: dict,
+    attrs: dict[str, object],
+) -> Call:
+    trace_id = str(span.get("traceId") or _attr(attrs, "trace_id", default=""))
+    span_id = str(span.get("spanId") or _attr(attrs, "span_id", default=""))
+    if not trace_id:
+        trace_id = stable_hash({"span": span, "attrs": attrs})
+    if not span_id:
+        span_id = stable_hash({"span": span.get("name"), "attrs": attrs})
+    provider = str(
+        _attr(attrs, "somm.provider", "gen_ai.system", "llm.provider", default="otel")
+    )
+    model = str(
+        _attr(
+            attrs,
+            "somm.model",
+            "gen_ai.response.model",
+            "gen_ai.request.model",
+            "llm.model_name",
+            default=span.get("name") or "unknown",
+        )
+    )
+    workload = str(
+        _attr(
+            attrs,
+            "somm.workload",
+            "llm.workload",
+            "gen_ai.operation.name",
+            default=span.get("name") or "otel",
+        )
+    )
+    workload_id = repo.register_workload(name=workload, project=cfg.project).id
+    outcome, error_kind = _outcome_for_span(span)
+    parent_span_id = str(span.get("parentSpanId") or "")
+    parent_call_id = _call_id_for_span(trace_id, parent_span_id) if parent_span_id else None
+    prompt_hash = stable_hash({"trace_id": trace_id, "span_id": span_id, "side": "prompt"})
+    response_hash = stable_hash({"trace_id": trace_id, "span_id": span_id, "side": "response"})
+    return Call(
+        id=_call_id_for_span(trace_id, span_id),
+        ts=_span_time(span.get("startTimeUnixNano")),
+        project=cfg.project,
+        workload_id=workload_id,
+        prompt_id=None,
+        provider=provider,
+        model=model,
+        tokens_in=_as_int(
+            _attr(
+                attrs,
+                "somm.tokens_in",
+                "gen_ai.usage.input_tokens",
+                "gen_ai.usage.prompt_tokens",
+                "llm.usage.prompt_tokens",
+            )
+        ),
+        tokens_out=_as_int(
+            _attr(
+                attrs,
+                "somm.tokens_out",
+                "gen_ai.usage.output_tokens",
+                "gen_ai.usage.completion_tokens",
+                "llm.usage.completion_tokens",
+            )
+        ),
+        latency_ms=_latency_ms(span, attrs),
+        cost_usd=_as_float(_attr(attrs, "somm.cost_usd", "gen_ai.usage.cost_usd")),
+        outcome=outcome,
+        error_kind=error_kind,
+        prompt_hash=prompt_hash,
+        response_hash=response_hash,
+        correlation_id=trace_id,
+        ttft_ms=_as_int(_attr(attrs, "somm.ttft_ms", "gen_ai.ttft_ms"), 0) or None,
+        session_id=str(_attr(attrs, "somm.session_id", "session.id", default=trace_id)),
+        parent_call_id=parent_call_id,
+        cache_tokens_in=_as_int(
+            _attr(attrs, "somm.cache_tokens_in", "gen_ai.usage.cache_read_input_tokens"),
+            0,
+        ) or None,
+        cache_tokens_out=_as_int(_attr(attrs, "somm.cache_tokens_out"), 0) or None,
+    )
+
+
+def _ingest_otlp_payload(repo: Repository, cfg: Config, payload: dict) -> dict:
+    ingested = 0
+    duplicates = 0
+    skipped = 0
+    for span, attrs in _iter_otlp_spans(payload):
+        try:
+            call = _call_from_otlp_span(repo, cfg, span, attrs)
+            repo.write_call(call)
+            ingested += 1
+        except sqlite3.IntegrityError:
+            duplicates += 1
+        except Exception:
+            skipped += 1
+    return {
+        "ok": True,
+        "ingested": ingested,
+        "duplicates": duplicates,
+        "skipped": skipped,
+    }
+
+
+async def _api_otlp_traces(request: Request) -> JSONResponse:
+    cfg: Config = request.app.state.config
+    repo: Repository = request.app.state.repo
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "OTLP payload must be an object"}, status_code=400)
+    return JSONResponse(_ingest_otlp_payload(repo, cfg, payload))
+
+
 async def _api_version(request: Request) -> JSONResponse:
     cfg: Config = request.app.state.config
     try:
@@ -640,11 +1205,16 @@ def create_app(config: Config | None = None) -> Starlette:
         routes=[
             Route("/", _home),
             Route("/health", _health),
+            Route("/api/status", _api_status),
             Route("/api/stats", _api_stats),
+            Route("/api/calls", _api_calls),
+            Route("/api/sessions", _api_sessions),
             Route("/api/version", _api_version),
             Route("/api/recommendations", _api_recommendations),
             Route("/api/recommendations/{rec_id:int}/dismiss", _api_rec_dismiss, methods=["POST"]),
             Route("/api/recommendations/{rec_id:int}/apply", _api_rec_apply, methods=["POST"]),
+            Route("/api/otlp/v1/traces", _api_otlp_traces, methods=["POST"]),
+            Route("/v1/traces", _api_otlp_traces, methods=["POST"]),
             Route("/v1/messages", messages_endpoint, methods=["POST"]),
         ],
     )
