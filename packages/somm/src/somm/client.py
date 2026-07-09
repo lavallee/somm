@@ -8,6 +8,7 @@ warning), call_id in result for provenance.
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import logging
 import shlex
@@ -16,6 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -752,8 +754,42 @@ class SommLLM:
                 pass
         return wl
 
+    def set_workload_policy(self, workload: str, policy: dict | None) -> None:
+        """Attach or clear a workload routing policy."""
+        wl = self._require_workload(workload)
+        self.repo.set_workload_policy(wl.id, policy)
+        if self._mirror_repo is not None:
+            try:
+                mirror_wl = self._mirror_repo.workload_by_name(
+                    workload, self.config.project
+                )
+                if mirror_wl is not None:
+                    self._mirror_repo.set_workload_policy(mirror_wl.id, policy)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _default_providers(self) -> list[SommProvider]:
         return build_default_providers(self.config, tracker=self._tracker)
+
+    def _policy_router(
+        self,
+        policy: dict,
+        *,
+        explicit_model: bool,
+    ) -> Router:
+        providers = _policy_providers(
+            self.providers,
+            policy,
+            explicit_model=explicit_model,
+        )
+        return Router(
+            providers,
+            self._tracker,
+            circuit_break_after=self.router.circuit_break_after,
+            circuit_break_cooldown_s=self.router.circuit_break_cooldown_s,
+            exhausted_sleep_cap_s=self.router.exhausted_sleep_cap_s,
+            plan_governor=self._plan_governor,
+        )
 
     # ------------------------------------------------------------------
 
@@ -1168,8 +1204,28 @@ class SommLLM:
                         ):
                             raise_after_record = chain_exc
         else:
+            dispatch_raise_exhausted = wait_on_exhausted is not None
             try:
-                router_result = self.router.dispatch(req, wait=wait_on_exhausted)
+                if wl.policy:
+                    retry_cfg = wl.policy.get("retry") or {}
+                    dispatch_raise_exhausted = retry_cfg.get("max") is not None
+                    policy_wait = wait_on_exhausted
+                    if wait is _WAIT_UNSET and retry_cfg.get("deadline_s") is not None:
+                        policy_wait = float(retry_cfg["deadline_s"])
+                    dispatch_raise_exhausted = (
+                        dispatch_raise_exhausted or policy_wait is not None
+                    )
+                    router_result = self._policy_router(
+                        wl.policy,
+                        explicit_model=model is not None,
+                    ).dispatch(
+                        req,
+                        wait=policy_wait,
+                        retry_max=retry_cfg.get("max"),
+                        retry_backoff_s=retry_cfg.get("backoff_s"),
+                    )
+                else:
+                    router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                 resp = router_result.response
                 text = resp.text
                 actual_provider = router_result.provider
@@ -1200,7 +1256,10 @@ class SommLLM:
                 )
                 error_kind = type(exc).__name__
                 error_detail = _format_error_detail(exc, actual_provider, actual_model)
-                if wait_on_exhausted is not None and isinstance(exc, SommProvidersExhausted):
+                if (
+                    dispatch_raise_exhausted
+                    and isinstance(exc, SommProvidersExhausted)
+                ):
                     raise_after_record = exc
 
         cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
@@ -2146,6 +2205,74 @@ def _merge_caps(*sources: list[str] | None) -> list[str]:
     return list(seen.keys())
 
 
+class _PolicyProvider:
+    """Per-call provider wrapper for workload policy model/timeout overrides."""
+
+    def __init__(
+        self,
+        provider: SommProvider,
+        *,
+        model: str | None,
+        explicit_model: bool,
+        timeout_s: float | None,
+    ) -> None:
+        if timeout_s is not None and hasattr(provider, "timeout"):
+            provider = copy.copy(provider)
+            provider.timeout = float(timeout_s)
+        self._provider = provider
+        self._model = model
+        self._explicit_model = explicit_model
+        self.name = provider.name
+        default_model = getattr(provider, "default_model", None)
+        self.default_model = model if model is not None and not explicit_model else default_model
+
+    def generate(self, request: SommRequest):
+        req = request
+        if self._model is not None and not self._explicit_model:
+            req = replace(request, model=self._model)
+        return self._provider.generate(req)
+
+    def stream(self, request):  # pragma: no cover - policy routing is generate-only
+        return self._provider.stream(request)
+
+    def health(self):
+        return self._provider.health()
+
+    def models(self):
+        return self._provider.models()
+
+    def estimate_tokens(self, text, model):
+        return self._provider.estimate_tokens(text, model)
+
+
+def _policy_providers(
+    providers: list[SommProvider],
+    policy: dict,
+    *,
+    explicit_model: bool,
+) -> list[SommProvider]:
+    timeout_s = policy.get("timeout_s")
+    fallback = policy.get("fallback")
+    if fallback:
+        by_name = {p.name: p for p in providers}
+        selected: list[tuple[SommProvider, str | None]] = []
+        for entry in fallback:
+            provider = by_name.get(entry["provider"])
+            if provider is not None:
+                selected.append((provider, entry.get("model")))
+    else:
+        selected = [(provider, None) for provider in providers]
+    return [
+        _PolicyProvider(
+            provider,
+            model=model,
+            explicit_model=explicit_model,
+            timeout_s=timeout_s,
+        )
+        for provider, model in selected
+    ]
+
+
 def _mirror_workloads(src: Repository, dst: Repository) -> None:
     """Copy workloads rows from src to dst (idempotent on id). Called once
     on SommLLM init when cross_project_enabled is set."""
@@ -2155,7 +2282,7 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
                 "SELECT id, name, project, description, input_schema_json, "
                 "output_schema_json, quality_criteria_json, budget_cap_usd_daily, "
                 "privacy_class, created_at, shadow_config_json, "
-                "capabilities_required_json FROM workloads"
+                "capabilities_required_json, policy_json FROM workloads"
             ).fetchall()
         if not rows:
             return
@@ -2166,8 +2293,8 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
                     (id, name, project, description,
                      input_schema_json, output_schema_json, quality_criteria_json,
                      budget_cap_usd_daily, privacy_class, created_at, shadow_config_json,
-                     capabilities_required_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     capabilities_required_json, policy_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

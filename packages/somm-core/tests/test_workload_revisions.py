@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from somm_core.repository import Repository
 
 
@@ -69,6 +70,30 @@ def test_set_workload_constraints_records_snapshots_and_keeps_live_row(tmp_path)
     assert refreshed.max_p95_latency_ms == 250
     assert refreshed.max_capability_failure_rate == 0.1
     assert refreshed.max_cost_per_call_usd == 0.01
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"timeout_s": None},
+        {"retry": {"backoff_s": None}},
+        {"retry": {"deadline_s": None}},
+        {"retry": {"max": None}},
+    ],
+)
+def test_set_workload_policy_rejects_non_finite_numbers(tmp_path, policy, bad_value):
+    repo = Repository(tmp_path / "somm.sqlite")
+    wl = repo.register_workload(name="w1", project="p")
+
+    if "timeout_s" in policy:
+        candidate = {"timeout_s": bad_value}
+    else:
+        key = next(iter(policy["retry"]))
+        candidate = {"retry": {key: bad_value}}
+
+    with pytest.raises(ValueError, match="finite|integer"):
+        repo.set_workload_policy(wl.id, candidate)
 
 
 def test_shadow_config_diff_and_forward_only_rollback(tmp_path):

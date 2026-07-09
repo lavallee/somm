@@ -123,6 +123,7 @@ class Workload:
     max_p95_latency_ms: int | None = None              # Tier 1: timeliness
     max_capability_failure_rate: float | None = None   # Tier 2/3: 0–1 (e.g. 0.05 = 5%)
     max_cost_per_call_usd: float | None = None         # cost ceiling per ok call
+    policy: dict | None = None
     created_at: datetime | None = None
 
 
