@@ -8,6 +8,42 @@ Nothing here is committed to a release date. The goal is to keep the
 shape of the future visible without letting the short list grow
 unbounded.
 
+## The 0.8 → 1.0 arc
+
+A directed push from "proven sensor, inert brain" to a fully-realized
+v1, in six phases. Three are shipped.
+
+- **0.8 — Stop the bleeding (shipped).** Scheduler correctness, web-admin
+  auth + CSP, cooldown admission control, hot-path connection reuse,
+  prompt→call binding, worker-heartbeat truth, telemetry integrity, CLI
+  honesty, MCP hardening.
+- **0.9 — The Loop (shipped).** A named-phase hook bus (`pre_call` /
+  `post_call` / `post_process`) with priorities and sync/async support;
+  the `somm.providers` entry-point registry; four reference plugins
+  (cache, redaction, notifier, OTel exporter); `somm plugin` CLI and
+  `docs/plugins.md`.
+- **0.10 — The Workload (shipped).** The workload as a versioned atomic
+  unit: prompt label layer + forking, weighted-label A/B, the
+  `somm prompt` CLI, `generate_structured()`, trace/cache/citation
+  telemetry columns, workload config revisions, and per-workload routing
+  policy. Schema v10→v15, migration engine made crash-atomic.
+- **0.11 — The Proof (next).** Evals + the closed loop: graders shared
+  between the background worker and a `somm eval run` CI gate, a durable
+  datasets table, a binary-rubric LLM judge, eval→selection wiring, and a
+  propose-only prompt optimizer.
+- **0.12 — The Brain.** Close the intelligence loop: recommendation
+  delivery + one-command apply, plan/quota learning, sommelier ranking
+  quality (model-id aliasing, decision-aware scoring, score breakdown),
+  and cross-project decision recall in `advise`.
+- **1.0 — Table stakes + launch.** Session/trace UI, OTLP ingest, a
+  supported JSON read API, an optional Postgres backend, and the public
+  release.
+
+Cross-cutting throughout: a hot-path overhead benchmark and sub-30ms
+import target (perf), a threat-model doc and CI supply-chain checks
+(security), and a PyPI release cadence with a one-shot `somm generate`
+CLI and an installable agent skill (adoption).
+
 ## Recommendation quality
 
 ### Cross-provider model-id canonicalization
