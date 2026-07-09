@@ -46,7 +46,13 @@ from somm._redaction import scrub_text
 from somm.errors import SommProvidersExhausted, SommStructuredError
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import fork_prompt as fork_prompt_version
-from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt, set_label
+from somm.prompts import (
+    get_prompt,
+    prompt_ids_for_workload,
+    register_prompt,
+    resolve_label,
+    set_label,
+)
 from somm.providers.base import (
     SommEmbedRequest,
     SommProvider,
@@ -1970,6 +1976,7 @@ class SommLLM:
         version: str = "latest",
         *,
         label: str | None = None,
+        bucket_key: str | None = None,
     ) -> Prompt:
         """Fetch a prompt by workload + version or label.
 
@@ -1977,8 +1984,27 @@ class SommLLM:
             body = llm.prompt("claim_extract", version="latest").body
             body = llm.prompt("claim_extract", label="production").body
             result = llm.generate(body, workload="claim_extract")
+
+        For weighted labels, bucket_key deterministically selects the variant.
+        When omitted, the current correlation id is used so a session resolves
+        to a stable variant. Pass the returned Prompt to generate(); telemetry
+        records the selected prompt_id for per-version scoring.
         """
         wl = self._require_workload(workload)
+        if label is not None:
+            resolved = resolve_label(
+                self.repo,
+                wl.id,
+                label,
+                bucket_key if bucket_key is not None else hooks.current_correlation_id(),
+            )
+            if resolved is None:
+                from somm.prompts import PromptNotFound
+
+                raise PromptNotFound(
+                    f"no prompt label {label!r} for workload {wl.id!r}"
+                )
+            return resolved
         return get_prompt(self.repo, wl.id, version=version, label=label)
 
     def fork_prompt(

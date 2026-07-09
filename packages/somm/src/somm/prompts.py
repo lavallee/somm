@@ -16,7 +16,8 @@ Behavior:
 - `llm.prompt(workload, version="latest")` fetches. "latest" = highest
   version by the retired_at=NULL entries.
 - `llm.prompt(workload, label="production")` resolves via prompt_labels.
-  Explicit label wins over version.
+  Explicit label wins over version. Weighted labels without a bucket key
+  resolve to their highest-weight variant.
 - `llm.prompt(workload, version="v2")` fetches a specific pinned version.
 - `llm.fork_prompt(...)` creates a new prompt in the same workload with
   parent_prompt_id set to the source prompt id. It is lineage, not a new
@@ -28,12 +29,14 @@ soft (`retired_at` timestamp) so historical calls stay analyzable.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from somm_core.models import Prompt
 from somm_core.parse import prompt_id as _prompt_id
+from somm_core.parse import stable_hash
 
 if TYPE_CHECKING:
     from somm_core.repository import Repository
@@ -121,7 +124,7 @@ def get_prompt(
     when a missing label should return None.
     """
     if label is not None:
-        prompt = get_label(repo, workload_id, label)
+        prompt = resolve_label(repo, workload_id, label, bucket_key=None)
         if prompt is None:
             raise PromptNotFound(
                 f"no prompt label {label!r} for workload {workload_id!r}"
@@ -180,6 +183,7 @@ def set_label(
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(workload_id, label) DO UPDATE SET
                     prompt_id = excluded.prompt_id,
+                    weights_json = NULL,
                     updated_at = CURRENT_TIMESTAMP,
                     updated_by = excluded.updated_by
                 """,
@@ -198,20 +202,90 @@ def set_label(
             raise
 
 
+def set_label_weights(
+    repo: Repository,
+    workload_id: str,
+    label: str,
+    weights: dict[str, float | int],
+    updated_by: str | None = None,
+) -> None:
+    """Move a label to a deterministic weighted prompt distribution.
+
+    Keys may be prompt versions (``v1.2``) or prompt ids. We store normalized
+    weights keyed by prompt id and keep ``prompt_labels.prompt_id`` pointed at
+    the highest-weight variant as the no-bucket fallback.
+    """
+    normalized = _normalize_label_weights(repo, workload_id, weights)
+    fallback_id = max(normalized.items(), key=lambda item: (item[1], item[0]))[0]
+    weights_json = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+    with repo._open() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """
+                INSERT INTO prompt_labels (
+                    workload_id, label, prompt_id, weights_json, updated_by
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(workload_id, label) DO UPDATE SET
+                    prompt_id = excluded.prompt_id,
+                    weights_json = excluded.weights_json,
+                    updated_at = CURRENT_TIMESTAMP,
+                    updated_by = excluded.updated_by
+                """,
+                (workload_id, label, fallback_id, weights_json, updated_by),
+            )
+            conn.execute(
+                """
+                INSERT INTO prompt_label_history (workload_id, label, prompt_id, moved_by)
+                VALUES (?, ?, ?, ?)
+                """,
+                (workload_id, label, fallback_id, updated_by),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def get_label(repo: Repository, workload_id: str, label: str) -> Prompt | None:
     """Resolve a prompt label, returning None when the label is unknown."""
+    return resolve_label(repo, workload_id, label, bucket_key=None)
+
+
+def resolve_label(
+    repo: Repository,
+    workload_id: str,
+    label: str,
+    bucket_key: str | None,
+) -> Prompt | None:
+    """Resolve a label to a Prompt, applying weighted A/B selection if present.
+
+    Weighted labels use ``stable_hash(bucket_key)`` for deterministic bucketing.
+    When ``bucket_key`` is None, resolution falls back to the highest-weight
+    variant, matching ``get_prompt(label=...)``'s deterministic behavior.
+    """
     with repo._open() as conn:
         row = conn.execute(
             """
-            SELECT p.id, p.workload_id, p.version, p.hash, p.body,
-                   p.created_at, p.retired_at, p.parent_prompt_id
-            FROM prompt_labels AS l
-            JOIN prompts AS p ON p.id = l.prompt_id AND p.workload_id = l.workload_id
-            WHERE l.workload_id = ? AND l.label = ?
+            SELECT prompt_id, weights_json
+            FROM prompt_labels
+            WHERE workload_id = ? AND label = ?
             """,
             (workload_id, label),
         ).fetchone()
-    return _row_to_prompt(row) if row else None
+    if row is None:
+        return None
+
+    prompt_id = row[0]
+    weights_json = row[1] if len(row) > 1 else None
+    if weights_json:
+        weights = _loads_weights(weights_json)
+        if weights:
+            prompt_id = _choose_weighted_prompt_id(weights, bucket_key) or prompt_id
+
+    return _prompt_by_id(repo, workload_id, prompt_id)
 
 
 def list_labels(repo: Repository, workload_id: str) -> dict[str, Prompt]:
@@ -229,6 +303,36 @@ def list_labels(repo: Repository, workload_id: str) -> dict[str, Prompt]:
             (workload_id,),
         ).fetchall()
     return {row[0]: _row_to_prompt(row[1:]) for row in rows}
+
+
+def list_label_pointers(repo: Repository, workload_id: str) -> dict[str, dict]:
+    """Return label pointer metadata, including weighted distributions."""
+    with repo._open() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.label, l.prompt_id, l.weights_json, p.version
+            FROM prompt_labels AS l
+            JOIN prompts AS p ON p.id = l.prompt_id AND p.workload_id = l.workload_id
+            WHERE l.workload_id = ?
+            ORDER BY l.label
+            """,
+            (workload_id,),
+        ).fetchall()
+        version_rows = conn.execute(
+            "SELECT id, version FROM prompts WHERE workload_id = ?",
+            (workload_id,),
+        ).fetchall()
+    versions_by_id = {row[0]: row[1] for row in version_rows}
+    out: dict[str, dict] = {}
+    for label, prompt_id, weights_json, version in rows:
+        weights = _loads_weights(weights_json)
+        out[label] = {
+            "prompt_id": prompt_id,
+            "version": version,
+            "weights": weights,
+            "versions": {pid: versions_by_id.get(pid, pid) for pid in weights},
+        }
+    return out
 
 
 def label_history(repo: Repository, workload_id: str, label: str) -> list[dict]:
@@ -329,6 +433,73 @@ def _resolve_prompt_ref(repo: Repository, workload_id: str, version_or_label: st
     if labeled is not None:
         return labeled
     return get_prompt(repo, workload_id, version=version_or_label)
+
+
+def _normalize_label_weights(
+    repo: Repository,
+    workload_id: str,
+    weights: dict[str, float | int],
+) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for ref, raw_weight in weights.items():
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError):
+            raise ValueError(f"invalid weight for {ref!r}: {raw_weight!r}") from None
+        if weight <= 0:
+            raise ValueError(f"weight for {ref!r} must be > 0")
+        prompt = _prompt_by_id(repo, workload_id, ref)
+        if prompt is None:
+            prompt = get_prompt(repo, workload_id, version=ref)
+        totals[prompt.id] = totals.get(prompt.id, 0.0) + weight
+    if not totals:
+        raise ValueError("weighted label must include at least one prompt")
+    total = sum(totals.values())
+    return {pid: weight / total for pid, weight in sorted(totals.items())}
+
+
+def _loads_weights(raw: str | None) -> dict[str, float]:
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    out: dict[str, float] = {}
+    for prompt_id, weight in loaded.items():
+        try:
+            value = float(weight)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            out[str(prompt_id)] = value
+    return out
+
+
+def _choose_weighted_prompt_id(
+    weights: dict[str, float],
+    bucket_key: str | None,
+) -> str | None:
+    if not weights:
+        return None
+    if bucket_key is None:
+        return max(weights.items(), key=lambda item: (item[1], item[0]))[0]
+
+    total = sum(weights.values())
+    if total <= 0:
+        return None
+    space = 16**16
+    point = int(stable_hash(str(bucket_key)), 16) / space * total
+    cumulative = 0.0
+    chosen = None
+    for prompt_id, weight in sorted(weights.items()):
+        cumulative += weight
+        chosen = prompt_id
+        if point < cumulative:
+            return prompt_id
+    return chosen
 
 
 def _bump(current: str | None, how: str) -> str:

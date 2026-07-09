@@ -1925,12 +1925,18 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+jsonschema = [
+    { name = "jsonschema" },
+]
 litellm = [
     { name = "litellm" },
 ]
 otel = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
+]
+pydantic = [
+    { name = "pydantic" },
 ]
 tokenizers = [
     { name = "tiktoken" },
@@ -1939,13 +1945,15 @@ tokenizers = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
+    { name = "jsonschema", marker = "extra == 'jsonschema'", specifier = ">=4" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
+    { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2" },
     { name = "somm-core", editable = "packages/somm-core" },
     { name = "tiktoken", marker = "extra == 'tokenizers'", specifier = ">=0.7" },
 ]
-provides-extras = ["litellm", "tokenizers", "otel"]
+provides-extras = ["litellm", "tokenizers", "otel", "pydantic", "jsonschema"]
 
 [[package]]
 name = "somm-core"

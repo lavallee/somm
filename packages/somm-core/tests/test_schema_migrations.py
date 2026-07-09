@@ -20,8 +20,8 @@ def test_v10_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 13
-        assert current_schema_version(conn) == 13
+        assert upgraded == SCHEMA_VERSION == 14
+        assert current_schema_version(conn) == 14
         tables = {
             row[0]
             for row in conn.execute(
@@ -60,8 +60,8 @@ def test_v11_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 13
-        assert current_schema_version(conn) == 13
+        assert upgraded == SCHEMA_VERSION == 14
+        assert current_schema_version(conn) == 14
         call_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
         }
@@ -103,8 +103,8 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 13
-        assert current_schema_version(conn) == 13
+        assert upgraded == SCHEMA_VERSION == 14
+        assert current_schema_version(conn) == 14
 
         tables = {
             row[0]
@@ -135,3 +135,25 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
         }
         assert "idx_workload_revisions_wl_rev" in indexes
         assert "idx_workload_revisions_wl" in indexes
+
+
+def test_v13_database_upgrades_to_v14_prompt_label_weights(tmp_path):
+    db_path = tmp_path / "v13.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 13:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        assert current_schema_version(conn) == 13
+
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 14
+        assert current_schema_version(conn) == 14
+        label_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(prompt_labels)").fetchall()
+        }
+        assert "weights_json" in label_columns
