@@ -14,6 +14,7 @@ Commands:
   somm workload        register and inspect project workloads
   somm prompt          manage prompt versions, labels, and A/B variants
   somm eval            promote calls to datasets and run eval gates
+  somm optimize        propose a prompt fork from failing graded calls
   somm plugin          list and inspect plugins, hooks, and providers
 """
 
@@ -32,7 +33,7 @@ from pathlib import Path
 
 from somm_core import VERSION, list_intel
 from somm_core.config import load as load_config
-from somm_core.models import PrivacyClass
+from somm_core.models import Outcome, PrivacyClass
 from somm_core.repository import Repository
 
 from somm.providers.ollama import OllamaProvider
@@ -658,6 +659,70 @@ def _print_eval_run(result) -> None:
         score = f"{item.score:.3f}"
         item_status = "PASS" if item.passed else "FAIL"
         print(f"{item.item_id[:8]:<10} {call:<10} {score:>7} {item_status:<6} {item.error or ''}")
+
+
+# ---------------------------------------------------------------------------
+# somm optimize
+
+
+def _cmd_optimize(args: argparse.Namespace) -> int:
+    from somm import SommLLM
+    from somm.optimize import propose_prompt_optimization
+    from somm.prompts import PromptNotFound
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    wl = repo.workload_by_name(args.workload, cfg.project)
+    if wl is None:
+        print(f"No workload {args.workload!r} registered for project {cfg.project!r}.", file=sys.stderr)
+        return 2
+
+    llm = SommLLM(config=cfg)
+    try:
+        def proposer(prompt: str) -> str:
+            result = llm.generate(
+                prompt=prompt,
+                workload="somm_optimize",
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                provider=args.provider,
+                model=args.model,
+                no_fallback=bool(args.provider),
+            )
+            writer = getattr(llm, "_writer", None)
+            if writer is not None:
+                writer.flush(timeout=5.0)
+            if result.outcome != Outcome.OK:
+                raise RuntimeError(
+                    f"optimizer call failed: {result.outcome.value} {result.error_detail or ''}"
+                )
+            return result.text
+
+        try:
+            result = propose_prompt_optimization(
+                repo,
+                workload_id=wl.id,
+                from_ref=args.from_ref,
+                proposer=proposer,
+                threshold=args.threshold,
+                limit=args.limit,
+                label=args.label,
+            )
+        except (PromptNotFound, ValueError, RuntimeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    finally:
+        llm.close()
+
+    print(
+        f"{result.label} -> {result.proposed_prompt.version} "
+        f"({result.proposed_prompt.id[:8]})"
+    )
+    print(f"source: {result.source_prompt.version} ({result.source_prompt.id[:8]})")
+    print(f"cases: {len(result.cases)}")
+    if result.rationale:
+        print(f"rationale: {result.rationale}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1814,6 +1879,22 @@ def build_parser() -> argparse.ArgumentParser:
     peval_run.add_argument("--model", default=None)
     peval_run.add_argument("--json", action="store_true")
     peval_run.set_defaults(func=_cmd_eval_run)
+
+    popt = sub.add_parser(
+        "optimize",
+        help="propose a prompt fork from failing graded calls",
+    )
+    popt.add_argument("--workload", required=True)
+    popt.add_argument("--project", default=None)
+    popt.add_argument("--from", dest="from_ref", default="production")
+    popt.add_argument("--threshold", type=float, default=0.8)
+    popt.add_argument("--limit", type=int, default=8)
+    popt.add_argument("--label", default="proposed")
+    popt.add_argument("--max-tokens", type=int, default=2048)
+    popt.add_argument("--temperature", type=float, default=0.2)
+    popt.add_argument("--provider", default=None)
+    popt.add_argument("--model", default=None)
+    popt.set_defaults(func=_cmd_optimize)
 
     pp = sub.add_parser("plugin", help="list and inspect plugins, hooks, and providers")
     pp_sub = pp.add_subparsers(dest="plugin_cmd", required=True)

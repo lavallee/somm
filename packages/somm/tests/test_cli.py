@@ -501,6 +501,7 @@ def test_corrected_command_hints_parse_against_real_parsers():
         ["prompt", "score", "--workload", "orders", "--label", "production"],
         ["eval", "promote-call", "abc", "--dataset", "golden"],
         ["eval", "run", "--workload", "orders", "--dataset", "golden"],
+        ["optimize", "--workload", "orders"],
         ["plugin", "list"],
         ["plugin", "info", "cache"],
         ["frontier", "--workload", "orders"],
