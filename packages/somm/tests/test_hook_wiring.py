@@ -327,3 +327,35 @@ def test_embed_short_circuit_returns_cached_vector_and_records_row(tmp_path):
     assert row["tokens_in"] == 4
     assert row["tokens_out"] == 0
     assert row["outcome"] == "ok"
+
+
+def test_short_circuit_serves_budget_capped_workload(tmp_path):
+    """A free short-circuit (cache hit) must bypass the fail-closed budget
+    gate — it spends nothing — while a real call would be refused."""
+    from somm.errors import SommBudgetExceeded
+
+    cfg = _tmp_config(tmp_path)
+    cfg.budget_fail_closed = True
+    fake = FakeProvider(fail=True)  # must never be called
+    llm = SommLLM(config=cfg, providers=[fake], on_error=lambda _: None)
+    # Register the workload with a $0 daily cap: any real spend is refused.
+    llm.register_workload(name="capped", budget_cap_usd_daily=0.0)
+
+    def cached(_ctx):
+        return hooks.ShortCircuit(text="from-cache", provider="cache", source="cache")
+
+    try:
+        # Without a hook, a real call is refused by the gate.
+        with pytest.raises(SommBudgetExceeded):
+            llm.generate("hi", workload="capped")
+
+        # With a short-circuit, the capped workload is still served.
+        hooks.register_hook(hooks.PRE_CALL, cached)
+        result = llm.generate("hi", workload="capped")
+        row = _call_row(llm, result.call_id)
+    finally:
+        llm.close()
+
+    assert result.text == "from-cache"
+    assert result.provider == "cache"
+    assert row["outcome"] == "ok"

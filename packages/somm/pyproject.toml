@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 litellm = ["litellm>=1.50"]
 tokenizers = ["tiktoken>=0.7"]
+otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 
 [project.scripts]
 somm = "somm.cli:main"

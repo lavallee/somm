@@ -276,9 +276,15 @@ def _fire_observer(fn: Callable[[dict[str, Any]], Any], event: dict[str, Any]) -
 
 
 def fire_post_call(event: dict[str, Any]) -> None:
-    """Run observe-only ``post_call`` hooks in priority order."""
+    """Run observe-only ``post_call`` hooks in priority order.
+
+    Each hook gets its own shallow copy of the event so an observe-only
+    hook that mutates (or stashes) the dict can't corrupt what later hooks
+    — or the post_process phase reading the same event on another thread —
+    see. Event values are flat scalars, so a shallow copy fully isolates.
+    """
     for hook in list(_hooks_by_phase[POST_CALL]):
-        _fire_observer(hook.fn, event)
+        _fire_observer(hook.fn, dict(event))
 
 
 def notify_call_observers(event: dict[str, Any]) -> None:
@@ -312,15 +318,18 @@ def fire_post_process(event: dict[str, Any]) -> None:
     if not hooks:
         return
     executor = _get_post_process_executor()
+    # Per-hook shallow copy: the caller's event dict must not be read on the
+    # worker thread (the caller keeps running and post_call already touched
+    # it), and one background hook must not mutate another's view.
     if executor is None:
         for hook in hooks:
-            _fire_observer(hook.fn, event)
+            _fire_observer(hook.fn, dict(event))
         return
     for hook in hooks:
         try:
-            executor.submit(_fire_observer, hook.fn, event)
+            executor.submit(_fire_observer, hook.fn, dict(event))
         except Exception:
-            _fire_observer(hook.fn, event)
+            _fire_observer(hook.fn, dict(event))
 
 
 def shutdown_hooks(wait: bool = False) -> None:

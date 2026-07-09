@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import re
 import shlex
 import sys
 import threading
@@ -40,6 +39,7 @@ from somm_core.registry import fleet_db_paths, register_project
 from somm_core.repository import Repository
 
 from somm import hooks
+from somm._redaction import scrub_text
 from somm.errors import SommProvidersExhausted
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt
@@ -374,25 +374,9 @@ def _format_error_detail(exc: Exception, provider: str, model: str | None) -> st
     return _scrub_secrets(" | ".join(parts))[:512]
 
 
-_SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
-    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
-    re.compile(r"xox[a-z]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"AIza[0-9A-Za-z_-]{30,}"),
-)
-_GENERIC_SECRET_PATTERN = re.compile(
-    r"\b(api[_-]?key|authorization|bearer|token)([\"':= ]+)([A-Za-z0-9_.~+/-]{16,})",
-    re.IGNORECASE,
-)
-
-
 def _scrub_secrets(text: str) -> str:
     """Redact common credentials from persisted operator-facing error text."""
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub("[redacted]", text)
-    return _GENERIC_SECRET_PATTERN.sub(r"\1\2[redacted]", text)
+    return scrub_text(text)
 
 
 def _format_empty_detail(
@@ -816,9 +800,6 @@ class SommLLM:
             except Exception:
                 pass  # never let a learned-override lookup break a live call
 
-        # Fail-closed budget gate: refuse before any provider call once the
-        # workload's daily cap is reached (inert unless budget_fail_closed).
-        self._enforce_budget(wl)
         wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
 
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
@@ -895,6 +876,14 @@ class SommLLM:
             )
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
+
+        # Fail-closed budget gate: refuse before any provider call once the
+        # workload's daily cap is reached (inert unless budget_fail_closed).
+        # Runs AFTER pre_call so a short-circuit (e.g. a cache hit) — which
+        # spends nothing — can still serve a capped workload; a real provider
+        # call is still refused.
+        if short_circuit is None:
+            self._enforce_budget(wl)
 
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
@@ -1441,7 +1430,6 @@ class SommLLM:
         from somm.providers.base import SommRequest
 
         wl = self._require_workload(workload)
-        self._enforce_budget(wl)
         wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
         messages = None
@@ -1497,6 +1485,11 @@ class SommLLM:
             )
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
+
+        # Budget gate after pre_call — a short-circuit spends nothing, so a
+        # capped workload may still stream from cache; a real call is refused.
+        if short_circuit is None:
+            self._enforce_budget(wl)
 
         chosen = None
         if short_circuit is None and wait_on_exhausted is not None:
