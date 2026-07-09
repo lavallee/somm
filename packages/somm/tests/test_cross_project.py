@@ -189,6 +189,37 @@ def test_env_flag_enables_mirror(tmp_path, monkeypatch):
     assert cfg.global_db_path == mirror_path
 
 
+def test_env_enabled_mirror_records_call_and_auto_workload(tmp_path, monkeypatch):
+    """User-style env config mirrors both calls and auto-created workloads."""
+    mirror_path = tmp_path / "env-global.sqlite"
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    monkeypatch.setenv("SOMM_CROSS_PROJECT", "1")
+    monkeypatch.setenv("SOMM_GLOBAL_PATH", str(mirror_path))
+    monkeypatch.setenv("SOMM_PROJECT", "env-proj")
+    monkeypatch.setenv("SOMM_REGISTRY_PATH", str(tmp_path / "registry.json"))
+
+    llm = SommLLM(providers=[FakeProvider()])
+    try:
+        result = llm.generate("hi", workload="env_workload")
+    finally:
+        llm.close()
+
+    mirror = Repository(mirror_path)
+    with mirror._open() as conn:
+        call = conn.execute(
+            "SELECT id, project FROM calls WHERE id = ?",
+            (result.call_id,),
+        ).fetchone()
+        workload = conn.execute(
+            "SELECT name, project FROM workloads WHERE name = ?",
+            ("env_workload",),
+        ).fetchone()
+    assert call == (result.call_id, "env-proj")
+    assert workload == ("env_workload", "env-proj")
+
+
 def test_mirror_failure_doesnt_break_primary(tmp_path, monkeypatch):
     """If the mirror write raises, the primary call still succeeds."""
     mirror_path = tmp_path / "global.sqlite"

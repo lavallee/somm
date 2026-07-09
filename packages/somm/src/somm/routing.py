@@ -5,7 +5,7 @@ Routing rules:
   2. Each (provider, model) has its own cooldown entry in provider_health.
   3. On transient failure, cool the (provider, model) with per-error backoff.
   4. Router skips cooled entries. If ALL configured providers are cooled,
-     Router sleeps until the next cool expires (bounded) and retries once.
+     Router fails fast unless the caller opted into wait-with-deadline.
   5. Fatal errors raise immediately — no fallback.
 
 State is persisted in SQLite (`provider_health`) so cooldowns survive
@@ -15,6 +15,7 @@ at dawn.
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -173,6 +174,8 @@ class Router:
         tracker: ProviderHealthTracker,
         circuit_break_after: int = 5,
         circuit_break_cooldown_s: float = 600,
+        # Deprecated: dispatch no longer auto-sleeps on exhaustion; pass
+        # wait= to dispatch (or SOMM_WAIT_ON_EXHAUSTED) instead.
         exhausted_sleep_cap_s: float = 300,
         plan_governor=None,
     ) -> None:
@@ -208,14 +211,37 @@ class Router:
             # path down with it.
             return active
 
-    def dispatch(self, request: SommRequest) -> RouterResult:
+    def wait_until_any_uncool(self, providers: list[SommProvider], wait: float) -> None:
+        """Block until at least one provider-wide cooldown clears or deadline expires."""
+        started = time.monotonic()
+        deadline = started + wait
+        while providers and all(self.tracker.get(p.name).is_cooling() for p in providers):
+            next_ok = self.tracker.next_uncool_at([p.name for p in providers])
+            if next_ok is None:
+                raise SommProvidersExhausted("no providers configured or all failed fatally")
+            sleep_s = (next_ok - datetime.now(UTC)).total_seconds()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                waited = time.monotonic() - started
+                raise SommProvidersExhausted(
+                    _wait_deadline_exhausted_message(waited, sleep_s),
+                    next_cool_in_s=sleep_s,
+                )
+            jitter = random.uniform(0.5, 2.0)
+            sleep_for = min(max(0.0, sleep_s + jitter), remaining)
+            if sleep_for <= 0:
+                continue
+            _sleep_bounded(sleep_for, deadline)
+
+    def dispatch(self, request: SommRequest, wait: float | None = None) -> RouterResult:
         """Try each provider. Return the first successful response.
 
         Raises:
             SommNoCapableProvider: no provider in the chain has a model that
                 can serve the request's required capabilities (e.g. `vision`).
                 Raised before any network call.
-            SommProvidersExhausted: all providers cooled for too long to wait.
+            SommProvidersExhausted: all providers cooled past the caller's
+                wait deadline, or fail-fast exhaustion when wait is omitted.
             SommFatalError: any provider raised a fatal error.
         """
         required = list(getattr(request, "capabilities_required", None) or [])
@@ -237,30 +263,42 @@ class Router:
                 "or set enforce=false in ~/.somm/plans.toml)"
             )
 
-        first_attempt = self._try_once(request, active)
-        if first_attempt is not None:
-            return first_attempt
+        deadline = None
+        wait_started = None
+        if wait is not None and wait > 0:
+            wait_started = time.monotonic()
+            deadline = wait_started + wait
 
-        # All providers cooled or all failed transiently this round.
-        next_ok = self.tracker.next_uncool_at([p.name for p in active])
-        if next_ok is None:
-            raise SommProvidersExhausted("no providers configured or all failed fatally")
-        sleep_s = (next_ok - datetime.now(UTC)).total_seconds()
-        if sleep_s <= 0:
-            # cooldown already passed — rare race; just retry
-            pass
-        elif sleep_s > self.exhausted_sleep_cap_s:
-            raise SommProvidersExhausted(
-                f"all providers cooled; next available in {sleep_s:.0f}s",
-                next_cool_in_s=sleep_s,
-            )
-        else:
-            time.sleep(sleep_s + 0.1)
+        while True:
+            attempt = self._try_once(request, active)
+            if attempt is not None:
+                return attempt
 
-        retry = self._try_once(request, active)
-        if retry is not None:
-            return retry
-        raise SommProvidersExhausted("all providers still failing after wait")
+            # All providers cooled or all failed transiently this round.
+            next_ok = self.tracker.next_uncool_at([p.name for p in active])
+            if next_ok is None:
+                raise SommProvidersExhausted("no providers configured or all failed fatally")
+
+            sleep_s = (next_ok - datetime.now(UTC)).total_seconds()
+            if deadline is None or wait_started is None:
+                raise SommProvidersExhausted(
+                    f"all providers cooled; next available in {sleep_s:.0f}s",
+                    next_cool_in_s=sleep_s,
+                )
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                waited = time.monotonic() - wait_started
+                raise SommProvidersExhausted(
+                    _wait_deadline_exhausted_message(waited, sleep_s),
+                    next_cool_in_s=sleep_s,
+                )
+
+            jitter = random.uniform(0.5, 2.0)
+            sleep_for = min(max(0.0, sleep_s + jitter), remaining)
+            if sleep_for <= 0:
+                continue
+            _sleep_bounded(sleep_for, deadline)
 
     # ------------------------------------------------------------------
 
@@ -338,6 +376,31 @@ class Router:
 
 
 # ---------------------------------------------------------------------------
+
+
+def _sleep_bounded(duration_s: float, deadline: float) -> None:
+    """Sleep up to duration_s in <=5s chunks without overshooting deadline."""
+    remaining_duration = max(0.0, duration_s)
+    while remaining_duration > 0:
+        remaining_deadline = deadline - time.monotonic()
+        if remaining_deadline <= 0:
+            return
+        chunk = min(remaining_duration, remaining_deadline, 5.0)
+        time.sleep(chunk)
+        remaining_duration -= chunk
+
+
+def _wait_deadline_exhausted_message(waited_s: float, next_cool_in_s: float) -> str:
+    return (
+        "SOMM_PROVIDERS_EXHAUSTED\n\n"
+        "Problem: Every provider in the routed candidate set is cooling down, "
+        f"and the wait deadline expired after {waited_s:.1f}s.\n"
+        f"Cause: The next tracked cooldown expires in ~{max(0.0, next_cool_in_s):.0f}s, "
+        "which is later than this call's wait budget.\n"
+        "Fix: Increase generate(wait=...), set SOMM_WAIT_ON_EXHAUSTED for batch "
+        "workers, add a healthy fallback provider, or wait for the cooldown to clear.\n"
+        "Docs: docs/errors/SOMM_PROVIDERS_EXHAUSTED.md"
+    )
 
 
 def _classify_unknown(exc: Exception) -> tuple[float, bool]:

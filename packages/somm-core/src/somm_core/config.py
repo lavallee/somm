@@ -1,15 +1,24 @@
 """Config loading: env > pyproject.toml > runtime override > defaults.
 
 Minimal v0.1 surface. Expands as features demand.
+
+SOMM_WAIT_ON_EXHAUSTED can set a process default wait deadline, in seconds,
+for calls whose routed provider set is entirely cooling down. Per-call
+``wait`` arguments on ``generate()``, ``stream()``, and
+``extract_structured()`` take precedence; ``wait=None`` and ``wait=0`` mean
+fail fast.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from somm_core.registry import registered_db_path
 
 
 @dataclass(slots=True)
@@ -40,11 +49,17 @@ class Config:
     http_timeout: float = 180.0  # seconds; used by openai-compat providers
     provider_order: list[str] | None = None  # e.g. ["openrouter", "minimax", "ollama"]
     busy_timeout_ms: int = 5000
+    # Local-only replication of calls/workloads into ~/.somm/global.sqlite so
+    # cross-project features (sommelier, fleet rollups) have data. The raw
+    # dataclass default is False (programmatic Config() stays inert, e.g. in
+    # tests); load() enables it by default since v0.8 — nothing leaves the
+    # machine; SOMM_CROSS_PROJECT=0 disables.
     cross_project_enabled: bool = False
     cross_project_path: Path | None = None  # defaults to ~/.somm/global.sqlite
     budget_fail_closed: bool = False  # hard pre-request gate: block calls once a workload's daily cap is reached
     budget_default_cap_usd_daily: float | None = None  # daily cap for workloads with no explicit budget_cap_usd_daily (when fail_closed)
     inprocess_workers: bool = False  # run the somm-service scheduler inside the library process (SOMM_INPROCESS_WORKERS=1)
+    wait_on_exhausted: float | None = None  # default generate/stream wait deadline when all routed providers are cooling
 
     @property
     def db_path(self) -> Path:
@@ -62,10 +77,13 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
 
     Order: defaults < pyproject [tool.somm] < env (SOMM_*) < explicit args.
     """
-    cwd = cwd or Path.cwd()
+    cwd = (cwd or Path.cwd()).resolve()
+    project_root = _discover_project_root(cwd)
     cfg = Config()
+    explicit_db_dir = False
+    db_dir_base = cwd
 
-    pyproject = cwd / "pyproject.toml"
+    pyproject = project_root / "pyproject.toml"
     if pyproject.exists():
         with pyproject.open("rb") as f:
             data = tomllib.load(f)
@@ -73,6 +91,10 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         for key in ("project", "mode", "ollama_url", "ollama_model"):
             if key in somm_cfg:
                 setattr(cfg, key, somm_cfg[key])
+        if "db_dir" in somm_cfg:
+            cfg.db_dir = Path(somm_cfg["db_dir"])
+            explicit_db_dir = True
+            db_dir_base = project_root
 
     env_map = {
         "SOMM_PROJECT": "project",
@@ -83,6 +105,10 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     for env_var, attr in env_map.items():
         if env_var in os.environ:
             setattr(cfg, attr, os.environ[env_var])
+    if "SOMM_DB_DIR" in os.environ:
+        cfg.db_dir = Path(os.environ["SOMM_DB_DIR"])
+        explicit_db_dir = True
+        db_dir_base = cwd
     if "OPENROUTER_API_KEY" in os.environ:
         cfg.openrouter_api_key = os.environ["OPENROUTER_API_KEY"]
     if "SOMM_OPENROUTER_ROSTER" in os.environ:
@@ -94,6 +120,8 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         cfg.ollama_think = val in ("1", "true", "yes", "on")
     if "SOMM_OLLAMA_KEEP_ALIVE" in os.environ:
         cfg.ollama_keep_alive = os.environ["SOMM_OLLAMA_KEEP_ALIVE"].strip()
+    # Default-on for env-resolved (real user) configs; see the field comment.
+    cfg.cross_project_enabled = True
     if "SOMM_CROSS_PROJECT" in os.environ:
         val = os.environ["SOMM_CROSS_PROJECT"].strip().lower()
         cfg.cross_project_enabled = val in ("1", "true", "yes", "on")
@@ -106,6 +134,9 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     if "SOMM_BUDGET_DEFAULT_CAP_USD_DAILY" in os.environ:
         with contextlib.suppress(ValueError):
             cfg.budget_default_cap_usd_daily = float(os.environ["SOMM_BUDGET_DEFAULT_CAP_USD_DAILY"])
+    if "SOMM_WAIT_ON_EXHAUSTED" in os.environ:
+        with contextlib.suppress(ValueError):
+            cfg.wait_on_exhausted = float(os.environ["SOMM_WAIT_ON_EXHAUSTED"])
     if "SOMM_GLOBAL_PATH" in os.environ:
         cfg.cross_project_path = Path(os.environ["SOMM_GLOBAL_PATH"])
     if "SOMM_PROVIDER_ORDER" in os.environ:
@@ -137,9 +168,31 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         cfg.project = project
 
     # Resolve paths relative to cwd; caller may also pass explicit paths.
-    cfg.db_dir = (
-        Path(cfg.db_dir).resolve() if cfg.db_dir.is_absolute() else (cwd / cfg.db_dir).resolve()
-    )
+    if explicit_db_dir:
+        cfg.db_dir = (
+            Path(cfg.db_dir).resolve()
+            if cfg.db_dir.is_absolute()
+            else (db_dir_base / cfg.db_dir).resolve()
+        )
+    elif (cwd / ".somm").exists():
+        cfg.db_dir = (cwd / ".somm").resolve()
+    elif project_root != cwd and (project_root / ".somm").exists():
+        cfg.db_dir = (project_root / ".somm").resolve()
+    elif (registered := registered_db_path(cfg.project)) is not None:
+        cfg.db_dir = registered.parent.resolve()
+        print(
+            f"[somm] using registered DB at {registered.resolve()} ; set SOMM_DB_DIR to override",
+            file=sys.stderr,
+        )
+    else:
+        cfg.db_dir = (cwd / ".somm").resolve()
     cfg.spool_dir = cfg.db_dir / "spool"
 
     return cfg
+
+
+def _discover_project_root(cwd: Path) -> Path:
+    for path in (cwd, *cwd.parents):
+        if (path / "pyproject.toml").exists():
+            return path
+    return cwd

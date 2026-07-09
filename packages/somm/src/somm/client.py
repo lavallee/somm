@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
+import shlex
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 from somm_core import EmbedResult, Outcome, SommResult, cost_for_call
 from somm_core.config import Config
@@ -27,14 +31,18 @@ from somm_core.parse import (
     infer_capabilities,
     stable_hash,
 )
+from somm_core.parse import (
+    prompt_id as _prompt_id,
+)
 from somm_core.plans import load_plans
 from somm_core.pricing import seed_known_pricing, sync_bundled_pricing
 from somm_core.registry import fleet_db_paths, register_project
 from somm_core.repository import Repository
 
 from somm import hooks
+from somm.errors import SommProvidersExhausted
 from somm.errors import SommStrictMode as _SommStrictMode
-from somm.prompts import get_prompt, register_prompt
+from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt
 from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import (
     SommEmbedRequest,
@@ -66,8 +74,25 @@ _inprocess_schedulers: dict[str, object] = {}
 # DBs we've already warned about a configured-but-dormant intelligence loop.
 _warned_dormant_loop: set[str] = set()
 
+# Global mirror paths we've already warned about when setup failed.
+_warned_mirror_unavailable: set[str] = set()
+
 # Providers we've already emitted a plan-pacing warning for this process.
 _warned_plan_pace: set[str] = set()
+
+# Project registry entries already announced by this client process.
+_registered_project_keys: set[tuple[str, str]] = set()
+_registered_project_keys_lock = threading.Lock()
+_WAIT_UNSET: Any = object()
+
+
+def _register_project_once(project: str, db_path: Path) -> None:
+    key = (project, str(Path(db_path).resolve()))
+    with _registered_project_keys_lock:
+        if key in _registered_project_keys:
+            return
+        register_project(project, db_path)
+        _registered_project_keys.add(key)
 
 
 def _build_plan_governor(config: Config):
@@ -158,15 +183,29 @@ def _warn_if_intelligence_loop_dormant(config: Config, repo: Repository) -> None
             ).fetchone()[0]
             if not shadow_n:
                 return
-            heartbeat_n = conn.execute(
-                "SELECT COUNT(*) FROM worker_heartbeat"
-            ).fetchone()[0]
+            heartbeat_n, newest_run_at, is_stale = conn.execute(
+                "SELECT COUNT(*), MAX(last_run_at), "
+                "       CASE "
+                "         WHEN MAX(last_run_at) IS NOT NULL "
+                "          AND julianday('now') - julianday(MAX(last_run_at)) > 7 "
+                "         THEN 1 ELSE 0 "
+                "       END "
+                "FROM worker_heartbeat"
+            ).fetchone()
         if heartbeat_n == 0:
             print(
                 f"[somm] online eval is configured for {shadow_n} workload(s) "
                 f"but no worker has ever run — sampled calls are piling up "
                 f"ungraded. Run `somm serve`, `somm-serve admin run-shadow`, "
                 f"or set SOMM_INPROCESS_WORKERS=1.",
+                file=sys.stderr,
+            )
+        elif is_stale:
+            print(
+                f"[somm] online eval is configured for {shadow_n} workload(s) "
+                f"but workers have not run since {newest_run_at} — sampled "
+                f"calls may be piling up ungraded. Run `somm serve`, "
+                f"`somm-serve admin run-shadow`, or set SOMM_INPROCESS_WORKERS=1.",
                 file=sys.stderr,
             )
     except Exception:
@@ -328,12 +367,33 @@ def _format_error_detail(exc: Exception, provider: str, model: str | None) -> st
         if status is not None:
             parts.append(f"http_status={status}")
         if body:
-            parts.append(f"body={body.strip()[:200]}")
+            parts.append(f"body={_scrub_secrets(body.strip())[:200]}")
     if provider:
         parts.append(f"provider={provider}")
     if model:
         parts.append(f"model={model}")
-    return " | ".join(parts)[:512]
+    return _scrub_secrets(" | ".join(parts))[:512]
+
+
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"xox[a-z]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"AIza[0-9A-Za-z_-]{30,}"),
+)
+_GENERIC_SECRET_PATTERN = re.compile(
+    r"\b(api[_-]?key|authorization|bearer|token)([\"':= ]+)([A-Za-z0-9_.~+/-]{16,})",
+    re.IGNORECASE,
+)
+
+
+def _scrub_secrets(text: str) -> str:
+    """Redact common credentials from persisted operator-facing error text."""
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    return _GENERIC_SECRET_PATTERN.sub(r"\1\2[redacted]", text)
 
 
 def _format_empty_detail(
@@ -482,6 +542,7 @@ class SommLLM:
 
         self.repo = Repository(self.config.db_path)
         self._shadow_cfg_cache: dict[str, tuple[float, dict | None]] = {}
+        self._prompt_ids_cache: dict[str, tuple[float, set[str]]] = {}
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
         self._plan_governor = _build_plan_governor(self.config)
@@ -505,10 +566,14 @@ class SommLLM:
 
         mirror_repo: Repository | None = None
         if self.config.cross_project_enabled:
-            mirror_repo = Repository(self.config.global_db_path)
-            # Mirror workload registrations as well so global rollups can
-            # resolve names rather than showing "(unregistered)".
-            _mirror_workloads(self.repo, mirror_repo)
+            try:
+                mirror_repo = Repository(self.config.global_db_path)
+                # Mirror workload registrations as well so global rollups can
+                # resolve names rather than showing "(unregistered)".
+                _mirror_workloads(self.repo, mirror_repo)
+            except Exception as exc:  # noqa: BLE001 — mirror must not break primary telemetry
+                _warn_mirror_unavailable(self.config.global_db_path, exc)
+                mirror_repo = None
 
         self._writer = WriterQueue(self.repo, self.config.spool_dir, mirror_repo=mirror_repo)
         self._writer.start()
@@ -537,7 +602,7 @@ class SommLLM:
         # Fleet registry + metered-plan pacing: quotas are shared across
         # every project on this machine, so announce this DB and warn (once
         # per process) when a metered plan is burning faster than its window.
-        register_project(self.config.project, self.config.db_path)
+        _register_project_once(self.config.project, self.config.db_path)
         _warn_if_plans_off_pace(self._plan_governor)
 
     def register_workload(self, **kwargs):
@@ -573,6 +638,35 @@ class SommLLM:
             cfg = None
         self._shadow_cfg_cache[workload_id] = (now + 300.0, cfg)
         return cfg
+
+    def _known_prompt_ids_cached(self, workload_id: str) -> set[str]:
+        """Registered prompt ids with a 5-minute in-process cache.
+
+        Plain-string prompt binding runs on the call path; cache misses cost
+        one indexed workload lookup per TTL window and failures degrade empty.
+        """
+        now = time.monotonic()
+        cached = self._prompt_ids_cache.get(workload_id)
+        if cached and cached[0] > now:
+            return cached[1]
+        try:
+            ids = prompt_ids_for_workload(self.repo, workload_id)
+        except Exception:
+            ids = set()
+        self._prompt_ids_cache[workload_id] = (now + 300.0, ids)
+        return ids
+
+    def _resolve_prompt_id(self, workload_id: str | None, prompt) -> str | None:
+        """Best-effort call-row prompt binding. Never raises."""
+        try:
+            if isinstance(prompt, Prompt):
+                return prompt.id
+            if workload_id is None or not isinstance(prompt, str):
+                return None
+            pid = _prompt_id(prompt)
+            return pid if pid in self._known_prompt_ids_cached(workload_id) else None
+        except Exception:
+            return None
 
     def _maybe_capture_sample(
         self, wl, call_id: str, prompt, messages, text: str, outcome
@@ -629,9 +723,20 @@ class SommLLM:
             default_cap_usd_daily=self.config.budget_default_cap_usd_daily,
         )
 
+    def _resolve_wait_on_exhausted(self, wait) -> float | None:
+        if wait is _WAIT_UNSET:
+            wait = self.config.wait_on_exhausted
+        if wait is None:
+            return None
+        try:
+            wait_s = float(wait)
+        except (TypeError, ValueError):
+            return None
+        return wait_s if wait_s > 0 else None
+
     def generate(
         self,
-        prompt: str | list[dict],
+        prompt: str | list[dict] | Prompt,
         system: str = "",
         workload: str = "default",
         max_tokens: int = 256,
@@ -645,11 +750,15 @@ class SommLLM:
         tools: list[dict] | None = None,
         messages: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        wait: float | None = _WAIT_UNSET,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
         demo mode: auto-registers unknown workloads as 'ad_hoc' equivalents.
         strict mode: raises SommStrictMode if workload isn't registered.
+        ``prompt`` may be a string, multimodal prompt list, or registered
+        ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
+        that prompt version on the telemetry row.
 
         ``no_fallback``: when a ``provider`` is pinned, suppress the normal
         rescue path through the router chain. The pinned (provider, model)
@@ -667,21 +776,27 @@ class SommLLM:
         A response with non-empty ``tool_calls`` and no text is NOT
         treated as Outcome.EMPTY — it is the expected shape of a
         tool-use turn.
+
+        ``wait`` controls admission when every routed provider candidate is
+        cooling down. Omit it to use ``SOMM_WAIT_ON_EXHAUSTED`` when set.
+        Pass ``None`` or ``0`` to fail fast; pass positive seconds to wait up
+        to that deadline before recording and raising final exhaustion.
         """
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
             if self.config.mode == "strict":
+                workload_arg = shlex.quote(workload)
                 raise SommStrictMode(
                     f"SOMM_WORKLOAD_UNREGISTERED\n\n"
                     f"Problem: This call used workload {workload!r}, but it is not registered.\n"
                     f"Cause: strict mode requires workload metadata before calls are logged.\n"
                     f"Fix:\n"
-                    f"  somm workload add {workload} --from-example structured-extraction\n"
+                    f"  somm workload add {workload_arg} --from-example structured-extraction\n"
                     f"  # or switch to observe mode:\n"
                     f"  export SOMM_MODE=observe\n"
                     f"Docs: docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"
                 )
-            wl = self.repo.register_workload(name=workload, project=self.config.project)
+            wl = self.register_workload(name=workload)
 
         # Self-healing: apply any learned parameter override for this
         # (workload, model). The agent worker writes these when it detects a
@@ -705,15 +820,19 @@ class SommLLM:
         # Fail-closed budget gate: refuse before any provider call once the
         # workload's daily cap is reached (inert unless budget_fail_closed).
         self._enforce_budget(wl)
+        wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
+
+        prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
+        call_prompt_id = None if messages is not None else self._resolve_prompt_id(wl.id, prompt)
 
         effective_caps = _merge_caps(
             wl.capabilities_required,
             capabilities_required,
-            infer_capabilities(prompt),
+            infer_capabilities(prompt_text),
         )
 
         req = SommRequest(
-            prompt=prompt,
+            prompt=prompt_text,
             system=system,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -742,6 +861,7 @@ class SommLLM:
         # Track whether we took the fallback path so we can fire on_fallback
         # only on the narrow "pinned failed + chain saved us" window.
         fallback_info: dict | None = None
+        raise_after_record: Exception | None = None
 
         if provider is not None:
             chosen = self._pick_provider(provider)
@@ -803,7 +923,7 @@ class SommLLM:
                     # model name (e.g. "qwen3:14b" on Minimax) guarantees a 404.
                     req.model = None
                     try:
-                        router_result = self.router.dispatch(req)
+                        router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                         resp = router_result.response
                         text = resp.text
                         actual_provider = router_result.provider
@@ -824,19 +944,24 @@ class SommLLM:
                                 tokens_out=tokens_out,
                                 latency_ms=latency_ms,
                             )
-                    except Exception:
+                    except Exception as chain_exc:
                         # Total failure — clear fallback_info so on_fallback
                         # doesn't fire; on_error handles final-failure signal.
                         fallback_info = None
                         outcome = Outcome.UPSTREAM_ERROR
-                        error_kind = type(exc).__name__
-                        error_detail = _format_error_detail(exc, chosen.name, model)
+                        error_kind = type(chain_exc).__name__
+                        error_detail = _format_error_detail(chain_exc, chosen.name, model)
                         actual_provider = chosen.name
-                        if hasattr(exc, "model") and exc.model:
-                            actual_model = exc.model
+                        if hasattr(chain_exc, "model") and chain_exc.model:
+                            actual_model = chain_exc.model
+                        if (
+                            wait_on_exhausted is not None
+                            and isinstance(chain_exc, SommProvidersExhausted)
+                        ):
+                            raise_after_record = chain_exc
         else:
             try:
-                router_result = self.router.dispatch(req)
+                router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                 resp = router_result.response
                 text = resp.text
                 actual_provider = router_result.provider
@@ -867,6 +992,8 @@ class SommLLM:
                 )
                 error_kind = type(exc).__name__
                 error_detail = _format_error_detail(exc, actual_provider, actual_model)
+                if wait_on_exhausted is not None and isinstance(exc, SommProvidersExhausted):
+                    raise_after_record = exc
 
         result = SommResult(
             text=text,
@@ -891,7 +1018,7 @@ class SommLLM:
             ts=ts,
             project=self.config.project,
             workload_id=wl.id,
-            prompt_id=None,  # D2b: prompt versioning lands with register_prompt
+            prompt_id=call_prompt_id,
             provider=actual_provider,
             model=actual_model,
             tokens_in=tokens_in,
@@ -904,14 +1031,14 @@ class SommLLM:
             # Multi-turn calls pass `messages` and a placeholder `prompt`;
             # hash the actual conversation so replay/cache/dedup keys off
             # real content rather than an ignored arg.
-            prompt_hash=stable_hash(messages if messages is not None else prompt),
+            prompt_hash=stable_hash(messages if messages is not None else prompt_text),
             response_hash=stable_hash(text),
             correlation_id=(correlation_id := hooks.current_correlation_id()),
             temperature=temperature,
             max_tokens=max_tokens,
         )
         self._writer.submit(call)
-        self._maybe_capture_sample(wl, call_id, prompt, messages, text, outcome)
+        self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
         hooks.notify_call_observers(_call_event(
             call_id=call_id, correlation_id=correlation_id,
             project=self.config.project, workload=workload,
@@ -970,6 +1097,9 @@ class SommLLM:
             except Exception:
                 # Hook must not break the caller.
                 pass
+
+        if raise_after_record is not None:
+            raise raise_after_record
 
         # Feature 3: warn if daily budget cap is exceeded.
         if wl.budget_cap_usd_daily is not None and result.cost_usd > 0:
@@ -1043,15 +1173,16 @@ class SommLLM:
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
             if self.config.mode == "strict":
+                workload_arg = shlex.quote(workload)
                 raise SommStrictMode(
                     f"SOMM_WORKLOAD_UNREGISTERED\n\n"
                     f"Problem: This embed call used workload {workload!r}, "
                     f"but it is not registered.\n"
                     f"Cause: strict mode requires workload metadata.\n"
-                    f"Fix: somm workload add {workload} --from-example structured-extraction\n"
+                    f"Fix: somm workload add {workload_arg} --from-example structured-extraction\n"
                     f"     # or: export SOMM_MODE=observe"
                 )
-            wl = self.repo.register_workload(name=workload, project=self.config.project)
+            wl = self.register_workload(name=workload)
 
         # v1: pin to ollama. No router involvement — `force ollama, no
         # fallbacks` is the explicit posture embeddings callers asked for.
@@ -1172,13 +1303,14 @@ class SommLLM:
 
     def stream(
         self,
-        prompt: str | list[dict],
+        prompt: str | list[dict] | Prompt,
         system: str = "",
         workload: str = "default",
         max_tokens: int = 256,
         temperature: float = 0.2,
         model: str | None = None,
         provider: str | None = None,
+        wait: float | None = _WAIT_UNSET,
     ) -> Iterator[str]:
         """Stream text deltas from the LLM. Yields user-visible text chunks
         (with `<think>` blocks stripped across chunk boundaries).
@@ -1186,6 +1318,11 @@ class SommLLM:
         Telemetry is written after the stream completes. No mid-stream
         router fallback in v0.1 — first non-cooled provider handles the
         whole stream or errors out.
+        ``prompt`` may be a string, multimodal prompt list, or registered
+        ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
+        that prompt version on the telemetry row.
+        Omit ``wait`` to use ``SOMM_WAIT_ON_EXHAUSTED`` when set; pass
+        ``None`` or ``0`` to fail fast when all stream candidates are cooling.
 
         Usage:
             for piece in llm.stream("tell a story", workload="story"):
@@ -1195,14 +1332,20 @@ class SommLLM:
 
         wl = self._require_workload(workload)
         self._enforce_budget(wl)
+        wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
+        prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
+        call_prompt_id = self._resolve_prompt_id(wl.id, prompt)
         req = SommRequest(
-            prompt=prompt,
+            prompt=prompt_text,
             system=system,
             max_tokens=max_tokens,
             temperature=temperature,
             model=model,
         )
 
+        if wait_on_exhausted is not None:
+            candidates = [self._pick_provider(provider)] if provider else list(self.providers)
+            self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
         chosen = self._pick_stream_provider(provider)
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
@@ -1234,7 +1377,7 @@ class SommLLM:
             text = "".join(collected)
             if not actual_model:
                 actual_model = chosen.name
-            tokens_in = chosen.estimate_tokens(prompt, actual_model) + chosen.estimate_tokens(
+            tokens_in = chosen.estimate_tokens(prompt_text, actual_model) + chosen.estimate_tokens(
                 system, actual_model
             )
             tokens_out = chosen.estimate_tokens(text, actual_model)
@@ -1262,7 +1405,7 @@ class SommLLM:
                 ts=ts,
                 project=self.config.project,
                 workload_id=wl.id,
-                prompt_id=None,
+                prompt_id=call_prompt_id,
                 provider=chosen.name,
                 model=actual_model or chosen.name,
                 tokens_in=tokens_in,
@@ -1278,7 +1421,7 @@ class SommLLM:
                 outcome=outcome,
                 error_kind=error_kind,
                 error_detail=error_detail,
-                prompt_hash=stable_hash(prompt),
+                prompt_hash=stable_hash(prompt_text),
                 response_hash=stable_hash(full_text),
                 correlation_id=(correlation_id := hooks.current_correlation_id()),
                 temperature=temperature,
@@ -1311,7 +1454,7 @@ class SommLLM:
 
     def extract_structured(
         self,
-        prompt: str,
+        prompt: str | Prompt,
         system: str = "",
         workload: str = "default",
         max_tokens: int = 512,
@@ -1320,18 +1463,24 @@ class SommLLM:
         provider: str | None = None,
         retries: int = 2,
         temperature_jitter: float = 0.05,
+        wait: float | None = _WAIT_UNSET,
     ) -> dict | list:
         """Call the LLM and extract JSON from the response.
 
         Handles markdown fences, bracket-balanced extraction, qwen2.5 double-
         quote quirk, `<think>` blocks (already stripped by adapters), control
         chars, and unescaped newlines.
+        ``prompt`` may be a string or registered ``Prompt`` object; the
+        generate call records the prompt version when one is provided or
+        hash-matched.
 
         On parse failure, retries up to `retries` more times. Each retry bumps
         temperature by `temperature_jitter` to break deterministic bad output.
         After total exhaustion, returns `{"raw": <last text>,
         "_somm_parse_err": True}` so the caller can distinguish between "LLM
         said nothing parseable" and "LLM said something parseable".
+        Omit ``wait`` to use ``SOMM_WAIT_ON_EXHAUSTED`` when set; pass
+        ``None`` or ``0`` to fail fast on provider exhaustion.
         """
         last_text = ""
         for attempt in range(retries + 1):
@@ -1344,6 +1493,7 @@ class SommLLM:
                 temperature=temp,
                 model=model,
                 provider=provider,
+                wait=wait,
             )
             last_text = result.text
             parsed = extract_json(result.text)
@@ -1369,7 +1519,9 @@ class SommLLM:
             bump: "minor" (default), "major", or an explicit version "vN".
         """
         wl = self._require_workload(workload)
-        return register_prompt(self.repo, wl.id, body, bump=bump)
+        prompt = register_prompt(self.repo, wl.id, body, bump=bump)
+        self._prompt_ids_cache.pop(wl.id, None)
+        return prompt
 
     def prompt(self, workload: str, version: str = "latest") -> Prompt:
         """Fetch a prompt by workload + version.
@@ -1436,7 +1588,7 @@ class SommLLM:
                     f"  somm.llm().repo.register_workload(name={name!r}, project=...)\n"
                     f"Docs: docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"
                 )
-            wl = self.repo.register_workload(name=name, project=self.config.project)
+            wl = self.register_workload(name=name)
         return wl
 
     # ------------------------------------------------------------------
@@ -1535,3 +1687,11 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
             )
     except Exception:  # noqa: BLE001 — best-effort mirror
         pass
+
+
+def _warn_mirror_unavailable(path: Path, exc: Exception) -> None:
+    key = str(Path(path).resolve())
+    if key in _warned_mirror_unavailable:
+        return
+    _warned_mirror_unavailable.add(key)
+    print(f"[somm] global mirror unavailable at {key}: {exc}; continuing without it", file=sys.stderr)

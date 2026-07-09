@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from somm.client import SommLLM
 from somm.errors import (
     SommAuthError,
     SommInsufficientCredit,
@@ -25,6 +26,7 @@ from somm.providers.base import (
     SommResponse,
 )
 from somm.routing import ProviderHealthTracker, Router
+from somm_core import Outcome
 from somm_core.config import Config
 from somm_core.repository import Repository
 
@@ -218,6 +220,164 @@ def test_router_exhausted_when_all_cooled_too_long(tmp_path):
 
     with pytest.raises(SommProvidersExhausted):
         r.dispatch(SommRequest(prompt="hi"))
+    assert p1.calls == 0
+    assert p2.calls == 0
+
+
+def test_router_all_cooled_wait_none_is_fail_fast(tmp_path, monkeypatch):
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    tr.mark_failure("p1", cooldown_s=3)
+    p1 = ScriptedProvider("p1", [])
+    r = Router([p1], tr)
+
+    def _unexpected_sleep(_seconds):
+        raise AssertionError("wait=None must not sleep")
+
+    monkeypatch.setattr("somm.routing.time.sleep", _unexpected_sleep)
+    with pytest.raises(SommProvidersExhausted, match="next available"):
+        r.dispatch(SommRequest(prompt="hi"), wait=None)
+    assert p1.calls == 0
+
+
+def test_router_waits_until_cooldown_expires_then_succeeds(tmp_path, monkeypatch):
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    tr.mark_failure("p1", cooldown_s=3)
+    p1 = ScriptedProvider("p1", [_ok(model="p1-m")])
+    r = Router([p1], tr)
+
+    now = 100.0
+    sleeps: list[float] = []
+    real_get = tr.get
+
+    def fake_monotonic():
+        return now
+
+    def fake_sleep(seconds):
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def fake_get(provider, model=""):
+        if now >= 103.0:
+            tr.clear(provider, model)
+        return real_get(provider, model)
+
+    jitter_bounds: list[tuple[float, float]] = []
+
+    def fake_jitter(low, high):
+        jitter_bounds.append((low, high))
+        return 1.0
+
+    monkeypatch.setattr("somm.routing.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("somm.routing.time.sleep", fake_sleep)
+    monkeypatch.setattr("somm.routing.random.uniform", fake_jitter)
+    monkeypatch.setattr(tr, "get", fake_get)
+
+    result = r.dispatch(SommRequest(prompt="hi"), wait=10)
+    assert result.provider == "p1"
+    assert p1.calls == 1
+    assert len(sleeps) == 1
+    assert 3.4 <= sleeps[0] <= 5.1
+    assert jitter_bounds == [(0.5, 2.0)]
+
+
+def test_generate_wait_deadline_records_one_error_row(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.project = "rt-client"
+    cfg.db_dir = tmp_path / ".somm"
+    cfg.spool_dir = cfg.db_dir / "spool"
+    p1 = ScriptedProvider("p1", [])
+    llm = SommLLM(config=cfg, providers=[p1], on_error=lambda _e: None)
+
+    now = 50.0
+    sleeps: list[float] = []
+
+    def fake_monotonic():
+        return now
+
+    def fake_sleep(seconds):
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    monkeypatch.setattr("somm.routing.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("somm.routing.time.sleep", fake_sleep)
+    monkeypatch.setattr("somm.routing.random.uniform", lambda _lo, _hi: 1.0)
+    monkeypatch.setattr(
+        llm._writer,
+        "submit",
+        lambda call: llm.repo.write_calls_batch([call]),
+    )
+
+    try:
+        llm._tracker.mark_failure("p1", cooldown_s=3600)
+        with pytest.raises(SommProvidersExhausted) as exc_info:
+            llm.generate("hi", workload="wait_deadline", wait=2)
+        assert "after 2.0s" in str(exc_info.value)
+        assert "next tracked cooldown expires" in str(exc_info.value)
+        assert sum(sleeps) == pytest.approx(2.0)
+        with llm.repo._open() as conn:
+            rows = conn.execute(
+                "SELECT outcome, error_kind, error_detail FROM calls"
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == Outcome.EXHAUSTED.value
+        assert rows[0][1] == "SommProvidersExhausted"
+        assert "after 2.0s" in rows[0][2]
+    finally:
+        llm.close()
+
+
+def test_generate_wait_env_and_explicit_fail_fast_override(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", "wait-env")
+    monkeypatch.setenv("SOMM_WAIT_ON_EXHAUSTED", "10")
+    p1 = ScriptedProvider("p1", [_ok(model="p1-m")])
+    llm = SommLLM(providers=[p1], on_error=lambda _e: None)
+
+    now = 100.0
+    release_at: float | None = 103.0
+    sleeps: list[float] = []
+    real_get = llm._tracker.get
+
+    def fake_monotonic():
+        return now
+
+    def fake_sleep(seconds):
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def fake_get(provider, model=""):
+        if release_at is not None and now >= release_at:
+            llm._tracker.clear(provider, model)
+        return real_get(provider, model)
+
+    monkeypatch.setattr("somm.routing.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("somm.routing.time.sleep", fake_sleep)
+    monkeypatch.setattr("somm.routing.random.uniform", lambda _lo, _hi: 1.0)
+    monkeypatch.setattr(llm._tracker, "get", fake_get)
+
+    try:
+        llm._tracker.mark_failure("p1", cooldown_s=3)
+        result = llm.generate("hi", workload="env_wait")
+        assert result.outcome == Outcome.OK
+        assert sleeps
+
+        release_at = None
+        sleeps.clear()
+        llm._tracker.mark_failure("p1", cooldown_s=3600)
+        result = llm.generate("hi", workload="env_wait_zero", wait=0)
+        assert result.outcome == Outcome.EXHAUSTED
+        assert sleeps == []
+
+        result = llm.generate("hi", workload="env_wait_none", wait=None)
+        assert result.outcome == Outcome.EXHAUSTED
+        assert sleeps == []
+    finally:
+        llm.close()
 
 
 def test_router_rate_limited_uses_retry_after(tmp_path):

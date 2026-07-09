@@ -90,22 +90,127 @@ def test_tick_runs_due_workers(tmp_path):
     assert w.runs == 1
 
 
+def test_tick_writes_scheduler_and_worker_heartbeats(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    w = _RecordingWorker("model_intel")
+    sched = Scheduler(repo, _workers_factory({"model_intel": w}))
+    sched.seed([("model_intel", 3600)])
+
+    executed = sched.tick()
+
+    assert executed == ["model_intel"]
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT worker_name, last_run_at, last_success_at, consecutive_failures "
+            "FROM worker_heartbeat ORDER BY worker_name"
+        ).fetchall()
+    by_name = {r[0]: r for r in rows}
+    assert set(by_name) == {"model_intel", "scheduler"}
+    assert by_name["scheduler"][1] is not None
+    assert by_name["scheduler"][2] is None
+    assert by_name["scheduler"][3] == 0
+    assert by_name["model_intel"][1] is not None
+    assert by_name["model_intel"][2] is not None
+    assert by_name["model_intel"][3] == 0
+
+
+def test_tick_failure_writes_failed_worker_heartbeat(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    w = _RecordingWorker("model_intel", should_raise=True)
+    sched = Scheduler(repo, _workers_factory({"model_intel": w}))
+    sched.seed([("model_intel", 3600)])
+
+    assert sched.tick() == []
+    assert sched.tick() == []
+
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT last_run_at, last_success_at, consecutive_failures "
+            "FROM worker_heartbeat WHERE worker_name = 'model_intel'"
+        ).fetchone()
+    assert row[0] is not None
+    assert row[1] is None
+    assert row[2] == 1
+
+
 def test_tick_doesnt_run_not_due_jobs(tmp_path):
     repo = _tmp_repo(tmp_path)
     w = _RecordingWorker("agent")
     sched = Scheduler(repo, _workers_factory({"agent": w}))
 
-    # Seed with due_at far in the future
-    future = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
     with repo._open() as conn:
         conn.execute(
-            "INSERT INTO jobs (job_name, due_at, interval_seconds) VALUES (?, ?, ?)",
-            ("agent", future, 3600),
+            "INSERT INTO jobs (job_name, due_at, interval_seconds) "
+            "VALUES (?, datetime('now', '+15 minutes'), ?)",
+            ("agent", 3600),
         )
 
+    assert sched._fetch_due() == []
+    assert not sched._claim("agent")
     executed = sched.tick()
     assert "agent" not in executed
     assert w.runs == 0
+
+
+def test_past_due_job_reschedules_after_success(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    w = _RecordingWorker("model_intel")
+    sched = Scheduler(repo, _workers_factory({"model_intel": w}))
+
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO jobs (job_name, due_at, interval_seconds) "
+            "VALUES (?, datetime('now', '-1 minute'), ?)",
+            ("model_intel", 3600),
+        )
+
+    assert sched._fetch_due() == ["model_intel"]
+    assert sched._claim("model_intel")
+    sched._mark_success("model_intel")
+    assert sched._fetch_due() == []
+    assert sched.tick() == []
+    assert sched.tick() == []
+    assert w.runs == 0
+
+
+def test_claim_respects_unexpired_and_expired_leases(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    sched = Scheduler(repo, _workers_factory({}))
+
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO jobs (job_name, due_at, locked_until, interval_seconds) "
+            "VALUES (?, datetime('now', '-1 minute'), datetime('now', '+15 minutes'), ?)",
+            ("agent", 3600),
+        )
+
+    assert sched._fetch_due() == []
+    assert not sched._claim("agent")
+
+    with repo._open() as conn:
+        conn.execute(
+            "UPDATE jobs SET locked_until = datetime('now', '-1 minute') "
+            "WHERE job_name = ?",
+            ("agent",),
+        )
+
+    assert sched._fetch_due() == ["agent"]
+    assert sched._claim("agent")
+
+
+def test_legacy_iso_due_at_is_still_due(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    sched = Scheduler(repo, _workers_factory({}))
+    legacy_due_at = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO jobs (job_name, due_at, interval_seconds) VALUES (?, ?, ?)",
+            ("agent", legacy_due_at, 3600),
+        )
+
+    assert sched._fetch_due() == ["agent"]
+    assert sched._claim("agent")
 
 
 def test_tick_success_clears_lease_and_reschedules(tmp_path):

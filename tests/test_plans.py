@@ -3,6 +3,7 @@ fleet-wide usage, the registry, and the pace-aware router gate."""
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,7 +18,7 @@ from somm_core.plans import (
     plan_for,
     usage_in_window,
 )
-from somm_core.registry import fleet_db_paths, register_project
+from somm_core.registry import fleet_db_paths, prune_registry, register_project
 from somm_core.repository import Repository
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
@@ -182,12 +183,51 @@ def test_usage_sums_across_dbs_and_units(tmp_path):
 
 def test_registry_roundtrip_and_pruning(tmp_path, monkeypatch):
     monkeypatch.setenv("SOMM_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.setenv("SOMM_REGISTRY_ALLOW_TMP", "1")
     db = _db_with_calls(tmp_path, "c.sqlite", "minimax", 1, 0.0)
     register_project("proj_c", db)
     register_project("gone", tmp_path / "never-existed.sqlite")
     paths = fleet_db_paths()
     assert db.resolve() in [p.resolve() for p in paths]
     assert len(paths) == 1  # vanished DB pruned
+
+
+def test_prune_registry_drops_dead_paths_and_keeps_live(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOMM_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    live = _db_with_calls(tmp_path, "live.sqlite", "minimax", 1, 0.0)
+    dead = tmp_path / "dead.sqlite"
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    "live": {"db_path": str(live), "last_seen": "now"},
+                    "dead": {"db_path": str(dead), "last_seen": "now"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert prune_registry() == 1
+    data = json.loads(registry.read_text(encoding="utf-8"))
+    assert set(data["projects"]) == {"live"}
+    assert data["projects"]["live"]["db_path"] == str(live)
+
+
+def test_pytest_tmp_paths_not_registered_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOMM_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.delenv("SOMM_REGISTRY_ALLOW_TMP", raising=False)
+    db = _db_with_calls(tmp_path, "tmp.sqlite", "minimax", 1, 0.0)
+
+    register_project("tmp-proj", db)
+
+    registry = tmp_path / "registry.json"
+    if registry.exists():
+        data = json.loads(registry.read_text(encoding="utf-8"))
+        assert data["projects"] == {}
+    else:
+        assert not registry.exists()
 
 
 def test_limit_statuses_end_to_end(tmp_path, monkeypatch):

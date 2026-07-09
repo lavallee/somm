@@ -57,6 +57,10 @@ def _fake_completion_response(
     )
 
 
+def _auth_headers(app, **extra: str) -> dict[str, str]:
+    return {"authorization": f"Bearer {app.state.service_token.value}", **extra}
+
+
 # -- Pure mapping unit tests -------------------------------------------------
 
 
@@ -180,8 +184,11 @@ def test_litellm_to_anthropic_response_tool_use():
 def test_litellm_to_anthropic_response_text_and_tool_use():
     """Response with both text AND a tool call → two content blocks in order."""
     tool_calls = [
-        {"id": "call_1", "type": "function",
-         "function": {"name": "search", "arguments": '{"q": "x"}'}}
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "search", "arguments": '{"q": "x"}'},
+        }
     ]
     resp = _fake_completion_response(
         text="Let me search for that.", tool_calls=tool_calls, finish="tool_calls"
@@ -190,7 +197,10 @@ def test_litellm_to_anthropic_response_text_and_tool_use():
     assert len(body["content"]) == 2
     assert body["content"][0] == {"type": "text", "text": "Let me search for that."}
     assert body["content"][1] == {
-        "type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "x"}
+        "type": "tool_use",
+        "id": "call_1",
+        "name": "search",
+        "input": {"q": "x"},
     }
     assert body["stop_reason"] == "tool_use"
 
@@ -198,15 +208,33 @@ def test_litellm_to_anthropic_response_text_and_tool_use():
 def test_litellm_to_anthropic_response_multiple_tool_calls():
     """Two parallel tool calls produce two separate tool_use content blocks."""
     tool_calls = [
-        {"id": "call_1", "type": "function", "function": {"name": "search", "arguments": '{"q": "x"}'}},
-        {"id": "call_2", "type": "function", "function": {"name": "lookup", "arguments": '{"id": 42}'}},
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "search", "arguments": '{"q": "x"}'},
+        },
+        {
+            "id": "call_2",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"id": 42}'},
+        },
     ]
     resp = _fake_completion_response(text="", finish="tool_calls", tool_calls=tool_calls)
     body = _litellm_to_anthropic_response(resp, requested_model="m")
     assert body["stop_reason"] == "tool_use"
     assert len(body["content"]) == 2
-    assert body["content"][0] == {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "x"}}
-    assert body["content"][1] == {"type": "tool_use", "id": "call_2", "name": "lookup", "input": {"id": 42}}
+    assert body["content"][0] == {
+        "type": "tool_use",
+        "id": "call_1",
+        "name": "search",
+        "input": {"q": "x"},
+    }
+    assert body["content"][1] == {
+        "type": "tool_use",
+        "id": "call_2",
+        "name": "lookup",
+        "input": {"id": 42},
+    }
 
 
 # -- End-to-end route tests --------------------------------------------------
@@ -227,7 +255,7 @@ def test_messages_route_dispatches_litellm_and_returns_anthropic_shape(tmp_path)
                 "messages": [{"role": "user", "content": "hello"}],
                 "max_tokens": 32,
             },
-            headers={"x-somm-workload": "proxy_wl"},
+            headers=_auth_headers(app, **{"x-somm-workload": "proxy_wl"}),
         )
     assert r.status_code == 200
     body = r.json()
@@ -274,7 +302,7 @@ def test_messages_route_writes_telemetry_row(tmp_path):
                 "messages": [{"role": "user", "content": "p"}],
                 "max_tokens": 8,
             },
-            headers={"x-somm-workload": "proxy_wl"},
+            headers=_auth_headers(app, **{"x-somm-workload": "proxy_wl"}),
         )
     assert r.status_code == 200
 
@@ -314,7 +342,7 @@ def test_messages_route_budget_gate_blocks_before_dispatch(tmp_path):
                 "messages": [{"role": "user", "content": "x"}],
                 "max_tokens": 8,
             },
-            headers={"x-somm-workload": "capped"},
+            headers=_auth_headers(app, **{"x-somm-workload": "capped"}),
         )
 
     assert r.status_code == 429
@@ -345,6 +373,7 @@ def test_messages_route_falls_back_to_default_workload(tmp_path):
                 "model": "claude-haiku-4-5-20251001",
                 "messages": [{"role": "user", "content": "x"}],
             },
+            headers=_auth_headers(app),
         )
     assert r.status_code == 200
 
@@ -358,7 +387,7 @@ def test_messages_route_rejects_missing_model(tmp_path):
     cfg = _cfg(tmp_path)
     app = create_app(cfg)
     client = TestClient(app)
-    r = client.post("/v1/messages", json={"messages": []})
+    r = client.post("/v1/messages", json={"messages": []}, headers=_auth_headers(app))
     assert r.status_code == 400
     body = r.json()
     assert body["type"] == "error"
@@ -373,7 +402,7 @@ def test_messages_route_rejects_non_dict_body(tmp_path):
     r = client.post(
         "/v1/messages",
         content=b"[1, 2, 3]",
-        headers={"content-type": "application/json"},
+        headers=_auth_headers(app, **{"content-type": "application/json"}),
     )
     assert r.status_code == 400
     body = r.json()
@@ -400,7 +429,7 @@ def test_messages_route_upstream_provider_error_returns_502(tmp_path):
                 "messages": [{"role": "user", "content": "ping"}],
                 "max_tokens": 8,
             },
-            headers={"x-somm-workload": "error_wl"},
+            headers=_auth_headers(app, **{"x-somm-workload": "error_wl"}),
         )
 
     assert r.status_code == 502
@@ -429,7 +458,10 @@ def test_messages_route_respects_x_somm_project_header(tmp_path):
                 "model": "claude-haiku-4-5-20251001",
                 "messages": [{"role": "user", "content": "hi"}],
             },
-            headers={"x-somm-workload": "wl-custom", "x-somm-project": "custom-proj"},
+            headers=_auth_headers(
+                app,
+                **{"x-somm-workload": "wl-custom", "x-somm-project": "custom-proj"},
+            ),
         )
     assert r.status_code == 200
 
@@ -439,3 +471,56 @@ def test_messages_route_respects_x_somm_project_header(tmp_path):
         ).fetchone()
     assert row is not None
     assert row[0] == "custom-proj"
+
+
+def test_messages_route_blocks_cross_site_without_token(tmp_path):
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "claude-haiku-4-5-20251001",
+            "messages": [{"role": "user", "content": "x"}],
+        },
+        headers={"origin": "https://evil.example"},
+    )
+
+    assert r.status_code == 403
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "authentication_error"
+    assert "Authorization: Bearer <token>" in body["error"]["message"]
+
+
+def test_messages_route_accepts_bearer_token_before_downstream_validation(tmp_path):
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    r = client.post(
+        "/v1/messages",
+        json={"messages": []},
+        headers=_auth_headers(app),
+    )
+
+    assert r.status_code not in (401, 403, 415)
+    assert r.status_code == 400
+
+
+def test_messages_route_requires_json_content_type_with_token(tmp_path):
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    r = client.post(
+        "/v1/messages",
+        content=b'{"messages": []}',
+        headers=_auth_headers(app, **{"content-type": "text/plain"}),
+    )
+
+    assert r.status_code == 415
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "invalid_request_error"

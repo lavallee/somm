@@ -5,8 +5,8 @@ Design:
   does.
 - Default jobs (seeded on first start): model_intel (24h), shadow_eval
   (15min), agent (7d). Intervals overridable via config.
-- Lease-based claim: `UPDATE jobs SET locked_until = ? WHERE job_name = ?
-  AND (locked_until IS NULL OR locked_until < ?)` — atomic, crash-safe.
+- Lease-based claim: set locked_until to now + lease_window_s when due and
+  unlocked or expired — atomic, crash-safe.
 - On success: clear lease, update last_success_at, reset due_at to
   now + interval_seconds.
 - On failure: clear lease, increment consecutive_failures, backoff
@@ -18,8 +18,9 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+
+from somm_service.workers._heartbeat import beat
 
 if TYPE_CHECKING:
     from somm_core.repository import Repository
@@ -106,6 +107,7 @@ class Scheduler:
 
     def tick(self) -> list[str]:
         """Run one scheduling pass. Returns the list of job_names executed."""
+        beat(self.repo, "scheduler", None)
         executed: list[str] = []
         for job_name in self._fetch_due():
             if not self._claim(job_name):
@@ -118,38 +120,41 @@ class Scheduler:
             try:
                 worker.run_once()
                 self._mark_success(job_name)
+                beat(self.repo, job_name, True)
                 executed.append(job_name)
             except Exception as e:
                 _log.warning("scheduler: %s failed: %s", job_name, e)
                 self._mark_failure(job_name)
+                beat(self.repo, job_name, False)
         return executed
 
     # ------------------------------------------------------------------
     # Job table ops
 
     def _fetch_due(self) -> list[str]:
-        now = datetime.now(UTC).isoformat()
         with self.repo._open() as conn:
+            # datetime(...) normalizes legacy ISO rows written before the scheduler
+            # standardized on SQLite's timestamp format.
             rows = conn.execute(
                 "SELECT job_name FROM jobs "
-                "WHERE due_at <= ? "
-                "AND (locked_until IS NULL OR locked_until < ?)",
-                (now, now),
+                "WHERE datetime(due_at) <= datetime('now') "
+                "AND (locked_until IS NULL OR datetime(locked_until) < datetime('now'))"
             ).fetchall()
         return [r[0] for r in rows]
 
     def _claim(self, job_name: str) -> bool:
         """Atomic lease acquisition. Returns True if this process owns the job now."""
-        now_dt = datetime.now(UTC)
-        now = now_dt.isoformat()
-        lease_until = _iso_plus(now_dt, self.lease_window_s)
         with self.repo._open() as conn:
+            # datetime(...) normalizes legacy ISO rows written before the scheduler
+            # standardized on SQLite's timestamp format.
             cursor = conn.execute(
-                "UPDATE jobs SET locked_until = ?, last_started_at = ? "
+                "UPDATE jobs SET "
+                "  locked_until = datetime('now', '+' || ? || ' seconds'), "
+                "  last_started_at = CURRENT_TIMESTAMP "
                 "WHERE job_name = ? "
-                "AND due_at <= ? "
-                "AND (locked_until IS NULL OR locked_until < ?)",
-                (lease_until, now, job_name, now, now),
+                "AND datetime(due_at) <= datetime('now') "
+                "AND (locked_until IS NULL OR datetime(locked_until) < datetime('now'))",
+                (self.lease_window_s, job_name),
             )
         return cursor.rowcount > 0
 
@@ -160,9 +165,9 @@ class Scheduler:
                 "  last_success_at = CURRENT_TIMESTAMP, "
                 "  locked_until = NULL, "
                 "  consecutive_failures = 0, "
-                "  due_at = datetime('now', ?) "
+                "  due_at = datetime('now', '+' || ? || ' seconds') "
                 "WHERE job_name = ?",
-                (f"+{self._interval_for(job_name)} seconds", job_name),
+                (self._interval_for(job_name), job_name),
             )
 
     def _mark_failure(self, job_name: str) -> None:
@@ -181,9 +186,9 @@ class Scheduler:
                 "UPDATE jobs SET "
                 "  consecutive_failures = consecutive_failures + 1, "
                 "  locked_until = NULL, "
-                "  due_at = datetime('now', ?) "
+                "  due_at = datetime('now', '+' || ? || ' seconds') "
                 "WHERE job_name = ?",
-                (f"+{backoff_s} seconds", job_name),
+                (backoff_s, job_name),
             )
 
     def _mark_skipped(self, job_name: str) -> None:
@@ -203,9 +208,3 @@ class Scheduler:
                 (job_name,),
             ).fetchone()
         return int(row[0]) if row else 3600
-
-
-def _iso_plus(base: datetime, seconds: int) -> str:
-    from datetime import timedelta
-
-    return (base + timedelta(seconds=seconds)).isoformat()

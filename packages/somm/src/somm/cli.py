@@ -1,13 +1,17 @@
-"""somm CLI entry point — grouped subcommands (D3e).
+"""somm CLI entry point — grouped subcommands.
 
 Commands:
-  somm status       roll-up per (workload, provider, model)
-  somm tail         live call stream
-  somm compare      run a prompt through N models side-by-side
-  somm frontier     adequacy frontier per (provider, model) for a workload
-  somm doctor       health check (config, ollama, db, model_intel, workers, cooldowns)
-  somm serve        run the web admin + HTTP API (requires somm-service)
-  somm spend        today's LLM spend vs daily budget cap per workload
+  somm status          roll-up per (workload, provider, model)
+  somm tail            live call stream
+  somm compare         run a prompt through N models side-by-side
+  somm frontier        adequacy frontier per (provider, model) for a workload
+  somm doctor          health check (config, ollama, db, model_intel, workers, cooldowns)
+  somm serve           run the web admin + HTTP API (requires somm-service)
+  somm spend           today's LLM spend vs daily budget cap per workload
+  somm backfill-costs  recompute cost_usd for calls missing pricing
+  somm plans           metered-plan quota usage + pacing
+  somm drain-spool     replay spooled telemetry into the DB
+  somm workload        register and inspect project workloads
 """
 
 from __future__ import annotations
@@ -22,9 +26,179 @@ from pathlib import Path
 
 from somm_core import VERSION, list_intel
 from somm_core.config import load as load_config
+from somm_core.models import PrivacyClass
 from somm_core.repository import Repository
 
 from somm.providers.ollama import OllamaProvider
+
+# ---------------------------------------------------------------------------
+# somm workload
+
+
+WORKLOAD_EXAMPLES: dict[str, dict] = {
+    "structured-extraction": {
+        "description": "Structured extraction workload",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Source text to extract from"}
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        "output_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "value": {"type": "string"},
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        },
+                        "required": ["label", "value"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        },
+        "quality_criteria": [
+            "Return valid JSON matching the output schema.",
+            "Extract only facts supported by the input text.",
+        ],
+    },
+    "freeform": {
+        "description": "",
+        "input_schema": None,
+        "output_schema": None,
+        "quality_criteria": [],
+    },
+}
+
+
+def _cmd_workload_add(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    template = WORKLOAD_EXAMPLES[args.from_example]
+    description = args.description
+    if description is None:
+        description = template["description"]
+    wl = repo.register_workload(
+        name=args.name,
+        project=cfg.project,
+        description=description,
+        input_schema=template["input_schema"],
+        output_schema=template["output_schema"],
+        quality_criteria=template["quality_criteria"],
+        privacy_class=PrivacyClass(args.privacy_class),
+    )
+    print(f"registered workload {wl.name!r} for project {cfg.project!r}")
+    print(f"privacy_class: {wl.privacy_class.value}")
+    print(f"input_schema: {'yes' if wl.input_schema else 'no'}")
+    print(f"output_schema: {'yes' if wl.output_schema else 'no'}")
+    return 0
+
+
+def _workload_rows(repo: Repository, project: str) -> list[dict]:
+    with repo._open() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                w.id,
+                w.name,
+                w.description,
+                w.input_schema_json,
+                w.output_schema_json,
+                w.quality_criteria_json,
+                w.budget_cap_usd_daily,
+                w.privacy_class,
+                w.capabilities_required_json,
+                w.max_p95_latency_ms,
+                w.max_capability_failure_rate,
+                w.max_cost_per_call_usd,
+                w.created_at,
+                COUNT(c.id) AS call_count
+            FROM workloads w
+            LEFT JOIN calls c ON c.workload_id = w.id AND c.project = w.project
+            WHERE w.project = ?
+            GROUP BY w.id
+            ORDER BY w.created_at DESC, w.name
+            """,
+            (project,),
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "name": r[1],
+            "description": r[2] or "",
+            "input_schema": json.loads(r[3]) if r[3] else None,
+            "output_schema": json.loads(r[4]) if r[4] else None,
+            "quality_criteria": json.loads(r[5]) if r[5] else [],
+            "budget_cap_usd_daily": r[6],
+            "privacy_class": r[7],
+            "capabilities_required": json.loads(r[8]) if r[8] else [],
+            "max_p95_latency_ms": r[9],
+            "max_capability_failure_rate": r[10],
+            "max_cost_per_call_usd": r[11],
+            "created_at": r[12],
+            "call_count": r[13],
+        }
+        for r in rows
+    ]
+
+
+def _cmd_workload_list(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    rows = _workload_rows(repo, cfg.project)
+    if not rows:
+        print(f"No workloads registered for project {cfg.project!r}.")
+        print("Register one with `somm workload add <name>`.")
+        return 0
+    print(f"Project: {cfg.project}")
+    print(f"{'name':<28} {'privacy':<10} {'calls':>8}")
+    for row in rows:
+        print(f"{row['name'][:27]:<28} {row['privacy_class']:<10} {row['call_count']:>8}")
+    return 0
+
+
+def _cmd_workload_show(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    rows = [row for row in _workload_rows(repo, cfg.project) if row["name"] == args.name]
+    if not rows:
+        print(f"No workload {args.name!r} registered for project {cfg.project!r}.", file=sys.stderr)
+        return 2
+    row = rows[0]
+    print(f"name: {row['name']}")
+    print(f"project: {cfg.project}")
+    print(f"id: {row['id']}")
+    print(f"description: {row['description'] or '—'}")
+    print(f"privacy_class: {row['privacy_class']}")
+    print(f"call_count: {row['call_count']}")
+    print(f"created_at: {row['created_at']}")
+    print(f"budget_cap_usd_daily: {row['budget_cap_usd_daily'] if row['budget_cap_usd_daily'] is not None else '—'}")
+    print(f"capabilities_required: {', '.join(row['capabilities_required']) or '—'}")
+    print("constraints:")
+    print(f"  max_p95_latency_ms: {row['max_p95_latency_ms'] if row['max_p95_latency_ms'] is not None else '—'}")
+    print(f"  max_capability_failure_rate: {row['max_capability_failure_rate'] if row['max_capability_failure_rate'] is not None else '—'}")
+    print(f"  max_cost_per_call_usd: {row['max_cost_per_call_usd'] if row['max_cost_per_call_usd'] is not None else '—'}")
+    print("input_schema:")
+    print(json.dumps(row["input_schema"], indent=2) if row["input_schema"] else "  —")
+    print("output_schema:")
+    print(json.dumps(row["output_schema"], indent=2) if row["output_schema"] else "  —")
+    if row["quality_criteria"]:
+        print("quality_criteria:")
+        for item in row["quality_criteria"]:
+            print(f"  - {item}")
+    else:
+        print("quality_criteria: —")
+    return 0
+
 
 # ---------------------------------------------------------------------------
 # somm status
@@ -354,7 +528,7 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
     cons_pretty = ", ".join(
         f"{k.removeprefix('max_')}≤{v}" for k, v in cons.items() if v is not None
     )
-    print(f"Constraints: {cons_pretty or '(none set — try `somm workload-set ...`)'}")
+    print(f"Constraints: {cons_pretty or '(none set — inspect with `somm workload show <name>`)'}")
     print(
         f"\n{'provider':<14} {'model':<28} {'n':>5} {'cap%':>6} {'det%':>6} "
         f"{'p50ms':>7} {'p95ms':>7} {'$/ok':>9} fitness"
@@ -423,22 +597,25 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             age = _age_since(latest) if latest else "—"
             print(f"  {src:<16} {len(entries):>5} models   latest {age}")
 
-    # Worker heartbeats (from `jobs` table)
+    # Worker heartbeats
     with repo._open() as conn:
-        jobs_rows = conn.execute(
-            "SELECT job_name, last_started_at, last_success_at, "
-            "       consecutive_failures, interval_seconds, due_at, locked_until "
-            "FROM jobs ORDER BY job_name"
+        heartbeat_rows = conn.execute(
+            "SELECT worker_name, last_run_at, last_success_at, consecutive_failures "
+            "FROM worker_heartbeat ORDER BY worker_name"
         ).fetchall()
-    if not jobs_rows:
-        print("workers: not yet started (start `somm serve` to seed + run)")
+    if not heartbeat_rows:
+        print("worker_heartbeat: no heartbeats recorded")
     else:
-        print("workers:")
-        for r in jobs_rows:
-            name, started, success, failures, interval, due_at, locked_until = r
-            status = "ok" if failures == 0 else f"WARN ({failures} failures)"
-            last_ok = _age_since(success) if success else "never"
-            print(f"  {name:<14} last_ok={last_ok:<20} interval={interval}s  {status}")
+        print("worker_heartbeat:")
+        print(
+            f"  {'worker_name':<16} {'last_run_at':<19} "
+            f"{'last_success_at':<19} consecutive_failures"
+        )
+        for name, last_run_at, last_success_at, failures in heartbeat_rows:
+            print(
+                f"  {name[:15]:<16} {(last_run_at or 'never'):<19} "
+                f"{(last_success_at or 'never'):<19} {failures}"
+            )
 
     # Cooldowns
     with repo._open() as conn:
@@ -956,6 +1133,35 @@ def build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--project", default=None)
     pf.add_argument("--since", type=int, default=30, help="window in days (default 30)")
     pf.set_defaults(func=_cmd_frontier)
+
+    pw = sub.add_parser("workload", help="register and inspect project workloads")
+    pw_sub = pw.add_subparsers(dest="workload_cmd", required=True)
+
+    pwa = pw_sub.add_parser("add", help="register a workload in the project DB")
+    pwa.add_argument("name", help="workload name")
+    pwa.add_argument("--project", default=None)
+    pwa.add_argument("--description", default=None)
+    pwa.add_argument(
+        "--privacy-class",
+        choices=[pc.value for pc in PrivacyClass],
+        default=PrivacyClass.INTERNAL.value,
+    )
+    pwa.add_argument(
+        "--from-example",
+        choices=sorted(WORKLOAD_EXAMPLES),
+        default="freeform",
+        help="built-in workload template (default: freeform)",
+    )
+    pwa.set_defaults(func=_cmd_workload_add)
+
+    pwl = pw_sub.add_parser("list", help="list registered workloads")
+    pwl.add_argument("--project", default=None)
+    pwl.set_defaults(func=_cmd_workload_list)
+
+    pws = pw_sub.add_parser("show", help="show one registered workload")
+    pws.add_argument("name", help="workload name")
+    pws.add_argument("--project", default=None)
+    pws.set_defaults(func=_cmd_workload_show)
 
     pd = sub.add_parser("doctor", help="check config + ollama + db + intel + workers + cooldowns")
     pd.add_argument("--project", default=None)

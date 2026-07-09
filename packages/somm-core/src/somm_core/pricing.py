@@ -12,6 +12,9 @@ Local / free models have price=0 and cost_usd stays 0.0.
 from __future__ import annotations
 
 import sys
+import threading
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,6 +28,26 @@ _PAID_PROVIDERS: frozenset[str] = frozenset(
 # Track which (provider, model) pairs have already emitted a missing-pricing
 # warning so we only warn once per process.
 _warned_missing_pricing: set[tuple[str, str]] = set()
+
+_PRICE_CACHE_TTL_SECONDS = 600.0
+_price_cache_lock = threading.Lock()
+_price_cache: dict[tuple[str, str, str], tuple[float, tuple[float, float] | None]] = {}
+
+
+def _price_cache_key(repo: Repository, provider: str, model: str) -> tuple[str, str, str]:
+    return (str(repo.db_path), provider, model)
+
+
+def _clear_price_cache(db_path: Path | str | None = None) -> None:
+    """Clear cached model prices, optionally scoped to one database path."""
+    with _price_cache_lock:
+        if db_path is None:
+            _price_cache.clear()
+            return
+        db_key = str(Path(db_path))
+        for key in [key for key in _price_cache if key[0] == db_key]:
+            _price_cache.pop(key, None)
+
 
 # Hardcoded pricing for major providers, used by seed_known_pricing().
 # Format: (provider, model, price_in_per_1m, price_out_per_1m, capabilities)
@@ -63,6 +86,7 @@ def seed_known_pricing(repo: Repository) -> None:
     Only seeds when the table has zero rows — never overwrites manually
     set prices. Called from SommLLM.__init__ on first use.
     """
+    _clear_price_cache(repo.db_path)
     with repo._open() as conn:
         count = conn.execute("SELECT COUNT(*) FROM model_intel").fetchone()[0]
     if count > 0:
@@ -105,6 +129,7 @@ def sync_bundled_pricing(repo: Repository) -> int:
     import json
     import zlib
 
+    _clear_price_cache(repo.db_path)
     try:
         from importlib import resources
 
@@ -167,6 +192,7 @@ def backfill_costs(
     Returns (rows_affected, total_usd). With dry_run=True nothing is
     written; the return value reports what would change.
     """
+    _clear_price_cache(repo.db_path)
     window = ""
     params: list = []
     if since_days is not None:
@@ -221,6 +247,16 @@ def cost_for_call(
     """
     if not provider or not model:
         return 0.0
+    key = _price_cache_key(repo, provider, model)
+    now = time.monotonic()
+    with _price_cache_lock:
+        cached = _price_cache.get(key)
+        if cached and cached[0] > now:
+            prices = cached[1]
+            if prices is None:
+                return 0.0
+            price_in, price_out = prices
+            return round((tokens_in * price_in + tokens_out * price_out) / 1_000_000.0, 8)
     with repo._open() as conn:
         row = conn.execute(
             "SELECT price_in_per_1m, price_out_per_1m "
@@ -228,6 +264,8 @@ def cost_for_call(
             (provider, model),
         ).fetchone()
     if not row:
+        with _price_cache_lock:
+            _price_cache[key] = (now + _PRICE_CACHE_TTL_SECONDS, None)
         if provider in _PAID_PROVIDERS:
             key = (provider, model)
             if key not in _warned_missing_pricing:
@@ -240,6 +278,8 @@ def cost_for_call(
                 )
         return 0.0
     price_in, price_out = row[0] or 0.0, row[1] or 0.0
+    with _price_cache_lock:
+        _price_cache[key] = (now + _PRICE_CACHE_TTL_SECONDS, (price_in, price_out))
     cost = (tokens_in * price_in + tokens_out * price_out) / 1_000_000.0
     return round(cost, 8)
 
@@ -275,6 +315,7 @@ def write_intel(
             """,
             (provider, model, price_in_per_1m, price_out_per_1m, context_window, caps_json, source),
         )
+    _clear_price_cache(repo.db_path)
 
 
 def merge_intel_capabilities(

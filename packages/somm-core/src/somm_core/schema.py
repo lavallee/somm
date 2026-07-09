@@ -23,12 +23,12 @@ class SchemaStale(RuntimeError):
         super().__init__(
             f"SOMM_SCHEMA_STALE\n\n"
             f"Problem: {path} is schema v{db_version}, but this somm version requires v{expected}.\n"
-            f"Cause: somm was upgraded and migrations have not been applied.\n"
+            f"Cause: an older somm process is still using the database, or this install is missing migrations.\n"
             f"Fix:\n"
-            f"  somm service stop\n"
-            f"  somm migrate --check\n"
-            f"  somm migrate\n"
-            f"  somm service start\n"
+            f"  1. Upgrade all somm packages used by this project.\n"
+            f"  2. Stop any long-running processes or daemons that still import the old version.\n"
+            f"  3. Re-run any somm command, for example: somm doctor --project <project>\n"
+            f"  4. Restart your own daemons after that command succeeds.\n"
             f"Docs: docs/errors/SOMM_SCHEMA_STALE.md"
         )
 
@@ -65,7 +65,8 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
     """Apply any pending migrations. Returns the schema version after running.
 
     Applied inside a transaction per-file. Called automatically on first library
-    use so zero-config `somm.llm()` works. For explicit control, run `somm migrate`.
+    use so zero-config `somm.llm()` works; re-running any somm command also
+    opens the repository and applies pending migrations.
     """
     current = current_schema_version(conn)
     applied = current

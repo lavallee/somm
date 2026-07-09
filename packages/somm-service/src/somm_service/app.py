@@ -22,8 +22,17 @@ model_intel / shadow_eval / agent workers on their cadences.
 
 from __future__ import annotations
 
+import contextlib
+import html
+import ipaddress
 import json
+import os
+import secrets
 import sqlite3
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from somm_core import VERSION
 from somm_core.config import Config
@@ -31,11 +40,251 @@ from somm_core.config import load as load_config
 from somm_core.repository import Repository
 from somm_core.schema import current_schema_version
 from starlette.applications import Starlette
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from somm_service.proxy import messages_endpoint
+from somm_service.proxy import _anthropic_error, messages_endpoint
+
+_CSP = "default-src 'none'; style-src 'unsafe-inline'"
+_LOCAL_HEADER = "x-somm-local"
+_TOKEN_ENV_VAR = "SOMM_SERVICE_TOKEN"
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceToken:
+    value: str
+    path: Path
+    source: str
+    created: bool = False
+
+
+def _service_token_path(cfg: Config) -> Path:
+    return Path(cfg.db_dir) / "service_token"
+
+
+def load_service_token(cfg: Config) -> ServiceToken:
+    """Load the service token.
+
+    Precedence is env > file: SOMM_SERVICE_TOKEN is intentionally first so
+    tests/CI and supervised deployments can inject a secret without touching
+    the local .somm token file.
+    """
+    token_path = _service_token_path(cfg)
+    env_token = os.environ.get(_TOKEN_ENV_VAR)
+    if env_token:
+        return ServiceToken(value=env_token, path=token_path, source="env")
+
+    token_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Claim creation with O_EXCL. The winner writes+fsyncs immediately while
+    # holding the fd; a loser (FileExistsError) reads the winner's token,
+    # retrying briefly to cover the microscopic window between create and
+    # write. A file that stays empty is corrupt/leftover, not a live race —
+    # remove it and re-claim so we never return "" (which authorizes a bare
+    # `Bearer ` header).
+    for _ in range(3):
+        try:
+            fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            existing = _read_existing_token(token_path)
+            if existing is not None:
+                return ServiceToken(value=existing, path=token_path, source="file")
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(token_path)
+            continue
+        token = secrets.token_urlsafe(32)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(token + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        return ServiceToken(value=token, path=token_path, source="file", created=True)
+    # Couldn't stabilize a file token (persistent contention/corruption) —
+    # fall back to an in-memory token so the service still starts securely.
+    return ServiceToken(
+        value=secrets.token_urlsafe(32), path=token_path, source="file", created=True
+    )
+
+
+def _read_existing_token(token_path: Path) -> str | None:
+    """Return a non-empty token from an already-published file, or None.
+
+    Retries briefly: a peer may have created the file (O_EXCL) an instant
+    before it wrote the token, so a single read could momentarily see
+    nothing. Never returns "" — an empty token would authorize a bare
+    `Bearer ` header."""
+    for _ in range(50):  # ~0.5s worst case
+        try:
+            value = token_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        if value:
+            return value
+        time.sleep(0.01)
+    return None
+
+
+def _log_service_token(token: ServiceToken, *, host: str, port: int) -> None:
+    if token.source == "env":
+        print(f"somm service token loaded from {_TOKEN_ENV_VAR}")
+        return
+    if token.created:
+        print(
+            "somm service token created: "
+            f"{token.value} "
+            f"(use: curl -H 'Authorization: Bearer {token.value}' http://{host}:{port}/v1/messages)"
+        )
+        return
+    print(f"somm service token loaded from {token.path}")
+
+
+def _host_is_loopback(host: str) -> bool:
+    """True only when the request's Host header names a loopback address.
+
+    The header-only (tokenless) auth path is meant for the local dashboard.
+    Gating it on a loopback Host defeats DNS-rebinding: a rebind target
+    resolves to attacker.example (or a LAN IP), whose Host is never
+    loopback, so a rebound page can't ride the same-origin bypass to a
+    service bound on 0.0.0.0.
+
+    Matching is exact: `localhost`, or an IP literal whose address is
+    loopback (127.0.0.0/8, ::1). A prefix check would wrongly accept
+    attacker-controlled names like `127.0.0.1.attacker.com`.
+    """
+    if not host:
+        return False
+    host = host.strip()
+    if host.startswith("["):  # bracketed IPv6: [addr] or [addr]:port
+        end = host.find("]")
+        if end == -1:
+            return False  # unclosed bracket
+        suffix = host[end + 1 :]
+        # Suffix must be empty or a well-formed :<port> — reject
+        # [::1].attacker.com, [::1]junk, etc.
+        if suffix and not (suffix.startswith(":") and suffix[1:].isdigit()):
+            return False
+        hostname = host[1:end]
+        try:  # bracket contents must be an IP literal
+            return ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            return False
+    hostname = (host.rsplit(":", 1)[0] if host.count(":") == 1 else host).lower()
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _origin_matches_host(origin: str, host: str) -> bool:
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and parsed.netloc == host
+
+
+class LocalSecurityMiddleware:
+    def __init__(self, app, *, token: str) -> None:
+        self.app = app
+        self._token = token
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        method = scope["method"]
+        path = scope["path"]
+        protected_admin = method == "POST" and path.startswith("/api/recommendations/")
+        protected_messages = method == "POST" and path == "/v1/messages"
+
+        if protected_admin or protected_messages:
+            if not self._is_authorized(headers):
+                response = self._forbidden(protected_messages)
+                self._set_security_headers(response)
+                await response(scope, receive, send)
+                return
+            if protected_messages and not self._is_json_request(headers):
+                response = _anthropic_error(
+                    error_type="invalid_request_error",
+                    message="POST /v1/messages requires Content-Type: application/json",
+                    status=415,
+                )
+                self._set_security_headers(response)
+                await response(scope, receive, send)
+                return
+
+        async def send_with_security_headers(message) -> None:
+            if message["type"] == "http.response.start":
+                self._set_security_headers_on_message(message)
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
+
+    def _is_authorized(self, headers: Headers) -> bool:
+        auth = headers.get("authorization", "")
+        if secrets.compare_digest(auth, f"Bearer {self._token}"):
+            return True
+
+        if headers.get(_LOCAL_HEADER) != "1":
+            return False
+
+        # The header-only path is the local dashboard's; only honor it when
+        # the Host is loopback, so a DNS-rebound page pointed at a service on
+        # 0.0.0.0 can't ride it (its Host is attacker.example / a LAN IP).
+        host = headers.get("host", "")
+        if not _host_is_loopback(host):
+            return False
+
+        sec_fetch_site = headers.get("sec-fetch-site")
+        if sec_fetch_site == "same-origin":
+            return True
+
+        origin = headers.get("origin")
+        return bool(origin and host and _origin_matches_host(origin, host))
+
+    @staticmethod
+    def _is_json_request(headers: Headers) -> bool:
+        content_type = headers.get("content-type", "")
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        return media_type == "application/json"
+
+    @staticmethod
+    def _forbidden(anthropic_shape: bool) -> JSONResponse:
+        message = (
+            "authentication required: send Authorization: Bearer <token>, or for "
+            "same-origin dashboard requests send X-Somm-Local: 1"
+        )
+        if anthropic_shape:
+            return _anthropic_error(
+                error_type="authentication_error",
+                message=message,
+                status=403,
+            )
+        return JSONResponse({"error": message}, status_code=403)
+
+    @staticmethod
+    def _set_security_headers(response: Response) -> None:
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        content_type = response.headers.get("content-type", "")
+        if content_type.startswith("text/html"):
+            response.headers.setdefault("Content-Security-Policy", _CSP)
+
+    @staticmethod
+    def _set_security_headers_on_message(message) -> None:
+        headers = MutableHeaders(scope=message)
+        if "x-content-type-options" not in headers:
+            headers["X-Content-Type-Options"] = "nosniff"
+        if "referrer-policy" not in headers:
+            headers["Referrer-Policy"] = "no-referrer"
+        content_type = headers.get("content-type", "")
+        if content_type.startswith("text/html") and "content-security-policy" not in headers:
+            headers["Content-Security-Policy"] = _CSP
+
 
 _HTML_SHELL = """<!DOCTYPE html>
 <html lang="en">
@@ -156,11 +405,8 @@ def _render_table(stats: list[dict]) -> str:
     )
 
 
-_ESC_MAP = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"}
-
-
 def _esc(s: str) -> str:
-    return "".join(_ESC_MAP.get(c, c) for c in str(s))
+    return html.escape(str(s), quote=True)
 
 
 def _list_recommendations(repo: Repository) -> list[dict]:
@@ -397,6 +643,7 @@ async def _api_version(request: Request) -> JSONResponse:
 def create_app(config: Config | None = None) -> Starlette:
     cfg = config or load_config()
     repo = Repository(cfg.db_path)
+    service_token = load_service_token(cfg)
     app = Starlette(
         debug=False,
         routes=[
@@ -410,8 +657,10 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/v1/messages", messages_endpoint, methods=["POST"]),
         ],
     )
+    app.add_middleware(LocalSecurityMiddleware, token=service_token.value)
     app.state.config = cfg
     app.state.repo = repo
+    app.state.service_token = service_token
     return app
 
 
@@ -438,6 +687,7 @@ def run_server(
     app = create_app(config)
     cfg: Config = app.state.config
     repo: Repository = app.state.repo
+    _log_service_token(app.state.service_token, host=host, port=port)
 
     if host not in ("127.0.0.1", "localhost", "::1"):
         print(

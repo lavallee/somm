@@ -10,6 +10,8 @@ from somm_core.config import Config
 from somm_service.app import create_app
 from starlette.testclient import TestClient
 
+_LOCAL_HEADERS = {"x-somm-local": "1", "sec-fetch-site": "same-origin"}
+
 
 def _tmp_config(tmp_path: Path) -> Config:
     cfg = Config()
@@ -22,7 +24,9 @@ def _tmp_config(tmp_path: Path) -> Config:
 def client_with_rec(tmp_path):
     cfg = _tmp_config(tmp_path)
     app = create_app(cfg)
-    c = TestClient(app)
+    # Loopback base_url so the X-Somm-Local dashboard path is honored — the
+    # header path is gated on a loopback Host to defeat DNS rebinding.
+    c = TestClient(app, base_url="http://localhost")
 
     # Seed a workload + recommendation
     repo = app.state.repo
@@ -86,7 +90,11 @@ def test_dismiss_rec(client_with_rec):
     data = c.get("/api/recommendations").json()
     rec_id = data["recommendations"][0]["id"]
 
-    r = c.post(f"/api/recommendations/{rec_id}/dismiss")
+    blocked = c.post(f"/api/recommendations/{rec_id}/dismiss")
+    assert blocked.status_code == 403
+    assert "X-Somm-Local: 1" in blocked.json()["error"]
+
+    r = c.post(f"/api/recommendations/{rec_id}/dismiss", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
@@ -100,9 +108,21 @@ def test_apply_rec(client_with_rec):
     data = c.get("/api/recommendations").json()
     rec_id = data["recommendations"][0]["id"]
 
-    r = c.post(f"/api/recommendations/{rec_id}/apply")
+    blocked = c.post(f"/api/recommendations/{rec_id}/apply")
+    assert blocked.status_code == 403
+    assert "X-Somm-Local: 1" in blocked.json()["error"]
+
+    r = c.post(f"/api/recommendations/{rec_id}/apply", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     assert r.json()["ok"] is True
+
+    # DNS-rebinding: same local headers but a non-loopback Host must NOT
+    # ride the header path (a rebound page's Host is attacker.example).
+    rebind = TestClient(app, base_url="http://attacker.example")
+    blocked_rebind = rebind.post(
+        f"/api/recommendations/{rec_id}/apply", headers=_LOCAL_HEADERS
+    )
+    assert blocked_rebind.status_code == 403
 
     # Verify applied_at set
     repo = app.state.repo

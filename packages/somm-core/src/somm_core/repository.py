@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -41,15 +43,16 @@ def _percentiles(csv: str | None) -> tuple[int | None, int | None]:
 
 
 class Repository:
-    """SQLite-backed repository. Thread-safe via per-call connection creation.
+    """SQLite-backed repository. Thread-safe via per-thread connection reuse.
 
     For high-write paths, use `somm.telemetry.WriterQueue` (wraps a single
     long-lived connection). For reads and low-volume writes, Repository
-    opens short-lived connections per call.
+    reuses one connection per Repository instance per thread.
     """
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
+        self._local = threading.local()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         # chmod 0700 on dir, 0600 on DB — shared-machine safety.
         self.db_path.parent.chmod(0o700)
@@ -58,6 +61,14 @@ class Repository:
         self.db_path.chmod(0o600)
 
     def _open(self) -> sqlite3.Connection:
+        pid = os.getpid()
+        cached = getattr(self._local, "conn", None)
+        cached_pid = getattr(self._local, "pid", None)
+        if cached is not None and cached_pid == pid:
+            return cached
+        # A pid mismatch means the connection was inherited across fork().
+        # Abandon it without close(): closing an inherited handle can
+        # finalize statements / checkpoint WAL against the parent's state.
         conn = sqlite3.connect(
             self.db_path,
             isolation_level=None,  # autocommit; we manage transactions
@@ -67,7 +78,19 @@ class Repository:
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA foreign_keys = ON")
+        self._local.conn = conn
+        self._local.pid = pid
         return conn
+
+    def close(self) -> None:
+        """Close this thread's cached SQLite connection, if one exists."""
+        cached = getattr(self._local, "conn", None)
+        if cached is not None:
+            try:
+                cached.close()
+            finally:
+                self._local.conn = None
+                self._local.pid = None
 
     # Workloads ---------------------------------------------------------------
 
@@ -217,12 +240,17 @@ class Repository:
         every reader joins through calls — and heals when the batch (or a
         spool drain) lands."""
         with self._open() as conn:
+            foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
             conn.execute("PRAGMA foreign_keys = OFF")
-            conn.execute(
-                "INSERT OR IGNORE INTO samples (call_id, prompt_body, response_body) "
-                "VALUES (?, ?, ?)",
-                (call_id, prompt_body, response_body),
-            )
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO samples (call_id, prompt_body, response_body) "
+                    "VALUES (?, ?, ?)",
+                    (call_id, prompt_body, response_body),
+                )
+            finally:
+                if foreign_keys:
+                    conn.execute("PRAGMA foreign_keys = ON")
 
     def set_shadow_config(self, workload_id: str, config: dict | None) -> None:
         """Attach (or clear) shadow-eval config for a workload.

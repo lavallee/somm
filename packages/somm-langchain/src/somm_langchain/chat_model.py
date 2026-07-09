@@ -4,7 +4,7 @@ Lets LangChain / LangGraph / deepagents apps treat somm as their LLM substrate.
 Thin adapter: message translation in, somm.llm().generate() through, ChatGeneration out.
 
 Tool-calling routes through somm's neutral tool shape (see docs/tool-calling.md),
-which currently lands on Anthropic + OpenAI-compat providers. Gemini/Ollama follow.
+which is supported across all somm chat providers.
 """
 
 from __future__ import annotations

@@ -111,6 +111,16 @@ def get_prompt(
     return _row_to_prompt(row)
 
 
+def prompt_ids_for_workload(repo: Repository, workload_id: str) -> set[str]:
+    """Return registered prompt ids for a workload."""
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT id FROM prompts WHERE workload_id = ?",
+            (workload_id,),
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
 def retire_prompt(repo: Repository, prompt_id: str) -> None:
     """Soft-retire a prompt. Historical calls still reference it."""
     with repo._open() as conn:

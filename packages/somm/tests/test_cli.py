@@ -11,14 +11,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from somm.cli import (
+    WORKLOAD_EXAMPLES,
     _age_since,
     _age_until,
     _fetch_since,
     _fmt_delta,
     _parse_model_specs,
     _print_comparison,
+    build_parser,
     main,
 )
+from somm.providers.base import ProviderHealth
 from somm_core.config import Config
 from somm_core.models import Call, Outcome
 from somm_core.repository import Repository
@@ -233,6 +236,121 @@ def test_print_comparison_error_row(capsys):
 
 
 # ---------------------------------------------------------------------------
+# workload
+
+
+def test_workload_add_applies_structured_extraction_template(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = main(
+        [
+            "workload",
+            "add",
+            "extract_entities",
+            "--project",
+            "cli-workload",
+            "--description",
+            "Extract entities",
+            "--privacy-class",
+            "private",
+            "--from-example",
+            "structured-extraction",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "registered workload 'extract_entities'" in out
+    assert "privacy_class: private" in out
+    assert "input_schema: yes" in out
+    assert "output_schema: yes" in out
+
+    repo = Repository(tmp_path / ".somm" / "calls.sqlite")
+    wl = repo.workload_by_name("extract_entities", "cli-workload")
+    assert wl is not None
+    assert wl.description == "Extract entities"
+    assert wl.privacy_class.value == "private"
+    assert wl.input_schema == WORKLOAD_EXAMPLES["structured-extraction"]["input_schema"]
+    assert wl.output_schema == WORKLOAD_EXAMPLES["structured-extraction"]["output_schema"]
+
+
+def test_workload_add_freeform_list_and_show(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert (
+        main(
+            [
+                "workload",
+                "add",
+                "drafting",
+                "--project",
+                "cli-workload",
+                "--from-example",
+                "freeform",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    repo = Repository(tmp_path / ".somm" / "calls.sqlite")
+    wl = repo.workload_by_name("drafting", "cli-workload")
+    assert wl is not None
+    repo.write_call(
+        Call(
+            id=str(uuid.uuid4()),
+            ts=datetime.now(UTC),
+            project="cli-workload",
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="ollama",
+            model="g",
+            tokens_in=1,
+            tokens_out=1,
+            latency_ms=1,
+            cost_usd=0.0,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="a",
+            response_hash="b",
+        )
+    )
+
+    assert main(["workload", "list", "--project", "cli-workload"]) == 0
+    list_out = capsys.readouterr().out
+    assert "drafting" in list_out
+    assert "internal" in list_out
+    assert "       1" in list_out
+
+    assert main(["workload", "show", "drafting", "--project", "cli-workload"]) == 0
+    show_out = capsys.readouterr().out
+    assert "name: drafting" in show_out
+    assert "privacy_class: internal" in show_out
+    assert "call_count: 1" in show_out
+    assert "max_p95_latency_ms: —" in show_out
+    assert "input_schema:\n  —" in show_out
+    assert "output_schema:\n  —" in show_out
+
+
+def test_corrected_command_hints_parse_against_real_parsers():
+    parser = build_parser()
+    for argv in (
+        ["workload", "add", "orders", "--from-example", "structured-extraction"],
+        ["workload", "add", "orders", "--from-example", "freeform"],
+        ["workload", "list"],
+        ["workload", "show", "orders"],
+        ["frontier", "--workload", "orders"],
+        ["compare", "hello", "--models", "ollama/g"],
+        ["doctor", "--project", "my_project"],
+        ["serve", "--project", "my_project"],
+        ["drain-spool"],
+    ):
+        parser.parse_args(argv)
+
+    from somm_service.cli import build_parser as build_serve_parser
+
+    serve_parser = build_serve_parser()
+    serve_parser.parse_args(["admin", "refresh-intel"])
+
+
+# ---------------------------------------------------------------------------
 # doctor (in-process; patches the env to avoid touching real repo)
 
 
@@ -248,3 +366,29 @@ def test_doctor_reports_schema_and_no_db(tmp_path, capsys, monkeypatch):
     assert "project: doctor-test" in out
     # db shouldn't exist at this path yet
     assert "exists:" in out
+
+
+def test_doctor_reports_worker_heartbeats(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO worker_heartbeat "
+            "(worker_name, last_run_at, last_success_at, consecutive_failures) "
+            "VALUES ('shadow_eval', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)"
+        )
+
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr(
+        "somm.cli.OllamaProvider.health",
+        lambda self: ProviderHealth(available=True, detail="ok"),
+    )
+
+    rc = main(["doctor"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "worker_heartbeat:" in out
+    assert "shadow_eval" in out
+    assert "last_run_at" in out
+    assert "last_success_at" in out
