@@ -106,6 +106,63 @@ def stable_hash(value: str | dict | list) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:16]
 
 
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_cache_tokens(raw: dict | None) -> tuple[int | None, int | None]:
+    """Return provider prompt-cache usage as (read_tokens, write_tokens).
+
+    Handles Anthropic ``usage.cache_read_input_tokens`` /
+    ``usage.cache_creation_input_tokens`` and OpenAI-compatible
+    ``usage.prompt_tokens_details.cached_tokens``. Unknown shapes return
+    ``(None, None)`` and malformed input never raises.
+    """
+    try:
+        if not isinstance(raw, dict):
+            return None, None
+        usage = raw.get("usage")
+        if not isinstance(usage, dict):
+            return None, None
+
+        cache_in = _int_or_none(usage.get("cache_read_input_tokens"))
+        cache_out = _int_or_none(usage.get("cache_creation_input_tokens"))
+
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            openai_cached = _int_or_none(details.get("cached_tokens"))
+            if openai_cached is not None:
+                cache_in = openai_cached
+
+        return cache_in, cache_out
+    except Exception:
+        return None, None
+
+
+def extract_citations(raw: dict | None) -> list | None:
+    """Return grounded-search citations from provider raw payloads.
+
+    Perplexity preserves source metadata at top-level ``citations``; some
+    grounded-search providers use ``search_results`` or ``sources``. Unknown
+    and malformed shapes return ``None`` and never raise.
+    """
+    try:
+        if not isinstance(raw, dict):
+            return None
+        for key in ("citations", "search_results", "sources"):
+            value = raw.get(key)
+            if isinstance(value, list):
+                return value
+        return None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Multimodal content-block helpers
 # ---------------------------------------------------------------------------

@@ -306,8 +306,13 @@ class Repository:
                     provider, model,
                     tokens_in, tokens_out, latency_ms, cost_usd,
                     outcome, error_kind, error_detail, prompt_hash, response_hash,
-                    correlation_id, temperature, max_tokens, top_p, stop_sequences_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    correlation_id, temperature, max_tokens, top_p, stop_sequences_json,
+                    ttft_ms, session_id, parent_call_id, cache_tokens_in,
+                    cache_tokens_out, citations_json
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     call.id,
@@ -331,6 +336,12 @@ class Repository:
                     call.max_tokens,
                     call.top_p,
                     call.stop_sequences_json,
+                    call.ttft_ms,
+                    call.session_id,
+                    call.parent_call_id,
+                    call.cache_tokens_in,
+                    call.cache_tokens_out,
+                    call.citations_json,
                 ),
             )
 
@@ -348,8 +359,13 @@ class Repository:
                         provider, model,
                         tokens_in, tokens_out, latency_ms, cost_usd,
                         outcome, error_kind, error_detail, prompt_hash, response_hash,
-                        correlation_id, temperature, max_tokens, top_p, stop_sequences_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        correlation_id, temperature, max_tokens, top_p, stop_sequences_json,
+                        ttft_ms, session_id, parent_call_id, cache_tokens_in,
+                        cache_tokens_out, citations_json
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     [
                         (
@@ -374,6 +390,12 @@ class Repository:
                             c.max_tokens,
                             c.top_p,
                             c.stop_sequences_json,
+                            c.ttft_ms,
+                            c.session_id,
+                            c.parent_call_id,
+                            c.cache_tokens_in,
+                            c.cache_tokens_out,
+                            c.citations_json,
                         )
                         for c in calls
                     ],
@@ -388,7 +410,10 @@ class Repository:
             row = conn.execute(
                 "SELECT id, ts, project, workload_id, prompt_id, provider, model, "
                 "tokens_in, tokens_out, latency_ms, cost_usd, outcome, error_kind, "
-                "prompt_hash, response_hash, error_detail FROM calls WHERE id = ?",
+                "prompt_hash, response_hash, error_detail, correlation_id, "
+                "temperature, max_tokens, top_p, stop_sequences_json, ttft_ms, "
+                "session_id, parent_call_id, cache_tokens_in, cache_tokens_out, "
+                "citations_json FROM calls WHERE id = ?",
                 (call_id,),
             ).fetchone()
         if not row:
@@ -410,6 +435,17 @@ class Repository:
             prompt_hash=row[13],
             response_hash=row[14],
             error_detail=row[15],
+            correlation_id=row[16],
+            temperature=row[17],
+            max_tokens=row[18],
+            top_p=row[19],
+            stop_sequences_json=row[20],
+            ttft_ms=row[21],
+            session_id=row[22],
+            parent_call_id=row[23],
+            cache_tokens_in=row[24],
+            cache_tokens_out=row[25],
+            citations_json=row[26],
         )
 
     def record_outcome_update(self, call_id: str, outcome: Outcome) -> None:

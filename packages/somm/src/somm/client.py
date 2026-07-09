@@ -8,6 +8,7 @@ warning), call_id in result for provenance.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import shlex
 import sys
@@ -26,6 +27,8 @@ from somm_core.models import Call, Prompt
 from somm_core.models import ToolCall as CoreToolCall
 from somm_core.parse import (
     ThinkStreamStripper,
+    extract_cache_tokens,
+    extract_citations,
     extract_json,
     infer_capabilities,
     stable_hash,
@@ -392,6 +395,16 @@ def _scrub_secrets(text: str) -> str:
     return scrub_text(text)
 
 
+def _citations_json(citations: list | None) -> str | None:
+    """Serialize citation metadata for calls.citations_json. Never raises."""
+    if citations is None:
+        return None
+    try:
+        return json.dumps(citations)
+    except Exception:
+        return None
+
+
 def _format_empty_detail(
     *,
     provider: str,
@@ -747,6 +760,8 @@ class SommLLM:
         messages: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         wait: float | None = _WAIT_UNSET,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -1060,6 +1075,10 @@ class SommLLM:
                 if wait_on_exhausted is not None and isinstance(exc, SommProvidersExhausted):
                     raise_after_record = exc
 
+        cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
+        citations = extract_citations(raw_out)
+        citations_json = _citations_json(citations)
+
         result = SommResult(
             text=text,
             provider=actual_provider,
@@ -1080,6 +1099,9 @@ class SommLLM:
             tool_calls=tool_calls_out,
             stop_reason=stop_reason_out,
             reasoning_content=reasoning_content_out,
+            cache_tokens_in=cache_tokens_in,
+            cache_tokens_out=cache_tokens_out,
+            citations=citations,
         )
 
         call = Call(
@@ -1105,6 +1127,11 @@ class SommLLM:
             correlation_id=(correlation_id := hooks.current_correlation_id()),
             temperature=temperature,
             max_tokens=max_tokens,
+            session_id=session_id,
+            parent_call_id=parent_call_id,
+            cache_tokens_in=cache_tokens_in,
+            cache_tokens_out=cache_tokens_out,
+            citations_json=citations_json,
         )
         self._writer.submit(call)
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
@@ -1219,6 +1246,8 @@ class SommLLM:
         *,
         workload: str = "default",
         model: str | None = None,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
     ) -> EmbedResult:
         """Compute one embedding via local ollama. v1 forces ollama with
         no fallback chain (caller asked for "force ollama, no fallbacks").
@@ -1374,6 +1403,8 @@ class SommLLM:
             prompt_hash=stable_hash(text),
             response_hash=response_hash,
             correlation_id=(correlation_id := hooks.current_correlation_id()),
+            session_id=session_id,
+            parent_call_id=parent_call_id,
         )
         self._writer.submit(call)
         _fire_call_hooks(_call_event(
@@ -1423,6 +1454,8 @@ class SommLLM:
         model: str | None = None,
         provider: str | None = None,
         wait: float | None = _WAIT_UNSET,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
     ) -> Iterator[str]:
         """Stream text deltas from the LLM. Yields user-visible text chunks
         (with `<think>` blocks stripped across chunk boundaries).
@@ -1523,6 +1556,8 @@ class SommLLM:
         actual_model = model or ""
         actual_provider = short_circuit.provider if short_circuit is not None else ""
         cost_usd_out: float | None = None
+        ttft_ms: int | None = None
+        raw_out: dict | None = None
 
         try:
             if short_circuit is not None:
@@ -1531,21 +1566,30 @@ class SommLLM:
                 tokens_in = short_circuit.tokens_in
                 tokens_out = short_circuit.tokens_out
                 cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+                raw_out = short_circuit.raw
                 if text:
                     collected.append(text)
+                    ttft_ms = int((time.monotonic() - t0) * 1000)
                     yield text
             else:
                 assert chosen is not None
                 for chunk in chosen.stream(req):
+                    chunk_raw = getattr(chunk, "raw", None)
+                    if isinstance(chunk_raw, dict):
+                        raw_out = chunk_raw
                     if chunk.text:
                         visible = stripper.feed(chunk.text)
                         if visible:
                             collected.append(visible)
+                            if ttft_ms is None:
+                                ttft_ms = int((time.monotonic() - t0) * 1000)
                             yield visible
                     if chunk.done:
                         tail = stripper.flush()
                         if tail:
                             collected.append(tail)
+                            if ttft_ms is None:
+                                ttft_ms = int((time.monotonic() - t0) * 1000)
                             yield tail
                         break
                 # Streaming providers don't always give token counts — estimate
@@ -1579,6 +1623,9 @@ class SommLLM:
             full_text = "".join(collected)
             provider_name = actual_provider or (chosen.name if chosen is not None else "hook")
             model_name = actual_model or provider_name
+            cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
+            citations = extract_citations(raw_out)
+            citations_json = _citations_json(citations)
             cost_usd = (
                 cost_usd_out
                 if cost_usd_out is not None
@@ -1610,6 +1657,12 @@ class SommLLM:
                 correlation_id=(correlation_id := hooks.current_correlation_id()),
                 temperature=temperature,
                 max_tokens=max_tokens,
+                ttft_ms=ttft_ms,
+                session_id=session_id,
+                parent_call_id=parent_call_id,
+                cache_tokens_in=cache_tokens_in,
+                cache_tokens_out=cache_tokens_out,
+                citations_json=citations_json,
             )
             self._writer.submit(call)
             _fire_call_hooks(_call_event(

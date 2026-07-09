@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from somm_core.parse import (
     extract_balanced,
+    extract_cache_tokens,
+    extract_citations,
     extract_json,
     prompt_id,
     strip_markdown_fence,
@@ -137,3 +139,45 @@ def test_prompt_id_is_16_hex_chars():
     pid = prompt_id('test prompt')
     assert len(pid) == 16
     assert all(c in '0123456789abcdef' for c in pid)
+
+
+# ---------------------------------------------------------------------------
+# telemetry extraction
+# ---------------------------------------------------------------------------
+
+
+def test_extract_cache_tokens_anthropic_shape():
+    raw = {
+        "usage": {
+            "cache_read_input_tokens": 12,
+            "cache_creation_input_tokens": 34,
+        }
+    }
+    assert extract_cache_tokens(raw) == (12, 34)
+
+
+def test_extract_cache_tokens_openai_shape():
+    raw = {"usage": {"prompt_tokens_details": {"cached_tokens": 56}}}
+    assert extract_cache_tokens(raw) == (56, None)
+
+
+def test_extract_cache_tokens_empty_and_garbage_never_raises():
+    assert extract_cache_tokens(None) == (None, None)
+    assert extract_cache_tokens({"usage": "bad"}) == (None, None)
+    assert extract_cache_tokens({"usage": {"prompt_tokens_details": "bad"}}) == (
+        None,
+        None,
+    )
+
+
+def test_extract_citations_perplexity_shapes():
+    citations = [{"url": "https://example.com/a"}]
+    assert extract_citations({"citations": citations}) == citations
+    assert extract_citations({"search_results": citations}) == citations
+    assert extract_citations({"sources": citations}) == citations
+
+
+def test_extract_citations_empty_and_garbage_never_raises():
+    assert extract_citations(None) is None
+    assert extract_citations({"citations": "bad"}) is None
+    assert extract_citations({"sources": {"url": "bad"}}) is None

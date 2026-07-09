@@ -166,6 +166,12 @@ class Call:
     max_tokens: int | None = None
     top_p: float | None = None
     stop_sequences_json: str | None = None
+    ttft_ms: int | None = None
+    session_id: str | None = None
+    parent_call_id: str | None = None
+    cache_tokens_in: int | None = None
+    cache_tokens_out: int | None = None
+    citations_json: str | None = None
 
 
 @dataclass(slots=True)
@@ -241,6 +247,10 @@ class SommResult:
     # REQUIRES this echoed back on the assistant turn in multi-turn calls, so
     # agent loops must preserve it across turns (see somm_langchain adapter).
     reasoning_content: str = ""
+    ttft_ms: int | None = None
+    cache_tokens_in: int | None = None
+    cache_tokens_out: int | None = None
+    citations: list | None = None
 
     def mark(self, outcome: Outcome) -> SommResult:
         """Post-tag a call's outcome. Returns self for chaining."""

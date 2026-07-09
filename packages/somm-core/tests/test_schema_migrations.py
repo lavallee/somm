@@ -6,7 +6,7 @@ from somm_core.schema import _list_migrations, current_schema_version, ensure_sc
 from somm_core.version import SCHEMA_VERSION
 
 
-def test_v10_database_upgrades_to_v11_prompt_labels(tmp_path):
+def test_v10_database_upgrades_through_prompt_labels(tmp_path):
     db_path = tmp_path / "v10.sqlite"
     with sqlite3.connect(db_path) as conn:
         for version, path in _list_migrations():
@@ -20,8 +20,8 @@ def test_v10_database_upgrades_to_v11_prompt_labels(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 11
-        assert current_schema_version(conn) == 11
+        assert upgraded == SCHEMA_VERSION == 12
+        assert current_schema_version(conn) == 12
         tables = {
             row[0]
             for row in conn.execute(
@@ -44,3 +44,41 @@ def test_v10_database_upgrades_to_v11_prompt_labels(tmp_path):
         }
         assert "idx_prompt_label_history_lookup" in indexes
         assert "idx_prompts_parent_prompt_id" in indexes
+
+
+def test_v11_database_upgrades_to_v12_call_telemetry(tmp_path):
+    db_path = tmp_path / "v11.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 11:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        assert current_schema_version(conn) == 11
+
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 12
+        assert current_schema_version(conn) == 12
+        call_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
+        }
+        assert {
+            "ttft_ms",
+            "session_id",
+            "parent_call_id",
+            "cache_tokens_in",
+            "cache_tokens_out",
+            "citations_json",
+        }.issubset(call_columns)
+
+        indexes = {
+            row[1]
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        assert "idx_calls_session_ts" in indexes
+        assert "idx_calls_parent_call" in indexes
