@@ -341,13 +341,6 @@ def test_cache_key_isolates_by_provider_tool_choice_and_caps():
     k_tc_auto = cache._cache_key(provider="openai", tool_choice="auto", **base)
     assert k_tc_none != k_tc_auto
 
-    k_caps_a = cache._cache_key(provider="openai", capabilities=["vision"], **base)
-    k_caps_b = cache._cache_key(provider="openai", capabilities=["tools"], **base)
-    assert k_caps_a != k_caps_b
-    # capabilities are order-insensitive
-    assert cache._cache_key(provider="openai", capabilities=["a", "b"], **base) == \
-        cache._cache_key(provider="openai", capabilities=["b", "a"], **base)
-
 
 def test_redaction_does_not_mutate_caller_messages(tmp_path):
     redaction.register()

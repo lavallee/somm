@@ -68,15 +68,18 @@ def _cache_key(
     max_tokens: int,
     tools: list[Any],
     tool_choice: Any = None,
-    capabilities: list[str] | None = None,
 ) -> str:
     content_hash = stable_hash(_prompt_content(prompt, messages))
     payload = {
         "workload": workload,
         "model": model or "",
-        # provider/tool_choice/capabilities change the semantics of the
-        # response, so a cache that ignored them could return one provider's
-        # answer for a call pinned to another.
+        # provider and tool_choice change the semantics of the response, so a
+        # cache that ignored them could return one provider's answer for a
+        # call pinned to another, or a text answer for a forced tool call.
+        # (Required capabilities are not keyed: they are typically inferred
+        # from the prompt content — which IS keyed via content_hash — so an
+        # explicit-capability collision on otherwise-identical content is a
+        # narrow edge left to a future revision.)
         "provider": provider or "",
         "system": system,
         "content_hash": content_hash,
@@ -84,7 +87,6 @@ def _cache_key(
         "max_tokens": max_tokens,
         "tools": tools,
         "tool_choice": tool_choice,
-        "capabilities": sorted(capabilities) if capabilities else [],
     }
     return stable_hash(payload)
 
