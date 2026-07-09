@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pytest
 from somm_core.config import Config
-from somm_service.app import create_app
+from somm_service.app import create_app, load_service_token
 from starlette.testclient import TestClient
 
 
@@ -34,6 +35,15 @@ def test_home_renders_empty_state(client):
     assert "NO DATA YET" in r.text or "HEALTHY" in r.text
 
 
+def test_home_has_html_security_headers(client):
+    c, _, _ = client
+    r = c.get("/")
+    assert r.status_code == 200
+    assert r.headers["content-security-policy"] == "default-src 'none'; style-src 'unsafe-inline'"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["referrer-policy"] == "no-referrer"
+
+
 def test_health_endpoint(client):
     c, cfg, _ = client
     r = c.get("/health")
@@ -41,6 +51,8 @@ def test_health_endpoint(client):
     data = r.json()
     assert data["ok"] is True
     assert data["project"] == cfg.project
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["referrer-policy"] == "no-referrer"
 
 
 def test_api_version(client):
@@ -142,3 +154,31 @@ def test_xss_in_workload_name_is_escaped(client, tmp_path):
     r = c.get("/")
     assert "<script>alert(1)</script>" not in r.text
     assert "&lt;script&gt;" in r.text
+
+
+def test_service_token_file_created_0600(tmp_path, monkeypatch):
+    monkeypatch.delenv("SOMM_SERVICE_TOKEN", raising=False)
+    cfg = _tmp_config(tmp_path)
+
+    service_token = load_service_token(cfg)
+
+    token_path = cfg.db_dir / "service_token"
+    assert service_token.created is True
+    assert service_token.value
+    assert token_path.read_text(encoding="utf-8").strip() == service_token.value
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+
+
+def test_service_token_env_override_takes_precedence(tmp_path, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    token_path = cfg.db_dir / "service_token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("file-token\n", encoding="utf-8")
+    token_path.chmod(0o600)
+    monkeypatch.setenv("SOMM_SERVICE_TOKEN", "env-token")
+
+    service_token = load_service_token(cfg)
+
+    assert service_token.value == "env-token"
+    assert service_token.source == "env"
+    assert token_path.read_text(encoding="utf-8").strip() == "file-token"

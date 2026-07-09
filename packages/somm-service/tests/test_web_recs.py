@@ -10,6 +10,8 @@ from somm_core.config import Config
 from somm_service.app import create_app
 from starlette.testclient import TestClient
 
+_LOCAL_HEADERS = {"x-somm-local": "1", "sec-fetch-site": "same-origin"}
+
 
 def _tmp_config(tmp_path: Path) -> Config:
     cfg = Config()
@@ -86,7 +88,11 @@ def test_dismiss_rec(client_with_rec):
     data = c.get("/api/recommendations").json()
     rec_id = data["recommendations"][0]["id"]
 
-    r = c.post(f"/api/recommendations/{rec_id}/dismiss")
+    blocked = c.post(f"/api/recommendations/{rec_id}/dismiss")
+    assert blocked.status_code == 403
+    assert "X-Somm-Local: 1" in blocked.json()["error"]
+
+    r = c.post(f"/api/recommendations/{rec_id}/dismiss", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
@@ -100,7 +106,11 @@ def test_apply_rec(client_with_rec):
     data = c.get("/api/recommendations").json()
     rec_id = data["recommendations"][0]["id"]
 
-    r = c.post(f"/api/recommendations/{rec_id}/apply")
+    blocked = c.post(f"/api/recommendations/{rec_id}/apply")
+    assert blocked.status_code == 403
+    assert "X-Somm-Local: 1" in blocked.json()["error"]
+
+    r = c.post(f"/api/recommendations/{rec_id}/apply", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
