@@ -240,6 +240,19 @@ concrete recommendations:
 
 Budget-capped per workload. Skipped entirely on private workloads.
 
+Production samples can also become durable CI fixtures. Promote a captured
+call into a dataset, run it synchronously as a gate, ask somm to propose a
+new prompt from failing graded calls, then run an experiment campaign that
+logs keep/revert decisions without mutating production:
+
+```bash
+somm eval promote-call <call_id> --dataset golden
+somm eval run --workload claim_extract --dataset golden --threshold 0.85
+somm optimize --workload claim_extract --from production --label proposed
+somm campaign run --workload claim_extract --dataset golden --max-rounds 5 \
+  --token-budget 50000 --plateau-window 2 --log campaign.jsonl
+```
+
 ### LangChain / agent frameworks
 
 `somm-langchain` ships `SommChatModel(BaseChatModel)` so LangChain,
@@ -257,7 +270,7 @@ every call) — explicitly via `somm.hooks`, or automatically through the
 
 ### MCP — talk to your telemetry from the agent's side
 
-`somm-mcp` ships **10 stdio tools** any MCP-capable agent can call:
+`somm-mcp` ships **11 stdio tools** any MCP-capable agent can call:
 
 | tool | what it does |
 |---|---|
@@ -268,6 +281,7 @@ every call) — explicitly via `somm.hooks`, or automatically through the
 | `somm_register_prompt` | commit prompt versions (minor/major/explicit) |
 | `somm_compare` | run a prompt through N models side-by-side |
 | `somm_replay` | replay a stored call against a different model |
+| `somm_eval_promote_call` | copy a sampled call into a durable eval dataset |
 | `somm_advise` | rank candidates from `model_intel` against free-form constraints |
 | `somm_record_decision` | persist the outcome of a sommelier conversation (cross-project) |
 | `somm_search_decisions` | recall prior decisions — globally by default |
@@ -292,6 +306,11 @@ somm spend [--json]                                # today's spend vs daily budg
 somm plans [--json] [--project-only]               # metered-plan quota usage + pacing (fleet-wide)
 somm backfill-costs [--since N] [--dry-run]        # recompute $0 calls that now have pricing
 somm drain-spool                                   # replay spooled telemetry into the DB
+somm workload add/list/show                        # register and inspect workloads
+somm prompt list/show/register/fork/diff/label     # immutable prompt versions + mutable labels
+somm eval promote-call/run                         # durable datasets + synchronous eval gates
+somm optimize --workload NAME                      # propose a prompt fork from failing graded calls
+somm campaign run --workload NAME --dataset NAME   # repeated eval campaign with keep/revert log
 somm doctor                                        # config, ollama, db, intel, workers, cooldowns
 somm serve [--host H] [--port N]                   # web admin + scheduler + workers
 ```

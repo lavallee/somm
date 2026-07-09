@@ -4,7 +4,8 @@
 
 The main library: `SommLLM` — one call wraps telemetry, provider routing
 across ten providers, tool calling, streaming, embeddings, multimodal
-dispatch, cost tracking, budget gates, online evaluation, and
+dispatch, cost tracking, budget gates, online evaluation, durable eval
+gates, prompt optimization proposals, experiment campaigns, and
 cross-project model memory (the sommelier). Zero-config, privacy-first,
 no phone-home.
 

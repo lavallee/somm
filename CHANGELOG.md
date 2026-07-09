@@ -6,6 +6,33 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — evals and the closed loop (Phase 3)
+
+- **Shared grader module**: structural JSON overlap, text-similarity, and
+  judge helpers now live in `somm_core.graders`, reused by the shadow worker
+  and synchronous eval paths.
+- **Durable eval datasets** (schema v16): `datasets`/`dataset_items`
+  promote sampled production calls into explicit golden fixtures. CLI:
+  `somm eval promote-call <call_id> --dataset NAME`; MCP:
+  `somm_eval_promote_call`.
+- **`somm eval run`**: runs a workload against a durable dataset, records
+  `eval_results` + receipts, reports pass/fail, and exits nonzero below the
+  threshold so it can serve as a CI gate.
+- **Binary-rubric judge tier**: opt-in `ShadowConfig.judge` supports
+  per-criterion binary judging and cheap multi-judge panels before frontier
+  judges; judge cost is included in budget accounting.
+- **Eval receipts and pairwise grading** (schema v17): structured
+  `eval_receipts` rows back dataset runs, shadow judge receipts, and
+  pairwise A/B grading without overloading `judge_reason`.
+- **Eval→selection wiring**: sommelier candidate ranking now learns from
+  judge/dataset eval scores using the same precedence as prompt promotion.
+- **`somm optimize`**: propose-only prompt optimizer that reads failing
+  graded calls, asks an LLM for a complete replacement prompt, forks a new
+  immutable version, and labels it `proposed` without moving production.
+- **Campaign harness** (schema v18): `somm campaign run` repeats durable
+  dataset evals under a metric contract, records append-only keep/revert
+  JSONL-shaped events, and stops on max rounds, token budget, or plateau.
+
 ### Added — the workload as an atomic unit (Phase 2)
 
 - **Prompt label layer + forking** (schema v11): mutable named pointers
