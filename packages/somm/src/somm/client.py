@@ -43,7 +43,7 @@ from somm_core.repository import Repository
 
 from somm import hooks
 from somm._redaction import scrub_text
-from somm.errors import SommProvidersExhausted
+from somm.errors import SommProvidersExhausted, SommStructuredError
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import fork_prompt as fork_prompt_version
 from somm.prompts import get_prompt, prompt_ids_for_workload, register_prompt, set_label
@@ -83,6 +83,128 @@ _warned_plan_pace: set[str] = set()
 _registered_project_keys: set[tuple[str, str]] = set()
 _registered_project_keys_lock = threading.Lock()
 _WAIT_UNSET: Any = object()
+_STRUCTURED_TEMPERATURE_JITTER = 0.05
+
+
+def _pydantic_base_model():
+    try:
+        from pydantic import BaseModel
+    except ImportError:
+        return None
+    return BaseModel
+
+
+def _looks_like_pydantic_model(schema: Any) -> bool:
+    return (
+        isinstance(schema, type)
+        and hasattr(schema, "model_validate")
+        and hasattr(schema, "model_json_schema")
+    )
+
+
+def _classify_structured_schema(schema: Any) -> tuple[str, Any | None]:
+    if _looks_like_pydantic_model(schema):
+        base_model = _pydantic_base_model()
+        if base_model is None:
+            raise ValueError(
+                "generate_structured(schema=...) received a Pydantic model, "
+                "but pydantic is not installed. Install with: pip install 'somm[pydantic]'"
+            )
+        if issubclass(schema, base_model):
+            return "pydantic", schema.model_json_schema()
+    if isinstance(schema, dict):
+        return "json_schema", schema
+    if callable(schema):
+        return "callable", None
+    raise TypeError(
+        "generate_structured(schema=...) expects a Pydantic BaseModel subclass, "
+        "a JSON Schema dict, or a callable validator"
+    )
+
+
+def _structured_system(system: str, schema_doc: Any | None) -> str:
+    if schema_doc is None:
+        return system
+    schema_text = json.dumps(schema_doc, sort_keys=True, separators=(",", ":"))
+    suffix = f"Respond with ONLY valid JSON matching this schema: {schema_text}"
+    return f"{system.rstrip()}\n\n{suffix}" if system else suffix
+
+
+def _structured_retry_system(system: str, raw: str, error: str) -> str:
+    feedback = (
+        "Your previous response failed: "
+        f"{error}\n\nPrevious raw output:\n{raw}\n\nReturn corrected JSON."
+    )
+    return f"{system.rstrip()}\n\n{feedback}" if system else feedback
+
+
+def _validate_structured_json_schema(parsed: dict | list, schema: dict) -> dict | list:
+    try:
+        import jsonschema
+    except ImportError:
+        _validate_structured_json_schema_light(parsed, schema)
+        return parsed
+
+    jsonschema.validate(instance=parsed, schema=schema)
+    return parsed
+
+
+def _validate_structured_json_schema_light(parsed: dict | list, schema: dict) -> None:
+    expected_type = schema.get("type")
+    if expected_type is None and (
+        "properties" in schema or "required" in schema or "additionalProperties" in schema
+    ):
+        expected_type = "object"
+    if isinstance(expected_type, list):
+        expected_types = set(expected_type)
+    elif isinstance(expected_type, str):
+        expected_types = {expected_type}
+    else:
+        expected_types = set()
+
+    if expected_types & {"object", "array"}:
+        type_matches = (
+            ("object" in expected_types and isinstance(parsed, dict))
+            or ("array" in expected_types and isinstance(parsed, list))
+        )
+        if not type_matches:
+            expected = " or ".join(sorted(expected_types & {"object", "array"}))
+            raise ValueError(
+                f"JSON Schema validation failed: expected top-level {expected}. "
+                "Install somm[jsonschema] for full JSON Schema validation."
+            )
+    if expected_types and expected_types.isdisjoint({"object", "array"}):
+        raise ValueError(
+            "JSON Schema validation failed: extract_json only returns object or array values. "
+            "Install somm[jsonschema] for full JSON Schema validation."
+        )
+
+    required = schema.get("required", [])
+    if required:
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                "JSON Schema validation failed: required keys need a top-level object. "
+                "Install somm[jsonschema] for full JSON Schema validation."
+            )
+        missing = [key for key in required if key not in parsed]
+        if missing:
+            raise ValueError(
+                "JSON Schema validation failed: missing required key(s): "
+                f"{', '.join(map(str, missing))}. Install somm[jsonschema] for full "
+                "JSON Schema validation."
+            )
+
+
+def _format_structured_failure(last_raw: str, last_error: str) -> str:
+    return (
+        "SOMM_STRUCTURED_OUTPUT_FAILED\n\n"
+        "Problem: generate_structured() could not produce JSON matching the supplied schema.\n"
+        f"Cause: Last validation error: {last_error}\n"
+        f"Last raw text: {last_raw}\n"
+        "Fix: Return only valid JSON matching the requested schema, or relax/replace "
+        "the schema validator.\n"
+        "Docs: docs/errors/SOMM_STRUCTURED_OUTPUT_FAILED.md"
+    )
 
 
 def _register_project_once(project: str, db_path: Path) -> None:
@@ -1689,6 +1811,81 @@ class SommLLM:
 
     # ------------------------------------------------------------------
     # Structured output
+
+    def generate_structured(
+        self,
+        prompt,
+        *,
+        schema,
+        workload: str = "default",
+        system: str = "",
+        max_tokens: int = 512,
+        temperature: float = 0.1,
+        model: str | None = None,
+        provider: str | None = None,
+        retries: int = 2,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+        wait: float | None = _WAIT_UNSET,
+    ) -> tuple[Any, SommResult]:
+        """Generate JSON, validate it, and return (validated_object, result).
+
+        Unlike extract_structured(), this is strict: it retries with corrective
+        feedback and raises SommStructuredError instead of returning a sentinel
+        dict when the model never produces a valid object.
+        """
+        schema_kind, schema_doc = _classify_structured_schema(schema)
+        base_system = _structured_system(system, schema_doc)
+        last_raw = ""
+        last_error = "no response"
+        last_result: SommResult | None = None
+
+        for attempt in range(retries + 1):
+            attempt_system = base_system
+            if attempt > 0:
+                attempt_system = _structured_retry_system(
+                    base_system,
+                    last_raw,
+                    last_error,
+                )
+            result = self.generate(
+                prompt=prompt,
+                system=attempt_system,
+                workload=workload,
+                max_tokens=max_tokens,
+                temperature=temperature + (attempt * _STRUCTURED_TEMPERATURE_JITTER),
+                model=model,
+                provider=provider,
+                wait=wait,
+                session_id=session_id,
+                parent_call_id=parent_call_id,
+            )
+            last_result = result
+            last_raw = result.text
+
+            parsed = extract_json(result.text)
+            if parsed is None:
+                last_error = "response did not contain a parseable JSON object or array"
+                result.mark(Outcome.BAD_JSON)
+                continue
+
+            try:
+                if schema_kind == "pydantic":
+                    validated = schema.model_validate(parsed)
+                elif schema_kind == "json_schema":
+                    validated = _validate_structured_json_schema(parsed, schema)
+                else:
+                    validated = schema(parsed)
+            except Exception as exc:
+                last_error = str(exc) or type(exc).__name__
+                result.mark(Outcome.BAD_JSON)
+                continue
+
+            return validated, result
+
+        if last_result is not None:
+            last_result.mark(Outcome.BAD_JSON)
+        raise SommStructuredError(_format_structured_failure(last_raw, last_error))
 
     def extract_structured(
         self,

@@ -152,6 +152,12 @@ class SommPrivacyViolation(SommError):
     code = "SOMM_PRIVACY_VIOLATION"
 
 
+class SommStructuredError(SommError):
+    """Strict structured-output generation failed after corrective retries."""
+
+    code = "SOMM_STRUCTURED_OUTPUT_FAILED"
+
+
 # Phrases providers use when the account is out of money/quota. Matched
 # case-insensitively against the raw error body. Kept deliberately narrow:
 # a false positive would silently fall through on a genuinely malformed
