@@ -211,6 +211,10 @@ def test_service_token_never_empty_on_zero_byte_file(tmp_path, monkeypatch):
         ("[::1]:7878", True),
         ("127.0.0.1.attacker.com", False),  # the rebinding-name bypass
         ("localhost.attacker.com", False),
+        ("[::1].attacker.com", False),  # malformed-bracket bypass
+        ("[::1]junk", False),
+        ("[127.0.0.1].attacker.com", False),
+        ("[::1", False),  # unclosed bracket
         ("attacker.example", False),
         ("10.0.0.5", False),
         ("", False),

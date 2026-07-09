@@ -154,14 +154,21 @@ def _host_is_loopback(host: str) -> bool:
     if not host:
         return False
     host = host.strip()
-    if host.startswith("["):  # bracketed IPv6, optional :port after ']'
+    if host.startswith("["):  # bracketed IPv6: [addr] or [addr]:port
         end = host.find("]")
-        hostname = host[1:end] if end != -1 else host[1:]
-    elif host.count(":") == 1:  # host:port
-        hostname = host.rsplit(":", 1)[0]
-    else:  # bare hostname or bare IPv6 (no port)
-        hostname = host
-    hostname = hostname.lower()
+        if end == -1:
+            return False  # unclosed bracket
+        suffix = host[end + 1 :]
+        # Suffix must be empty or a well-formed :<port> — reject
+        # [::1].attacker.com, [::1]junk, etc.
+        if suffix and not (suffix.startswith(":") and suffix[1:].isdigit()):
+            return False
+        hostname = host[1:end]
+        try:  # bracket contents must be an IP literal
+            return ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            return False
+    hostname = (host.rsplit(":", 1)[0] if host.count(":") == 1 else host).lower()
     if hostname == "localhost":
         return True
     try:
