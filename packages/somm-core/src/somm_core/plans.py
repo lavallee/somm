@@ -75,6 +75,10 @@ class PlanLimit:
     quota: float
     unit: str = "requests"
     anchor_day: int = 1  # calendar-month reset day (1-28)
+    learned: bool = False
+    source: str = ""
+    last_observed: str = ""
+    n_events: int = 0
 
     def is_rolling(self) -> bool:
         return self.window != "month"
@@ -226,6 +230,10 @@ def _parse_limit(provider: str, lim: dict) -> PlanLimit:
         quota=float(lim["quota"]),
         unit=unit,
         anchor_day=int(lim.get("anchor_day", 1)),
+        learned=bool(lim.get("learned", False)),
+        source=str(lim.get("source", "")),
+        last_observed=str(lim.get("last_observed", "")),
+        n_events=int(lim.get("n_events", 0) or 0),
     )
     if limit.is_rolling():
         limit.window_seconds()  # validate format now, loudly
@@ -370,7 +378,7 @@ def usage_in_window(
     Read-only; a missing or locked DB contributes 0 rather than failing —
     pacing is advisory and must never take the call path down."""
     now = now or datetime.now(UTC)
-    start, _end = limit.bounds(now)
+    start, end = limit.bounds(now)
     aliases = _provider_aliases(provider)
     marks = ",".join("?" for _ in aliases)
     total = 0.0
@@ -380,8 +388,8 @@ def usage_in_window(
             try:
                 row = conn.execute(
                     f"SELECT {_UNIT_SQL[limit.unit]} FROM calls "
-                    f"WHERE provider IN ({marks}) AND ts >= ?",
-                    (*aliases, start.isoformat()),
+                    f"WHERE provider IN ({marks}) AND ts >= ? AND ts <= ?",
+                    (*aliases, start.isoformat(), end.isoformat()),
                 ).fetchone()
                 total += float(row[0] or 0)
             finally:
@@ -487,6 +495,18 @@ class ObservedCeiling:
     last_event: str  # ISO timestamp of the most recent quota error
 
 
+@dataclass(slots=True)
+class LearnedLimitUpdate:
+    provider: str
+    window: str
+    unit: str
+    old_quota: float | None
+    new_quota: float
+    n_events: int
+    last_event: str
+    action: str  # "added" | "updated" | "unchanged"
+
+
 _QUOTA_ERROR_WHERE = (
     "outcome != 'ok' AND ("
     "error_kind LIKE '%RateLimit%' "
@@ -576,6 +596,175 @@ def observed_ceilings(
                 )
             )
     return out
+
+
+def providers_with_quota_errors(
+    db_paths: list[Path],
+    lookback_days: int = 90,
+    now: datetime | None = None,
+) -> list[str]:
+    """Providers with recent quota/rate-limit-looking failures in the fleet."""
+
+    now = now or datetime.now(UTC)
+    cutoff = (now - timedelta(days=lookback_days)).isoformat()
+    out: set[str] = set()
+    for db in db_paths:
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+            try:
+                rows = conn.execute(
+                    f"SELECT DISTINCT provider FROM calls WHERE ts >= ? AND {_QUOTA_ERROR_WHERE}",
+                    (cutoff,),
+                ).fetchall()
+                out.update(str(row[0]) for row in rows if row[0])
+            finally:
+                conn.close()
+        except Exception:
+            continue
+    return sorted(out)
+
+
+def learn_observed_limits(
+    db_paths: list[Path],
+    plans: dict[str, Plan],
+    *,
+    path: Path | None = None,
+    dry_run: bool = False,
+    min_events: int = 1,
+    drift_threshold: float = 0.05,
+) -> list[LearnedLimitUpdate]:
+    """Fold observed quota ceilings into the local plans file."""
+
+    path = path or plans_path()
+    updates: list[LearnedLimitUpdate] = []
+    candidate_providers = set(plans)
+    candidate_providers.update(providers_with_quota_errors(db_paths))
+    for provider in sorted(candidate_providers):
+        plan = plans.get(provider) or plan_for(provider, plans)
+        if plan.mode != "metered":
+            continue
+        if provider not in plans:
+            plans[provider] = plan
+        ceilings = observed_ceilings(db_paths, provider)
+        for ceiling in ceilings:
+            if ceiling.n_events < min_events:
+                continue
+            existing = _matching_limit(plan, ceiling.window, ceiling.unit)
+            old_quota = existing.quota if existing is not None else None
+            action = "unchanged"
+            if existing is None:
+                plan.limits.append(
+                    PlanLimit(
+                        window=ceiling.window,
+                        quota=ceiling.estimate,
+                        unit=ceiling.unit,
+                        learned=True,
+                        source="observed_429",
+                        last_observed=ceiling.last_event,
+                        n_events=ceiling.n_events,
+                    )
+                )
+                action = "added"
+            else:
+                drift = (
+                    abs(ceiling.estimate - existing.quota) / existing.quota
+                    if existing.quota
+                    else 1.0
+                )
+                if existing.learned or drift >= drift_threshold:
+                    existing.quota = ceiling.estimate
+                    existing.learned = True
+                    existing.source = "observed_429"
+                    existing.last_observed = ceiling.last_event
+                    existing.n_events = ceiling.n_events
+                    action = "updated"
+            updates.append(
+                LearnedLimitUpdate(
+                    provider=provider,
+                    window=ceiling.window,
+                    unit=ceiling.unit,
+                    old_quota=old_quota,
+                    new_quota=ceiling.estimate,
+                    n_events=ceiling.n_events,
+                    last_event=ceiling.last_event,
+                    action=action,
+                )
+            )
+    if not dry_run and any(u.action in {"added", "updated"} for u in updates):
+        write_plans(plans, path=path)
+    return updates
+
+
+def write_plans(plans: dict[str, Plan], path: Path | None = None) -> None:
+    """Write a minimal machine-owned plans.toml preserving plan semantics."""
+
+    path = path or plans_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_format_plans_toml(plans), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _matching_limit(plan: Plan, window: str, unit: str) -> PlanLimit | None:
+    for limit in plan.limits:
+        if limit.window == window and limit.unit == unit:
+            return limit
+    return None
+
+
+def _format_plans_toml(plans: dict[str, Plan]) -> str:
+    lines = [
+        "# Machine-updated by somm. Comments from the previous file are not preserved.",
+        "",
+    ]
+    for provider, plan in sorted(plans.items()):
+        lines.append(f"[{_toml_key(provider)}]")
+        lines.append(f'mode = "{_toml_str(plan.mode)}"')
+        if plan.name:
+            lines.append(f'plan = "{_toml_str(plan.name)}"')
+        if plan.soft_target_pct != 80.0:
+            lines.append(f"soft_target_pct = {_toml_float(plan.soft_target_pct)}")
+        if plan.enforce:
+            lines.append("enforce = true")
+        if plan.catalog_ref:
+            _provider, catalog = plan.catalog_ref.split("/", 1)
+            lines.append(f'catalog = "{_toml_str(catalog)}"')
+        if plan.price_usd_month:
+            lines.append(f"price = {_toml_float(plan.price_usd_month)}")
+        for limit in plan.limits:
+            lines.append("")
+            lines.append(f"[[{_toml_key(provider)}.limits]]")
+            lines.append(f'window = "{_toml_str(limit.window)}"')
+            lines.append(f"quota = {_toml_float(limit.quota)}")
+            if limit.unit != "requests":
+                lines.append(f'unit = "{_toml_str(limit.unit)}"')
+            if limit.anchor_day != 1:
+                lines.append(f"anchor_day = {limit.anchor_day}")
+            if limit.learned:
+                lines.append("learned = true")
+            if limit.source:
+                lines.append(f'source = "{_toml_str(limit.source)}"')
+            if limit.last_observed:
+                lines.append(f'last_observed = "{_toml_str(limit.last_observed)}"')
+            if limit.n_events:
+                lines.append(f"n_events = {int(limit.n_events)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _toml_key(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        return value
+    return f'"{_toml_str(value)}"'
+
+
+def _toml_str(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _toml_float(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{float(value):.6g}"
 
 
 def limit_statuses(

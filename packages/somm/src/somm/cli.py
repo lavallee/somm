@@ -1543,7 +1543,13 @@ _CATALOG_STALE_DAYS = 90
 
 
 def _cmd_plans(args: argparse.Namespace) -> int:
-    from somm_core.plans import limit_statuses, load_catalog, load_plans, plans_path
+    from somm_core.plans import (
+        learn_observed_limits,
+        limit_statuses,
+        load_catalog,
+        load_plans,
+        plans_path,
+    )
     from somm_core.registry import fleet_db_paths
 
     catalog = load_catalog()
@@ -1573,6 +1579,58 @@ def _cmd_plans(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"plans.toml is invalid: {exc}")
         return 1
+    cfg = load_config(project=args.project)
+    dbs = (
+        [cfg.db_path]
+        if args.project_only
+        else fleet_db_paths(include=cfg.db_path if cfg.db_path.exists() else None)
+    )
+
+    if args.learn:
+        updates = learn_observed_limits(
+            dbs,
+            plans,
+            dry_run=args.dry_run,
+            min_events=args.min_events,
+        )
+        if args.json:
+            print(json.dumps({
+                "path": str(plans_path()),
+                "dry_run": args.dry_run,
+                "updates": [
+                    {
+                        "provider": u.provider,
+                        "window": u.window,
+                        "unit": u.unit,
+                        "old_quota": u.old_quota,
+                        "new_quota": u.new_quota,
+                        "n_events": u.n_events,
+                        "last_event": u.last_event,
+                        "action": u.action,
+                    }
+                    for u in updates
+                ],
+            }, indent=2))
+            return 0
+        if not updates:
+            print("no observed quota ceilings to learn")
+        else:
+            verb = "would update" if args.dry_run else "updated"
+            changed = [u for u in updates if u.action in {"added", "updated"}]
+            print(f"{verb} {len(changed)} learned plan limit(s) in {plans_path()}")
+            for u in updates:
+                old = "-" if u.old_quota is None else f"{u.old_quota:g}"
+                print(
+                    f"  {u.action:<9} {u.provider:<12} {u.window:<5} {u.unit:<12} "
+                    f"{old} -> {u.new_quota:g} ({u.n_events} event(s))"
+                )
+        if not args.dry_run:
+            try:
+                plans = load_plans(catalog=catalog)
+            except Exception as exc:
+                print(f"plans.toml is invalid after learning: {exc}")
+                return 1
+
     if not plans:
         print(f"No plans declared. Create {plans_path()} — example:")
         print(
@@ -1590,12 +1648,6 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             '\n  mode = "payg"'
         )
         return 0
-
-    dbs = (
-        [cfg.db_path]
-        if args.project_only
-        else fleet_db_paths(include=cfg.db_path if cfg.db_path.exists() else None)
-    )
     statuses = limit_statuses(dbs, plans)
     scope = "this project only" if args.project_only else f"fleet ({len(dbs)} project DBs)"
 
@@ -2199,6 +2251,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--catalog",
         action="store_true",
         help="list known plans from the bundled catalog (with sources + verified dates)",
+    )
+    ppl.add_argument(
+        "--learn",
+        action="store_true",
+        help="write observed quota ceilings from recent 429s into plans.toml",
+    )
+    ppl.add_argument("--dry-run", action="store_true", help="show learned limits without writing")
+    ppl.add_argument(
+        "--min-events",
+        type=int,
+        default=1,
+        help="minimum quota-error events required to learn a ceiling",
     )
     ppl.set_defaults(func=_cmd_plans)
 
