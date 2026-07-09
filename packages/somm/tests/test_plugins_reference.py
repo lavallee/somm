@@ -326,3 +326,40 @@ def test_otel_exporter_emits_span():
     assert attrs["somm.call_id"] == "c1"
     assert attrs["somm.outcome"] == "ok"
     assert attrs["somm.cost_usd"] == 0.012
+
+
+def test_cache_key_isolates_by_provider_tool_choice_and_caps():
+    base = dict(
+        workload="w", model=None, system="", prompt="hello",
+        messages=None, temperature=0.2, max_tokens=256, tools=[],
+    )
+    k_openai = cache._cache_key(provider="openai", **base)
+    k_anthropic = cache._cache_key(provider="anthropic", **base)
+    assert k_openai != k_anthropic  # a pinned provider must not share a key
+
+    k_tc_none = cache._cache_key(provider="openai", tool_choice="none", **base)
+    k_tc_auto = cache._cache_key(provider="openai", tool_choice="auto", **base)
+    assert k_tc_none != k_tc_auto
+
+    k_caps_a = cache._cache_key(provider="openai", capabilities=["vision"], **base)
+    k_caps_b = cache._cache_key(provider="openai", capabilities=["tools"], **base)
+    assert k_caps_a != k_caps_b
+    # capabilities are order-insensitive
+    assert cache._cache_key(provider="openai", capabilities=["a", "b"], **base) == \
+        cache._cache_key(provider="openai", capabilities=["b", "a"], **base)
+
+
+def test_redaction_does_not_mutate_caller_messages(tmp_path):
+    redaction.register()
+    fake = FakeProvider()
+    llm = _llm(tmp_path, fake)
+    original = [{"role": "user", "content": "secret sk-testsecret123 here"}]
+    try:
+        llm.generate("ignored", workload="redact", messages=original)
+    finally:
+        llm.close()
+
+    # The provider saw redacted content...
+    assert "[redacted]" in fake.last_request.messages[0]["content"]
+    # ...but the caller's own object is untouched.
+    assert original[0]["content"] == "secret sk-testsecret123 here"

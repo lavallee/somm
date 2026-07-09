@@ -312,6 +312,18 @@ def build_default_providers(
                 type(provider).__name__,
             )
             continue
+        # The provider's own .name must match the spec name the registry
+        # keyed/collision-checked on — otherwise a plugin spec "acme" could
+        # return a provider named "ollama" and corrupt health tracking,
+        # telemetry attribution, and generate(provider="acme") lookup.
+        actual_name = getattr(provider, "name", None)
+        if actual_name != spec.name:
+            logger.warning(
+                "skipping provider %r: factory returned a provider named %r",
+                spec.name,
+                actual_name,
+            )
+            continue
         available[spec.name] = provider
         spec_by_name[spec.name] = spec
 

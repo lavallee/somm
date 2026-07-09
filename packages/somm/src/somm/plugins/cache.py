@@ -60,22 +60,31 @@ def _cache_key(
     *,
     workload: str,
     model: str | None,
+    provider: str | None = None,
     system: str,
     prompt: Any,
     messages: list[Any] | None,
     temperature: float,
     max_tokens: int,
     tools: list[Any],
+    tool_choice: Any = None,
+    capabilities: list[str] | None = None,
 ) -> str:
     content_hash = stable_hash(_prompt_content(prompt, messages))
     payload = {
         "workload": workload,
         "model": model or "",
+        # provider/tool_choice/capabilities change the semantics of the
+        # response, so a cache that ignored them could return one provider's
+        # answer for a call pinned to another.
+        "provider": provider or "",
         "system": system,
         "content_hash": content_hash,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "tools": tools,
+        "tool_choice": tool_choice,
+        "capabilities": sorted(capabilities) if capabilities else [],
     }
     return stable_hash(payload)
 
@@ -118,12 +127,14 @@ def _pre_call(ctx: hooks.PreCallContext) -> hooks.ShortCircuit | None:
         key = _cache_key(
             workload=ctx.workload,
             model=ctx.model,
+            provider=ctx.provider,
             system=ctx.system,
             prompt=ctx.prompt,
             messages=ctx.messages,
             temperature=ctx.temperature,
             max_tokens=ctx.max_tokens,
             tools=ctx.tools,
+            tool_choice=ctx.tool_choice,
         )
         ctx.metadata[_CACHE_KEY_METADATA] = key
         entry = _lookup(key)
@@ -196,12 +207,14 @@ class _CachingProxy:
             key = _cache_key(
                 workload=workload,
                 model=model,
+                provider=values.get("provider"),
                 system=values.get("system", ""),
                 prompt=values.get("prompt"),
                 messages=values.get("messages"),
                 temperature=values.get("temperature", 0.2),
                 max_tokens=values.get("max_tokens", 256),
                 tools=values.get("tools") or [],
+                tool_choice=values.get("tool_choice"),
             )
             if _enabled_for_workload(workload):
                 entry = _lookup(key)

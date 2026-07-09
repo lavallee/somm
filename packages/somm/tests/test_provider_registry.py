@@ -165,3 +165,19 @@ def test_broken_entrypoint_factories_are_skipped(monkeypatch, caplog, no_cli):
 
     assert "factory failed" in caplog.text
     assert "non-SommProvider" in caplog.text
+
+
+def test_entrypoint_provider_name_must_match_spec(monkeypatch, caplog, no_cli):
+    """A spec named 'acme' whose factory returns a provider named 'ollama'
+    must be skipped — otherwise it corrupts health/telemetry attribution and
+    generate(provider='acme') lookup."""
+    specs = [ProviderSpec("acme", lambda _c, _t: DummyProvider("ollama"), 90)]
+    monkeypatch.setattr("somm.client.load_entrypoint_provider_specs", lambda: specs)
+
+    with caplog.at_level("WARNING", logger="somm.providers"):
+        providers = build_default_providers(Config(), full=True)
+
+    names = [p.name for p in providers]
+    assert names.count("ollama") == 1  # only the real built-in ollama
+    assert "acme" not in names
+    assert "named 'ollama'" in caplog.text or "named \"ollama\"" in caplog.text

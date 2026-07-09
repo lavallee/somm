@@ -125,8 +125,16 @@ _hooks_by_phase: dict[str, list[_HookRegistration]] = {
 }
 _next_insertion_index = 0
 _entry_points_loaded = False
+_entry_points_lock = threading.Lock()
 _post_process_executor: ThreadPoolExecutor | None = None
 _post_process_executor_lock = threading.Lock()
+# Bound the background post_process work queue: a slow or hung exporter/
+# notifier must not let pending jobs (and their captured event dicts) grow
+# without limit. When saturated we drop the newest job — dropping telemetry
+# side-effects under sustained backpressure is strictly better than an OOM.
+_POST_PROCESS_MAX_PENDING = 1024
+_post_process_pending = 0
+_post_process_pending_lock = threading.Lock()
 
 
 def _validate_phase(phase: str) -> None:
@@ -326,10 +334,33 @@ def fire_post_process(event: dict[str, Any]) -> None:
             _fire_observer(hook.fn, dict(event))
         return
     for hook in hooks:
+        with _post_process_pending_lock:
+            if _post_process_pending >= _POST_PROCESS_MAX_PENDING:
+                _logger.warning(
+                    "post_process queue saturated (%d pending); dropping a job",
+                    _post_process_pending,
+                )
+                continue
+            _bump_pending(1)
         try:
-            executor.submit(_fire_observer, hook.fn, dict(event))
+            executor.submit(_run_post_process_job, hook.fn, dict(event))
         except Exception:
+            with _post_process_pending_lock:
+                _bump_pending(-1)
             _fire_observer(hook.fn, dict(event))
+
+
+def _bump_pending(delta: int) -> None:
+    global _post_process_pending
+    _post_process_pending += delta
+
+
+def _run_post_process_job(fn: Callable[[dict[str, Any]], Any], event: dict[str, Any]) -> None:
+    try:
+        _fire_observer(fn, event)
+    finally:
+        with _post_process_pending_lock:
+            _bump_pending(-1)
 
 
 def shutdown_hooks(wait: bool = False) -> None:
@@ -385,9 +416,14 @@ def load_entry_points() -> None:
     skipped silently, following the same never-break rule as hooks.
     """
     global _entry_points_loaded
-    if _entry_points_loaded:
-        return
-    _entry_points_loaded = True
+    # Lock the check-and-set: two threads constructing SommLLM at startup
+    # could both pass an unguarded flag check and register every entry-point
+    # hook twice (duplicate webhooks/spans for plugins without their own
+    # idempotency guard).
+    with _entry_points_lock:
+        if _entry_points_loaded:
+            return
+        _entry_points_loaded = True
     try:
         from importlib.metadata import entry_points
 

@@ -17,16 +17,16 @@ _priority = 5
 
 
 def _redact_value(value: Any) -> Any:
+    # Build NEW containers rather than mutating in place: the request objects
+    # (prompt list, messages) belong to the caller, who may reuse them for
+    # later turns, audit logging, or retry comparison. Silently rewriting
+    # their data would be a nasty surprise.
     if isinstance(value, str):
         return scrub_text(value, _extra_patterns)
     if isinstance(value, list):
-        for index, item in enumerate(value):
-            value[index] = _redact_value(item)
-        return value
+        return [_redact_value(item) for item in value]
     if isinstance(value, dict):
-        for key, item in list(value.items()):
-            value[key] = _redact_value(item)
-        return value
+        return {key: _redact_value(item) for key, item in value.items()}
     return value
 
 
