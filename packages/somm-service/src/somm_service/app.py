@@ -82,7 +82,16 @@ def load_service_token(cfg: Config) -> ServiceToken:
 
     token_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
-    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Another process (e.g. a second uvicorn worker) created it between
+        # our exists() check and here — read theirs rather than crashing.
+        return ServiceToken(
+            value=token_path.read_text(encoding="utf-8").strip(),
+            path=token_path,
+            source="file",
+        )
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(token + "\n")
     return ServiceToken(value=token, path=token_path, source="file", created=True)
@@ -100,6 +109,21 @@ def _log_service_token(token: ServiceToken, *, host: str, port: int) -> None:
         )
         return
     print(f"somm service token loaded from {token.path}")
+
+
+def _host_is_loopback(host: str) -> bool:
+    """True only when the request's Host header names a loopback address.
+
+    The header-only (tokenless) auth path is meant for the local dashboard.
+    Gating it on a loopback Host defeats DNS-rebinding: a rebind target
+    resolves to attacker.example (or a LAN IP), whose Host is never
+    loopback, so a rebound page can't ride the same-origin bypass to a
+    service bound on 0.0.0.0.
+    """
+    hostname = host.rsplit(":", 1)[0].strip("[]").lower() if host else ""
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return True
+    return hostname.startswith("127.")
 
 
 def _origin_matches_host(origin: str, host: str) -> bool:
@@ -157,12 +181,18 @@ class LocalSecurityMiddleware:
         if headers.get(_LOCAL_HEADER) != "1":
             return False
 
+        # The header-only path is the local dashboard's; only honor it when
+        # the Host is loopback, so a DNS-rebound page pointed at a service on
+        # 0.0.0.0 can't ride it (its Host is attacker.example / a LAN IP).
+        host = headers.get("host", "")
+        if not _host_is_loopback(host):
+            return False
+
         sec_fetch_site = headers.get("sec-fetch-site")
         if sec_fetch_site == "same-origin":
             return True
 
         origin = headers.get("origin")
-        host = headers.get("host", "")
         return bool(origin and host and _origin_matches_host(origin, host))
 
     @staticmethod

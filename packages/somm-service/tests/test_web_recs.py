@@ -24,7 +24,9 @@ def _tmp_config(tmp_path: Path) -> Config:
 def client_with_rec(tmp_path):
     cfg = _tmp_config(tmp_path)
     app = create_app(cfg)
-    c = TestClient(app)
+    # Loopback base_url so the X-Somm-Local dashboard path is honored — the
+    # header path is gated on a loopback Host to defeat DNS rebinding.
+    c = TestClient(app, base_url="http://localhost")
 
     # Seed a workload + recommendation
     repo = app.state.repo
@@ -113,6 +115,14 @@ def test_apply_rec(client_with_rec):
     r = c.post(f"/api/recommendations/{rec_id}/apply", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     assert r.json()["ok"] is True
+
+    # DNS-rebinding: same local headers but a non-loopback Host must NOT
+    # ride the header path (a rebound page's Host is attacker.example).
+    rebind = TestClient(app, base_url="http://attacker.example")
+    blocked_rebind = rebind.post(
+        f"/api/recommendations/{rec_id}/apply", headers=_LOCAL_HEADERS
+    )
+    assert blocked_rebind.status_code == 403
 
     # Verify applied_at set
     repo = app.state.repo

@@ -60,7 +60,8 @@ def test_sommllm_registers_project_once_per_process(tmp_path, monkeypatch):
 
     def counting_replace(self: Path, target: Path) -> Path:
         nonlocal registry_rewrites
-        if self.name == "registry.json.tmp":
+        # Temp name is registry.json.tmp.<pid>.<tid> (unique per writer).
+        if target.name == "registry.json" and ".json.tmp" in self.name:
             registry_rewrites += 1
         return original_replace(self, target)
 
