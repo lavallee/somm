@@ -138,6 +138,56 @@ async def test_search_decisions_global_scope(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_advise_cites_decision_recorded_from_other_project(tmp_path, monkeypatch):
+    global_path = tmp_path / "global.sqlite"
+    cfg_a = _tmp_cfg(tmp_path / "project-a")
+    cfg_a.project = "project-a"
+    cfg_a.cross_project_path = global_path
+    cfg_b = _tmp_cfg(tmp_path / "project-b")
+    cfg_b.project = "project-b"
+    cfg_b.cross_project_path = global_path
+    monkeypatch.setenv("SOMM_GLOBAL_PATH", str(global_path))
+
+    Repository(cfg_a.db_path)
+    repo_b = Repository(cfg_b.db_path)
+    _seed_vision_intel(repo_b)
+
+    from somm_mcp.server import build_server
+
+    server_a = build_server(config=cfg_a)
+    await _call(
+        server_a,
+        "somm_record_decision",
+        question="what vision model for chart critique",
+        rationale="gemma-3 handled chart labels best",
+        candidates=[{"provider": "openrouter", "model": "google/gemma-3-27b-it:free"}],
+        chosen_provider="openrouter",
+        chosen_model="google/gemma-3-27b-it:free",
+        agent="codex-project-a",
+    )
+
+    server_b = build_server(config=cfg_b)
+    res = await _call(
+        server_b,
+        "somm_advise",
+        question="what vision model for chart critique",
+        capabilities=["vision"],
+        providers=["openrouter"],
+        free_only=True,
+    )
+
+    assert res["prior_decisions"]
+    assert res["prior_decisions"][0]["project"] == "project-a"
+    assert res["prior_decisions"][0]["chosen_model"] == "google/gemma-3-27b-it:free"
+    gemma = next(
+        c for c in res["candidates"]
+        if c["model"] == "google/gemma-3-27b-it:free"
+    )
+    assert any("prior(project-a" in reason for reason in gemma["reasons"])
+    assert gemma["score_breakdown"]["prior_factor"] > 1.0
+
+
+@pytest.mark.asyncio
 async def test_recommend_falls_through_to_cold_start(tmp_path, monkeypatch):
     """When a workload has no shadow data, somm_recommend should surface
     cold-start candidates from the sommelier instead of an empty list."""
