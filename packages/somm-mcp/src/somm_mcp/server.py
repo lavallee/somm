@@ -1,4 +1,4 @@
-"""FastMCP server — exposes 10 tools to coding agents.
+"""FastMCP server — exposes 11 tools to coding agents.
 
 Tool catalog:
   somm_stats              — rolled-up call counts per (workload, provider, model)
@@ -13,6 +13,7 @@ Tool catalog:
                             provider (default scope: global)
   somm_register_workload  — commit a workload (+ optional privacy/schemas)
   somm_register_prompt    — commit a new prompt version for a workload
+  somm_eval_promote_call  — copy a sampled call into a durable eval dataset
   somm_compare            — run a prompt through N models side-by-side (provider-dependent)
   somm_replay             — replay a stored call against a different model (provider-dependent)
 
@@ -437,6 +438,46 @@ def build_server(
             "workload": workload,
             "version": p.version,
             "hash": p.hash,
+        }
+
+    # ------------------------------------------------------------------
+    # somm_eval_promote_call
+
+    @server.tool()
+    def somm_eval_promote_call(
+        call_id: str,
+        dataset: str,
+        description: str = "",
+    ) -> dict:
+        """Copy a sampled call into a durable eval dataset.
+
+        The call must belong to the current project, have a registered workload,
+        and have prompt/response bodies captured in `samples`. The tool returns
+        ids and counts only; it does not echo recorded prompt or response bodies.
+
+        Args:
+            call_id: UUID of the recorded call to promote.
+            dataset: dataset name, scoped to the call's workload in this project.
+            description: optional dataset description.
+        """
+        try:
+            ds, item = repo.promote_call_to_dataset(
+                call_id,
+                dataset,
+                project=cfg.project,
+                description=description,
+                created_by="mcp:somm_eval_promote_call",
+            )
+        except ValueError as exc:
+            return {"error": str(exc), "call_id": call_id, "dataset": dataset}
+        return {
+            "project": ds.project,
+            "workload_id": ds.workload_id,
+            "dataset": ds.name,
+            "dataset_id": ds.id,
+            "item_id": item.id,
+            "source_call_id": item.source_call_id,
+            "items": len(repo.dataset_items(ds.id)),
         }
 
     # ------------------------------------------------------------------

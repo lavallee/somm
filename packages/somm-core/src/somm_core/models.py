@@ -139,6 +139,28 @@ class Prompt:
     parent_prompt_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Dataset:
+    id: str
+    project: str
+    workload_id: str
+    name: str
+    description: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetItem:
+    id: str
+    dataset_id: str
+    source_call_id: str | None
+    prompt_body: str
+    expected_response_body: str
+    metadata: dict[str, Any] | None = None
+    created_at: datetime | None = None
+
+
 @dataclass(slots=True)
 class Call:
     """A row in `calls`. Immutable after insert — late data goes in `call_updates`."""

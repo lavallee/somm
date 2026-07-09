@@ -165,6 +165,96 @@ async def test_register_prompt_unknown_workload(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# tool: somm_eval_promote_call
+
+
+@pytest.mark.asyncio
+async def test_eval_promote_call_creates_dataset_without_returning_bodies(tmp_path):
+    from somm_mcp.server import build_server
+
+    cfg = _tmp_cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="eval_w", project=cfg.project)
+    call_id = str(uuid.uuid4())
+    repo.write_call(
+        Call(
+            id=call_id,
+            ts=datetime.now(UTC),
+            project=cfg.project,
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="ollama",
+            model="a",
+            tokens_in=1,
+            tokens_out=1,
+            latency_ms=1,
+            cost_usd=0.0,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="a",
+            response_hash="b",
+        )
+    )
+    repo.write_sample(call_id, "secret-ish prompt", "gold response")
+
+    server = build_server(cfg)
+    res = await _call(
+        server,
+        "somm_eval_promote_call",
+        call_id=call_id,
+        dataset="golden",
+        description="CI fixtures",
+    )
+
+    assert "error" not in res
+    assert res["dataset"] == "golden"
+    assert res["source_call_id"] == call_id
+    assert "prompt_body" not in res
+    assert "expected_response_body" not in res
+    dataset = repo.get_dataset(project=cfg.project, workload_id=wl.id, name="golden")
+    assert dataset is not None
+    assert dataset.description == "CI fixtures"
+    items = repo.dataset_items(dataset.id)
+    assert len(items) == 1
+    assert items[0].prompt_body == "secret-ish prompt"
+
+
+@pytest.mark.asyncio
+async def test_eval_promote_call_missing_sample_errors(tmp_path):
+    from somm_mcp.server import build_server
+
+    cfg = _tmp_cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="eval_w", project=cfg.project)
+    call_id = str(uuid.uuid4())
+    repo.write_call(
+        Call(
+            id=call_id,
+            ts=datetime.now(UTC),
+            project=cfg.project,
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="ollama",
+            model="a",
+            tokens_in=1,
+            tokens_out=1,
+            latency_ms=1,
+            cost_usd=0.0,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="a",
+            response_hash="b",
+        )
+    )
+
+    server = build_server(cfg)
+    res = await _call(server, "somm_eval_promote_call", call_id=call_id, dataset="golden")
+
+    assert "error" in res
+    assert "captured sample" in res["error"]
+
+
+# ---------------------------------------------------------------------------
 # tool: somm_search_calls
 
 

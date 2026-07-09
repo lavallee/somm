@@ -14,7 +14,16 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from somm_core.models import Call, Decision, Outcome, PrivacyClass, Prompt, Workload
+from somm_core.models import (
+    Call,
+    Dataset,
+    DatasetItem,
+    Decision,
+    Outcome,
+    PrivacyClass,
+    Prompt,
+    Workload,
+)
 from somm_core.parse import prompt_id as _prompt_id
 from somm_core.parse import stable_hash
 from somm_core.parse import workload_id as _workload_id
@@ -132,6 +141,27 @@ def _validate_workload_policy(policy: dict | None) -> dict | None:
             raise ValueError("workload policy timeout_s must be a finite positive number")
         out["timeout_s"] = float(timeout_s)
     return out
+
+
+def _dataset_id(project: str, workload_id: str, name: str) -> str:
+    return stable_hash(
+        {
+            "kind": "dataset",
+            "project": project,
+            "workload_id": workload_id,
+            "name": name,
+        }
+    )
+
+
+def _dataset_item_id(dataset_id: str, source_call_id: str) -> str:
+    return stable_hash(
+        {
+            "kind": "dataset_item",
+            "dataset_id": dataset_id,
+            "source_call_id": source_call_id,
+        }
+    )
 
 
 class Repository:
@@ -662,6 +692,174 @@ class Repository:
         if not row or not row[0]:
             return None
         return json.loads(row[0])
+
+    # Datasets ---------------------------------------------------------------
+
+    @staticmethod
+    def _dataset_row(row) -> Dataset:
+        return Dataset(
+            id=row[0],
+            project=row[1],
+            workload_id=row[2],
+            name=row[3],
+            description=row[4] or "",
+            created_at=datetime.fromisoformat(row[5]) if row[5] else None,
+            updated_at=datetime.fromisoformat(row[6]) if row[6] else None,
+        )
+
+    @staticmethod
+    def _dataset_item_row(row) -> DatasetItem:
+        return DatasetItem(
+            id=row[0],
+            dataset_id=row[1],
+            source_call_id=row[2],
+            prompt_body=row[3],
+            expected_response_body=row[4],
+            metadata=json.loads(row[5]) if row[5] else None,
+            created_at=datetime.fromisoformat(row[6]) if row[6] else None,
+        )
+
+    def get_dataset(
+        self,
+        *,
+        project: str,
+        workload_id: str,
+        name: str,
+    ) -> Dataset | None:
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT id, project, workload_id, name, description, created_at, updated_at "
+                "FROM datasets WHERE project = ? AND workload_id = ? AND name = ?",
+                (project, workload_id, name),
+            ).fetchone()
+        return self._dataset_row(row) if row else None
+
+    def dataset_items(self, dataset_id: str) -> list[DatasetItem]:
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT id, dataset_id, source_call_id, prompt_body, "
+                "expected_response_body, metadata_json, created_at "
+                "FROM dataset_items WHERE dataset_id = ? ORDER BY created_at, id",
+                (dataset_id,),
+            ).fetchall()
+        return [self._dataset_item_row(row) for row in rows]
+
+    def promote_call_to_dataset(
+        self,
+        call_id: str,
+        dataset_name: str,
+        *,
+        project: str | None = None,
+        description: str = "",
+        created_by: str | None = None,
+    ) -> tuple[Dataset, DatasetItem]:
+        """Copy a sampled call into a durable golden dataset.
+
+        The call must have a registered workload and an opt-in samples row.
+        Promotion is idempotent per (dataset, source_call_id); repeating the
+        command returns the existing dataset item instead of duplicating it.
+        """
+
+        clean_name = dataset_name.strip()
+        if not clean_name:
+            raise ValueError("dataset name is required")
+        with self._open() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT c.id, c.ts, c.project, c.workload_id, c.prompt_id,
+                           c.provider, c.model, c.tokens_in, c.tokens_out,
+                           c.latency_ms, c.cost_usd, c.outcome, c.prompt_hash,
+                           c.response_hash, w.name, w.privacy_class,
+                           s.prompt_body, s.response_body
+                    FROM calls c
+                    LEFT JOIN workloads w ON w.id = c.workload_id
+                    LEFT JOIN samples s ON s.call_id = c.id
+                    WHERE c.id = ?
+                    """,
+                    (call_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"call {call_id!r} not found")
+                if project is not None and row[2] != project:
+                    raise ValueError(
+                        f"call {call_id!r} belongs to project {row[2]!r}, not {project!r}"
+                    )
+                if row[3] is None:
+                    raise ValueError(f"call {call_id!r} has no registered workload")
+                if row[16] is None or row[17] is None:
+                    raise ValueError(
+                        f"call {call_id!r} has no captured sample; enable sample capture first"
+                    )
+
+                dataset_project = row[2]
+                workload_id = row[3]
+                dataset_id = _dataset_id(dataset_project, workload_id, clean_name)
+                item_id = _dataset_item_id(dataset_id, call_id)
+                conn.execute(
+                    "INSERT OR IGNORE INTO datasets "
+                    "(id, project, workload_id, name, description) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (dataset_id, dataset_project, workload_id, clean_name, description),
+                )
+                if description:
+                    conn.execute(
+                        "UPDATE datasets SET description = ?, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ?",
+                        (description, dataset_id),
+                    )
+
+                metadata = {
+                    "source": "promote_call",
+                    "source_call_id": call_id,
+                    "source_project": row[2],
+                    "source_workload_id": workload_id,
+                    "source_workload_name": row[14],
+                    "source_privacy_class": row[15],
+                    "source_prompt_id": row[4],
+                    "source_provider": row[5],
+                    "source_model": row[6],
+                    "source_tokens_in": row[7],
+                    "source_tokens_out": row[8],
+                    "source_latency_ms": row[9],
+                    "source_cost_usd": row[10],
+                    "source_outcome": row[11],
+                    "source_prompt_hash": row[12],
+                    "source_response_hash": row[13],
+                    "source_ts": row[1],
+                    "created_by": created_by,
+                }
+                conn.execute(
+                    "INSERT OR IGNORE INTO dataset_items "
+                    "(id, dataset_id, source_call_id, prompt_body, "
+                    "expected_response_body, metadata_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        item_id,
+                        dataset_id,
+                        call_id,
+                        row[16],
+                        row[17],
+                        json.dumps(metadata, sort_keys=True),
+                    ),
+                )
+                dataset_row = conn.execute(
+                    "SELECT id, project, workload_id, name, description, "
+                    "created_at, updated_at FROM datasets WHERE id = ?",
+                    (dataset_id,),
+                ).fetchone()
+                item_row = conn.execute(
+                    "SELECT id, dataset_id, source_call_id, prompt_body, "
+                    "expected_response_body, metadata_json, created_at "
+                    "FROM dataset_items WHERE id = ?",
+                    (item_id,),
+                ).fetchone()
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return self._dataset_row(dataset_row), self._dataset_item_row(item_row)
 
     # Prompts -----------------------------------------------------------------
 

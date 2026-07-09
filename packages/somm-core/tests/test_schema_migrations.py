@@ -20,8 +20,8 @@ def test_v10_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 15
-        assert current_schema_version(conn) == 15
+        assert upgraded == SCHEMA_VERSION == 16
+        assert current_schema_version(conn) == 16
         tables = {
             row[0]
             for row in conn.execute(
@@ -60,8 +60,8 @@ def test_v11_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 15
-        assert current_schema_version(conn) == 15
+        assert upgraded == SCHEMA_VERSION == 16
+        assert current_schema_version(conn) == 16
         call_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
         }
@@ -103,8 +103,8 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 15
-        assert current_schema_version(conn) == 15
+        assert upgraded == SCHEMA_VERSION == 16
+        assert current_schema_version(conn) == 16
 
         tables = {
             row[0]
@@ -151,8 +151,8 @@ def test_v13_database_upgrades_to_v14_prompt_label_weights(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 15
-        assert current_schema_version(conn) == 15
+        assert upgraded == SCHEMA_VERSION == 16
+        assert current_schema_version(conn) == 16
         label_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(prompt_labels)").fetchall()
         }
@@ -173,12 +173,71 @@ def test_v14_database_upgrades_to_v15_workload_policy(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 15
-        assert current_schema_version(conn) == 15
+        assert upgraded == SCHEMA_VERSION == 16
+        assert current_schema_version(conn) == 16
         workload_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
         assert "policy_json" in workload_columns
+
+
+def test_v15_database_upgrades_to_v16_datasets(tmp_path):
+    db_path = tmp_path / "v15.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 15:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        assert current_schema_version(conn) == 15
+
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 16
+        assert current_schema_version(conn) == 16
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert {"datasets", "dataset_items"}.issubset(tables)
+
+        dataset_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(datasets)").fetchall()
+        }
+        assert {
+            "id",
+            "project",
+            "workload_id",
+            "name",
+            "description",
+            "created_at",
+            "updated_at",
+        }.issubset(dataset_columns)
+        item_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(dataset_items)").fetchall()
+        }
+        assert {
+            "id",
+            "dataset_id",
+            "source_call_id",
+            "prompt_body",
+            "expected_response_body",
+            "metadata_json",
+            "created_at",
+        }.issubset(item_columns)
+
+        indexes = {
+            row[1]
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        assert "idx_datasets_project_workload_name" in indexes
+        assert "idx_dataset_items_dataset" in indexes
 
 
 def test_migration_and_version_stamp_are_atomic(tmp_path, monkeypatch):

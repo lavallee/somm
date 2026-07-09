@@ -13,6 +13,7 @@ Commands:
   somm drain-spool     replay spooled telemetry into the DB
   somm workload        register and inspect project workloads
   somm prompt          manage prompt versions, labels, and A/B variants
+  somm eval            promote calls to datasets and run eval gates
   somm plugin          list and inspect plugins, hooks, and providers
 """
 
@@ -567,6 +568,35 @@ def _cmd_prompt_score(args: argparse.Namespace) -> int:
             f"{_fmt_score(score['mean_embedding']):>8} "
             f"{_fmt_score(score['mean_judge']):>8}"
         )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# somm eval
+
+
+def _cmd_eval_promote_call(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    try:
+        dataset, item = repo.promote_call_to_dataset(
+            args.call_id,
+            args.dataset,
+            project=cfg.project,
+            description=args.description or "",
+            created_by="somm eval promote-call",
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    n_items = len(repo.dataset_items(dataset.id))
+    print(f"promoted call {args.call_id} to dataset {dataset.name!r}")
+    print(f"project: {dataset.project}")
+    print(f"workload_id: {dataset.workload_id}")
+    print(f"dataset_id: {dataset.id}")
+    print(f"item_id: {item.id}")
+    print(f"items: {n_items}")
     return 0
 
 
@@ -1696,6 +1726,19 @@ def build_parser() -> argparse.ArgumentParser:
     ppscore_ref.add_argument("--version", default=None)
     ppscore_ref.add_argument("--label", default=None)
     ppscore.set_defaults(func=_cmd_prompt_score)
+
+    peval = sub.add_parser("eval", help="promote datasets and run eval gates")
+    peval_sub = peval.add_subparsers(dest="eval_cmd", required=True)
+
+    peval_promote = peval_sub.add_parser(
+        "promote-call",
+        help="copy a sampled call into a durable eval dataset",
+    )
+    peval_promote.add_argument("call_id")
+    peval_promote.add_argument("--project", default=None)
+    peval_promote.add_argument("--dataset", required=True)
+    peval_promote.add_argument("--description", default="")
+    peval_promote.set_defaults(func=_cmd_eval_promote_call)
 
     pp = sub.add_parser("plugin", help="list and inspect plugins, hooks, and providers")
     pp_sub = pp.add_subparsers(dest="plugin_cmd", required=True)

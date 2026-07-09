@@ -329,6 +329,56 @@ def test_workload_add_freeform_list_and_show(tmp_path, capsys, monkeypatch):
     assert "output_schema:\n  —" in show_out
 
 
+def test_eval_promote_call_creates_dataset(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    repo = Repository(tmp_path / ".somm" / "calls.sqlite")
+    wl = repo.register_workload(name="eval_w", project="cli-eval")
+    call_id = str(uuid.uuid4())
+    repo.write_call(
+        Call(
+            id=call_id,
+            ts=datetime.now(UTC),
+            project="cli-eval",
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="ollama",
+            model="g",
+            tokens_in=1,
+            tokens_out=1,
+            latency_ms=1,
+            cost_usd=0.0,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="a",
+            response_hash="b",
+        )
+    )
+    repo.write_sample(call_id, "prompt body", "expected response")
+
+    rc = main(
+        [
+            "eval",
+            "promote-call",
+            call_id,
+            "--dataset",
+            "golden",
+            "--project",
+            "cli-eval",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "promoted call" in out
+    assert "dataset_id:" in out
+    dataset = repo.get_dataset(project="cli-eval", workload_id=wl.id, name="golden")
+    assert dataset is not None
+    items = repo.dataset_items(dataset.id)
+    assert len(items) == 1
+    assert items[0].prompt_body == "prompt body"
+    assert items[0].expected_response_body == "expected response"
+
+
 def test_corrected_command_hints_parse_against_real_parsers():
     parser = build_parser()
     for argv in (
@@ -354,6 +404,7 @@ def test_corrected_command_hints_parse_against_real_parsers():
         ],
         ["prompt", "promote", "--workload", "orders", "--version", "v1", "--to", "production"],
         ["prompt", "score", "--workload", "orders", "--label", "production"],
+        ["eval", "promote-call", "abc", "--dataset", "golden"],
         ["plugin", "list"],
         ["plugin", "info", "cache"],
         ["frontier", "--workload", "orders"],
