@@ -11,11 +11,11 @@ scored by evidence strength. v0.3c ships 3 recommendation types:
    model. Surfaces as a "try this" candidate, not an auto-switch.
 3. chronic_cooldown — a provider on a workload's chain has been cooled
    for >50% of the analysis window. Recommends re-ordering or removing.
-4. adaptive_param_bump — SELF-HEALING. A (workload, provider, model) keeps
+4. adaptive_param_bump — PENDING BY DEFAULT. A (workload, provider, model) keeps
    returning empty with the `stripped_empty` signature (a reasoning model
    exhausting its output budget on thinking before answering). Writes a
-   learned_param_override raising the max_tokens floor; auto-applied (no
-   approval step) and recorded as an already-applied recommendation.
+   recommendation by default; only workloads with policy `auto_heal: true`
+   receive an immediate learned_param_override.
 
 Outputs to `recommendations` (schema v1). Config-driven window, threshold,
 notification sink (stdout only in v0.3c; webhook/SMTP in v0.3d+).
@@ -81,25 +81,25 @@ class AgentWorker:
                 self._write(rec)
                 written += 1
 
-        # adaptive_param_bump is SELF-HEALING — under the batch auto-heal policy
-        # we both write the learned override (which generate() applies on the
-        # next call) AND record an already-applied recommendation for the audit
-        # trail. No human approval step.
         adaptive = self._rec_adaptive_param_bump()
         auto_applied = 0
         for rec in adaptive:
-            ev = rec.evidence
-            self.repo.upsert_learned_override(
-                workload_id=rec.workload_id,
-                provider=ev["provider"],
-                model=ev["model"],
-                max_tokens_floor=ev["recommended_max_tokens_floor"],
-                failure_signature=ev["failure_signature"],
-                evidence=ev,
-                confidence=rec.confidence,
-            )
-            self._write(rec, applied=True)
-            auto_applied += 1
+            if self._auto_heal_enabled(rec.workload_id):
+                ev = rec.evidence
+                self.repo.upsert_learned_override(
+                    workload_id=rec.workload_id,
+                    provider=ev["provider"],
+                    model=ev["model"],
+                    max_tokens_floor=ev["recommended_max_tokens_floor"],
+                    failure_signature=ev["failure_signature"],
+                    evidence=ev,
+                    confidence=rec.confidence,
+                )
+                self._write(rec, applied=True)
+                auto_applied += 1
+            elif not self._already_open(rec):
+                self._write(rec)
+                written += 1
 
         all_recs = recs + adaptive
         if written or auto_applied:
@@ -368,11 +368,11 @@ class AgentWorker:
         return out
 
     # ------------------------------------------------------------------
-    # Rec: adaptive_param_bump — self-healing for recurring capability failures.
+    # Rec: adaptive_param_bump — controlled self-healing for recurring capability failures.
     # Detects the `stripped_empty` signature (a reasoning model exhausting its
     # output budget on thinking tokens and returning empty) and prescribes a
     # higher max_tokens floor for that (workload, provider, model). run_once()
-    # auto-applies these by writing a learned_param_override.
+    # auto-applies only when the workload policy opts into auto_heal.
 
     def _rec_adaptive_param_bump(self) -> list[Recommendation]:
         out: list[Recommendation] = []
@@ -451,6 +451,20 @@ class AgentWorker:
                 f"INSERT INTO recommendations {cols} VALUES {vals}",
                 tuple(params),
             )
+
+    def _auto_heal_enabled(self, workload_id: str) -> bool:
+        with self.repo._open() as conn:
+            row = conn.execute(
+                "SELECT policy_json FROM workloads WHERE id = ?",
+                (workload_id,),
+            ).fetchone()
+        if row is None or not row[0]:
+            return False
+        try:
+            policy = json.loads(row[0])
+        except json.JSONDecodeError:
+            return False
+        return bool(isinstance(policy, dict) and policy.get("auto_heal") is True)
 
     def _notify(self, recs: list[Recommendation]) -> None:
         if self.notify_sink == "stdout":

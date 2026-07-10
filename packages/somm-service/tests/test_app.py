@@ -15,6 +15,8 @@ from somm_core.repository import Repository
 from somm_service.app import create_app, load_service_token
 from starlette.testclient import TestClient
 
+_LOCAL_HEADERS = {"x-somm-local": "1", "sec-fetch-site": "same-origin"}
+
 
 def _tmp_config(tmp_path: Path) -> Config:
     cfg = Config()
@@ -28,12 +30,18 @@ def _tmp_config(tmp_path: Path) -> Config:
 def client(tmp_path):
     cfg = _tmp_config(tmp_path)
     app = create_app(cfg)
-    return TestClient(app), cfg, app
+    return TestClient(app, base_url="http://localhost"), cfg, app
+
+
+def _auth_headers(app, **extra: str) -> dict[str, str]:
+    return {"authorization": f"Bearer {app.state.service_token.value}", **extra}
 
 
 def test_home_renders_empty_state(client):
-    c, cfg, _ = client
-    r = c.get("/")
+    c, cfg, app = client
+    assert c.get("/").status_code == 403
+    r = c.get("/", headers=_LOCAL_HEADERS)
+    assert c.get("/", headers=_auth_headers(app)).status_code == 200
     assert r.status_code == 200
     assert "somm" in r.text
     assert cfg.project in r.text
@@ -44,7 +52,7 @@ def test_home_renders_empty_state(client):
 
 def test_home_has_html_security_headers(client):
     c, _, _ = client
-    r = c.get("/")
+    r = c.get("/", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     assert r.headers["content-security-policy"] == "default-src 'none'; style-src 'unsafe-inline'"
     assert r.headers["x-content-type-options"] == "nosniff"
@@ -58,13 +66,16 @@ def test_health_endpoint(client):
     data = r.json()
     assert data["ok"] is True
     assert data["project"] == cfg.project
+    assert "db_path" not in data
+    assert data["db_exists"] is True
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["referrer-policy"] == "no-referrer"
 
 
 def test_api_version(client):
-    c, cfg, _ = client
-    r = c.get("/api/version")
+    c, cfg, app = client
+    assert c.get("/api/version").status_code == 403
+    r = c.get("/api/version", headers=_auth_headers(app))
     assert r.status_code == 200
     data = r.json()
     assert data["version"] == VERSION
@@ -72,9 +83,13 @@ def test_api_version(client):
 
 
 def test_api_stats_empty(client):
-    c, cfg, _ = client
-    r = c.get("/api/stats")
+    c, cfg, app = client
+    assert c.get("/api/stats").status_code == 403
+
+    r = c.get("/api/stats", headers=_auth_headers(app))
     assert r.status_code == 200
+    local = c.get("/api/stats", headers=_LOCAL_HEADERS)
+    assert local.status_code == 200
     data = r.json()
     assert data["project"] == cfg.project
     assert data["rows"] == []
@@ -112,24 +127,32 @@ def test_status_calls_and_sessions_api(client):
             )
         )
 
-    status = c.get("/api/status").json()
+    status = c.get("/api/status", headers=_LOCAL_HEADERS).json()
     assert status["total_calls"] == 2
     assert status["health"] == "healthy"
 
-    calls = c.get("/api/calls", params={"q": "child-model"}).json()
+    calls = c.get("/api/calls", params={"q": "child-model"}, headers=_LOCAL_HEADERS).json()
     assert calls["count"] == 1
     assert calls["calls"][0]["parent_call_id"] == parent_id
 
-    sessions = c.get("/api/sessions").json()
+    sessions = c.get("/api/sessions", headers=_LOCAL_HEADERS).json()
     assert sessions["count"] == 1
     assert sessions["sessions"][0]["session_id"] == "session-1"
     assert sessions["sessions"][0]["n_calls"] == 2
 
 
-def test_otlp_trace_ingest_records_call(client):
-    c, cfg, app = client
+def test_non_loopback_host_with_local_header_cannot_read_api(client):
+    _, _, app = client
+    remote = TestClient(app, base_url="http://example.com")
+
+    r = remote.get("/api/calls", headers=_LOCAL_HEADERS)
+
+    assert r.status_code == 403
+
+
+def _otlp_payload(*, trace_id: str = "trace-otlp-1", span_id: str = "span-otlp-1") -> dict:
     now_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
-    payload = {
+    return {
         "resourceSpans": [
             {
                 "resource": {
@@ -141,8 +164,8 @@ def test_otlp_trace_ingest_records_call(client):
                     {
                         "spans": [
                             {
-                                "traceId": "trace-otlp-1",
-                                "spanId": "span-otlp-1",
+                                "traceId": trace_id,
+                                "spanId": span_id,
                                 "name": "chat",
                                 "startTimeUnixNano": str(now_ns),
                                 "endTimeUnixNano": str(now_ns + 25_000_000),
@@ -171,6 +194,11 @@ def test_otlp_trace_ingest_records_call(client):
         ]
     }
 
+
+def test_otlp_trace_ingest_records_call(client):
+    c, cfg, app = client
+    payload = _otlp_payload()
+
     unauth = c.post("/api/otlp/v1/traces", json=payload)
     assert unauth.status_code == 403
 
@@ -183,7 +211,11 @@ def test_otlp_trace_ingest_records_call(client):
     assert res.status_code == 200
     assert res.json()["ingested"] == 1
 
-    calls = c.get("/api/calls", params={"q": "trace-otlp-1"}).json()["calls"]
+    calls = c.get(
+        "/api/calls",
+        params={"q": "trace-otlp-1"},
+        headers=_LOCAL_HEADERS,
+    ).json()["calls"]
     assert len(calls) == 1
     assert calls[0]["workload"] == "otlp_chat"
     assert calls[0]["provider"] == "openai"
@@ -192,6 +224,77 @@ def test_otlp_trace_ingest_records_call(client):
     assert calls[0]["tokens_out"] == 3
     assert calls[0]["latency_ms"] == 25
     assert calls[0]["session_id"] == "sess-otlp"
+
+
+def test_otlp_rejects_oversized_content_length_without_writes(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    cfg.service_otlp_max_body_bytes = 8
+    app = create_app(cfg)
+    c = TestClient(app, base_url="http://localhost")
+
+    r = c.post(
+        "/api/otlp/v1/traces",
+        content=b'{"spans":[]}',
+        headers={
+            "authorization": f"Bearer {app.state.service_token.value}",
+            "content-type": "application/json",
+            "content-length": "999",
+        },
+    )
+
+    assert r.status_code == 413
+    with app.state.repo._open() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
+
+
+def test_otlp_rejects_over_span_cap_without_partial_writes(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    cfg.service_otlp_max_spans = 1
+    app = create_app(cfg)
+    c = TestClient(app, base_url="http://localhost")
+    payload = {"spans": []}
+    for idx in range(2):
+        payload["spans"].append(_otlp_payload(trace_id=f"trace-{idx}")["resourceSpans"][0]["scopeSpans"][0]["spans"][0])
+
+    r = c.post(
+        "/api/otlp/v1/traces",
+        json=payload,
+        headers=_auth_headers(app),
+    )
+
+    assert r.status_code == 413
+    assert r.json()["max_spans"] == 1
+    with app.state.repo._open() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
+
+
+def test_otlp_malformed_spans_skip_and_attrs_are_bounded(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    cfg.service_otlp_max_attr_chars = 5
+    app = create_app(cfg)
+    c = TestClient(app, base_url="http://localhost")
+    span = _otlp_payload(trace_id="trace-bounds")["resourceSpans"][0]["scopeSpans"][0][
+        "spans"
+    ][0]
+    span["attributes"].extend(
+        [
+            {"key": "somm.model", "value": {"stringValue": "very-long-model"}},
+            {"key": "somm.workload", "value": {"stringValue": "very-long-workload"}},
+        ]
+    )
+
+    r = c.post(
+        "/api/otlp/v1/traces",
+        json={"spans": [span, "not-a-span"]},
+        headers=_auth_headers(app),
+    )
+
+    assert r.status_code == 200
+    assert r.json()["ingested"] == 1
+    calls = c.get("/api/calls", headers=_LOCAL_HEADERS).json()["calls"]
+    assert len(calls) == 1
+    assert calls[0]["model"] == "very-"
+    assert calls[0]["workload"] == "very-"
 
 
 def test_home_with_calls_shows_healthy(client, tmp_path):
@@ -231,7 +334,7 @@ def test_home_with_calls_shows_healthy(client, tmp_path):
     llm.generate("hi", workload="svc_end_to_end")
     llm.close()
 
-    r = c.get("/")
+    r = c.get("/", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     assert "HEALTHY" in r.text
     assert "svc_end_to_end" in r.text
@@ -272,7 +375,7 @@ def test_xss_in_workload_name_is_escaped(client, tmp_path):
     )
     repo.write_call(call)
 
-    r = c.get("/")
+    r = c.get("/", headers=_LOCAL_HEADERS)
     assert "<script>alert(1)</script>" not in r.text
     assert "&lt;script&gt;" in r.text
 
@@ -288,6 +391,20 @@ def test_service_token_file_created_0600(tmp_path, monkeypatch):
     assert service_token.value
     assert token_path.read_text(encoding="utf-8").strip() == service_token.value
     assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+
+
+def test_created_service_token_log_does_not_print_secret(tmp_path, capsys):
+    from somm_service.app import _log_service_token
+
+    cfg = _tmp_config(tmp_path)
+    service_token = load_service_token(cfg)
+
+    _log_service_token(service_token, host="127.0.0.1", port=7878)
+
+    out = capsys.readouterr().out
+    assert service_token.value not in out
+    assert str(service_token.path) in out
+    assert "$(cat " in out
 
 
 def test_service_token_env_override_takes_precedence(tmp_path, monkeypatch):

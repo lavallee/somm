@@ -1,9 +1,4 @@
-"""Tests for somm self-healing: adaptive_param_bump.
-
-Covers the batch auto-heal path — the agent worker detecting a recurring
-`stripped_empty` capability failure for a (workload, provider, model) and
-writing a learned_param_override that raises the max_tokens floor.
-"""
+"""Tests for somm self-healing: adaptive_param_bump."""
 
 from __future__ import annotations
 
@@ -87,12 +82,32 @@ def test_detect_ignores_no_content_and_low_volume(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# auto-apply via the agent worker
+# adaptive recommendation and opt-in auto-heal via the agent worker
 
 
-def test_agent_auto_applies_and_records(tmp_path):
+def test_agent_writes_pending_recommendation_by_default(tmp_path):
     cfg, repo = _tmp_setup(tmp_path)
     wl = repo.register_workload(name="prioritize", project=cfg.project)
+    for _ in range(10):
+        _empty_call(repo, wl.id, cfg.project, "minimax", "MiniMax-M2.7")
+
+    summary = AgentWorker(repo, min_calls_for_consideration=5).run_once()
+    assert summary["auto_applied"] == 0
+    assert summary["by_action"].get("adaptive_param_bump", 0) >= 1
+
+    assert repo.lookup_learned_override(wl.id, "MiniMax-M2.7", "minimax") is None
+
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT applied_at FROM recommendations WHERE action = 'adaptive_param_bump'"
+        ).fetchone()
+    assert row is not None and row[0] is None
+
+
+def test_agent_auto_applies_when_workload_opts_in(tmp_path):
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload(name="prioritize", project=cfg.project)
+    repo.set_workload_policy(wl.id, {"auto_heal": True}, created_by="test")
     for _ in range(10):
         _empty_call(repo, wl.id, cfg.project, "minimax", "MiniMax-M2.7")
 
@@ -100,11 +115,9 @@ def test_agent_auto_applies_and_records(tmp_path):
     assert summary["auto_applied"] >= 1
     assert summary["by_action"].get("adaptive_param_bump", 0) >= 1
 
-    # the heal is written and readable on the hot path
     ov = repo.lookup_learned_override(wl.id, "MiniMax-M2.7", "minimax")
     assert ov is not None and ov["max_tokens_floor"] == 8192
 
-    # recorded as an already-applied recommendation (not an open suggestion)
     with repo._open() as conn:
         row = conn.execute(
             "SELECT applied_at FROM recommendations WHERE action = 'adaptive_param_bump'"
@@ -115,6 +128,7 @@ def test_agent_auto_applies_and_records(tmp_path):
 def test_adaptive_bump_dedups_across_runs(tmp_path):
     cfg, repo = _tmp_setup(tmp_path)
     wl = repo.register_workload(name="prioritize", project=cfg.project)
+    repo.set_workload_policy(wl.id, {"auto_heal": True}, created_by="test")
     for _ in range(10):
         _empty_call(repo, wl.id, cfg.project, "minimax", "MiniMax-M2.7")
 

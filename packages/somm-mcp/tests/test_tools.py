@@ -476,6 +476,82 @@ async def test_compare_runs_each_model(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_compare_rejects_too_many_models_before_calls(tmp_path):
+    from somm_mcp.server import build_server
+
+    cfg = _tmp_cfg(tmp_path)
+    cfg.mcp_compare_max_models = 1
+    p1 = FakeProvider("ollama")
+    server = build_server(cfg, providers=[p1])
+
+    res = await _call(
+        server,
+        "somm_compare",
+        prompt="ping",
+        models=["ollama/a", "ollama/b"],
+    )
+
+    assert "fanout exceeds limit" in res["error"]
+    assert p1.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_compare_rejects_overlarge_max_tokens_before_calls(tmp_path):
+    from somm_mcp.server import build_server
+
+    cfg = _tmp_cfg(tmp_path)
+    cfg.mcp_compare_max_tokens = 32
+    p1 = FakeProvider("ollama")
+    server = build_server(cfg, providers=[p1])
+
+    res = await _call(
+        server,
+        "somm_compare",
+        prompt="ping",
+        models=["ollama/a"],
+        max_tokens=33,
+    )
+
+    assert "max_tokens exceeds limit" in res["error"]
+    assert p1.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_compare_allow_expensive_uses_elevated_caps_only(tmp_path):
+    from somm_mcp.server import build_server
+
+    cfg = _tmp_cfg(tmp_path)
+    cfg.mcp_compare_max_models = 1
+    cfg.mcp_compare_allow_expensive_max_models = 2
+    cfg.mcp_compare_max_tokens = 32
+    cfg.mcp_compare_allow_expensive_max_tokens = 64
+    p1 = FakeProvider("ollama")
+    server = build_server(cfg, providers=[p1])
+
+    ok = await _call(
+        server,
+        "somm_compare",
+        prompt="ping",
+        models=["ollama/a", "ollama/b"],
+        max_tokens=64,
+        allow_expensive=True,
+    )
+    too_much = await _call(
+        server,
+        "somm_compare",
+        prompt="ping",
+        models=["ollama/a", "ollama/b"],
+        max_tokens=65,
+        allow_expensive=True,
+    )
+
+    assert len(ok["results"]) == 2
+    assert p1.calls == 2
+    assert "hard limit" in too_much["error"]
+    assert p1.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_compare_unknown_provider_in_list(tmp_path):
     from somm_mcp.server import build_server
 

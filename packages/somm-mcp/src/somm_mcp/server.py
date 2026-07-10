@@ -552,6 +552,7 @@ def build_server(
         workload: str = "compare",
         max_tokens: int = 256,
         temperature: float = 0.0,
+        allow_expensive: bool = False,
     ) -> dict:
         """Run a prompt through N models side-by-side. Non-routed; explicit picks.
 
@@ -562,6 +563,8 @@ def build_server(
             models: list like ["ollama/gemma4:e4b", "openai/gpt-4o-mini"].
             workload: workload name to tag telemetry (default "compare").
             max_tokens, temperature: per-call params.
+            allow_expensive: opt in to the elevated compare caps. The
+              absolute configured ceiling still applies.
 
         Returns:
             dict with per-model result blocks (text, tokens, latency, cost, call_id).
@@ -571,6 +574,38 @@ def build_server(
         specs = _parse_models(models)
         if not specs:
             return {"error": "no models supplied; example: ['ollama/gemma4:e4b']"}
+        max_models = (
+            cfg.mcp_compare_allow_expensive_max_models
+            if allow_expensive
+            else cfg.mcp_compare_max_models
+        )
+        max_allowed_tokens = (
+            cfg.mcp_compare_allow_expensive_max_tokens
+            if allow_expensive
+            else cfg.mcp_compare_max_tokens
+        )
+        if len(specs) > max_models:
+            return {
+                "error": (
+                    f"somm_compare model fanout exceeds limit: {len(specs)} > {max_models}; "
+                    "set allow_expensive=True for the elevated cap"
+                    if not allow_expensive
+                    else f"somm_compare model fanout exceeds hard limit: {len(specs)} > {max_models}"
+                ),
+                "limit": max_models,
+                "allow_expensive": allow_expensive,
+            }
+        if max_tokens > max_allowed_tokens:
+            return {
+                "error": (
+                    f"somm_compare max_tokens exceeds limit: {max_tokens} > {max_allowed_tokens}; "
+                    "set allow_expensive=True for the elevated cap"
+                    if not allow_expensive
+                    else f"somm_compare max_tokens exceeds hard limit: {max_tokens} > {max_allowed_tokens}"
+                ),
+                "limit": max_allowed_tokens,
+                "allow_expensive": allow_expensive,
+            }
         # Use the library to get cost + telemetry + strict-mode check in one shot.
         from somm.client import SommLLM
 

@@ -26,6 +26,26 @@ def _seed_switch_recommendation(repo: Repository, project: str = "recs"):
     return wl, int(rec_id)
 
 
+def _seed_adaptive_recommendation(repo: Repository, project: str = "recs"):
+    wl = repo.register_workload(name="claims", project=project)
+    evidence = {
+        "workload": "claims",
+        "provider": "minimax",
+        "model": "MiniMax-M2.7",
+        "failure_signature": "capability_empty:stripped_empty",
+        "recommended_max_tokens_floor": 8192,
+        "empty_rate": 0.8,
+    }
+    with repo._open() as conn:
+        rec_id = conn.execute(
+            "INSERT INTO recommendations "
+            "(workload_id, action, evidence_json, expected_impact, confidence) "
+            "VALUES (?, 'adaptive_param_bump', ?, 'raise max token floor', 0.75)",
+            (wl.id, json.dumps(evidence)),
+        ).lastrowid
+    return wl, int(rec_id)
+
+
 def test_apply_recommendation_updates_policy_records_decision_and_applies(tmp_path):
     repo = Repository(tmp_path / "calls.sqlite")
     mirror = Repository(tmp_path / "global.sqlite")
@@ -69,6 +89,20 @@ def test_dismiss_recommendation_closes_without_policy_change(tmp_path):
 
     assert rec.dismissed_at is not None
     assert repo.workload_by_name("claims", "recs").policy is None
+
+
+def test_apply_adaptive_recommendation_writes_learned_override(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl, rec_id = _seed_adaptive_recommendation(repo)
+
+    result = apply_recommendation(repo, rec_id, actor="test")
+
+    override = repo.lookup_learned_override(wl.id, "MiniMax-M2.7", "minimax")
+    assert override is not None
+    assert override["max_tokens_floor"] == 8192
+    assert result.recommendation.applied_at is not None
+    assert result.decision.chosen_provider == "minimax"
+    assert result.decision.chosen_model == "MiniMax-M2.7"
 
 
 def test_inbox_cli_lists_and_applies(tmp_path, capsys, monkeypatch):

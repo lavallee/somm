@@ -146,7 +146,11 @@ def apply_recommendation(
         raise ValueError(f"recommendation {recommendation_id!r} is already applied")
 
     current_policy = _workload_policy(repo, rec.workload_id)
-    policy = _policy_for_recommendation(rec, current_policy)
+    if rec.action == "adaptive_param_bump":
+        _apply_adaptive_param_bump(repo, rec)
+        policy = current_policy
+    else:
+        policy = _policy_for_recommendation(rec, current_policy)
     revision: int | None = None
     if policy is not None:
         repo.set_workload_policy(
@@ -246,17 +250,35 @@ def _policy_for_recommendation(
         policy["fallback"] = [*cool, *hot]
         return policy
     if rec.action == "adaptive_param_bump":
-        ev = rec.evidence
-        repo_hint = (
-            ev.get("provider"),
-            ev.get("model"),
-            ev.get("recommended_max_tokens_floor"),
-        )
-        raise ValueError(
-            "adaptive_param_bump recommendations are auto-applied by the agent worker "
-            f"via learned overrides ({repo_hint!r})"
-        )
+        return policy
     raise ValueError(f"recommendation action {rec.action!r} is not directly applyable")
+
+
+def _apply_adaptive_param_bump(repo: Repository, rec: RecommendationRecord) -> None:
+    ev = rec.evidence
+    provider = str(ev.get("provider") or "").strip()
+    model = str(ev.get("model") or "").strip()
+    floor = ev.get("recommended_max_tokens_floor")
+    signature = str(ev.get("failure_signature") or "capability_empty:stripped_empty")
+    if not provider or not model:
+        raise ValueError(
+            f"adaptive_param_bump recommendation {rec.id} requires provider and model evidence"
+        )
+    try:
+        max_tokens_floor = int(floor)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"adaptive_param_bump recommendation {rec.id} requires an integer max_tokens floor"
+        ) from exc
+    repo.upsert_learned_override(
+        workload_id=rec.workload_id,
+        provider=provider,
+        model=model,
+        max_tokens_floor=max_tokens_floor,
+        failure_signature=signature,
+        evidence=ev,
+        confidence=rec.confidence or 0.0,
+    )
 
 
 def _provider_model_entry(raw: object) -> dict[str, Any] | None:
@@ -296,6 +318,10 @@ def _decision_for_recommendation(
     candidate = rec.evidence.get("candidate")
     chosen_provider = candidate.get("provider") if isinstance(candidate, dict) else None
     chosen_model = candidate.get("model") if isinstance(candidate, dict) else None
+    if chosen_provider is None:
+        chosen_provider = rec.evidence.get("provider")
+    if chosen_model is None:
+        chosen_model = rec.evidence.get("model")
     return build_decision(
         question=f"Apply {rec.action} recommendation for {rec.workload}",
         candidates=[rec.evidence],

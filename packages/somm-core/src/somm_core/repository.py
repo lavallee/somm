@@ -34,7 +34,7 @@ from somm_core.parse import stable_hash
 from somm_core.parse import workload_id as _workload_id
 from somm_core.schema import ensure_schema
 
-_POLICY_KEYS = {"fallback", "retry", "timeout_s"}
+_POLICY_KEYS = {"fallback", "retry", "timeout_s", "auto_heal"}
 _RETRY_KEYS = {"max", "backoff_s", "deadline_s"}
 
 
@@ -145,6 +145,11 @@ def _validate_workload_policy(policy: dict | None) -> dict | None:
         if not _is_number(timeout_s) or float(timeout_s) <= 0:
             raise ValueError("workload policy timeout_s must be a finite positive number")
         out["timeout_s"] = float(timeout_s)
+    if "auto_heal" in policy:
+        auto_heal = policy["auto_heal"]
+        if not isinstance(auto_heal, bool):
+            raise ValueError("workload policy auto_heal must be a boolean")
+        out["auto_heal"] = auto_heal
     return out
 
 

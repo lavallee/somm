@@ -18,9 +18,10 @@ configured a provider key or local provider endpoint.
 - **Library hot path**: user code imports `somm` and calls providers. Hook and
   plugin failures must never expose secrets or break an otherwise successful
   call.
-- **Web service**: `somm serve` binds to localhost by default. Mutating routes
-  and LLM proxy routes require the service bearer token or the same-origin
-  local dashboard header path.
+- **Web service**: `somm serve` binds to localhost by default. Dashboard/read
+  APIs, mutating routes, and LLM proxy routes require the service bearer token
+  or the same-origin local dashboard header path, unless read APIs are
+  explicitly opened with `SOMM_SERVICE_PUBLIC_READ=1`.
 - **MCP stdio**: `somm-mcp` talks to a local coding agent over stdio. MCP tool
   results wrap stored prompt/response bodies in untrusted-content envelopes.
 - **OTLP ingest**: `/api/otlp/v1/traces` and `/v1/traces` accept JSON spans from
@@ -43,16 +44,28 @@ configured a provider key or local provider endpoint.
 ## Mitigations
 
 - Web admin binds `127.0.0.1` by default and warns on non-localhost bind.
-- Mutating service routes require bearer-token auth; dashboard-only header auth
-  is accepted only for loopback hosts with same-origin evidence.
+- Dashboard/read APIs and mutating service routes require bearer-token auth;
+  dashboard-only header auth is accepted only for loopback hosts with
+  same-origin evidence.
+- Public `/health` reports liveness without local filesystem paths. Richer
+  status, calls, sessions, recommendation, and version data use the read API
+  auth boundary by default.
 - HTML is manually escaped and served with `default-src 'none'` plus nosniff and
   no-referrer headers.
 - Local DB directories are created `0700`; SQLite files are chmod `0600`.
 - MCP responses envelope stored user/model content as untrusted text.
 - Private workloads cannot be shadow-graded; the SQL `shadow_candidates` view
   and worker checks both enforce this.
-- Service OTLP ingest is lenient but bounded to normal call rows; malformed
-  spans are skipped rather than failing the whole batch.
+- Service OTLP ingest is lenient but bounded to normal call rows; oversized
+  JSON bodies and over-cap span batches are rejected before writes, attributes
+  are truncated, and malformed spans are skipped rather than failing the whole
+  batch.
+- The local proxy bounds request bodies, runs provider dispatch off the event
+  loop with service-controlled timeouts, and rejects unknown explicit proxy
+  workloads so authenticated clients cannot bypass pre-registered caps.
+- `somm_compare` caps model fanout and per-call `max_tokens`; callers must set
+  `allow_expensive=true` for the elevated cap, and that elevated cap remains a
+  hard ceiling.
 - CI runs `pip-audit` against the locked dependency export and `zizmor` against
   GitHub Actions workflows.
 

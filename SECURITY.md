@@ -26,8 +26,10 @@ service, no telemetry phone-home, and no central account. The
 relevant attack surfaces are:
 
 - **The localhost web admin** (`somm-serve`) — binds to a local
-  interface for reviewing telemetry and recommendations. Don't expose
-  it to an untrusted network without your own auth/reverse-proxy layer.
+  interface for reviewing telemetry and recommendations. The dashboard
+  and read APIs require the service token by default when used outside
+  the same-origin loopback path. Don't expose it to an untrusted network
+  without considering network placement and auth.
 - **The MCP stdio server** (`somm-mcp`) — talks to coding agents over
   stdio; treat it like any other local tool with filesystem/process
   access.

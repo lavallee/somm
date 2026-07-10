@@ -362,13 +362,17 @@ file, and `77` permission error.
 ### Stable local read API and OTLP ingest
 
 With `somm-service` installed, the dashboard also exposes supported JSON
-read endpoints:
+read endpoints. They require the service bearer token, or the dashboard's
+same-origin local header path on a loopback `Host`; set
+`SOMM_SERVICE_PUBLIC_READ=1` only for deployments that deliberately expose
+read-only telemetry.
 
 ```text
 GET /api/status
 GET /api/stats?window=7
 GET /api/calls?window=7&q=gemma&limit=100
 GET /api/sessions?window=7
+GET /api/version
 GET /api/recommendations
 ```
 
@@ -383,9 +387,10 @@ curl -H "Authorization: Bearer $SOMM_SERVICE_TOKEN" \
 ```
 
 The OTLP parser is lenient about `gen_ai` semantic-convention drift and
-stores accepted spans as ordinary `calls` rows. SQLite remains the
-default backend; the `somm[postgres]` extra installs the Postgres driver
-dependency for shared-deployment experiments.
+stores accepted spans as ordinary `calls` rows. Ingest rejects oversized
+JSON bodies and over-cap span batches before writing rows. SQLite remains
+the default backend; the `somm[postgres]` extra installs the Postgres
+driver dependency for shared-deployment experiments.
 
 With `somm-service` installed:
 

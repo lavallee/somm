@@ -62,7 +62,7 @@ def client_with_rec(tmp_path):
 
 def test_home_renders_recommendation(client_with_rec):
     c, _, _ = client_with_rec
-    r = c.get("/")
+    r = c.get("/", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     assert "demo_w" in r.text
     assert "switch_model" in r.text
@@ -74,7 +74,8 @@ def test_home_renders_recommendation(client_with_rec):
 
 def test_api_recommendations_json(client_with_rec):
     c, cfg, _ = client_with_rec
-    r = c.get("/api/recommendations")
+    assert c.get("/api/recommendations").status_code == 403
+    r = c.get("/api/recommendations", headers=_LOCAL_HEADERS)
     assert r.status_code == 200
     data = r.json()
     assert len(data["recommendations"]) == 1
@@ -87,7 +88,7 @@ def test_api_recommendations_json(client_with_rec):
 def test_dismiss_rec(client_with_rec):
     c, cfg, app = client_with_rec
     # Grab id
-    data = c.get("/api/recommendations").json()
+    data = c.get("/api/recommendations", headers=_LOCAL_HEADERS).json()
     rec_id = data["recommendations"][0]["id"]
 
     blocked = c.post(f"/api/recommendations/{rec_id}/dismiss")
@@ -99,13 +100,13 @@ def test_dismiss_rec(client_with_rec):
     assert r.json()["ok"] is True
 
     # No longer open
-    after = c.get("/api/recommendations").json()
+    after = c.get("/api/recommendations", headers=_LOCAL_HEADERS).json()
     assert after["recommendations"] == []
 
 
 def test_apply_rec(client_with_rec):
     c, cfg, app = client_with_rec
-    data = c.get("/api/recommendations").json()
+    data = c.get("/api/recommendations", headers=_LOCAL_HEADERS).json()
     rec_id = data["recommendations"][0]["id"]
 
     blocked = c.post(f"/api/recommendations/{rec_id}/apply")
@@ -145,7 +146,7 @@ def test_xss_in_recommendation_evidence_is_escaped(tmp_path):
     """Workload names + evidence fields render safely even with <script> payloads."""
     cfg = _tmp_config(tmp_path)
     app = create_app(cfg)
-    c = TestClient(app)
+    c = TestClient(app, base_url="http://localhost")
     repo = app.state.repo
     from somm_core.models import PrivacyClass
 
@@ -167,7 +168,7 @@ def test_xss_in_recommendation_evidence_is_escaped(tmp_path):
             (wl.id, json.dumps(evidence)),
         )
 
-    r = c.get("/")
+    r = c.get("/", headers=_LOCAL_HEADERS)
     assert "<script>alert(1)</script>" not in r.text
     assert "<img src=x>" not in r.text
     assert "&lt;script&gt;" in r.text

@@ -12,6 +12,8 @@ litellm.completion is mocked throughout; no network and no real provider keys.
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -243,6 +245,7 @@ def test_litellm_to_anthropic_response_multiple_tool_calls():
 def test_messages_route_dispatches_litellm_and_returns_anthropic_shape(tmp_path):
     """Happy path: route calls litellm.completion, maps response, returns 200."""
     cfg = _cfg(tmp_path)
+    Repository(cfg.db_path).register_workload(name="proxy_wl", project=cfg.project)
     app = create_app(cfg)
     client = TestClient(app)
 
@@ -270,6 +273,7 @@ def test_messages_route_dispatches_litellm_and_returns_anthropic_shape(tmp_path)
     assert kwargs["model"] == "claude-haiku-4-5-20251001"
     assert kwargs["messages"] == [{"role": "user", "content": "hello"}]
     assert kwargs["max_tokens"] == 32
+    assert kwargs["timeout"] == cfg.http_timeout
 
 
 def test_messages_route_writes_telemetry_row(tmp_path):
@@ -278,6 +282,7 @@ def test_messages_route_writes_telemetry_row(tmp_path):
     somm.llm() call."""
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
+    repo.register_workload(name="proxy_wl", project=cfg.project)
     # Seed pricing so cost > 0 is observable.
     write_intel(
         repo,
@@ -415,6 +420,7 @@ def test_messages_route_upstream_provider_error_returns_502(tmp_path):
     """litellm.completion raises → 502 api_error, telemetry row with outcome=upstream_error."""
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
+    repo.register_workload(name="error_wl", project=cfg.project)
     app = create_app(cfg)
     client = TestClient(app)
 
@@ -447,6 +453,7 @@ def test_messages_route_respects_x_somm_project_header(tmp_path):
     """X-Somm-Project header overrides cfg.project for workload registration."""
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
+    repo.register_workload(name="wl-custom", project="custom-proj")
     app = create_app(cfg)
     client = TestClient(app)
 
@@ -471,6 +478,123 @@ def test_messages_route_respects_x_somm_project_header(tmp_path):
         ).fetchone()
     assert row is not None
     assert row[0] == "custom-proj"
+
+
+def test_messages_route_rejects_unknown_explicit_workload_before_dispatch(tmp_path):
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    with patch("somm_service.proxy.litellm.completion") as mock_comp:
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers=_auth_headers(app, **{"x-somm-workload": "new-uncapped"}),
+        )
+
+    assert r.status_code == 403
+    assert "pre-register" in r.json()["error"]["message"]
+    mock_comp.assert_not_called()
+
+
+def test_messages_route_default_workload_gets_default_cap(tmp_path):
+    cfg = _cfg(tmp_path, fail_closed=True)
+    cfg.budget_default_cap_usd_daily = 1.25
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    with patch("somm_service.proxy.litellm.completion", return_value=_fake_completion_response()):
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "x"}],
+            },
+            headers=_auth_headers(app),
+        )
+
+    assert r.status_code == 200
+    wl = app.state.repo.workload_by_name("proxy_default", cfg.project)
+    assert wl is not None
+    assert wl.budget_cap_usd_daily == pytest.approx(1.25)
+
+
+def test_messages_route_rejects_default_workload_when_fail_closed_without_default_cap(tmp_path):
+    cfg = _cfg(tmp_path, fail_closed=True)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    with patch("somm_service.proxy.litellm.completion") as mock_comp:
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "x"}],
+            },
+            headers=_auth_headers(app),
+        )
+
+    assert r.status_code == 403
+    mock_comp.assert_not_called()
+
+
+def test_messages_route_rejects_oversized_body_before_dispatch(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.service_proxy_max_body_bytes = 8
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    with patch("somm_service.proxy.litellm.completion") as mock_comp:
+        r = client.post(
+            "/v1/messages",
+            content=b'{"model":"x","messages":[]}',
+            headers=_auth_headers(
+                app,
+                **{"content-type": "application/json", "content-length": "999"},
+            ),
+        )
+
+    assert r.status_code == 413
+    mock_comp.assert_not_called()
+
+
+def test_messages_route_slow_provider_does_not_block_status_api(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.http_timeout = 5.0
+    Repository(cfg.db_path).register_workload(name="proxy_wl", project=cfg.project)
+    app = create_app(cfg)
+    client = TestClient(app, base_url="http://localhost")
+    entered = threading.Event()
+
+    def slow_completion(**kwargs):
+        entered.set()
+        time.sleep(0.25)
+        return _fake_completion_response()
+
+    def post_message():
+        return client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "x"}],
+            },
+            headers=_auth_headers(app, **{"x-somm-workload": "proxy_wl"}),
+        )
+
+    with patch("somm_service.proxy.litellm.completion", side_effect=slow_completion):
+        thread = threading.Thread(target=post_message)
+        thread.start()
+        assert entered.wait(timeout=1.0)
+        started = time.perf_counter()
+        status = client.get("/api/status", headers={"x-somm-local": "1", "sec-fetch-site": "same-origin"})
+        elapsed = time.perf_counter() - started
+        thread.join(timeout=1.0)
+
+    assert status.status_code == 200
+    assert elapsed < 0.20
 
 
 def test_messages_route_blocks_cross_site_without_token(tmp_path):

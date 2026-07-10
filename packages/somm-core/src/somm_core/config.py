@@ -60,6 +60,15 @@ class Config:
     budget_default_cap_usd_daily: float | None = None  # daily cap for workloads with no explicit budget_cap_usd_daily (when fail_closed)
     inprocess_workers: bool = False  # run the somm-service scheduler inside the library process (SOMM_INPROCESS_WORKERS=1)
     wait_on_exhausted: float | None = None  # default generate/stream wait deadline when all routed providers are cooling
+    service_public_read: bool = False  # allow unauthenticated dashboard/read API only when explicitly opted in
+    service_proxy_max_body_bytes: int = 1_048_576
+    service_otlp_max_body_bytes: int = 1_048_576
+    service_otlp_max_spans: int = 1000
+    service_otlp_max_attr_chars: int = 2048
+    mcp_compare_max_models: int = 5
+    mcp_compare_allow_expensive_max_models: int = 10
+    mcp_compare_max_tokens: int = 1024
+    mcp_compare_allow_expensive_max_tokens: int = 4096
 
     @property
     def db_path(self) -> Path:
@@ -137,6 +146,22 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     if "SOMM_WAIT_ON_EXHAUSTED" in os.environ:
         with contextlib.suppress(ValueError):
             cfg.wait_on_exhausted = float(os.environ["SOMM_WAIT_ON_EXHAUSTED"])
+    if "SOMM_SERVICE_PUBLIC_READ" in os.environ:
+        val = os.environ["SOMM_SERVICE_PUBLIC_READ"].strip().lower()
+        cfg.service_public_read = val in ("1", "true", "yes", "on")
+    for env_var, attr in (
+        ("SOMM_SERVICE_PROXY_MAX_BODY_BYTES", "service_proxy_max_body_bytes"),
+        ("SOMM_SERVICE_OTLP_MAX_BODY_BYTES", "service_otlp_max_body_bytes"),
+        ("SOMM_SERVICE_OTLP_MAX_SPANS", "service_otlp_max_spans"),
+        ("SOMM_SERVICE_OTLP_MAX_ATTR_CHARS", "service_otlp_max_attr_chars"),
+        ("SOMM_MCP_COMPARE_MAX_MODELS", "mcp_compare_max_models"),
+        ("SOMM_MCP_COMPARE_ALLOW_EXPENSIVE_MAX_MODELS", "mcp_compare_allow_expensive_max_models"),
+        ("SOMM_MCP_COMPARE_MAX_TOKENS", "mcp_compare_max_tokens"),
+        ("SOMM_MCP_COMPARE_ALLOW_EXPENSIVE_MAX_TOKENS", "mcp_compare_allow_expensive_max_tokens"),
+    ):
+        if env_var in os.environ:
+            with contextlib.suppress(ValueError):
+                setattr(cfg, attr, max(1, int(os.environ[env_var])))
     if "SOMM_GLOBAL_PATH" in os.environ:
         cfg.cross_project_path = Path(os.environ["SOMM_GLOBAL_PATH"])
     if "SOMM_PROVIDER_ORDER" in os.environ:

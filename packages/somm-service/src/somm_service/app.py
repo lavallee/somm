@@ -59,11 +59,21 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
+from somm_service.http_limits import PayloadTooLarge, read_bounded_json
 from somm_service.proxy import _anthropic_error, messages_endpoint
 
 _CSP = "default-src 'none'; style-src 'unsafe-inline'"
 _LOCAL_HEADER = "x-somm-local"
 _TOKEN_ENV_VAR = "SOMM_SERVICE_TOKEN"
+_READ_PROTECTED_PATHS = {
+    "/",
+    "/api/status",
+    "/api/stats",
+    "/api/calls",
+    "/api/sessions",
+    "/api/version",
+    "/api/recommendations",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,8 +155,9 @@ def _log_service_token(token: ServiceToken, *, host: str, port: int) -> None:
     if token.created:
         print(
             "somm service token created: "
-            f"{token.value} "
-            f"(use: curl -H 'Authorization: Bearer {token.value}' http://{host}:{port}/v1/messages)"
+            f"{token.path} "
+            "(use: curl -H \"Authorization: Bearer $(cat "
+            f"{token.path})\" http://{host}:{port}/v1/messages)"
         )
         return
     print(f"somm service token loaded from {token.path}")
@@ -200,9 +211,10 @@ def _origin_matches_host(origin: str, host: str) -> bool:
 
 
 class LocalSecurityMiddleware:
-    def __init__(self, app, *, token: str) -> None:
+    def __init__(self, app, *, token: str, public_read: bool = False) -> None:
         self.app = app
         self._token = token
+        self._public_read = public_read
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -212,6 +224,11 @@ class LocalSecurityMiddleware:
         headers = Headers(scope=scope)
         method = scope["method"]
         path = scope["path"]
+        protected_read = (
+            method in ("GET", "HEAD")
+            and path in _READ_PROTECTED_PATHS
+            and not self._public_read
+        )
         protected_admin = method == "POST" and path.startswith("/api/recommendations/")
         protected_messages = method == "POST" and path == "/v1/messages"
         protected_otlp = method == "POST" and path in (
@@ -219,7 +236,7 @@ class LocalSecurityMiddleware:
             "/v1/traces",
         )
 
-        if protected_admin or protected_messages or protected_otlp:
+        if protected_read or protected_admin or protected_messages or protected_otlp:
             if not self._is_authorized(headers):
                 response = self._forbidden(protected_messages)
                 self._set_security_headers(response)
@@ -840,7 +857,6 @@ async def _health(request: Request) -> JSONResponse:
         {
             "ok": True,
             "project": cfg.project,
-            "db_path": str(cfg.db_path),
             "db_exists": cfg.db_path.exists(),
         }
     )
@@ -984,7 +1000,45 @@ def _otel_attrs(items: list | None) -> dict[str, object]:
     return attrs
 
 
-def _iter_otlp_spans(payload: dict):
+def _bounded_attr_value(value: object, *, max_chars: int, depth: int = 0) -> object:
+    if isinstance(value, str):
+        return value[:max_chars]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if depth >= 2:
+        return str(value)[:max_chars]
+    if isinstance(value, list):
+        return [
+            _bounded_attr_value(item, max_chars=max_chars, depth=depth + 1)
+            for item in value[:50]
+        ]
+    if isinstance(value, dict):
+        return {
+            _bounded_attr_key(key, max_chars=max_chars): _bounded_attr_value(
+                val, max_chars=max_chars, depth=depth + 1
+            )
+            for key, val in list(value.items())[:50]
+        }
+    return str(value)[:max_chars]
+
+
+def _bounded_attr_key(key: object, *, max_chars: int) -> str:
+    # Keep normal semantic-convention keys intact even under a tiny value cap,
+    # while still bounding pathological key names.
+    return str(key)[: max(64, max_chars)]
+
+
+def _bound_attrs(attrs: dict[str, object], *, max_chars: int) -> dict[str, object]:
+    max_chars = max(1, int(max_chars))
+    return {
+        _bounded_attr_key(key, max_chars=max_chars): _bounded_attr_value(
+            value, max_chars=max_chars
+        )
+        for key, value in attrs.items()
+    }
+
+
+def _iter_otlp_spans(payload: dict, *, max_attr_chars: int):
     for resource_span in payload.get("resourceSpans", []) or []:
         if not isinstance(resource_span, dict):
             continue
@@ -1005,10 +1059,10 @@ def _iter_otlp_spans(payload: dict):
                 attrs = dict(resource_attrs)
                 attrs.update(scope_attrs)
                 attrs.update(_otel_attrs(span.get("attributes")))
-                yield span, attrs
+                yield span, _bound_attrs(attrs, max_chars=max_attr_chars)
     for span in payload.get("spans", []) or []:
         if isinstance(span, dict):
-            yield span, _otel_attrs(span.get("attributes"))
+            yield span, _bound_attrs(_otel_attrs(span.get("attributes")), max_chars=max_attr_chars)
 
 
 def _attr(attrs: dict[str, object], *keys: str, default=None):
@@ -1147,11 +1201,34 @@ def _call_from_otlp_span(
     )
 
 
-def _ingest_otlp_payload(repo: Repository, cfg: Config, payload: dict) -> dict:
+def _ingest_otlp_payload(
+    repo: Repository,
+    cfg: Config,
+    payload: dict,
+    *,
+    max_spans: int,
+    max_attr_chars: int,
+) -> tuple[dict, int]:
+    spans = []
+    for idx, (span, attrs) in enumerate(
+        _iter_otlp_spans(payload, max_attr_chars=max_attr_chars),
+        start=1,
+    ):
+        if idx > max_spans:
+            return (
+                {
+                    "ok": False,
+                    "error": f"OTLP payload exceeds {max_spans} spans",
+                    "max_spans": max_spans,
+                },
+                413,
+            )
+        spans.append((span, attrs))
+
     ingested = 0
     duplicates = 0
     skipped = 0
-    for span, attrs in _iter_otlp_spans(payload):
+    for span, attrs in spans:
         try:
             call = _call_from_otlp_span(repo, cfg, span, attrs)
             repo.write_call(call)
@@ -1165,19 +1242,28 @@ def _ingest_otlp_payload(repo: Repository, cfg: Config, payload: dict) -> dict:
         "ingested": ingested,
         "duplicates": duplicates,
         "skipped": skipped,
-    }
+    }, 200
 
 
 async def _api_otlp_traces(request: Request) -> JSONResponse:
     cfg: Config = request.app.state.config
     repo: Repository = request.app.state.repo
     try:
-        payload = await request.json()
+        payload = await read_bounded_json(request, max_bytes=cfg.service_otlp_max_body_bytes)
+    except PayloadTooLarge as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=413)
     except json.JSONDecodeError:
         return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
     if not isinstance(payload, dict):
         return JSONResponse({"ok": False, "error": "OTLP payload must be an object"}, status_code=400)
-    return JSONResponse(_ingest_otlp_payload(repo, cfg, payload))
+    result, status = _ingest_otlp_payload(
+        repo,
+        cfg,
+        payload,
+        max_spans=cfg.service_otlp_max_spans,
+        max_attr_chars=cfg.service_otlp_max_attr_chars,
+    )
+    return JSONResponse(result, status_code=status)
 
 
 async def _api_version(request: Request) -> JSONResponse:
@@ -1218,7 +1304,11 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/v1/messages", messages_endpoint, methods=["POST"]),
         ],
     )
-    app.add_middleware(LocalSecurityMiddleware, token=service_token.value)
+    app.add_middleware(
+        LocalSecurityMiddleware,
+        token=service_token.value,
+        public_read=cfg.service_public_read,
+    )
     app.state.config = cfg
     app.state.repo = repo
     app.state.service_token = service_token

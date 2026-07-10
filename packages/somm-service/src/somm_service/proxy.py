@@ -26,6 +26,8 @@ body and litellm is NOT called.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 import uuid
 from datetime import UTC, datetime
@@ -37,13 +39,20 @@ from somm.errors import SommBudgetExceeded
 from somm_core import Outcome, cost_for_call
 from somm_core.models import Call
 from somm_core.parse import stable_hash
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from somm_service.http_limits import PayloadTooLarge, read_bounded_json
 
 # Default workload name when no X-Somm-Workload header is provided. Calls
 # from harness CLIs that don't know about somm still get recorded — just
 # bucketed into a single catch-all workload instead of going untracked.
 _DEFAULT_WORKLOAD = "proxy_default"
+
+
+class ProxyWorkloadError(ValueError):
+    pass
 
 
 def _provider_from_model(model: str) -> tuple[str, str]:
@@ -230,15 +239,30 @@ def _anthropic_error(
     )
 
 
-def _resolve_workload(repo, request: Request, project: str) -> Any:
+def _resolve_workload(repo, request: Request, project: str, cfg) -> Any:
     """Read X-Somm-Workload header (or fall back to default) and ensure the
     workload row exists. Auto-registers so calls from harness CLIs that
     haven't pre-registered still land in calls.sqlite (observe-mode parity
     with the library path)."""
-    name = request.headers.get("x-somm-workload") or _DEFAULT_WORKLOAD
+    explicit_workload = request.headers.get("x-somm-workload")
+    name = explicit_workload or _DEFAULT_WORKLOAD
     wl = repo.workload_by_name(name, project)
     if wl is None:
-        wl = repo.register_workload(name=name, project=project)
+        if explicit_workload:
+            raise ProxyWorkloadError(
+                f"unknown X-Somm-Workload {name!r}; pre-register proxy workloads before use"
+            )
+        default_cap = cfg.budget_default_cap_usd_daily
+        if cfg.budget_fail_closed and default_cap is None:
+            raise ProxyWorkloadError(
+                "proxy_default must be pre-registered or "
+                "SOMM_BUDGET_DEFAULT_CAP_USD_DAILY must be set when fail-closed budgets are enabled"
+            )
+        wl = repo.register_workload(
+            name=name,
+            project=project,
+            budget_cap_usd_daily=default_cap,
+        )
     return wl
 
 
@@ -259,7 +283,19 @@ async def messages_endpoint(request: Request) -> JSONResponse:
     repo = request.app.state.repo
 
     try:
-        body = await request.json()
+        body = await read_bounded_json(request, max_bytes=cfg.service_proxy_max_body_bytes)
+    except PayloadTooLarge as exc:
+        return _anthropic_error(
+            error_type="invalid_request_error",
+            message=str(exc),
+            status=413,
+        )
+    except json.JSONDecodeError as exc:
+        return _anthropic_error(
+            error_type="invalid_request_error",
+            message=f"invalid JSON body: {exc}",
+            status=400,
+        )
     except Exception as exc:
         return _anthropic_error(
             error_type="invalid_request_error",
@@ -274,7 +310,14 @@ async def messages_endpoint(request: Request) -> JSONResponse:
         )
 
     project = request.headers.get("x-somm-project") or cfg.project
-    workload = _resolve_workload(repo, request, project)
+    try:
+        workload = _resolve_workload(repo, request, project, cfg)
+    except ProxyWorkloadError as exc:
+        return _anthropic_error(
+            error_type="invalid_request_error",
+            message=str(exc),
+            status=403,
+        )
 
     # Fail-closed budget gate — reuses the SAME helper the library uses, so
     # the proxy path and the direct somm.llm() path enforce one ceiling.
@@ -303,6 +346,7 @@ async def messages_endpoint(request: Request) -> JSONResponse:
             message=str(exc),
             status=400,
         )
+    params.setdefault("timeout", cfg.http_timeout)
 
     requested_model = params["model"]
     provider, model_only = _provider_from_model(requested_model)
@@ -316,10 +360,17 @@ async def messages_endpoint(request: Request) -> JSONResponse:
     tokens_in = tokens_out = 0
     response_body: dict[str, Any] | None = None
     try:
-        resp = litellm.completion(**params)
+        resp = await asyncio.wait_for(
+            run_in_threadpool(litellm.completion, **params),
+            timeout=cfg.http_timeout,
+        )
         response_body = _litellm_to_anthropic_response(resp, requested_model=requested_model)
         tokens_in = response_body["usage"]["input_tokens"]
         tokens_out = response_body["usage"]["output_tokens"]
+    except TimeoutError as exc:
+        outcome = Outcome.TIMEOUT
+        error_kind = type(exc).__name__
+        error_detail = f"{type(exc).__name__}: provider call exceeded {cfg.http_timeout:.0f}s"[:512]
     except Exception as exc:
         outcome = Outcome.UPSTREAM_ERROR
         error_kind = type(exc).__name__
