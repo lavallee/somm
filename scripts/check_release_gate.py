@@ -17,7 +17,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APPROVAL_PATH = ROOT / "notes" / "ONE_DOT_ZERO_GO_DECISION.md"
+APPROVAL_PATH = ROOT / "docs" / "release" / "ONE_DOT_ZERO_GO_DECISION.md"
 APPROVAL_MARKER = "somm-1.0-go: true"
 
 PYPROJECTS = [

@@ -16,7 +16,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   tools, service contracts, and migration semantics are not yet being declared
   stable.
 - Added a CI and PyPI-publish release gate that blocks future `1.x` versions
-  unless the repo contains an explicit `notes/ONE_DOT_ZERO_GO_DECISION.md`
+  unless the repo contains an explicit `docs/release/ONE_DOT_ZERO_GO_DECISION.md`
   readiness decision.
 
 ### Added — the brain and beta launch surface

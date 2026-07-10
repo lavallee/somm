@@ -26,7 +26,7 @@ uv run python scripts/check_release_gate.py
 ```
 
 That gate fails any `1.x` version unless
-`notes/ONE_DOT_ZERO_GO_DECISION.md` exists and contains
+`docs/release/ONE_DOT_ZERO_GO_DECISION.md` exists and contains
 `somm-1.0-go: true`. Add that file only after the project has explicitly
 decided that the public API, MCP contracts, migration semantics, release
 cadence, and operational docs are ready to be called stable.
