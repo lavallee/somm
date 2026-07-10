@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview — somm explained</title>
+<meta name="description" content="Introduce what somm is, the problem it solves, and the shape of the system: a local-first telemetry substrate with routing, evaluation, and intelligence layered on top — no hosted control plane, no commercial dependencies on the hot path.">
+<link rel="stylesheet" href="lib/artoo-kit/tokens.css">
+<link rel="stylesheet" href="lib/artoo-kit/base.css">
+<link rel="stylesheet" href="lib/artoo-kit/article.css">
+<link rel="stylesheet" href="lib/artoo-kit/components.css">
+</head>
+<body>
+<nav class="site-nav">
+  <span class="brand">somm explained</span>
+  <button class="nav-toggle" aria-label="Menu">menu</button>
+  <div class="nav-links">
+    <a href="index.html" aria-current="page">Overview</a>
+    <a href="life-of-a-call.html">The Life of a Call</a>
+    <a href="data-and-privacy.html">The Data Substrate</a>
+    <a href="intelligence-loop.html">The Intelligence Loop</a>
+    <a href="agents-and-integrations.html">Agents and Integrations</a>
+    <a href="engineering-reference.html">Engineering Reference</a>
+  </div>
+  <button data-theme-toggle class="nav-toggle" style="display:block;margin-left:auto" aria-label="Toggle theme">theme</button>
+</nav>
+<main class="article">
+<header class="article-header">
+  <p class="article-kicker">somm explained · Page 1 of 6</p>
+  <h1 class="article-title">Overview</h1>
+  <p class="article-dek">somm is a zero-config Python library that routes LLM calls across providers, records every call in a local SQLite database, and turns the accumulated telemetry into evidence-backed model recommendations — with no hosted control plane and no commercial dependency on the hot path.</p>
+</header>
+
+<h2>What somm is: telemetry, routing, and an intelligence loop</h2>
+
+<div class="article-mrow">
+  <p>An application creates a client with <code>somm.llm(project=...)</code> and submits named workloads through <code>generate()</code>. Each call is routed through eligible providers and recorded in a project-local <code>.somm/calls.sqlite</code> database with provider, model, token, cost, latency, and outcome data (<code>README.md:67</code>). That is the whole required footprint: a library call in, a routed response and a telemetry row out.</p>
+  <aside class="article-marginnote article-marginnote--source">
+    <span class="term">Source</span> The architectural framing — a local, per-project SQLite telemetry substrate with routing, evaluation, model intelligence, recommendations, and agent interfaces layered on top — comes from <code>docs/BLUEPRINT.md:19</code>.
+  </aside>
+</div>
+
+<p>Everything else is layered on that substrate. Calls, workloads, optional samples, evaluations, model intelligence, provider health, and recommendations all share one SQLite data model (<code>docs/BLUEPRINT.md:118</code>). When the optional <code>somm serve</code> service is running, scheduled workers grade sampled calls, refresh model metadata, and produce recommendations; the MCP server and web dashboard read the same local state (<code>notes/PLAN.md:69</code>). Services consume calls to produce evaluations and recommendations without ever rewriting the original telemetry (<code>docs/BLUEPRINT.md:171</code>).</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  A["somm.llm(project=...)"] --> C["SommLLM client"]
+  C --> R["Router"]
+  R --> P["Provider adapters"]
+  C --> DB[("project-local SQLite\n.somm/calls.sqlite")]
+  subgraph serve ["Optional: somm serve"]
+    W["Background workers\n(model intel, shadow eval, agent)"]
+    UI["Web dashboard"]
+  end
+  W --> DB
+  UI --> DB
+  W --> REC["Recommendations"]
+  MCP["somm-mcp\n(coding-agent tools)"] --> DB
+</pre>
+</div>
+
+<h2>The core bet: local-first, privacy-first, zero-config</h2>
+
+<div class="article-mrow">
+  <p><strong>Zero-config</strong> means configuration resolves in layers — built-in defaults, the project's <code>pyproject.toml</code>, environment variables, then explicit arguments — before selecting a project-local or registered database (<code>packages/somm-core/src/somm_core/config.py:84</code>). In the default <em>observe</em> mode, unknown workloads auto-register so adoption needs no ceremony; <em>strict</em> mode turns a missing registration into an error when governance matters (<code>packages/somm/src/somm/client.py:658</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Hot path</span> The synchronous work between an application's <code>generate()</code> call and its response. somm keeps this path service-free: a per-process writer queue batches SQLite writes, and repeated lock failures spill to JSONL for later atomic replay instead of blocking the call (<code>notes/PLAN.md:1179</code>, <code>packages/somm/src/somm/telemetry.py:270</code>).
+  </aside>
+</div>
+
+<p><strong>Local-first</strong> means the database is user-owned. Constructing a repository creates a permission-restricted SQLite file, applies migrations automatically, and configures WAL for continuous local writes with concurrent readers (<code>packages/somm-core/src/somm_core/repository.py:177</code>). Cost tracking works offline from a bundled pricing snapshot shipped inside the wheel (<code>packages/somm-core/src/somm_core/pricing.py:108</code>), and paid intelligence sources stay off the default path (<code>ROADMAP.md:237</code>). CI enforces the speed of this bet mechanically: a performance gate measures clean import latency and a 500-call warmed hot path against a fake provider, failing when medians exceed budget (<code>scripts/check_perf_budget.py:96</code>).</p>
+
+<p><strong>Privacy-first</strong> is structural, not aspirational. Prompt and response bodies are stored only through opt-in sampling; databases use owner-only permissions (<code>packages/somm-core/src/somm_core/repository.py:185</code>). Privacy is enforced independently in routing, workers, SQL views, file permissions, and localhost service defaults (<code>docs/threat-model.md:44</code>). A workload registered as private is restricted to local providers — and if none are available, the call fails rather than sending data upstream (<code>examples/private_workload.py:27</code>).</p>
+
+<div class="callout callout--warn">
+  <span class="callout-title">Fail open vs. fail closed — a deliberate split</span>
+  Advisory intelligence fails open so it can never break live inference: missing pricing becomes zero cost, unreadable fleet databases contribute zero (<code>packages/somm-core/src/somm_core/pricing.py:240</code>), and hook failures cannot break the call path (<code>docs/plugins.md:79</code>). Hard budgets fail closed: refusal is fatal and happens <em>before</em> dispatch, so provider fallback can't route around a spending cap (<code>docs/errors/SOMM_BUDGET_EXCEEDED.md:23</code>).
+</div>
+
+<blockquote class="article-pullquote">
+  Telemetry is append-only. Intelligence is advisory. Budgets are law.
+  <cite>— the design stance, per <code>docs/BLUEPRINT.md:56</code>, <code>packages/somm-core/src/somm_core/pricing.py:240</code>, and <code>docs/errors/SOMM_BUDGET_EXCEEDED.md:23</code></cite>
+</blockquote>
+
+<h2>Workloads, not providers, as the stable identity</h2>
+
+<div class="article-mrow">
+  <p>The unit of identity in somm is not a provider or a model — it's the <em>workload</em>. Workload names unify policies, budgets, evaluation, and recommendations (<code>README.md:92</code>), and each workload carries privacy classification, budget ceilings, and capability requirements (<code>docs/BLUEPRINT.md:118</code>). Because the workload names the task rather than the vendor, telemetry stays comparable when routing changes underneath it (<code>packages/somm-skill/src/somm_skill/SKILL.md:44</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Workload</span> A named, stable task identity attached to every call — "summarize-ticket", not "call GPT". Registered once via <code>register_workload(...)</code> with privacy class and daily budget (<code>examples/private_workload.py:19</code>); every routing decision, cost, and evaluation accrues to it.
+  </aside>
+</div>
+
+<p>This is what makes the intelligence loop possible. The router filters explicitly incapable provider/model pairs before any network access, applies quota pacing, skips cooled-down providers, and falls through transient failures (<code>packages/somm/src/somm/routing.py:158</code>) — but because every one of those decisions is recorded against a workload, the system can later answer "which model actually serves this task best?" with evidence instead of vibes. Recommendations expose their supporting evidence and require the user to apply them; nothing rolls out automatically (<code>docs/BLUEPRINT.md:255</code>).</p>
+
+<h2>The six packages at a glance</h2>
+
+<p>A uv workspace separates the system into six independently published packages (<code>README.md:528</code>, <code>pyproject.toml:7</code>), each with its own PyPI trusted-publishing environment (<code>.github/workflows/publish.yml:28</code>):</p>
+
+<table>
+  <thead>
+    <tr><th>Package</th><th>Role</th><th>Anchor</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>somm</code></td>
+      <td>The main library and CLI: provider routing, telemetry, cost and budget controls, prompt management, evaluation, diagnostics.</td>
+      <td><code>packages/somm/src/somm/client.py:910</code></td>
+    </tr>
+    <tr>
+      <td><code>somm-core</code></td>
+      <td>Dependency-free foundation: typed records, SQLite persistence and migrations, config, pricing, quota accounting, graders.</td>
+      <td><code>packages/somm-core/src/somm_core/repository.py:177</code></td>
+    </tr>
+    <tr>
+      <td><code>somm-service</code></td>
+      <td>The localhost control plane: dashboard, telemetry APIs, an Anthropic-compatible proxy, and background intelligence workers.</td>
+      <td><code>packages/somm-service/src/somm_service/app.py:1285</code></td>
+    </tr>
+    <tr>
+      <td><code>somm-mcp</code></td>
+      <td>A stdio MCP server exposing telemetry, recommendations, comparisons, replay, and decision memory to coding agents.</td>
+      <td><code>packages/somm-mcp/src/somm_mcp/server.py:59</code></td>
+    </tr>
+    <tr>
+      <td><code>somm-langchain</code></td>
+      <td>A thin adapter making somm's routed runtime look like a standard LangChain chat model.</td>
+      <td><code>packages/somm-langchain/src/somm_langchain/chat_model.py:32</code></td>
+    </tr>
+    <tr>
+      <td><code>somm-skill</code></td>
+      <td>A dependency-free agent playbook: Markdown guidance teaching coding agents the telemetry and model-selection loop.</td>
+      <td><code>packages/somm-skill/src/somm_skill/SKILL.md:6</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The dependency shape is deliberate: <code>somm-core</code> has no dependencies at all (<code>packages/somm-core/README.md:3</code>), the client keeps the hot path self-hosted, and everything above — service, MCP, LangChain, skill — is optional. Provider dispatch never leaks into the foundation.</p>
+
+<h2>By the numbers</h2>
+
+<div class="stat-row">
+  <div class="stat"><span class="value">42k</span><span class="label">lines of Python</span></div>
+  <div class="stat"><span class="value">6</span><span class="label">publishable packages</span></div>
+  <div class="stat"><span class="value">v19</span><span class="label">one shared SQLite schema</span></div>
+  <div class="stat"><span class="value">14</span><span class="label">MCP tools for agents</span></div>
+</div>
+
+<div class="article-mrow">
+  <p>The single schema is the load-bearing number. Schema v19 evolves the original workload/prompt/call ledger into decisions, workload revisions, datasets, evaluation receipts, campaigns, and canonical model aliases (<code>packages/somm-core/src/somm_core/version.py:7</code>) — and every layer of the system, from the router to the dashboard to the MCP tools, reads and writes that one model. Migrations commit DDL and version stamps together, so a database is never left partially upgraded (<code>packages/somm-core/src/somm_core/schema.py:91</code>). A release gate requires every workspace package to share a single version with exact internal pins (<code>scripts/check_release_gate.py:54</code>), and CI runs the whole matrix on Python 3.12 and 3.13 (<code>.github/workflows/ci.yml:9</code>).</p>
+  <aside class="article-marginnote article-marginnote--callout">
+    <span class="term">Honest footnote</span> The snapshot has known drift: the workspace says <code>0.12.0</code> beta while <code>roster.toml</code> still says <code>1.0.0</code> — a version the changelog identifies as mistakenly published (<code>CHANGELOG.md:14</code>). The MCP README advertises 10 tools; the server registers 14 (<code>packages/somm-mcp/README.md:7</code>).
+  </aside>
+</div>
+
+<h2>How to read this site</h2>
+
+<p>The pages follow the data. Start with a single call and follow it outward — through the substrate it lands in, the loop that learns from it, the agents that consume it, and the engineering that keeps it honest.</p>
+
+<div class="card-grid">
+  <a class="card" href="life-of-a-call.html">
+    <h3>The Life of a Call</h3>
+    <p>From <code>generate()</code> through workload resolution, hooks, budget checks, routing, fallback, and the telemetry row it leaves behind.</p>
+  </a>
+  <a class="card" href="data-and-privacy.html">
+    <h3>The Data Substrate</h3>
+    <p>The SQLite schema, append-only call records, opt-in sampling, owner-only permissions, and privacy enforced at every layer.</p>
+  </a>
+  <a class="card" href="intelligence-loop.html">
+    <h3>The Intelligence Loop</h3>
+    <p>Model-intel refresh, shadow evaluation against gold models, and how graded evidence becomes recommendations you apply — never auto-rollout.</p>
+  </a>
+  <a class="card" href="agents-and-integrations.html">
+    <h3>Agents and Integrations</h3>
+    <p>The 14 MCP tools, the LangChain adapter, drop-in compatibility shims, and the skill files that teach coding agents the loop.</p>
+  </a>
+  <a class="card" href="engineering-reference.html">
+    <h3>Engineering Reference</h3>
+    <p>CI gates, performance budgets, the release process, security posture, and the scripts that turn project invariants into executable checks.</p>
+  </a>
+</div>
+<footer class="colophon article-full" style="margin-left:var(--sp-6);margin-right:var(--sp-6)">
+  Generated 2026-07-10 by <a href="https://github.com/lavallee/artoo">artoo</a> v0.1.0 (explainer generator).<br>
+  Describes <code>somm</code> at commit <code>cc8ebd4</code>.<br>
+  Workers: analysis: codex, synthesis: claude.<br>
+  Machine-written from a deterministic inventory plus per-area code analysis; verify load-bearing claims against the source.
+</footer>
+</main>
+<script src="lib/vendor/mermaid.min.js"></script>
+<script src="lib/artoo-kit/kit.js"></script>
+</body>
+</html>

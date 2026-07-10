@@ -1,0 +1,237 @@
+/* artoo-kit components — nav, cards, callouts, badges, stats, colophon. */
+
+/* -- site shell ---------------------------------------------------------- */
+
+.site-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-6);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.site-nav .brand {
+  font-weight: 700;
+  color: var(--text);
+  margin-right: var(--sp-4);
+}
+
+.site-nav a {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  border: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+}
+
+.site-nav a:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.site-nav a[aria-current="page"] {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.site-nav .nav-toggle { display: none; }
+
+.page {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: var(--sp-8) var(--sp-6) var(--sp-24);
+}
+
+.page--narrow { max-width: calc(var(--measure) + 4rem); }
+
+/* -- cards ---------------------------------------------------------------- */
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: var(--sp-4);
+  margin: var(--sp-6) 0;
+}
+
+.card {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  color: var(--text);
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+a.card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.card h3 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--text-lg);
+}
+
+.card p {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--sp-2);
+}
+
+/* -- callouts -------------------------------------------------------------- */
+
+.callout {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--sp-3) var(--sp-4);
+  margin: var(--sp-6) 0;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.callout > :last-child { margin-bottom: 0; }
+.callout .callout-title {
+  color: var(--text);
+  font-weight: 650;
+  display: block;
+  margin-bottom: var(--sp-1);
+}
+
+.callout--warn { border-left-color: var(--warn); }
+.callout--danger { border-left-color: var(--danger); }
+.callout--success { border-left-color: var(--success); }
+
+/* -- badges & meta ---------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  padding: 0.1em 0.6em;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  background: var(--surface-2);
+}
+
+.badge--accent { color: var(--accent); border-color: var(--accent); background: transparent; }
+.badge--success { color: var(--success); border-color: var(--success); background: transparent; }
+.badge--warn { color: var(--warn); border-color: var(--warn); background: transparent; }
+
+/* -- stat rows -------------------------------------------------------------- */
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--sp-4);
+  margin: var(--sp-6) 0;
+}
+
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.stat .value {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  color: var(--text);
+  display: block;
+  line-height: var(--leading-tight);
+}
+
+.stat .label {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* -- table of contents -------------------------------------------------------- */
+
+.toc {
+  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--sp-4);
+  margin: var(--sp-6) 0;
+}
+
+.toc ol {
+  margin: 0;
+  padding-left: var(--sp-6);
+}
+
+.toc a { color: var(--text-2); }
+.toc a:hover { color: var(--accent); }
+
+/* -- diagrams -------------------------------------------------------------- */
+
+.diagram {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  margin: var(--sp-8) 0;
+  overflow-x: auto;
+}
+
+.diagram svg { display: block; margin: 0 auto; }
+
+/* -- colophon -------------------------------------------------------------- */
+
+.colophon {
+  border-top: 1px solid var(--border);
+  margin-top: var(--sp-16);
+  padding: var(--sp-6) 0 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.colophon a { color: var(--muted); text-decoration: underline; }
+
+/* -- responsive nav -------------------------------------------------------------- */
+
+@media (max-width: 720px) {
+  .site-nav { flex-wrap: wrap; padding: var(--sp-3) var(--sp-4); }
+
+  .site-nav .nav-toggle {
+    display: block;
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    padding: var(--sp-1) var(--sp-2);
+    font: inherit;
+    font-size: var(--text-sm);
+  }
+
+  .site-nav .nav-links {
+    display: none;
+    flex-basis: 100%;
+    flex-direction: column;
+    gap: var(--sp-1);
+    padding-top: var(--sp-2);
+  }
+
+  .site-nav .nav-links.open { display: flex; }
+  .page { padding: var(--sp-6) var(--sp-4) var(--sp-16); }
+}
+
+@media (min-width: 721px) {
+  .site-nav .nav-links { display: flex; gap: var(--sp-1); }
+}

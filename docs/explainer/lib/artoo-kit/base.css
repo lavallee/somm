@@ -1,0 +1,147 @@
+/* artoo-kit base — resets and page defaults. Import order:
+   tokens.css, base.css, then article.css / components.css as needed. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+h1, h2, h3, h4 {
+  color: var(--text);
+  line-height: var(--leading-tight);
+  margin: 0 0 var(--sp-4);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+h1 { font-size: var(--text-3xl); }
+h2 { font-size: var(--text-2xl); margin-top: var(--sp-12); }
+h3 { font-size: var(--text-xl); margin-top: var(--sp-8); }
+h4 { font-size: var(--text-lg); margin-top: var(--sp-6); }
+
+p, ul, ol {
+  margin: 0 0 var(--sp-4);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+a:hover {
+  border-bottom-color: var(--accent);
+}
+
+strong { font-weight: 650; }
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: var(--sp-8) 0;
+}
+
+img, svg, video {
+  max-width: 100%;
+  height: auto;
+}
+
+code, kbd, pre, samp {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+code {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.1em 0.35em;
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  overflow-x: auto;
+  line-height: var(--leading-normal);
+}
+
+pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+kbd {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  padding: 0.05em 0.4em;
+  font-size: var(--text-xs);
+}
+
+blockquote {
+  margin: var(--sp-6) 0;
+  padding-left: var(--sp-4);
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-2);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: var(--sp-6) 0;
+  font-size: var(--text-sm);
+}
+
+th, td {
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+figure {
+  margin: var(--sp-8) 0;
+}
+
+figcaption {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  margin-top: var(--sp-2);
+}
+
+@media print {
+  body { background: #fff; color: #111; }
+  nav, .no-print { display: none !important; }
+}
