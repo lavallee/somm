@@ -7,9 +7,19 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
-## [1.0.0] — 2026-07-09
+## [0.12.0] — 2026-07-10
 
-### Added — the brain and launch surface (Phases 4/5)
+### Release status
+
+- `0.12.0` replaces the mistakenly published `1.0.0` release. somm remains
+  beta/pre-1.0: the system is usable and published, but its public API, MCP
+  tools, service contracts, and migration semantics are not yet being declared
+  stable.
+- Added a CI and PyPI-publish release gate that blocks future `1.x` versions
+  unless the repo contains an explicit `notes/ONE_DOT_ZERO_GO_DECISION.md`
+  readiness decision.
+
+### Added — the brain and beta launch surface
 
 - **Recommendation inbox apply loop**: CLI, MCP, and web actions can list,
   apply, and dismiss routing recommendations. Applying a recommendation now
@@ -39,6 +49,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   performance budget script covering sub-30ms top-level import and sub-1ms
   warmed hot-path p50. CLI executors use a private per-call temp cwd, and
   parse/spool fuzz coverage exercises malformed input paths.
+- **Service guardrails**: dashboard/read APIs require bearer auth or the
+  same-origin loopback dashboard path by default; `/health` no longer exposes
+  local paths; proxy and OTLP ingress enforce body/span caps; proxy dispatch
+  runs off the event loop with service-controlled timeouts; MCP compare has
+  fanout/token caps; adaptive parameter bumps require explicit auto-heal opt-in.
 
 ### Added — evals and the closed loop (Phase 3)
 

@@ -20,6 +20,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Sync workspace (all packages + dev group)
         run: uv sync --all-packages --frozen
+      - name: Check release version gate
+        run: uv run python scripts/check_release_gate.py
       # Uses the repo's existing [tool.ruff] config (pyproject.toml). Some
       # pre-existing violations are not yet fixed — see CONTRIBUTING.md /
       # project notes for status; new code should not add to the count.

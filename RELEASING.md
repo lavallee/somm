@@ -15,8 +15,21 @@ Version bump rules:
   alignment. No new schema, no API additions.
 - **Minor (0.1.1 → 0.2.0)** — new feature surface (MCP tools, library
   APIs, schema migrations) that stays backward-compatible.
-- **Major (0.x → 1.0)** — breaking changes to the library surface, MCP
-  tool signatures, or schema semantics.
+- **Major (0.x → 1.0)** — a deliberate stability declaration, not a routine
+  feature release. It requires a checked-in readiness decision before CI or
+  the PyPI publish workflow will build artifacts.
+
+CI and publish both run:
+
+```bash
+uv run python scripts/check_release_gate.py
+```
+
+That gate fails any `1.x` version unless
+`notes/ONE_DOT_ZERO_GO_DECISION.md` exists and contains
+`somm-1.0-go: true`. Add that file only after the project has explicitly
+decided that the public API, MCP contracts, migration semantics, release
+cadence, and operational docs are ready to be called stable.
 
 Schema migrations bump `SCHEMA_VERSION` in lockstep with a new
 `packages/somm-core/src/somm_core/migrations/NNNN_<name>.sql` file. One

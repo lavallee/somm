@@ -49,6 +49,8 @@ jobs:
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           enable-cache: true
+      - name: Check release version gate
+        run: uv run python scripts/check_release_gate.py
       - name: Build ${{ matrix.package }}
         # NB: in a uv workspace, `uv build` from a member dir writes to the
         # WORKSPACE ROOT dist/ — pass --out-dir explicitly so the publish
