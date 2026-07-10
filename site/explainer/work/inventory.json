@@ -1,0 +1,3188 @@
+{
+ "repo": "/media/ubuntussd/home/lavallee/Projects/somm",
+ "name": "somm",
+ "git": {
+  "head": "cc8ebd4",
+  "commits": 174,
+  "first_commit": "2026-07-10",
+  "last_commit": "2026-07-10",
+  "remote": "https://github.com/lavallee/somm.git"
+ },
+ "loc_by_extension": {
+  ".py": 41996,
+  ".md": 7953,
+  ".json": 3481,
+  ".sql": 568,
+  ".css": 402,
+  ".html": 395,
+  ".toml": 380,
+  ".yml": 121
+ },
+ "files": [
+  {
+   "path": ".gitignore",
+   "loc": 0
+  },
+  {
+   "path": "CHANGELOG.md",
+   "loc": 946
+  },
+  {
+   "path": "CODE_OF_CONDUCT.md",
+   "loc": 131
+  },
+  {
+   "path": "CONTRIBUTING.md",
+   "loc": 60
+  },
+  {
+   "path": "LICENSE",
+   "loc": 0
+  },
+  {
+   "path": "README.md",
+   "loc": 596
+  },
+  {
+   "path": "RELEASING.md",
+   "loc": 176
+  },
+  {
+   "path": "ROADMAP.md",
+   "loc": 252
+  },
+  {
+   "path": "SECURITY.md",
+   "loc": 51
+  },
+  {
+   "path": "conftest.py",
+   "loc": 22
+  },
+  {
+   "path": "pyproject.toml",
+   "loc": 35
+  },
+  {
+   "path": "roster.toml",
+   "loc": 37
+  },
+  {
+   "path": "sessions.txt",
+   "loc": 0
+  },
+  {
+   "path": "uv.lock",
+   "loc": 0
+  },
+  {
+   "path": "tests/__init__.py",
+   "loc": 0
+  },
+  {
+   "path": "tests/test_blocklist.py",
+   "loc": 185
+  },
+  {
+   "path": "tests/test_config_load.py",
+   "loc": 161
+  },
+  {
+   "path": "tests/test_plans.py",
+   "loc": 432
+  },
+  {
+   "path": "tests/test_pricing_bundle.py",
+   "loc": 87
+  },
+  {
+   "path": "tests/test_pricing_safety.py",
+   "loc": 157
+  },
+  {
+   "path": "somm_workspace.egg-info/PKG-INFO",
+   "loc": 0
+  },
+  {
+   "path": "somm_workspace.egg-info/SOURCES.txt",
+   "loc": 0
+  },
+  {
+   "path": "somm_workspace.egg-info/dependency_links.txt",
+   "loc": 0
+  },
+  {
+   "path": "somm_workspace.egg-info/top_level.txt",
+   "loc": 0
+  },
+  {
+   "path": "skillopt/somm.candidate.md",
+   "loc": 223
+  },
+  {
+   "path": "skillopt/somm.md",
+   "loc": 162
+  },
+  {
+   "path": "scripts/check_perf_budget.py",
+   "loc": 122
+  },
+  {
+   "path": "scripts/check_release_gate.py",
+   "loc": 103
+  },
+  {
+   "path": "scripts/score_skill.py",
+   "loc": 153
+  },
+  {
+   "path": "scripts/update_pricing_bundle.py",
+   "loc": 135
+  },
+  {
+   "path": "packages/somm-skill/README.md",
+   "loc": 35
+  },
+  {
+   "path": "packages/somm-skill/pyproject.toml",
+   "loc": 29
+  },
+  {
+   "path": "packages/somm-skill/src/somm_skill/SKILL.md",
+   "loc": 235
+  },
+  {
+   "path": "packages/somm-skill/src/somm_skill/SOMMELIER.md",
+   "loc": 186
+  },
+  {
+   "path": "packages/somm-skill/src/somm_skill/__init__.py",
+   "loc": 1
+  },
+  {
+   "path": "packages/somm-skill/src/somm_skill/py.typed",
+   "loc": 0
+  },
+  {
+   "path": "packages/somm-service/README.md",
+   "loc": 15
+  },
+  {
+   "path": "packages/somm-service/pyproject.toml",
+   "loc": 38
+  },
+  {
+   "path": "packages/somm-service/tests/test_agent.py",
+   "loc": 285
+  },
+  {
+   "path": "packages/somm-service/tests/test_app.py",
+   "loc": 464
+  },
+  {
+   "path": "packages/somm-service/tests/test_hf_intel.py",
+   "loc": 215
+  },
+  {
+   "path": "packages/somm-service/tests/test_http_limits.py",
+   "loc": 39
+  },
+  {
+   "path": "packages/somm-service/tests/test_model_intel.py",
+   "loc": 270
+  },
+  {
+   "path": "packages/somm-service/tests/test_proxy_messages.py",
+   "loc": 650
+  },
+  {
+   "path": "packages/somm-service/tests/test_scheduler.py",
+   "loc": 333
+  },
+  {
+   "path": "packages/somm-service/tests/test_self_heal.py",
+   "loc": 161
+  },
+  {
+   "path": "packages/somm-service/tests/test_shadow_eval.py",
+   "loc": 512
+  },
+  {
+   "path": "packages/somm-service/tests/test_web_recs.py",
+   "loc": 174
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/__init__.py",
+   "loc": 9
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/app.py",
+   "loc": 1362
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/cli.py",
+   "loc": 190
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/http_limits.py",
+   "loc": 40
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/inprocess.py",
+   "loc": 57
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/proxy.py",
+   "loc": 418
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/py.typed",
+   "loc": 0
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/workers/__init__.py",
+   "loc": 23
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/workers/_heartbeat.py",
+   "loc": 52
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/workers/_runner.py",
+   "loc": 210
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/workers/agent.py",
+   "loc": 512
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/workers/hf_intel.py",
+   "loc": 199
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/workers/model_intel.py",
+   "loc": 222
+  },
+  {
+   "path": "packages/somm-service/src/somm_service/workers/shadow_eval.py",
+   "loc": 643
+  },
+  {
+   "path": "packages/somm-mcp/README.md",
+   "loc": 13
+  },
+  {
+   "path": "packages/somm-mcp/pyproject.toml",
+   "loc": 36
+  },
+  {
+   "path": "packages/somm-mcp/tests/test_server.py",
+   "loc": 106
+  },
+  {
+   "path": "packages/somm-mcp/tests/test_sommelier_tools.py",
+   "loc": 216
+  },
+  {
+   "path": "packages/somm-mcp/tests/test_tools.py",
+   "loc": 792
+  },
+  {
+   "path": "packages/somm-mcp/src/somm_mcp/__init__.py",
+   "loc": 13
+  },
+  {
+   "path": "packages/somm-mcp/src/somm_mcp/cli.py",
+   "loc": 39
+  },
+  {
+   "path": "packages/somm-mcp/src/somm_mcp/py.typed",
+   "loc": 0
+  },
+  {
+   "path": "packages/somm-mcp/src/somm_mcp/server.py",
+   "loc": 995
+  },
+  {
+   "path": "packages/somm-langchain/README.md",
+   "loc": 20
+  },
+  {
+   "path": "packages/somm-langchain/pyproject.toml",
+   "loc": 33
+  },
+  {
+   "path": "packages/somm-langchain/tests/test_chat_model.py",
+   "loc": 367
+  },
+  {
+   "path": "packages/somm-langchain/src/somm_langchain/__init__.py",
+   "loc": 5
+  },
+  {
+   "path": "packages/somm-langchain/src/somm_langchain/chat_model.py",
+   "loc": 295
+  },
+  {
+   "path": "packages/somm-langchain/src/somm_langchain/py.typed",
+   "loc": 0
+  },
+  {
+   "path": "packages/somm-core/README.md",
+   "loc": 13
+  },
+  {
+   "path": "packages/somm-core/pyproject.toml",
+   "loc": 31
+  },
+  {
+   "path": "packages/somm-core/tests/test_datasets.py",
+   "loc": 124
+  },
+  {
+   "path": "packages/somm-core/tests/test_graders.py",
+   "loc": 90
+  },
+  {
+   "path": "packages/somm-core/tests/test_plan_learning.py",
+   "loc": 82
+  },
+  {
+   "path": "packages/somm-core/tests/test_pricing_cache.py",
+   "loc": 48
+  },
+  {
+   "path": "packages/somm-core/tests/test_registry_concurrency.py",
+   "loc": 43
+  },
+  {
+   "path": "packages/somm-core/tests/test_repository.py",
+   "loc": 103
+  },
+  {
+   "path": "packages/somm-core/tests/test_schema_migrations.py",
+   "loc": 474
+  },
+  {
+   "path": "packages/somm-core/tests/test_workload_revisions.py",
+   "loc": 165
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/__init__.py",
+   "loc": 81
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/config.py",
+   "loc": 223
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/graders.py",
+   "loc": 239
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/models.py",
+   "loc": 382
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/parse.py",
+   "loc": 396
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/plans.py",
+   "loc": 803
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/pricing.py",
+   "loc": 406
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/py.typed",
+   "loc": 0
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/registry.py",
+   "loc": 173
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/repository.py",
+   "loc": 1940
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/schema.py",
+   "loc": 142
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/version.py",
+   "loc": 7
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0001_initial.sql",
+   "loc": 148
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0002_workload_shadow.sql",
+   "loc": 26
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0003_workload_capabilities.sql",
+   "loc": 6
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0004_decisions.sql",
+   "loc": 32
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0005_error_detail.sql",
+   "loc": 6
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0006_workload_constraints.sql",
+   "loc": 47
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0007_commission_and_call_params.sql",
+   "loc": 21
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0008_learned_param_overrides.sql",
+   "loc": 31
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0009_correlation_id.sql",
+   "loc": 16
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0010_drop_commission_id.sql",
+   "loc": 13
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0011_prompt_labels.sql",
+   "loc": 28
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0012_call_telemetry_columns.sql",
+   "loc": 15
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0013_workload_revisions.sql",
+   "loc": 20
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0014_prompt_label_weights.sql",
+   "loc": 7
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0015_workload_policy.sql",
+   "loc": 6
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0016_datasets.sql",
+   "loc": 36
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0017_eval_receipts.sql",
+   "loc": 34
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0018_campaigns.sql",
+   "loc": 57
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/migrations/0019_model_aliases.sql",
+   "loc": 19
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/data/plan_catalog.toml",
+   "loc": 98
+  },
+  {
+   "path": "packages/somm-core/src/somm_core/data/pricing_bundle.json",
+   "loc": 3472
+  },
+  {
+   "path": "packages/somm/README.md",
+   "loc": 21
+  },
+  {
+   "path": "packages/somm/pyproject.toml",
+   "loc": 43
+  },
+  {
+   "path": "packages/somm/tests/test_budget_gate.py",
+   "loc": 180
+  },
+  {
+   "path": "packages/somm/tests/test_call_telemetry.py",
+   "loc": 174
+  },
+  {
+   "path": "packages/somm/tests/test_campaigns.py",
+   "loc": 208
+  },
+  {
+   "path": "packages/somm/tests/test_cli.py",
+   "loc": 666
+  },
+  {
+   "path": "packages/somm/tests/test_cli_spend.py",
+   "loc": 252
+  },
+  {
+   "path": "packages/somm/tests/test_compat.py",
+   "loc": 247
+  },
+  {
+   "path": "packages/somm/tests/test_cross_project.py",
+   "loc": 246
+  },
+  {
+   "path": "packages/somm/tests/test_embed.py",
+   "loc": 229
+  },
+  {
+   "path": "packages/somm/tests/test_error_detail_scrub.py",
+   "loc": 71
+  },
+  {
+   "path": "packages/somm/tests/test_eval_run.py",
+   "loc": 167
+  },
+  {
+   "path": "packages/somm/tests/test_generate_structured.py",
+   "loc": 214
+  },
+  {
+   "path": "packages/somm/tests/test_hook_wiring.py",
+   "loc": 361
+  },
+  {
+   "path": "packages/somm/tests/test_hooks.py",
+   "loc": 129
+  },
+  {
+   "path": "packages/somm/tests/test_hooks_bus.py",
+   "loc": 287
+  },
+  {
+   "path": "packages/somm/tests/test_hot_path.py",
+   "loc": 108
+  },
+  {
+   "path": "packages/somm/tests/test_inprocess_workers.py",
+   "loc": 143
+  },
+  {
+   "path": "packages/somm/tests/test_library_ext.py",
+   "loc": 945
+  },
+  {
+   "path": "packages/somm/tests/test_multimodal.py",
+   "loc": 336
+  },
+  {
+   "path": "packages/somm/tests/test_no_fallback.py",
+   "loc": 174
+  },
+  {
+   "path": "packages/somm/tests/test_openrouter.py",
+   "loc": 256
+  },
+  {
+   "path": "packages/somm/tests/test_optimize.py",
+   "loc": 136
+  },
+  {
+   "path": "packages/somm/tests/test_outcome_classification.py",
+   "loc": 65
+  },
+  {
+   "path": "packages/somm/tests/test_parse_helpers.py",
+   "loc": 207
+  },
+  {
+   "path": "packages/somm/tests/test_perplexity_provider.py",
+   "loc": 89
+  },
+  {
+   "path": "packages/somm/tests/test_plan_governor.py",
+   "loc": 50
+  },
+  {
+   "path": "packages/somm/tests/test_plugin_cli.py",
+   "loc": 84
+  },
+  {
+   "path": "packages/somm/tests/test_plugins_reference.py",
+   "loc": 358
+  },
+  {
+   "path": "packages/somm/tests/test_pricing_utils.py",
+   "loc": 18
+  },
+  {
+   "path": "packages/somm/tests/test_prompt_ab.py",
+   "loc": 192
+  },
+  {
+   "path": "packages/somm/tests/test_prompt_binding.py",
+   "loc": 129
+  },
+  {
+   "path": "packages/somm/tests/test_prompt_cli.py",
+   "loc": 277
+  },
+  {
+   "path": "packages/somm/tests/test_prompt_labels.py",
+   "loc": 178
+  },
+  {
+   "path": "packages/somm/tests/test_provider_adapters.py",
+   "loc": 1234
+  },
+  {
+   "path": "packages/somm/tests/test_provider_registry.py",
+   "loc": 183
+  },
+  {
+   "path": "packages/somm/tests/test_recommendations.py",
+   "loc": 126
+  },
+  {
+   "path": "packages/somm/tests/test_routing.py",
+   "loc": 524
+  },
+  {
+   "path": "packages/somm/tests/test_sample_capture.py",
+   "loc": 125
+  },
+  {
+   "path": "packages/somm/tests/test_smoke.py",
+   "loc": 533
+  },
+  {
+   "path": "packages/somm/tests/test_sommelier.py",
+   "loc": 845
+  },
+  {
+   "path": "packages/somm/tests/test_streaming.py",
+   "loc": 315
+  },
+  {
+   "path": "packages/somm/tests/test_workload_frontier.py",
+   "loc": 181
+  },
+  {
+   "path": "packages/somm/tests/test_workload_policy.py",
+   "loc": 331
+  },
+  {
+   "path": "packages/somm/tests/test_writer_atexit.py",
+   "loc": 139
+  },
+  {
+   "path": "packages/somm/src/somm/__init__.py",
+   "loc": 67
+  },
+  {
+   "path": "packages/somm/src/somm/_redaction.py",
+   "loc": 50
+  },
+  {
+   "path": "packages/somm/src/somm/campaigns.py",
+   "loc": 431
+  },
+  {
+   "path": "packages/somm/src/somm/capabilities.py",
+   "loc": 296
+  },
+  {
+   "path": "packages/somm/src/somm/cli.py",
+   "loc": 2428
+  },
+  {
+   "path": "packages/somm/src/somm/client.py",
+   "loc": 2310
+  },
+  {
+   "path": "packages/somm/src/somm/errors.py",
+   "loc": 183
+  },
+  {
+   "path": "packages/somm/src/somm/evals.py",
+   "loc": 350
+  },
+  {
+   "path": "packages/somm/src/somm/hooks.py",
+   "loc": 439
+  },
+  {
+   "path": "packages/somm/src/somm/optimize.py",
+   "loc": 194
+  },
+  {
+   "path": "packages/somm/src/somm/plan_governor.py",
+   "loc": 75
+  },
+  {
+   "path": "packages/somm/src/somm/prompts.py",
+   "loc": 543
+  },
+  {
+   "path": "packages/somm/src/somm/provenance.py",
+   "loc": 36
+  },
+  {
+   "path": "packages/somm/src/somm/py.typed",
+   "loc": 0
+  },
+  {
+   "path": "packages/somm/src/somm/recommendations.py",
+   "loc": 352
+  },
+  {
+   "path": "packages/somm/src/somm/routing.py",
+   "loc": 484
+  },
+  {
+   "path": "packages/somm/src/somm/slots.py",
+   "loc": 84
+  },
+  {
+   "path": "packages/somm/src/somm/sommelier.py",
+   "loc": 973
+  },
+  {
+   "path": "packages/somm/src/somm/telemetry.py",
+   "loc": 338
+  },
+  {
+   "path": "packages/somm/src/somm/providers/__init__.py",
+   "loc": 54
+  },
+  {
+   "path": "packages/somm/src/somm/providers/_openai_compat.py",
+   "loc": 492
+  },
+  {
+   "path": "packages/somm/src/somm/providers/anthropic.py",
+   "loc": 234
+  },
+  {
+   "path": "packages/somm/src/somm/providers/base.py",
+   "loc": 134
+  },
+  {
+   "path": "packages/somm/src/somm/providers/claude_cli.py",
+   "loc": 123
+  },
+  {
+   "path": "packages/somm/src/somm/providers/codex_cli.py",
+   "loc": 102
+  },
+  {
+   "path": "packages/somm/src/somm/providers/deepseek.py",
+   "loc": 44
+  },
+  {
+   "path": "packages/somm/src/somm/providers/gemini.py",
+   "loc": 73
+  },
+  {
+   "path": "packages/somm/src/somm/providers/minimax.py",
+   "loc": 29
+  },
+  {
+   "path": "packages/somm/src/somm/providers/ollama.py",
+   "loc": 293
+  },
+  {
+   "path": "packages/somm/src/somm/providers/openai.py",
+   "loc": 17
+  },
+  {
+   "path": "packages/somm/src/somm/providers/openrouter.py",
+   "loc": 296
+  },
+  {
+   "path": "packages/somm/src/somm/providers/perplexity.py",
+   "loc": 59
+  },
+  {
+   "path": "packages/somm/src/somm/providers/registry.py",
+   "loc": 223
+  },
+  {
+   "path": "packages/somm/src/somm/plugins/__init__.py",
+   "loc": 43
+  },
+  {
+   "path": "packages/somm/src/somm/plugins/cache.py",
+   "loc": 254
+  },
+  {
+   "path": "packages/somm/src/somm/plugins/notifier.py",
+   "loc": 104
+  },
+  {
+   "path": "packages/somm/src/somm/plugins/otel_exporter.py",
+   "loc": 74
+  },
+  {
+   "path": "packages/somm/src/somm/plugins/redaction.py",
+   "loc": 58
+  },
+  {
+   "path": "packages/somm/src/somm/compat/__init__.py",
+   "loc": 53
+  },
+  {
+   "path": "packages/somm/src/somm/compat/generic.py",
+   "loc": 161
+  },
+  {
+   "path": "packages/somm/src/somm/compat/openai_compat.py",
+   "loc": 177
+  },
+  {
+   "path": "packages/somm/.somm/calls.sqlite",
+   "loc": 0
+  },
+  {
+   "path": "notes/CHARTER.md",
+   "loc": 97
+  },
+  {
+   "path": "notes/GAMEPLAN-2026-07.md",
+   "loc": 482
+  },
+  {
+   "path": "notes/PLAN.md",
+   "loc": 1836
+  },
+  {
+   "path": "notes/SOUNDCHECK-WORKLIST-2026-07-10.md",
+   "loc": 312
+  },
+  {
+   "path": "notes/TODOS.md",
+   "loc": 56
+  },
+  {
+   "path": "examples/README.md",
+   "loc": 114
+  },
+  {
+   "path": "examples/drop_in_wrapper.py",
+   "loc": 90
+  },
+  {
+   "path": "examples/openai_swap_in.py",
+   "loc": 67
+  },
+  {
+   "path": "examples/private_workload.py",
+   "loc": 50
+  },
+  {
+   "path": "docs/.nojekyll",
+   "loc": 0
+  },
+  {
+   "path": "docs/BLUEPRINT.md",
+   "loc": 352
+  },
+  {
+   "path": "docs/index.html",
+   "loc": 323
+  },
+  {
+   "path": "docs/intel-sources.md",
+   "loc": 135
+  },
+  {
+   "path": "docs/multimodal.md",
+   "loc": 101
+  },
+  {
+   "path": "docs/plugins.md",
+   "loc": 220
+  },
+  {
+   "path": "docs/style.css",
+   "loc": 402
+  },
+  {
+   "path": "docs/threat-model.md",
+   "loc": 85
+  },
+  {
+   "path": "docs/tool-calling.md",
+   "loc": 151
+  },
+  {
+   "path": "docs/errors/SOMM_BUDGET_EXCEEDED.md",
+   "loc": 66
+  },
+  {
+   "path": "docs/errors/SOMM_EMPTY_RESPONSE.md",
+   "loc": 60
+  },
+  {
+   "path": "docs/errors/SOMM_ERROR.md",
+   "loc": 41
+  },
+  {
+   "path": "docs/errors/SOMM_NO_CAPABLE_PROVIDER.md",
+   "loc": 65
+  },
+  {
+   "path": "docs/errors/SOMM_PORT_BUSY.md",
+   "loc": 43
+  },
+  {
+   "path": "docs/errors/SOMM_PRIVACY_VIOLATION.md",
+   "loc": 73
+  },
+  {
+   "path": "docs/errors/SOMM_PROVIDERS_EXHAUSTED.md",
+   "loc": 58
+  },
+  {
+   "path": "docs/errors/SOMM_PROVIDER_5XX.md",
+   "loc": 42
+  },
+  {
+   "path": "docs/errors/SOMM_PROVIDER_AUTH.md",
+   "loc": 50
+  },
+  {
+   "path": "docs/errors/SOMM_PROVIDER_BAD_REQUEST.md",
+   "loc": 53
+  },
+  {
+   "path": "docs/errors/SOMM_PROVIDER_INSUFFICIENT_CREDIT.md",
+   "loc": 49
+  },
+  {
+   "path": "docs/errors/SOMM_PROVIDER_RATE_LIMIT.md",
+   "loc": 50
+  },
+  {
+   "path": "docs/errors/SOMM_PROVIDER_TIMEOUT.md",
+   "loc": 52
+  },
+  {
+   "path": "docs/errors/SOMM_SCHEMA_STALE.md",
+   "loc": 41
+  },
+  {
+   "path": "docs/errors/SOMM_WORKLOAD_UNREGISTERED.md",
+   "loc": 46
+  },
+  {
+   "path": "docs/errors/index.html",
+   "loc": 72
+  },
+  {
+   "path": ".somm/calls.backup-pre-0.3.1.sqlite",
+   "loc": 0
+  },
+  {
+   "path": ".somm/calls.sqlite",
+   "loc": 0
+  },
+  {
+   "path": ".github/PULL_REQUEST_TEMPLATE.md",
+   "loc": 14
+  },
+  {
+   "path": ".github/workflows/ci.yml",
+   "loc": 55
+  },
+  {
+   "path": ".github/workflows/publish.yml",
+   "loc": 66
+  },
+  {
+   "path": ".github/ISSUE_TEMPLATE/bug_report.md",
+   "loc": 49
+  },
+  {
+   "path": ".github/ISSUE_TEMPLATE/feature_request.md",
+   "loc": 25
+  },
+  {
+   "path": ".claude/settings.local.json",
+   "loc": 9
+  }
+ ],
+ "python": {
+  "packages": [
+   {
+    "path": ".",
+    "name": "somm-workspace",
+    "description": "somm \u2014 self-hosted LLM telemetry, routing, and intelligence loop (workspace root)",
+    "dependencies": [],
+    "scripts": [],
+    "workspace_members": [
+     "packages/*"
+    ]
+   },
+   {
+    "path": "packages/somm-skill",
+    "name": "somm-skill",
+    "description": "somm onboarding skill templates for coding agents (Claude, Codex, Cursor, Windsurf)",
+    "dependencies": [],
+    "scripts": [],
+    "workspace_members": []
+   },
+   {
+    "path": "packages/somm-service",
+    "name": "somm-service",
+    "description": "somm service \u2014 web admin, HTTP API, background workers",
+    "dependencies": [
+     "somm-core==0.12.0",
+     "somm==0.12.0",
+     "litellm>=1.40",
+     "starlette>=0.40",
+     "uvicorn>=0.30"
+    ],
+    "scripts": [
+     "somm-serve"
+    ],
+    "workspace_members": []
+   },
+   {
+    "path": "packages/somm-mcp",
+    "name": "somm-mcp",
+    "description": "somm MCP server \u2014 exposes telemetry + recommendations to coding agents",
+    "dependencies": [
+     "somm-core==0.12.0",
+     "somm==0.12.0",
+     "mcp>=1.2"
+    ],
+    "scripts": [
+     "somm-mcp"
+    ],
+    "workspace_members": []
+   },
+   {
+    "path": "packages/somm-langchain",
+    "name": "somm-langchain",
+    "description": "LangChain BaseChatModel adapter for somm \u2014 lets LangChain/LangGraph/deepagents apps use somm as their LLM substrate",
+    "dependencies": [
+     "somm-core==0.12.0",
+     "somm==0.12.0",
+     "langchain-core>=0.3"
+    ],
+    "scripts": [],
+    "workspace_members": []
+   },
+   {
+    "path": "packages/somm-core",
+    "name": "somm-core",
+    "description": "somm shared core \u2014 schema, repository, config, parse, version",
+    "dependencies": [],
+    "scripts": [],
+    "workspace_members": []
+   },
+   {
+    "path": "packages/somm",
+    "name": "somm",
+    "description": "somm \u2014 self-hosted LLM telemetry, routing, and intelligence loop (library)",
+    "dependencies": [
+     "somm-core==0.12.0",
+     "httpx>=0.27"
+    ],
+    "scripts": [
+     "somm"
+    ],
+    "workspace_members": []
+   }
+  ],
+  "modules": [
+   {
+    "path": "conftest.py",
+    "loc": 22,
+    "doc": "Repo-wide test isolation.",
+    "imports": [
+     "__future__",
+     "pytest"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "tests/__init__.py",
+    "loc": 0,
+    "doc": "",
+    "imports": [],
+    "is_test": true
+   },
+   {
+    "path": "tests/test_blocklist.py",
+    "loc": 185,
+    "doc": "Blocklist CI guard \u2014 fails if internal project names leak into the repo.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "re"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "tests/test_config_load.py",
+    "loc": 161,
+    "doc": "Unit tests for somm_core.config.load() env-var override behavior.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "tests/test_plans.py",
+    "loc": 432,
+    "doc": "Tests for billing plans: parsing, window math, pacing states,",
+    "imports": [
+     "__future__",
+     "datetime",
+     "json",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "tests/test_pricing_bundle.py",
+    "loc": 87,
+    "doc": "Tests for the bundled pricing snapshot + sync_bundled_pricing().",
+    "imports": [
+     "__future__",
+     "importlib",
+     "json",
+     "pathlib",
+     "somm_core",
+     "tempfile"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "tests/test_pricing_safety.py",
+    "loc": 157,
+    "doc": "Tests for cost-tracking safety features.",
+    "imports": [
+     "__future__",
+     "contextlib",
+     "io",
+     "pathlib",
+     "somm_core",
+     "tempfile"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "scripts/check_perf_budget.py",
+    "loc": 122,
+    "doc": "CI performance budget checks for somm's import and warmed call path.",
+    "imports": [
+     "__future__",
+     "os",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "statistics",
+     "subprocess",
+     "sys",
+     "tempfile",
+     "time"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "scripts/check_release_gate.py",
+    "loc": 103,
+    "doc": "Release-version guardrails for the unified somm workspace.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "re",
+     "sys",
+     "tomllib"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "scripts/score_skill.py",
+    "loc": 153,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "os",
+     "pathlib",
+     "re",
+     "sys"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "scripts/update_pricing_bundle.py",
+    "loc": 135,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "argparse",
+     "datetime",
+     "json",
+     "pathlib",
+     "sys",
+     "urllib"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-skill/src/somm_skill/__init__.py",
+    "loc": 1,
+    "doc": "somm-skill \u2014 onboarding skill content + templates for coding agents.",
+    "imports": [],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/tests/test_agent.py",
+    "loc": 285,
+    "doc": "Tests for AgentWorker \u2014 switch_model, new_model_landed, chronic_cooldown.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "json",
+     "pathlib",
+     "somm_core",
+     "somm_service",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_app.py",
+    "loc": 464,
+    "doc": "Tests for somm-service web + API.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "somm_service",
+     "starlette",
+     "stat",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_hf_intel.py",
+    "loc": 215,
+    "doc": "HuggingFace intel worker \u2014 canonicalization, enrichment merge, feature flag.",
+    "imports": [
+     "__future__",
+     "httpx",
+     "pathlib",
+     "somm_core",
+     "somm_service"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_http_limits.py",
+    "loc": 39,
+    "doc": "Tests for shared HTTP ingress limit helpers.",
+    "imports": [
+     "__future__",
+     "pytest",
+     "somm_service"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_model_intel.py",
+    "loc": 270,
+    "doc": "Tests for the model-intel worker + pricing helpers.",
+    "imports": [
+     "__future__",
+     "httpx",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "somm_service"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_proxy_messages.py",
+    "loc": 650,
+    "doc": "Tests for the /v1/messages Anthropic-compatible proxy gateway.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "pytest",
+     "somm_core",
+     "somm_service",
+     "starlette",
+     "threading",
+     "time",
+     "types",
+     "unittest"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_scheduler.py",
+    "loc": 333,
+    "doc": "Scheduler tests \u2014 seed, lease atomicity, success/failure state, crash recovery.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "pathlib",
+     "somm_core",
+     "somm_service",
+     "threading",
+     "time"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_self_heal.py",
+    "loc": 161,
+    "doc": "Tests for somm self-healing: adaptive_param_bump.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "pathlib",
+     "somm_core",
+     "somm_service",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_shadow_eval.py",
+    "loc": 512,
+    "doc": "Tests for ShadowEvalWorker \u2014 structural + text similarity grading,",
+    "imports": [
+     "__future__",
+     "datetime",
+     "hashlib",
+     "json",
+     "pathlib",
+     "pytest",
+     "shutil",
+     "somm",
+     "somm_core",
+     "somm_service",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/tests/test_web_recs.py",
+    "loc": 174,
+    "doc": "Web admin recommendations rendering + dismiss/apply endpoints.",
+    "imports": [
+     "__future__",
+     "json",
+     "pathlib",
+     "pytest",
+     "somm_core",
+     "somm_service",
+     "starlette"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/__init__.py",
+    "loc": 9,
+    "doc": "somm-service \u2014 web admin + HTTP API + background workers.",
+    "imports": [
+     "somm_service"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/app.py",
+    "loc": 1362,
+    "doc": "Starlette app serving the web admin + HTTP API.",
+    "imports": [
+     "__future__",
+     "contextlib",
+     "dataclasses",
+     "datetime",
+     "html",
+     "ipaddress",
+     "json",
+     "os",
+     "pathlib",
+     "secrets",
+     "somm",
+     "somm_core",
+     "somm_service",
+     "sqlite3",
+     "starlette",
+     "time",
+     "urllib",
+     "uuid",
+     "uvicorn"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/cli.py",
+    "loc": 190,
+    "doc": "`somm-serve` + admin CLI \u2014 standalone entry point.",
+    "imports": [
+     "__future__",
+     "argparse",
+     "somm_core",
+     "somm_service",
+     "sys"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/http_limits.py",
+    "loc": 40,
+    "doc": "Small request-body guards shared by service JSON ingress paths.",
+    "imports": [
+     "__future__",
+     "json",
+     "starlette",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/inprocess.py",
+    "loc": 57,
+    "doc": "In-process intelligence loop \u2014 the scheduler without the web server.",
+    "imports": [
+     "__future__",
+     "somm",
+     "somm_core",
+     "somm_service",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/proxy.py",
+    "loc": 418,
+    "doc": "POST /v1/messages \u2014 Anthropic Messages-compatible LLM proxy gateway (v1).",
+    "imports": [
+     "__future__",
+     "asyncio",
+     "datetime",
+     "json",
+     "litellm",
+     "somm",
+     "somm_core",
+     "somm_service",
+     "starlette",
+     "time",
+     "typing",
+     "uuid"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/workers/__init__.py",
+    "loc": 23,
+    "doc": "Scheduled workers: model_intel (v0.3a), shadow_eval (v0.3b), agent (v0.3c).",
+    "imports": [
+     "somm_service"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/workers/_heartbeat.py",
+    "loc": 52,
+    "doc": "Best-effort worker heartbeat writes.",
+    "imports": [
+     "__future__",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/workers/_runner.py",
+    "loc": 210,
+    "doc": "Scheduler \u2014 polls the `jobs` table; claims + runs due workers atomically.",
+    "imports": [
+     "__future__",
+     "collections",
+     "logging",
+     "somm_core",
+     "somm_service",
+     "threading",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/workers/agent.py",
+    "loc": 512,
+    "doc": "Agent worker \u2014 weekly analysis that emits recommendations.",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "datetime",
+     "json",
+     "logging",
+     "somm_core",
+     "statistics",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/workers/hf_intel.py",
+    "loc": 199,
+    "doc": "HuggingFace-Hub intel worker \u2014 supplements `model_intel` with per-model",
+    "imports": [
+     "__future__",
+     "httpx",
+     "logging",
+     "os",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/workers/model_intel.py",
+    "loc": 222,
+    "doc": "Model-intel worker \u2014 scrapes OpenRouter, probes ollama, seeds static pricing.",
+    "imports": [
+     "__future__",
+     "httpx",
+     "logging",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-service/src/somm_service/workers/shadow_eval.py",
+    "loc": 643,
+    "doc": "Shadow-eval worker \u2014 re-runs sampled production calls through a gold model",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "datetime",
+     "hashlib",
+     "json",
+     "logging",
+     "somm",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-mcp/tests/test_server.py",
+    "loc": 106,
+    "doc": "Tests for the somm-mcp server. Exercises the handler function directly",
+    "imports": [
+     "__future__",
+     "json",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "somm_mcp"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-mcp/tests/test_sommelier_tools.py",
+    "loc": 216,
+    "doc": "MCP sommelier tools \u2014 somm_advise, somm_record_decision, somm_search_decisions,",
+    "imports": [
+     "__future__",
+     "json",
+     "pathlib",
+     "pytest",
+     "somm_core",
+     "somm_mcp"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-mcp/tests/test_tools.py",
+    "loc": 792,
+    "doc": "MCP tool tests \u2014 exercise each of the 7 tools end-to-end.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "json",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "somm_mcp",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-mcp/src/somm_mcp/__init__.py",
+    "loc": 13,
+    "doc": "somm-mcp \u2014 MCP server exposing somm telemetry + recommendations.",
+    "imports": [
+     "somm_mcp"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-mcp/src/somm_mcp/cli.py",
+    "loc": 39,
+    "doc": "`somm-mcp` CLI \u2014 runs the stdio MCP server with the full provider chain.",
+    "imports": [
+     "__future__",
+     "argparse",
+     "somm",
+     "somm_core",
+     "somm_mcp",
+     "sys"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-mcp/src/somm_mcp/server.py",
+    "loc": 995,
+    "doc": "FastMCP server \u2014 exposes 14 tools to coding agents.",
+    "imports": [
+     "__future__",
+     "json",
+     "mcp",
+     "somm",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-langchain/tests/test_chat_model.py",
+    "loc": 367,
+    "doc": "Tests for SommChatModel \u2014 LangChain \u21c4 somm translation, bind_tools, error path.",
+    "imports": [
+     "__future__",
+     "langchain_core",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "somm_langchain"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-langchain/src/somm_langchain/__init__.py",
+    "loc": 5,
+    "doc": "somm-langchain \u2014 LangChain BaseChatModel adapter for somm.",
+    "imports": [
+     "somm_langchain"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-langchain/src/somm_langchain/chat_model.py",
+    "loc": 295,
+    "doc": "SommChatModel \u2014 LangChain BaseChatModel implementation that routes through somm.",
+    "imports": [
+     "__future__",
+     "langchain_core",
+     "pydantic",
+     "somm",
+     "somm_core",
+     "somm_langchain",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/tests/test_datasets.py",
+    "loc": 124,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "datetime",
+     "pytest",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-core/tests/test_graders.py",
+    "loc": 90,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-core/tests/test_plan_learning.py",
+    "loc": 82,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "datetime",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-core/tests/test_pricing_cache.py",
+    "loc": 48,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-core/tests/test_registry_concurrency.py",
+    "loc": 43,
+    "doc": "Registry read-modify-write must not lose entries under concurrency.",
+    "imports": [
+     "__future__",
+     "json",
+     "somm_core",
+     "threading"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-core/tests/test_repository.py",
+    "loc": 103,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "datetime",
+     "somm_core",
+     "threading"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-core/tests/test_schema_migrations.py",
+    "loc": 474,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "somm_core",
+     "sqlite3"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-core/tests/test_workload_revisions.py",
+    "loc": 165,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "pytest",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/__init__.py",
+    "loc": 81,
+    "doc": "somm-core \u2014 shared schema, repository, config, parse, version across all somm packages.",
+    "imports": [
+     "__future__",
+     "importlib",
+     "somm_core"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/config.py",
+    "loc": 223,
+    "doc": "Config loading: env > pyproject.toml > runtime override > defaults.",
+    "imports": [
+     "__future__",
+     "contextlib",
+     "dataclasses",
+     "os",
+     "pathlib",
+     "somm_core",
+     "sys",
+     "tomllib"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/graders.py",
+    "loc": 239,
+    "doc": "Shared eval graders used by workers and synchronous eval runs.",
+    "imports": [
+     "__future__",
+     "collections",
+     "dataclasses",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/models.py",
+    "loc": 382,
+    "doc": "Typed data shapes shared across packages.",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "datetime",
+     "enum",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/parse.py",
+    "loc": 396,
+    "doc": "Shared parsing helpers: JSON extraction, <think> stripping, hashing.",
+    "imports": [
+     "__future__",
+     "base64",
+     "hashlib",
+     "json",
+     "re",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/plans.py",
+    "loc": 803,
+    "doc": "Billing plans \u2014 PAYG vs metered-quota accounting per provider.",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "datetime",
+     "importlib",
+     "os",
+     "pathlib",
+     "re",
+     "sqlite3",
+     "tomllib"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/pricing.py",
+    "loc": 406,
+    "doc": "Cost calculation from the `model_intel` cache.",
+    "imports": [
+     "__future__",
+     "importlib",
+     "json",
+     "pathlib",
+     "somm_core",
+     "sys",
+     "the",
+     "threading",
+     "time",
+     "typing",
+     "zlib"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/registry.py",
+    "loc": 173,
+    "doc": "Fleet registry \u2014 which project databases live on this machine.",
+    "imports": [
+     "__future__",
+     "contextlib",
+     "datetime",
+     "fcntl",
+     "json",
+     "os",
+     "pathlib",
+     "threading"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/repository.py",
+    "loc": 1940,
+    "doc": "Repository \u2014 the single query/write API used by library, service, and MCP.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "json",
+     "math",
+     "os",
+     "pathlib",
+     "somm_core",
+     "sqlite3",
+     "threading",
+     "uuid"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/schema.py",
+    "loc": 142,
+    "doc": "Schema migration runner.",
+    "imports": [
+     "__future__",
+     "importlib",
+     "pathlib",
+     "somm_core",
+     "sqlite3"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm-core/src/somm_core/version.py",
+    "loc": 7,
+    "doc": "Single source of truth for somm's version + schema version.",
+    "imports": [],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/tests/test_budget_gate.py",
+    "loc": 180,
+    "doc": "Fail-closed budget gate: refuse calls once a workload's daily cap is reached.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_call_telemetry.py",
+    "loc": 174,
+    "doc": "Phase-2 telemetry columns: session/parent hierarchy, cache tokens,",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "sqlite3",
+     "time"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_campaigns.py",
+    "loc": 208,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "datetime",
+     "somm",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_cli.py",
+    "loc": 666,
+    "doc": "CLI integration tests \u2014 status, tail, compare, doctor.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "json",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "somm_service",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_cli_spend.py",
+    "loc": 252,
+    "doc": "Tests for `somm spend` subcommand.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "json",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_compat.py",
+    "loc": 247,
+    "doc": "Compat shim tests \u2014 GenericLLMCompat + openai_chat_completions.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_cross_project.py",
+    "loc": 246,
+    "doc": "Cross-project mirror tests \u2014 D6.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_embed.py",
+    "loc": 229,
+    "doc": "SommLLM.embed() \u2014 local ollama, no fallback, telemetry mirrors generate().",
+    "imports": [
+     "__future__",
+     "json",
+     "os",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "sqlite3",
+     "urllib"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_error_detail_scrub.py",
+    "loc": 71,
+    "doc": "Tests for persisted error_detail secret redaction.",
+    "imports": [
+     "__future__",
+     "somm"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_eval_run.py",
+    "loc": 167,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "datetime",
+     "somm",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_generate_structured.py",
+    "loc": 214,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "sqlite3"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_hook_wiring.py",
+    "loc": 361,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "sqlite3",
+     "threading",
+     "time"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_hooks.py",
+    "loc": 129,
+    "doc": "Tests for somm.hooks \u2014 correlation-id provider + call observers.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_hooks_bus.py",
+    "loc": 287,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "asyncio",
+     "pytest",
+     "somm",
+     "threading",
+     "time"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_hot_path.py",
+    "loc": 108,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "sqlite3",
+     "threading"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_inprocess_workers.py",
+    "loc": 143,
+    "doc": "Tests for SOMM_INPROCESS_WORKERS wiring + the dormant-loop warning.",
+    "imports": [
+     "__future__",
+     "contextlib",
+     "io",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "somm_service"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_library_ext.py",
+    "loc": 945,
+    "doc": "Tests for D2c library additions: extract_structured, prompt versioning,",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_multimodal.py",
+    "loc": 336,
+    "doc": "Multimodal prompt widening + capability-aware routing.",
+    "imports": [
+     "__future__",
+     "collections",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_no_fallback.py",
+    "loc": 174,
+    "doc": "no_fallback=True suppresses pinned-call rescue through the router chain.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_openrouter.py",
+    "loc": 256,
+    "doc": "OpenRouter provider tests \u2014 httpx MockTransport, no network.",
+    "imports": [
+     "__future__",
+     "httpx",
+     "json",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_optimize.py",
+    "loc": 136,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "datetime",
+     "somm",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_outcome_classification.py",
+    "loc": 65,
+    "doc": "FailureClass classification of Outcome values.",
+    "imports": [
+     "__future__",
+     "pytest",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_parse_helpers.py",
+    "loc": 207,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "json",
+     "random",
+     "somm_core",
+     "string"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_perplexity_provider.py",
+    "loc": 89,
+    "doc": "Tests for the Perplexity provider \u2014 search-grounded sonar models.",
+    "imports": [
+     "__future__",
+     "httpx",
+     "json",
+     "somm"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_plan_governor.py",
+    "loc": 50,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "datetime",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_plugin_cli.py",
+    "loc": 84,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "pytest",
+     "somm"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_plugins_reference.py",
+    "loc": 358,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "opentelemetry",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "time"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_pricing_utils.py",
+    "loc": 18,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_prompt_ab.py",
+    "loc": 192,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "collections",
+     "math",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "sqlite3"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_prompt_binding.py",
+    "loc": 129,
+    "doc": "Prompt-version binding on call telemetry.",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "sqlite3"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_prompt_cli.py",
+    "loc": 277,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "datetime",
+     "somm",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_prompt_labels.py",
+    "loc": 178,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "pytest",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_provider_adapters.py",
+    "loc": 1234,
+    "doc": "Tests for openai, minimax, anthropic adapters.",
+    "imports": [
+     "__future__",
+     "httpx",
+     "json",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "subprocess"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_provider_registry.py",
+    "loc": 183,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "collections",
+     "pytest",
+     "somm",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_recommendations.py",
+    "loc": 126,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "json",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_routing.py",
+    "loc": 524,
+    "doc": "Routing layer tests \u2014 tracker CRUD, Router fallback, cooldowns, circuit breaker.",
+    "imports": [
+     "__future__",
+     "collections",
+     "datetime",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "time"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_sample_capture.py",
+    "loc": 125,
+    "doc": "Tests for online-eval sample capture on the call path (0.7.0).",
+    "imports": [
+     "__future__",
+     "pathlib",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_smoke.py",
+    "loc": 533,
+    "doc": "D1 smoke tests.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "httpx",
+     "json",
+     "os",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "threading",
+     "time",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_sommelier.py",
+    "loc": 845,
+    "doc": "Sommelier \u2014 candidate ranking + decision memory + cross-project mirror.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_streaming.py",
+    "loc": 315,
+    "doc": "Streaming tests \u2014 ThinkStreamStripper, ollama stream, OpenAI SSE stream,",
+    "imports": [
+     "__future__",
+     "datetime",
+     "httpx",
+     "os",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_workload_frontier.py",
+    "loc": 181,
+    "doc": "workload_frontier \u2014 adequacy rollup per (provider, model) for a workload.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "pathlib",
+     "pytest",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_workload_policy.py",
+    "loc": 331,
+    "doc": "",
+    "imports": [
+     "__future__",
+     "collections",
+     "pathlib",
+     "pytest",
+     "somm",
+     "somm_core",
+     "threading"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/tests/test_writer_atexit.py",
+    "loc": 139,
+    "doc": "WriterQueue must drain pending calls on normal process exit.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "subprocess",
+     "sys",
+     "textwrap",
+     "uuid"
+    ],
+    "is_test": true
+   },
+   {
+    "path": "packages/somm/src/somm/__init__.py",
+    "loc": 67,
+    "doc": "somm \u2014 self-hosted LLM telemetry, routing, and intelligence loop.",
+    "imports": [
+     "importlib",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/_redaction.py",
+    "loc": 50,
+    "doc": "Shared redaction helpers for operator-facing text and outbound hooks.",
+    "imports": [
+     "__future__",
+     "collections",
+     "re"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/campaigns.py",
+    "loc": 431,
+    "doc": "Experiment campaign harness built on durable dataset evals.",
+    "imports": [
+     "__future__",
+     "collections",
+     "dataclasses",
+     "json",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "uuid"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/capabilities.py",
+    "loc": 296,
+    "doc": "Capability lookup against `model_intel.capabilities_json`.",
+    "imports": [
+     "__future__",
+     "json",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/cli.py",
+    "loc": 2428,
+    "doc": "somm CLI entry point \u2014 grouped subcommands.",
+    "imports": [
+     "__future__",
+     "argparse",
+     "datetime",
+     "difflib",
+     "importlib",
+     "inspect",
+     "json",
+     "pathlib",
+     "somm",
+     "somm_core",
+     "somm_service",
+     "sqlite3",
+     "sys",
+     "time"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/client.py",
+    "loc": 2310,
+    "doc": "SommLLM \u2014 the library entry point.",
+    "imports": [
+     "__future__",
+     "collections",
+     "contextlib",
+     "copy",
+     "dataclasses",
+     "datetime",
+     "from",
+     "json",
+     "jsonschema",
+     "logging",
+     "pathlib",
+     "pydantic",
+     "shlex",
+     "somm",
+     "somm_core",
+     "somm_service",
+     "sys",
+     "threading",
+     "time",
+     "typing",
+     "uuid"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/errors.py",
+    "loc": 183,
+    "doc": "Provider/routing error taxonomy.",
+    "imports": [
+     "__future__"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/evals.py",
+    "loc": 350,
+    "doc": "Synchronous dataset eval runner.",
+    "imports": [
+     "__future__",
+     "collections",
+     "dataclasses",
+     "json",
+     "somm_core",
+     "time",
+     "uuid"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/hooks.py",
+    "loc": 439,
+    "doc": "Extension hooks that must never break somm's call path.",
+    "imports": [
+     "__future__",
+     "asyncio",
+     "atexit",
+     "collections",
+     "concurrent",
+     "contextlib",
+     "dataclasses",
+     "importlib",
+     "inspect",
+     "logging",
+     "somm",
+     "threading",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/optimize.py",
+    "loc": 194,
+    "doc": "Propose-only prompt optimization.",
+    "imports": [
+     "__future__",
+     "collections",
+     "dataclasses",
+     "json",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/plan_governor.py",
+    "loc": 75,
+    "doc": "Pace-aware routing decisions from billing plans.",
+    "imports": [
+     "__future__",
+     "collections",
+     "pathlib",
+     "somm_core",
+     "time"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/prompts.py",
+    "loc": 543,
+    "doc": "Prompt versioning \u2014 first-class Prompt objects.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "json",
+     "math",
+     "re",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/provenance.py",
+    "loc": 36,
+    "doc": "Provenance helper \u2014 stable dict you can stamp on output rows.",
+    "imports": [
+     "__future__",
+     "datetime",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/recommendations.py",
+    "loc": 352,
+    "doc": "Shared recommendation inbox and apply logic.",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "json",
+     "somm",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/routing.py",
+    "loc": 484,
+    "doc": "Router + ProviderHealthTracker.",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "datetime",
+     "random",
+     "somm",
+     "somm_core",
+     "time",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/slots.py",
+    "loc": 84,
+    "doc": "Parallel-worker slot assignment.",
+    "imports": [
+     "__future__",
+     "somm",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/sommelier.py",
+    "loc": 973,
+    "doc": "Sommelier \u2014 the model-advisor layer.",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "datetime",
+     "fnmatch",
+     "json",
+     "re",
+     "somm",
+     "somm_core",
+     "typing",
+     "uuid"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/telemetry.py",
+    "loc": 338,
+    "doc": "Per-process writer queue + JSONL spool fallback.",
+    "imports": [
+     "__future__",
+     "atexit",
+     "contextlib",
+     "dataclasses",
+     "datetime",
+     "json",
+     "os",
+     "pathlib",
+     "queue",
+     "somm_core",
+     "sqlite3",
+     "sys",
+     "threading",
+     "time"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/__init__.py",
+    "loc": 54,
+    "doc": "Provider adapters and public provider protocol.",
+    "imports": [
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/_openai_compat.py",
+    "loc": 492,
+    "doc": "Shared HTTP call logic for OpenAI-compatible /v1/chat/completions endpoints.",
+    "imports": [
+     "__future__",
+     "collections",
+     "datetime",
+     "email",
+     "httpx",
+     "json",
+     "somm",
+     "somm_core",
+     "time",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/anthropic.py",
+    "loc": 234,
+    "doc": "Anthropic provider \u2014 Messages API.",
+    "imports": [
+     "__future__",
+     "collections",
+     "httpx",
+     "somm",
+     "somm_core",
+     "time"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/base.py",
+    "loc": 134,
+    "doc": "SommProvider protocol \u2014 public, stable, entry-point compatible.",
+    "imports": [
+     "__future__",
+     "collections",
+     "dataclasses",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/claude_cli.py",
+    "loc": 123,
+    "doc": "Claude CLI provider \u2014 routes a workload to `claude -p` (Claude Code, headless).",
+    "imports": [
+     "__future__",
+     "collections",
+     "json",
+     "os",
+     "shutil",
+     "somm",
+     "somm_core",
+     "subprocess",
+     "tempfile",
+     "time"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/codex_cli.py",
+    "loc": 102,
+    "doc": "Codex CLI provider \u2014 routes a workload to `codex exec` (OpenAI Codex CLI, headless).",
+    "imports": [
+     "__future__",
+     "collections",
+     "os",
+     "shutil",
+     "somm",
+     "somm_core",
+     "subprocess",
+     "tempfile",
+     "time"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/deepseek.py",
+    "loc": 44,
+    "doc": "DeepSeek provider \u2014 OpenAI-compatible endpoint at api.deepseek.com.",
+    "imports": [
+     "__future__",
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/gemini.py",
+    "loc": 73,
+    "doc": "Gemini provider \u2014 Google's OpenAI-compatible endpoint.",
+    "imports": [
+     "__future__",
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/minimax.py",
+    "loc": 29,
+    "doc": "Minimax provider \u2014 OpenAI-compatible endpoint at api.minimax.io.",
+    "imports": [
+     "__future__",
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/ollama.py",
+    "loc": 293,
+    "doc": "Ollama provider \u2014 local first-party adapter.",
+    "imports": [
+     "__future__",
+     "collections",
+     "httpx",
+     "json",
+     "somm",
+     "somm_core",
+     "time"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/openai.py",
+    "loc": 17,
+    "doc": "OpenAI provider \u2014 uses the OpenAI-compatible base.",
+    "imports": [
+     "__future__",
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/openrouter.py",
+    "loc": 296,
+    "doc": "OpenRouter provider \u2014 free-roster + per-model cooldown pattern.",
+    "imports": [
+     "__future__",
+     "collections",
+     "datetime",
+     "email",
+     "httpx",
+     "somm",
+     "somm_core",
+     "time",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/perplexity.py",
+    "loc": 59,
+    "doc": "Perplexity provider \u2014 search-grounded `sonar` models at api.perplexity.ai.",
+    "imports": [
+     "__future__",
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/providers/registry.py",
+    "loc": 223,
+    "doc": "Provider registry for built-in and entry-point provider construction.",
+    "imports": [
+     "__future__",
+     "collections",
+     "dataclasses",
+     "functools",
+     "importlib",
+     "logging",
+     "shutil",
+     "somm",
+     "somm_core",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/plugins/__init__.py",
+    "loc": 43,
+    "doc": "Opt-in reference plugins for somm's hook bus.",
+    "imports": [
+     "__future__",
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/plugins/cache.py",
+    "loc": 254,
+    "doc": "Per-process response cache for somm calls.",
+    "imports": [
+     "__future__",
+     "collections",
+     "dataclasses",
+     "inspect",
+     "somm",
+     "somm_core",
+     "threading",
+     "time",
+     "typing",
+     "uuid"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/plugins/notifier.py",
+    "loc": 104,
+    "doc": "Webhook notifications for selected somm call events.",
+    "imports": [
+     "__future__",
+     "httpx",
+     "logging",
+     "somm",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/plugins/otel_exporter.py",
+    "loc": 74,
+    "doc": "OpenTelemetry span exporter for completed somm calls.",
+    "imports": [
+     "__future__",
+     "opentelemetry",
+     "somm",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/plugins/redaction.py",
+    "loc": 58,
+    "doc": "Outbound prompt redaction hook.",
+    "imports": [
+     "__future__",
+     "somm",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/compat/__init__.py",
+    "loc": 53,
+    "doc": "Drop-in compatibility shims for grafting somm into existing codebases.",
+    "imports": [
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/compat/generic.py",
+    "loc": 161,
+    "doc": "Drop-in shim for codebases with a legacy `FooLLM.generate()` wrapper class.",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "somm",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "packages/somm/src/somm/compat/openai_compat.py",
+    "loc": 177,
+    "doc": "OpenAI SDK compatibility shim \u2014 swap in for `openai.OpenAI().chat.completions.create()`.",
+    "imports": [
+     "__future__",
+     "dataclasses",
+     "openai",
+     "somm",
+     "time",
+     "typing"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "examples/drop_in_wrapper.py",
+    "loc": 90,
+    "doc": "Drop-in replacement for a project's existing LLM wrapper class.",
+    "imports": [
+     "__future__",
+     "myproject",
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "examples/openai_swap_in.py",
+    "loc": 67,
+    "doc": "Swap `openai.OpenAI().chat.completions.create()` for somm's shim.",
+    "imports": [
+     "__future__",
+     "somm"
+    ],
+    "is_test": false
+   },
+   {
+    "path": "examples/private_workload.py",
+    "loc": 50,
+    "doc": "Register a privacy_class=PRIVATE workload \u2014 bans upstream egress.",
+    "imports": [
+     "__future__",
+     "somm",
+     "somm_core"
+    ],
+    "is_test": false
+   }
+  ],
+  "source_loc": 23549,
+  "test_loc": 18447,
+  "test_files": 71
+ },
+ "readme": {
+  "file": "README.md",
+  "title": "somm",
+  "first_paragraph": "**Self-hosted LLM telemetry, routing, and intelligence loop.**\nZero-config. Privacy-first. No commercial dependencies on the hot path."
+ },
+ "docs": [
+  "docs/BLUEPRINT.md",
+  "docs/errors/SOMM_BUDGET_EXCEEDED.md",
+  "docs/errors/SOMM_EMPTY_RESPONSE.md",
+  "docs/errors/SOMM_ERROR.md",
+  "docs/errors/SOMM_NO_CAPABLE_PROVIDER.md",
+  "docs/errors/SOMM_PORT_BUSY.md",
+  "docs/errors/SOMM_PRIVACY_VIOLATION.md",
+  "docs/errors/SOMM_PROVIDERS_EXHAUSTED.md",
+  "docs/errors/SOMM_PROVIDER_5XX.md",
+  "docs/errors/SOMM_PROVIDER_AUTH.md",
+  "docs/errors/SOMM_PROVIDER_BAD_REQUEST.md",
+  "docs/errors/SOMM_PROVIDER_INSUFFICIENT_CREDIT.md",
+  "docs/errors/SOMM_PROVIDER_RATE_LIMIT.md",
+  "docs/errors/SOMM_PROVIDER_TIMEOUT.md",
+  "docs/errors/SOMM_SCHEMA_STALE.md",
+  "docs/errors/SOMM_WORKLOAD_UNREGISTERED.md",
+  "docs/intel-sources.md",
+  "docs/multimodal.md",
+  "docs/plugins.md",
+  "docs/threat-model.md",
+  "docs/tool-calling.md"
+ ]
+}

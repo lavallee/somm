@@ -1,0 +1,25 @@
+[artifact]
+slug = "somm-explainer"
+title = "somm explained"
+description = "A generated explainer of the somm repository."
+kind = "explainer"
+status = "building"
+created = "2026-07-10"
+updated = "2026-07-10"
+
+[[libraries]]
+name = "artoo-kit"
+version = "0.1.0"
+sha256 = "c5b710294939bd2f01360ad47a20f6a9a3fdc14840bf92a04480fb6f2a2a23a3"
+
+[[vendor]]
+name = "mermaid"
+url = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+sha256 = "74d7c46dabca328c2294733910a8aa1ed0c37451776e8d5295da38a2b758fb9b"
+path = "site/lib/vendor/mermaid.min.js"
+
+[deploy]
+target = "github-pages"
+
+[deploy.github-pages]
+subpath = "explainer"

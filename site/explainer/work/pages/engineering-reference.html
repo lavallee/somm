@@ -1,0 +1,169 @@
+<header class="article-header">
+  <p class="article-kicker">somm explained · part 6</p>
+  <h1 class="article-title">Engineering Reference</h1>
+  <p class="article-dek">The contributor's map: how the uv workspace is laid out, what CI refuses to merge, how six packages ship to PyPI under one shared version, and the commands you will actually type.</p>
+</header>
+
+<p>Everything on this page is machinery that exists to keep one promise: the library stays zero-config, fast, offline-capable, and private, no matter who is committing. The workspace layout, the CI gates, the release gate, and the test isolation fixtures are all enforcement mechanisms for that promise.</p>
+
+<h2>Workspace layout: six packages, one shared version</h2>
+
+<div class="article-mrow">
+  <p>somm is a single repository organized as a uv workspace of six Python packages, splitting schema and storage, the client and router, service workers and web UI, MCP, LangChain integration, and agent onboarding into separately publishable units (<code>README.md:528</code>, <code>pyproject.toml:7</code>).</p>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">uv workspace</span> a multi-package Python repository managed by uv with one shared lockfile. CI installs it frozen, so every job resolves identical dependencies (<code>.github/workflows/ci.yml:9</code>).</aside>
+</div>
+
+<div class="stat-row">
+  <div class="stat"><span class="value">6</span><span class="label">workspace packages</span></div>
+  <div class="stat"><span class="value">1</span><span class="label">shared version across all of them</span></div>
+  <div class="stat"><span class="value">v19</span><span class="label">current SQLite schema version</span></div>
+</div>
+
+<table>
+  <thead><tr><th>Package</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td><code>somm-core</code></td><td>Dependency-free foundation: typed telemetry records, SQLite persistence, config, parsing, pricing, quota accounting, and evaluation primitives (<code>packages/somm-core/README.md:3</code>)</td></tr>
+    <tr><td><code>somm</code></td><td>The main library and CLI: provider routing, local telemetry, cost and budget controls, prompt management, evaluation, and diagnostics (<code>packages/somm/README.md:3</code>)</td></tr>
+    <tr><td><code>somm-service</code></td><td>The local service tier: web dashboard, telemetry APIs, an Anthropic-compatible proxy, and background intelligence workers (<code>packages/somm-service/README.md:3</code>)</td></tr>
+    <tr><td><code>somm-mcp</code></td><td>Stdio MCP server exposing telemetry, recommendations, model intelligence, and decision history to coding agents (<code>packages/somm-mcp/src/somm_mcp/cli.py:27</code>)</td></tr>
+    <tr><td><code>somm-langchain</code></td><td>A thin adapter that makes somm's routed runtime look like a LangChain chat model (<code>packages/somm-langchain/README.md:3</code>)</td></tr>
+    <tr><td><code>somm-skill</code></td><td>Dependency-free Markdown onboarding resources for coding agents, shipped as package data (<code>packages/somm-skill/README.md:3</code>, <code>packages/somm-skill/pyproject.toml:4</code>)</td></tr>
+  </tbody>
+</table>
+
+<figure>
+  <div class="diagram">
+    <pre class="mermaid">
+graph TD
+  somm["somm — client, router, CLI"] --> core["somm-core — records, SQLite, pricing, quotas"]
+  service["somm-service — dashboard, proxy, workers"] --> core
+  mcp["somm-mcp — agent tools over stdio"] --> somm
+  mcp --> core
+  lc["somm-langchain — chat-model adapter"] --> somm
+  skill["somm-skill — agent onboarding docs, no dependencies"]
+    </pre>
+  </div>
+  <figcaption>Internal dependency shape. <code>somm-langchain</code> wraps <code>SommLLM.generate()</code> (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:79</code>); <code>somm-mcp</code> delegates persistence and domain logic to <code>somm-core</code> and <code>somm</code>; <code>somm-skill</code> ships no runtime code at all (<code>packages/somm-skill/src/somm_skill/__init__.py:1</code>).</figcaption>
+</figure>
+
+<p>The whole workspace moves as one version. Releases bump every package together (<code>RELEASING.md:8</code>), and a standard-library-only script enforces it: <code>scripts/check_release_gate.py</code> loads every package's <code>pyproject.toml</code>, requires a single shared version, verifies that <code>somm_core.VERSION</code> matches, and checks that internal <code>somm</code>/<code>somm-core</code> dependency pins are exact (<code>scripts/check_release_gate.py:23</code>, <code>scripts/check_release_gate.py:54</code>, <code>scripts/check_release_gate.py:71</code>). Underneath it all sits the migration-backed database: schema v19 evolves the original workload/prompt/call ledger into decisions, workload revisions, datasets, evaluation receipts, campaigns, and canonical model aliases (<code>packages/somm-core/src/somm_core/version.py:7</code>).</p>
+
+<h2>CI gates: lint, tests on 3.12/3.13, pip-audit, and the perf budget</h2>
+
+<div class="article-mrow">
+  <p>Every pull request runs a matrix on Python 3.12 and 3.13 against the frozen workspace. Each matrix job checks release-version consistency, linting, tests, and the performance budget (<code>.github/workflows/ci.yml:9</code>). A separate security job — deliberately isolated from the version matrix — runs <code>pip-audit</code> against exported, locked production dependencies (without workspace packages or dev dependencies) and audits the GitHub Actions themselves with zizmor (<code>.github/workflows/ci.yml:35</code>). Third-party actions are pinned to commit SHAs rather than mutable tags (<code>.github/workflows/ci.yml:15</code>).</p>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">zizmor</span> a static auditor for GitHub Actions workflows — it checks somm's own automation, while <code>pip-audit</code> checks the locked Python dependencies for known vulnerabilities (<code>.github/workflows/ci.yml:35</code>).</aside>
+</div>
+
+<table>
+  <thead><tr><th>Gate</th><th>Command</th></tr></thead>
+  <tbody>
+    <tr><td>Full test suite</td><td><code>uv run pytest packages/ tests/</code> (<code>.github/PULL_REQUEST_TEMPLATE.md:7</code>)</td></tr>
+    <tr><td>Blocklist guard</td><td><code>uv run pytest tests/test_blocklist.py</code> (<code>.github/PULL_REQUEST_TEMPLATE.md:8</code>)</td></tr>
+    <tr><td>Version consistency</td><td><code>uv run python scripts/check_release_gate.py</code> (<code>.github/workflows/ci.yml:23</code>)</td></tr>
+    <tr><td>Performance budget</td><td><code>uv run python scripts/check_perf_budget.py</code> (<code>.github/workflows/ci.yml:32</code>)</td></tr>
+  </tbody>
+</table>
+
+<div class="article-pullnumber"><span class="num">500</span><span class="label">warmed <code>generate()</code> calls per perf-budget run</span></div>
+
+<p>The performance gate protects the hot path the whole project is built around. It measures clean <code>import somm</code> latency in fresh subprocesses, then exercises a warmed <code>SommLLM.generate()</code> path 500 times against a fake provider and a temporary repository — isolating somm's own overhead from network and provider latency (<code>scripts/check_perf_budget.py:52</code>, <code>scripts/check_perf_budget.py:69</code>, <code>scripts/check_perf_budget.py:22</code>).</p>
+
+<div class="callout">
+  <span class="callout-title">Only the median gates</span>
+  The script reports both p50 and p95, but a job fails only when p50 exceeds the configurable import or hot-path budget. P95 is published for visibility without letting noisy outliers flake CI (<code>scripts/check_perf_budget.py:96</code>, <code>scripts/check_perf_budget.py:100</code>, <code>scripts/check_perf_budget.py:108</code>).
+</div>
+
+<p>Human process backs the automation: the PR template requires contributors to confirm tests, the blocklist guard, lint status, changelog handling, and coordinated versioning (<code>.github/PULL_REQUEST_TEMPLATE.md:5</code>), and <code>CONTRIBUTING.md</code> requires tests plus an Unreleased changelog entry with every change (<code>CONTRIBUTING.md:28</code>).</p>
+
+<h2>Release discipline: the version gate, trusted publishing, and rerunnable publishes</h2>
+
+<div class="article-mrow">
+  <p>Publishing starts when a GitHub release is published, or manually via <code>workflow_dispatch</code> (<code>.github/workflows/publish.yml:23</code>). A matrix then builds and publishes each of the six packages independently, each using its own package-specific GitHub environment and PyPI trusted publishing via OIDC (<code>.github/workflows/publish.yml:28</code>). The per-package environments are not decoration: pending trusted publishers on PyPI must be unique per repository, workflow, and environment (<code>.github/workflows/publish.yml:4</code>).</p>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">Trusted publishing</span> PyPI accepts a short-lived OIDC identity token minted by the GitHub Actions run itself, instead of a long-lived API token stored as a repository secret (<code>.github/workflows/publish.yml:28</code>).</aside>
+</div>
+
+<p>Two small decisions make multi-package publishing survivable. Each package builds into its own artifact directory, because workspace-member builds would otherwise all write into the root <code>dist/</code> (<code>.github/workflows/publish.yml:54</code>). And <code>skip-existing</code> means a release that failed halfway through six packages can simply be rerun — already-published packages are skipped rather than erroring (<code>.github/workflows/publish.yml:63</code>).</p>
+
+<p>Before any of that, the release gate runs — the same <code>check_release_gate.py</code> used in CI, written against only the standard library so it works before dependencies are even installed (<code>scripts/check_release_gate.py:1</code>). Beyond version consistency, releases with major version 1 or higher additionally require a committed approval marker (<code>scripts/check_release_gate.py:82</code>); <code>RELEASING.md</code> frames this as an explicit readiness file required before any 1.x publication (<code>RELEASING.md:94</code>). The release process also refreshes bundled pricing and plan data and updates agent-skill documentation (<code>RELEASING.md:28</code>).</p>
+
+<div class="callout callout--warn">
+  <span class="callout-title">Known metadata drift</span>
+  The workspace and README currently say <code>0.12.0</code> beta while <code>roster.toml</code> still says <code>1.0.0</code> — a version the changelog identifies as mistakenly published (<code>pyproject.toml:3</code>, <code>roster.toml:5</code>, <code>CHANGELOG.md:14</code>). The ≥1.x approval-marker gate exists to block exactly that kind of accidental major-version publish. Separately, the README documents cross-project mirroring as default-off while the changelog says it now defaults on (<code>README.md:518</code>, <code>CHANGELOG.md:206</code>).
+</div>
+
+<h2>Test strategy: isolated machine state, offline pricing, and the blocklist scanner</h2>
+
+<div class="article-mrow">
+  <p>The suite runs across all packages plus the top-level <code>tests/</code> directory (<code>pyproject.toml:32</code>). Its most important safety feature is invisible: an autouse fixture redirects machine-wide registry, plan, and global-database state into temporary paths and disables mirroring for every test (<code>conftest.py:13</code>). The reason is concrete — cross-project mirroring can otherwise touch the real <code>~/.somm/global.sqlite</code> on the developer's machine (<code>conftest.py:18</code>).</p>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">Autouse fixture</span> a pytest fixture applied to every test automatically, without being requested. Here it guarantees the suite can never write to your real fleet-wide telemetry.</aside>
+</div>
+
+<p>Configuration tests pin down zero-config behavior precisely: they clear the relevant environment variables, call <code>somm_core.config.load()</code>, and verify defaults plus precedence among explicit environment settings, <code>pyproject.toml</code>, an existing project-root <code>.somm</code>, the project registry, and a fresh local <code>.somm</code> directory (<code>tests/test_config_load.py:44</code>). Local project state wins over registry reuse, an explicit <code>SOMM_DB_DIR</code> wins over everything tested, and registry reuse is announced on stderr so telemetry is never silently shared (<code>tests/test_config_load.py:78</code>, <code>tests/test_config_load.py:102</code>, <code>tests/test_config_load.py:135</code>).</p>
+
+<p>Pricing tests keep cost accounting honest offline. The packaged JSON snapshot — regenerated by <code>scripts/update_pricing_bundle.py</code>, which normalizes LiteLLM data to per-million-token prices and prunes it to routes somm supports (<code>scripts/update_pricing_bundle.py:71</code>) — must cover every paid routed provider and populate model intelligence with no network access (<code>tests/test_pricing_bundle.py:38</code>, <code>tests/test_pricing_bundle.py:47</code>). Bundle sync replaces stale seeded data but preserves manually entered prices, and a fingerprint skips repeat work (<code>tests/test_pricing_bundle.py:66</code>, <code>tests/test_pricing_bundle.py:84</code>). A missing price yields zero cost plus a once-per-provider/model warning for paid providers, while free providers stay silent (<code>tests/test_pricing_safety.py:87</code>, <code>tests/test_pricing_safety.py:101</code>, <code>tests/test_pricing_safety.py:115</code>).</p>
+
+<div class="article-mrow">
+  <p>Finally, a repository-wide blocklist scanner rejects internal names and personal filesystem paths across selected source, documentation, example, test, and CI files (<code>tests/test_blocklist.py:57</code>, <code>tests/test_blocklist.py:117</code>, <code>tests/test_blocklist.py:162</code>). It is the last line of the project's privacy posture applied to the repository itself: private project details must not leak into the public codebase.</p>
+  <aside class="article-marginnote article-marginnote--source"><span class="term">Provenance</span> the PR checklist makes this gate personal — contributors must confirm <code>uv run pytest tests/test_blocklist.py</code> passes before review (<code>.github/PULL_REQUEST_TEMPLATE.md:5</code>).</aside>
+</div>
+
+<h2>CLI quick reference: generate, status, doctor, compare, serve</h2>
+
+<p>The <code>somm</code> CLI spans generation, status, workloads, prompts, evals, campaigns, plans, diagnostics, and service startup (<code>README.md:330</code>). These are the commands contributors and bug reporters reach for most:</p>
+
+<div class="article-breakout">
+  <table>
+    <thead><tr><th>Command</th><th>What it does</th><th>Reference</th></tr></thead>
+    <tbody>
+      <tr><td><code>somm generate …</code></td><td>Run a routed, recorded generation from the shell</td><td><code>packages/somm/src/somm/cli.py:2051</code></td></tr>
+      <tr><td><code>somm status</code> / <code>somm tail</code></td><td>Inspect recorded telemetry from the terminal</td><td><code>examples/README.md:70</code>, <code>examples/README.md:78</code></td></tr>
+      <tr><td><code>somm doctor</code></td><td>Check processes, cooldowns, migrations, and permission drift — its output is requested with every bug report</td><td><code>docs/errors/SOMM_PORT_BUSY.md:11</code>, <code>.github/ISSUE_TEMPLATE/bug_report.md:22</code></td></tr>
+      <tr><td><code>somm calls --status error</code></td><td>Surface failed-call telemetry when reporting bugs</td><td><code>.github/ISSUE_TEMPLATE/bug_report.md:28</code></td></tr>
+      <tr><td><code>somm compare … --models …</code></td><td>Run one prompt across several providers/models side by side</td><td><code>docs/index.html:181</code></td></tr>
+      <tr><td><code>somm serve --project …</code></td><td>Start the local dashboard, scheduler, and background workers</td><td><code>docs/index.html:174</code></td></tr>
+      <tr><td><code>somm plugin list</code> / <code>info</code></td><td>Inspect installed hook plugins</td><td><code>docs/plugins.md:167</code></td></tr>
+      <tr><td><code>somm-mcp --project …</code></td><td>Launch the stdio MCP server for coding agents</td><td><code>packages/somm-mcp/src/somm_mcp/cli.py:12</code></td></tr>
+      <tr><td><code>somm-serve</code></td><td>Start the service directly, or run intel, shadow, and agent admin commands</td><td><code>packages/somm-service/src/somm_service/cli.py:161</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>Canonical errors: the SOMM_* catalog</h2>
+
+<div class="article-mrow">
+  <p>Failures in somm are deliberately visible and bounded rather than silently swallowed (<code>README.md:162</code>), and each named failure gets a canonical page. Every <code>SOMM_*</code> page documents the same four things: the problem, its cause, the runtime behavior, and the fix (<code>docs/errors/index.html:28</code>).</p>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">Transient vs. fatal</span> timeouts, rate limits, 5xx responses, and insufficient credit cool the provider and fall through to the next candidate; policy and configuration failures are fatal and stop the call immediately (<code>docs/errors/index.html:28</code>).</aside>
+</div>
+
+<table>
+  <thead><tr><th>Error page</th><th>What it covers</th></tr></thead>
+  <tbody>
+    <tr><td><code>SOMM_WORKLOAD_UNREGISTERED</code></td><td>Strict mode rejects calls whose workload was never declared with <code>register_workload(...)</code>; the default observe mode auto-registers instead (<code>docs/errors/SOMM_WORKLOAD_UNREGISTERED.md:19</code>, <code>packages/somm/src/somm/client.py:658</code>)</td></tr>
+    <tr><td><code>SOMM_BUDGET_EXCEEDED</code></td><td>Budget refusal is fatal and happens before dispatch, so provider fallback can never spend around the daily cap (<code>docs/errors/SOMM_BUDGET_EXCEEDED.md:23</code>)</td></tr>
+    <tr><td><code>SOMM_PORT_BUSY</code></td><td>The service port is already taken; the documented fix path leans on <code>somm doctor</code>'s process, cooldown, migration, and permission-drift checks (<code>docs/errors/SOMM_PORT_BUSY.md:11</code>)</td></tr>
+  </tbody>
+</table>
+
+<p>The budget error is the catalog's clearest expression of the project's design philosophy: auxiliary intelligence — hooks, mirroring, learned overrides — fails open so it can never break live inference, but hard budgets deliberately fail closed before any provider is contacted (<code>packages/somm/src/somm/hooks.py:246</code>, <code>packages/somm/src/somm/client.py:571</code>).</p>
+
+<h2>Where to go next</h2>
+
+<div class="card-grid">
+  <a class="card" href="life-of-a-call.html">
+    <h3>The Life of a Call</h3>
+    <p>The runtime these gates protect: routing, the pre-dispatch budget check, fallback, and the telemetry write.</p>
+  </a>
+  <a class="card" href="data-and-privacy.html">
+    <h3>The Data Substrate</h3>
+    <p>The SQLite schema those v19 migrations build, and the permission model the test isolation defends.</p>
+  </a>
+  <a class="card" href="intelligence-loop.html">
+    <h3>The Intelligence Loop</h3>
+    <p>The workers <code>somm serve</code> starts: model intel, shadow evaluation, and recommendations.</p>
+  </a>
+  <a class="card" href="agents-and-integrations.html">
+    <h3>Agents and Integrations</h3>
+    <p>Half the workspace in action: <code>somm-mcp</code>, <code>somm-langchain</code>, and the <code>somm-skill</code> playbook.</p>
+  </a>
+</div>

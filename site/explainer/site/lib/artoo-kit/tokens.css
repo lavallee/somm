@@ -1,0 +1,142 @@
+/* artoo-kit tokens — the design spine. Never hardcode a hex in pages;
+   reference a token. Dark is the default; light via [data-theme="light"]
+   or the OS preference. */
+
+:root {
+  /* primitives */
+  --p-zinc-950: #0c0d10;
+  --p-zinc-900: #16181d;
+  --p-zinc-850: #1c1f26;
+  --p-zinc-800: #23262f;
+  --p-zinc-700: #33374233;
+  --p-zinc-400: #9aa1ad;
+  --p-zinc-300: #b8bec9;
+  --p-zinc-100: #e8eaee;
+  --p-cream-50: #faf7f2;
+  --p-cream-100: #f3efe7;
+  --p-cream-200: #e9e3d7;
+  --p-ink-900: #1f2430;
+  --p-ink-600: #4a5264;
+  --p-accent-400: #7aa2f7;
+  --p-accent-500: #5b87e0;
+  --p-accent-600: #3e63b4;
+  --p-green-400: #4fbf8f;
+  --p-amber-400: #d9a441;
+  --p-red-400: #e06c60;
+
+  /* chart palette — Okabe–Ito, colorblind-safe, order = draw order */
+  --chart-1: #56b4e9;
+  --chart-2: #e69f00;
+  --chart-3: #009e73;
+  --chart-4: #cc79a7;
+  --chart-5: #0072b2;
+  --chart-6: #d55e00;
+  --chart-7: #f0e442;
+  --chart-8: #999999;
+
+  /* semantic — dark default */
+  --bg: var(--p-zinc-950);
+  --surface: var(--p-zinc-900);
+  --surface-2: var(--p-zinc-850);
+  --border: #2c3038;
+  --border-strong: #3a3f4a;
+  --text: var(--p-zinc-100);
+  --text-2: var(--p-zinc-300);
+  --muted: var(--p-zinc-400);
+  --accent: var(--p-accent-400);
+  --accent-strong: var(--p-accent-500);
+  --success: var(--p-green-400);
+  --warn: var(--p-amber-400);
+  --danger: var(--p-red-400);
+  --code-bg: #14161b;
+  --selection: #2b4a86;
+
+  /* typography — system stacks only */
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: Charter, "Iowan Old Style", Georgia, Cambria, "Times New Roman", serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+  --text-4xl: 3rem;
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.7;
+
+  /* 4px spacing grid */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-6: 1.5rem;
+  --sp-8: 2rem;
+  --sp-12: 3rem;
+  --sp-16: 4rem;
+  --sp-24: 6rem;
+
+  /* shape, elevation, motion */
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 14px;
+  --shadow-1: 0 1px 3px rgb(0 0 0 / 0.3);
+  --shadow-2: 0 4px 16px rgb(0 0 0 / 0.35);
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+
+  --measure: 68ch;      /* prose line length */
+  --margin-col: 200px;  /* article margin-note gutter */
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: var(--p-cream-50);
+  --surface: #ffffff;
+  --surface-2: var(--p-cream-100);
+  --border: var(--p-cream-200);
+  --border-strong: #d8d0bf;
+  --text: var(--p-ink-900);
+  --text-2: #333a49;
+  --muted: var(--p-ink-600);
+  --accent: var(--p-accent-600);
+  --accent-strong: var(--p-accent-500);
+  --code-bg: #f0ece3;
+  --selection: #c7d7f5;
+  --shadow-1: 0 1px 3px rgb(31 36 48 / 0.08);
+  --shadow-2: 0 4px 16px rgb(31 36 48 / 0.10);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+    --bg: var(--p-cream-50);
+    --surface: #ffffff;
+    --surface-2: var(--p-cream-100);
+    --border: var(--p-cream-200);
+    --border-strong: #d8d0bf;
+    --text: var(--p-ink-900);
+    --text-2: #333a49;
+    --muted: var(--p-ink-600);
+    --accent: var(--p-accent-600);
+    --accent-strong: var(--p-accent-500);
+    --code-bg: #f0ece3;
+    --selection: #c7d7f5;
+    --shadow-1: 0 1px 3px rgb(31 36 48 / 0.08);
+    --shadow-2: 0 4px 16px rgb(31 36 48 / 0.10);
+    color-scheme: light;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur: 0ms;
+  }
+}

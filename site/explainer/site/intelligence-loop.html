@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Intelligence Loop — somm explained</title>
+<meta name="description" content="Show how raw telemetry becomes advice: the service tier&#x27;s scheduled workers refresh model intelligence, shadow-grade sampled calls against a gold model, and emit propose-only recommendations that an operator explicitly applies.">
+<link rel="stylesheet" href="lib/artoo-kit/tokens.css">
+<link rel="stylesheet" href="lib/artoo-kit/base.css">
+<link rel="stylesheet" href="lib/artoo-kit/article.css">
+<link rel="stylesheet" href="lib/artoo-kit/components.css">
+</head>
+<body>
+<nav class="site-nav">
+  <span class="brand">somm explained</span>
+  <button class="nav-toggle" aria-label="Menu">menu</button>
+  <div class="nav-links">
+    <a href="index.html">Overview</a>
+    <a href="life-of-a-call.html">The Life of a Call</a>
+    <a href="data-and-privacy.html">The Data Substrate</a>
+    <a href="intelligence-loop.html" aria-current="page">The Intelligence Loop</a>
+    <a href="agents-and-integrations.html">Agents and Integrations</a>
+    <a href="engineering-reference.html">Engineering Reference</a>
+  </div>
+  <button data-theme-toggle class="nav-toggle" style="display:block;margin-left:auto" aria-label="Toggle theme">theme</button>
+</nav>
+<main class="article">
+<div class="article-header-wrapper"></div>
+
+<header class="article-header">
+  <p class="article-kicker">somm explained · Part 4</p>
+  <h1 class="article-title">The Intelligence Loop</h1>
+  <p class="article-dek">The library's hot path only routes and records. The judgment lives in the service tier: three scheduled workers that refresh model intelligence, grade sampled calls against a gold model, and draft recommendations that a human — not somm — decides to apply.</p>
+</header>
+
+<p>The previous pages showed somm as a sensor: every call lands as an immutable row in a project-local SQLite database. This page is about what happens to those rows. When the service tier runs, scheduled workers grade sampled calls, refresh model metadata, and produce recommendations — while MCP tools and the web dashboard read the same local state (<code>notes/PLAN.md:69</code>). Nothing in this loop requires a hosted control plane; it is the same <code>calls.sqlite</code> file, read and enriched in place.</p>
+
+<div class="article-breakout">
+  <div class="diagram">
+    <pre class="mermaid">
+flowchart TB
+  app["Application calls via somm.llm()"] --> db[("calls.sqlite — calls, samples, provider health")]
+  proxy["Anthropic-compatible proxy /v1/messages"] --> db
+  otlp["OTLP span ingest"] --> db
+  subgraph sched["Scheduler — jobs and leases stored in SQLite"]
+    intel["ModelIntelWorker — daily"]
+    shadow["ShadowEvalWorker — every 15 min"]
+    agentw["AgentWorker — weekly"]
+  end
+  ext["Bundled pricing · OpenRouter · Ollama · Hugging Face"] --> intel
+  db -- "captured samples" --> shadow
+  gold["Gold model"] --> shadow
+  intel --> mi[("model intelligence")]
+  shadow --> ev[("evaluations + receipts")]
+  db --> agentw
+  mi --> agentw
+  ev --> agentw
+  agentw --> rec[("recommendations")]
+  rec --> operator["Operator reviews: apply or dismiss"]
+  operator -. "explicit apply only" .-> app
+    </pre>
+  </div>
+</div>
+
+<h2>somm serve: dashboard, proxy, OTLP ingest, and the scheduler</h2>
+
+<p>Starting the service with <code>somm serve --project ...</code> brings up the local dashboard, scheduler, and workers (<code>docs/index.html:174</code>). Under the hood, <code>create_app()</code> opens the configured repository, creates or loads a service token, registers dashboard, recommendation, OTLP-ingest, and proxy routes, then applies local-security middleware (<code>packages/somm-service/src/somm_service/app.py:1285</code>). <code>run_server()</code> then runs Uvicorn plus a daemon scheduler (<code>packages/somm-service/src/somm_service/app.py:1328</code>). The <code>somm-serve</code> entry point can also run the intel, shadow, and agent stages as one-off admin commands (<code>packages/somm-service/src/somm_service/cli.py:161</code>).</p>
+
+<p>The service adds two extra ways for telemetry to enter the ledger. The Anthropic-compatible <code>/v1/messages</code> proxy validates and translates each request, resolves a workload, enforces its budget <em>before</em> dispatch, calls LiteLLM in a thread pool, and records success or failure in the same call ledger (<code>packages/somm-service/src/somm_service/proxy.py:269</code>) — a rejected call creates neither spend nor telemetry (<code>packages/somm-service/src/somm_service/proxy.py:322</code>). OTLP JSON spans are bounded, normalized into <code>Call</code> records, and written without partially ingesting an over-limit batch (<code>packages/somm-service/src/somm_service/app.py:1204</code>). Access stays local: a generated file token plus a tightly constrained same-origin localhost path designed to resist DNS rebinding (<code>packages/somm-service/src/somm_service/app.py:91</code>, <code>packages/somm-service/src/somm_service/app.py:265</code>), with request bodies bounded both by <code>Content-Length</code> and incremental streaming checks (<code>packages/somm-service/src/somm_service/http_limits.py:15</code>).</p>
+
+<div class="article-mrow">
+  <p>The scheduler itself is deliberately boring infrastructure: jobs and leases live in SQLite, successful runs reschedule themselves, and failures back off with a bound (<code>packages/somm-service/src/somm_service/workers/_runner.py:32</code>). Three jobs are installed by default — a daily model-intelligence refresh, shadow evaluation every 15 minutes, and a weekly agent analysis. For setups that don't want the web stack at all, <code>start_inprocess_scheduler()</code> runs the same intelligence loop inside the application process (<code>packages/somm-service/src/somm_service/inprocess.py:44</code>), enabled via <code>SOMM_INPROCESS_WORKERS=1</code> (<code>skillopt/somm.candidate.md:160</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Lease</span> a claim on a scheduled job or sample, persisted in SQLite, that a worker holds while processing. Recoverable leases mean a crash mid-run doesn't orphan work (<code>packages/somm-service/src/somm_service/workers/shadow_eval.py:262</code>).
+  </aside>
+</div>
+
+<div class="stat-row">
+  <div class="stat"><span class="value">daily</span><span class="label">model-intel refresh</span></div>
+  <div class="stat"><span class="value">15 min</span><span class="label">shadow-eval cadence</span></div>
+  <div class="stat"><span class="value">weekly</span><span class="label">agent analysis</span></div>
+</div>
+
+<h2>Model intelligence: bundled pricing plus OpenRouter, Ollama, and Hugging Face signals</h2>
+
+<div class="article-mrow">
+  <p>The <code>ModelIntelWorker</code> answers the question "what models exist, what do they cost, and what can they do?" It merges static pricing, OpenRouter metadata, and the local Ollama inventory; optional Hugging Face enrichment adds modality metadata on top (<code>packages/somm-service/src/somm_service/workers/model_intel.py:86</code>, <code>packages/somm-service/src/somm_service/workers/hf_intel.py:124</code>). The baseline works with no network at all: pricing is seeded and synchronized from an offline bundled snapshot, cached for ten minutes, and used to convert token counts into per-call USD cost (<code>packages/somm-core/src/somm_core/pricing.py:108</code>, <code>packages/somm-core/src/somm_core/pricing.py:233</code>).</p>
+  <aside class="article-marginnote article-marginnote--source">
+    <span class="term">Where the bundle comes from</span> <code>scripts/update_pricing_bundle.py</code> fetches or reads LiteLLM pricing, keeps supported providers and modes, normalizes prices to per-million-token values, adds curated missing rows, and writes the JSON snapshot shipped in the wheel (<code>scripts/update_pricing_bundle.py:40</code>, <code>scripts/update_pricing_bundle.py:110</code>).
+  </aside>
+</div>
+
+<p>This intelligence is advisory, and it fails open: a missing price becomes zero cost rather than a blocked call (<code>packages/somm-core/src/somm_core/pricing.py:240</code>), with a once-per-provider/model warning for paid providers so the gap stays visible (<code>tests/test_pricing_safety.py:87</code>). Two other stances shape this layer. Signals remain distinct rather than being collapsed into an opaque composite quality score, and paid data sources stay off the default path (<code>ROADMAP.md:237</code>). And the docs are candid about maturity: several proposed external quality and hardware signals remain unwired, so <code>docs/intel-sources.md:128</code> labels itself a scratchpad, not a committed design.</p>
+
+<h2>Shadow evaluation: sampled, opt-in grading with receipts</h2>
+
+<div class="article-mrow">
+  <p>Model intelligence says what a model claims to be; shadow evaluation measures what it actually does on <em>your</em> workload. It starts in the library, not the service: body capture is opt-in, deterministically sampled, size-capped, and forbidden for private workloads (<code>packages/somm/src/somm/client.py:850</code>), configured per workload via <code>llm.enable_shadow(...)</code> (<code>examples/private_workload.py:38</code>) or <code>repo.set_shadow_config(...)</code> (<code>skillopt/somm.candidate.md:72</code>). Every 15 minutes, the <code>ShadowEvalWorker</code> picks up captured samples, grades them against a configured gold model, and writes eval receipts (<code>packages/somm-service/src/somm_service/workers/shadow_eval.py:102</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Gold model</span> the designated reference model a sampled production response is graded against, giving workload-specific quality evidence rather than generic benchmark scores (<code>docs/intel-sources.md:12</code>).
+  </aside>
+</div>
+
+<div class="callout">
+  <span class="callout-title">Private workloads never enter the loop</span>
+  Shadow evaluation is workload-opt-in, excludes private workloads, and requires captured bodies (<code>packages/somm-service/src/somm_service/workers/shadow_eval.py:102</code>). Attempting to enable shadow evaluation on a <code>PrivacyClass.PRIVATE</code> workload raises <code>SommPrivacyViolation</code> outright (<code>examples/private_workload.py:36</code>). The full capture-and-permissions story is on <a href="data-and-privacy.html">The Data Substrate</a>.
+</div>
+
+<p>Grading itself is deliberately dependency-free: <code>grade_response_pair()</code> runs deterministic structural and text comparisons (<code>packages/somm-core/src/somm_core/graders.py:28</code>), and each result is linked to a structured evaluation receipt so a recommendation can later show exactly which graded calls back it (<code>packages/somm-core/src/somm_core/repository.py:757</code>).</p>
+
+<div class="callout callout--warn">
+  <span class="callout-title">LLM-as-judge is scaffolded, not wired</span>
+  Binary judge prompt and parsing helpers exist in <code>somm-core</code>, but <code>grade_response_pair()</code> still receives <code>None</code> from the placeholder <code>judge_score</code> — actual judge execution is not implemented there (<code>packages/somm-core/src/somm_core/graders.py:211</code>). Today's receipts rest on the deterministic graders.
+</div>
+
+<h2>From evidence to recommendations: the agent worker</h2>
+
+<p>Once a week, the <code>AgentWorker</code> reads everything the other stages produced — calls, evaluations, provider health, and model metadata — and converts it into deduplicated recommendations, or into parameter overrides only where a workload has explicitly opted in (<code>packages/somm-service/src/somm_service/workers/agent.py:70</code>). Self-healing stays recommendation-only unless the workload sets <code>auto_heal: true</code> (<code>packages/somm-service/src/somm_service/workers/agent.py:84</code>). Downstream consumers see the same evidence chain: the MCP tool <code>somm_recommend</code> combines open recommendations with model rankings from shadow evaluations, and when no evaluation data exists it falls back to model-intelligence candidates and prior recorded decisions (<code>packages/somm-mcp/src/somm_mcp/server.py:117</code>).</p>
+
+<blockquote class="article-pullquote">
+  Recommendations expose supporting evidence and require user application rather than automatic rollout.
+  <cite>— design decision, <code>docs/BLUEPRINT.md:255</code></cite>
+</blockquote>
+
+<h2>Propose-only by design: humans apply, somm suggests</h2>
+
+<p>This is the loop's defining constraint. Optimization and recommendations are propose-only by default; automatic promotion is deliberately excluded from the design (<code>notes/GAMEPLAN-2026-07.md:131</code>). Applying a learned recommendation is a separate, explicit operation in the library (<code>packages/somm/src/somm/recommendations.py:133</code>), and the operator surfaces mirror that: the dashboard's recommendation routes (<code>packages/somm-service/src/somm_service/app.py:1285</code>) and the MCP pair <code>somm_apply_recommendation</code> / <code>somm_dismiss_recommendation</code> (<code>packages/somm-mcp/src/somm_mcp/server.py:197</code>) let a human — or an agent acting with the human's tooling — accept or reject each item individually.</p>
+
+<div class="callout callout--success">
+  <span class="callout-title">Why propose-only works</span>
+  Because every call is already recorded immutably, a recommendation can point at its receipts: the graded samples, health events, and pricing data behind it. The operator reviews evidence, not a black-box score — and until they act, routing behavior does not change. The single carve-out is per-workload <code>auto_heal: true</code>, itself an explicit opt-in (<code>packages/somm-service/src/somm_service/workers/agent.py:84</code>).
+</div>
+
+<h2>Durable datasets, campaigns, and prompt optimization</h2>
+
+<p>The loop's newest layer makes evidence reusable. Opt-in captured samples can be promoted idempotently into durable golden datasets, graded with the deterministic comparators, and linked to structured evaluation receipts (<code>packages/somm-core/src/somm_core/repository.py:757</code>). The operator drives this through <code>somm eval promote-call</code>, <code>somm eval run</code>, <code>somm optimize</code>, and <code>somm campaign run</code> (<code>notes/GAMEPLAN-2026-07.md:227</code>), or through MCP's <code>somm_eval_promote_call</code> (<code>packages/somm-mcp/src/somm_mcp/server.py:509</code>).</p>
+
+<div class="article-pullnumber">
+  <span class="num">19</span>
+  <span class="label">schema versions in the SQLite ledger that carries the loop</span>
+</div>
+
+<p>Schema v19 is where this shows up structurally: it evolves the original workload/prompt/call ledger into decisions, workload revisions, datasets, evaluation receipts, campaigns, and canonical model aliases (<code>packages/somm-core/src/somm_core/version.py:7</code>). Prompt optimization follows the same propose-only stance as everything else: a failing graded call can produce a versioned prompt proposal (<code>packages/somm/src/somm/optimize.py:39</code>), but optimization only ever creates a proposal label — it never promotes directly to staging or production (<code>packages/somm/src/somm/optimize.py:49</code>). The loop closes the way it opened: somm accumulates evidence, drafts the change, and waits for a person to say yes.</p>
+
+<div class="card-grid">
+  <a class="card" href="life-of-a-call.html">
+    <h3>The Life of a Call</h3>
+    <p>The hot path that feeds this loop: routing, fallback, budgets, and how a call becomes an immutable row.</p>
+  </a>
+  <a class="card" href="data-and-privacy.html">
+    <h3>The Data Substrate</h3>
+    <p>The SQLite schema, opt-in sampling, and the privacy guarantees the workers must respect.</p>
+  </a>
+  <a class="card" href="agents-and-integrations.html">
+    <h3>Agents and Integrations</h3>
+    <p>How MCP tools, the LangChain adapter, and the agent skill consume the loop's recommendations.</p>
+  </a>
+  <a class="card" href="engineering-reference.html">
+    <h3>Engineering Reference</h3>
+    <p>CI gates, performance budgets, and the release machinery around the six workspace packages.</p>
+  </a>
+</div>
+<footer class="colophon article-full" style="margin-left:var(--sp-6);margin-right:var(--sp-6)">
+  Generated 2026-07-10 by <a href="https://github.com/lavallee/artoo">artoo</a> v0.1.0 (explainer generator).<br>
+  Describes <code>somm</code> at commit <code>cc8ebd4</code>.<br>
+  Workers: analysis: codex, synthesis: claude.<br>
+  Machine-written from a deterministic inventory plus per-area code analysis; verify load-bearing claims against the source.
+</footer>
+</main>
+<script src="lib/vendor/mermaid.min.js"></script>
+<script src="lib/artoo-kit/kit.js"></script>
+</body>
+</html>

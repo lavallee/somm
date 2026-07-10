@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Data Substrate — somm explained</title>
+<meta name="description" content="Explain the SQLite data model that everything shares — append-only calls, workload revisions, prompts, samples, datasets, and decisions — and the privacy and cost guarantees built into it.">
+<link rel="stylesheet" href="lib/artoo-kit/tokens.css">
+<link rel="stylesheet" href="lib/artoo-kit/base.css">
+<link rel="stylesheet" href="lib/artoo-kit/article.css">
+<link rel="stylesheet" href="lib/artoo-kit/components.css">
+</head>
+<body>
+<nav class="site-nav">
+  <span class="brand">somm explained</span>
+  <button class="nav-toggle" aria-label="Menu">menu</button>
+  <div class="nav-links">
+    <a href="index.html">Overview</a>
+    <a href="life-of-a-call.html">The Life of a Call</a>
+    <a href="data-and-privacy.html" aria-current="page">The Data Substrate</a>
+    <a href="intelligence-loop.html">The Intelligence Loop</a>
+    <a href="agents-and-integrations.html">Agents and Integrations</a>
+    <a href="engineering-reference.html">Engineering Reference</a>
+  </div>
+  <button data-theme-toggle class="nav-toggle" style="display:block;margin-left:auto" aria-label="Toggle theme">theme</button>
+</nav>
+<main class="article">
+<header class="article-header">
+  <p class="article-kicker">somm explained · Part 3 of 6</p>
+  <h1 class="article-title">The Data Substrate</h1>
+  <p class="article-dek">Every layer of somm — routing, evaluation, recommendations, agent tools — reads and writes one project-local SQLite file. This page walks the tables that file contains, the append-only discipline that governs them, and the privacy and cost guarantees built into the schema itself.</p>
+</header>
+
+<p>The previous page followed <a href="life-of-a-call.html">a single call</a> from <code>generate()</code> to a recorded row. This page is about where that row lands, and why the shape of the storage — not a policy document — is what makes somm's privacy and cost promises hold.</p>
+
+<h2>One project-local database: <code>.somm/calls.sqlite</code></h2>
+
+<div class="article-mrow">
+  <p>Every call an application makes through somm is recorded in a local <code>.somm/calls.sqlite</code> database, with provider, model, token, cost, latency, and outcome data (<code>README.md:67</code>). There is no hosted control plane behind it. Configuration resolves in layers — defaults, the project's <code>pyproject.toml</code>, environment variables, then explicit arguments — before selecting a project-local or registered database (<code>packages/somm-core/src/somm_core/config.py:84</code>). The precedence is pinned by tests: an existing project-root <code>.somm</code> beats registry reuse, an explicit <code>SOMM_DB_DIR</code> beats everything tested, and reusing a registered database is announced on stderr so telemetry is never silently shared (<code>tests/test_config_load.py:78</code>, <code>tests/test_config_load.py:102</code>, <code>tests/test_config_load.py:135</code>).</p>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">WAL</span> Write-ahead logging, the SQLite journal mode <code>Repository</code> enables on open. SQLite stays the default store because WAL fits continuous local writes plus concurrent readers (<code>notes/PLAN.md:189</code>); Postgres is optional for shared deployments.</aside>
+</div>
+
+<p>Constructing a <code>Repository</code> creates the database with owner-only file permissions, applies migrations automatically, and configures WAL, foreign keys, and per-thread, fork-aware connections (<code>packages/somm-core/src/somm_core/repository.py:177</code>). The write path never requires a running service: a per-process <code>WriterQueue</code> batches short writes into the database, and repeated lock failures spill to permission-restricted JSONL files that are later replayed atomically (<code>notes/PLAN.md:1179</code>, <code>packages/somm/src/somm/telemetry.py:270</code>). Even provider cooldown state lives in SQLite, with separate model-level and provider-wide entries, so it survives restarts (<code>docs/BLUEPRINT.md:187</code>).</p>
+
+<div class="article-breakout">
+  <div class="diagram">
+    <pre class="mermaid">
+flowchart LR
+  subgraph immutable["Append-only records"]
+    calls[("calls")]
+    updates[("call_updates")]
+    pv[("prompt_versions")]
+    rev[("workload_revisions")]
+    receipts[("eval receipts")]
+  end
+  subgraph pointers["Mutable pointers"]
+    wl[("workloads — live row")]
+    labels[("prompt labels")]
+  end
+  subgraph optin["Opt-in bodies"]
+    samples[("samples")]
+    ds[("datasets")]
+  end
+  calls -- "late metadata" --> updates
+  wl -- "every mutation appends a snapshot" --> rev
+  labels -- "point at" --> pv
+  calls -- "deterministic sampling" --> samples
+  samples -- "promoted idempotently" --> ds
+  ds -- "graded" --> receipts
+  decisions[("decisions")]
+  decisions -. "best-effort mirror" .-> global[("~/.somm/global.sqlite")]
+    </pre>
+  </div>
+</div>
+
+<h2>Append-only telemetry: immutable calls, mutable pointers via <code>call_updates</code></h2>
+
+<div class="article-mrow">
+  <p>A <code>Call</code> is an immutable telemetry event. The record carries route, token, latency, cost, outcome, tracing, cache, and citation fields (<code>packages/somm-core/src/somm_core/models.py:225</code>); on the client side each normalized record includes provider/model attribution, hashes, errors, correlation data, and cache usage (<code>packages/somm/src/somm/client.py:1265</code>). Once written, a call row is never edited. When an outcome changes after the fact — an application marks a result bad hours later — that change is appended to <code>call_updates</code> instead of overwriting the original (<code>packages/somm-core/src/somm_core/repository.py:1403</code>).</p>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">call_updates</span> The append-only side table for late-arriving metadata about a recorded call. The original row stays byte-identical; the update is a new fact with its own history.</aside>
+</div>
+
+<blockquote class="article-pullquote">Telemetry is append-only: late metadata goes into <code>call_updates</code>, preserving deterministic audit history.<cite>— docs/BLUEPRINT.md:56</cite></blockquote>
+
+<p>Everything downstream respects this contract. Evaluation and recommendation services consume calls to produce their own records without rewriting the original telemetry (<code>docs/BLUEPRINT.md:171</code>). Failures are recorded the same way — deliberately visible and bounded in telemetry rather than silently swallowed (<code>README.md:162</code>) — which is why <code>somm calls --status error</code> is the diagnostic route bug reports ask for (<code>.github/ISSUE_TEMPLATE/bug_report.md:28</code>).</p>
+
+<h2>Prompt versions, workload revisions, and audit history</h2>
+
+<div class="article-pullnumber"><span class="num">19</span><span class="label">schema versions, applied atomically on startup</span></div>
+
+<p>The schema is at version 19, which evolved the original workload/prompt/call ledger into decisions, workload revisions, datasets, evaluation receipts, campaigns, and canonical model aliases (<code>packages/somm-core/src/somm_core/version.py:7</code>). <code>ensure_schema()</code> applies the packaged SQL migrations automatically (<code>packages/somm-core/src/somm_core/schema.py:80</code>), and each migration commits its DDL and version stamp in the same transaction, so a database can never end up partially upgraded (<code>packages/somm-core/src/somm_core/schema.py:91</code>).</p>
+
+<p>The append-only discipline extends beyond calls, using a consistent pattern: immutable snapshots underneath, mutable pointers on top (<code>notes/GAMEPLAN-2026-07.md:95</code>).</p>
+
+<ul>
+  <li><strong>Workloads.</strong> Routing constraints live on the workload's live row for fast reads, but every mutation appends a revision snapshot. Rollback doesn't delete anything — it copies an old snapshot forward as a <em>new</em> revision (<code>packages/somm-core/src/somm_core/repository.py:402</code>, <code>packages/somm-core/src/somm_core/repository.py:579</code>).</li>
+  <li><strong>Prompts.</strong> Prompt versions are immutable; labels are the mutable pointers, resolved at call time — including deterministic weighted labels for splitting traffic between versions (<code>packages/somm/src/somm/client.py:1846</code>, <code>packages/somm/src/somm/client.py:1880</code>).</li>
+  <li><strong>Samples and datasets.</strong> Opt-in captured samples can be promoted idempotently into durable golden datasets, graded with deterministic structural and text comparisons, and linked to structured evaluation receipts (<code>packages/somm-core/src/somm_core/repository.py:757</code>, <code>packages/somm-core/src/somm_core/graders.py:28</code>).</li>
+  <li><strong>Decisions.</strong> Model-choice judgments recorded through the MCP tools are written locally and best-effort mirrored to a global cross-project repository, so future selection work can recall them (<code>packages/somm-mcp/src/somm_mcp/server.py:360</code>). That global database is real machine state — the test suite explicitly redirects <code>~/.somm/global.sqlite</code> into temporary paths to avoid polluting it (<code>conftest.py:18</code>).</li>
+</ul>
+
+<h2>Privacy classes: PRIVATE workloads fail closed rather than egress</h2>
+
+<div class="article-mrow">
+  <p>A workload is registered once with its privacy class; every subsequent call inherits the policy. A workload registered with <code>PrivacyClass.PRIVATE</code> is restricted to local providers — and if no local provider is available, the call fails instead of sending data upstream (<code>examples/private_workload.py:19</code>, <code>examples/private_workload.py:27</code>). Attempting to enable shadow evaluation on a private workload is rejected with <code>SommPrivacyViolation</code> (<code>examples/private_workload.py:36</code>), and the example pairs the class with a zero-dollar daily budget as an additional safeguard (<code>examples/private_workload.py:24</code>).</p>
+  <aside class="article-marginnote article-marginnote--source"><span class="term">Threat model</span> The enforcement layers below are documented as deliberately independent — no single layer is trusted to hold alone (<code>docs/threat-model.md:44</code>).</aside>
+</div>
+
+<p>Crucially, prompt and response bodies are not stored by default at all. Bodies enter the database only through opt-in shadow sampling, which is deterministically sampled, size-capped, and forbidden for private workloads (<code>packages/somm/src/somm/client.py:850</code>, <code>packages/somm-core/src/somm_core/repository.py:642</code>). The same policy is enforced independently at several layers:</p>
+
+<table>
+  <thead>
+    <tr><th>Layer</th><th>What it enforces</th><th>Where</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Routing</td><td>PRIVATE workloads route only to local providers; none available → the call fails</td><td><code>examples/private_workload.py:27</code></td></tr>
+    <tr><td>Workers</td><td>Shadow evaluation is workload-opt-in and excludes private workloads</td><td><code>packages/somm-service/src/somm_service/workers/shadow_eval.py:102</code></td></tr>
+    <tr><td>Storage</td><td>Databases and registries are created with owner-only permissions</td><td><code>packages/somm-core/src/somm_core/repository.py:185</code></td></tr>
+    <tr><td>Hooks</td><td>Hook events omit prompt and response bodies entirely</td><td><code>docs/plugins.md:79</code></td></tr>
+    <tr><td>Agents</td><td>MCP replay refuses private workloads; recorded bodies are truncated to 4,000 characters and wrapped as untrusted data</td><td><code>packages/somm-mcp/src/somm_mcp/server.py:663</code>, <code>packages/somm-mcp/src/somm_mcp/server.py:49</code></td></tr>
+  </tbody>
+</table>
+
+<p><code>somm doctor</code> keeps the storage layer honest over time, checking for permission drift alongside processes, cooldowns, and migrations (<code>docs/errors/SOMM_PORT_BUSY.md:11</code>).</p>
+
+<div class="callout callout--danger"><span class="callout-title">What fails closed</span> Hard per-workload daily budgets refuse the call <em>before</em> provider dispatch, so fallback can never route around a cap (<code>docs/errors/SOMM_BUDGET_EXCEEDED.md:23</code>, <code>packages/somm/src/somm/client.py:571</code>). In the service proxy, a budget-rejected call creates neither spend nor telemetry records (<code>packages/somm-service/src/somm_service/proxy.py:322</code>). And PRIVATE workloads with no local provider fail rather than egress.</div>
+
+<div class="callout callout--success"><span class="callout-title">What fails open</span> Advisory intelligence never blocks live inference: a missing price records zero cost (<code>packages/somm-core/src/somm_core/pricing.py:240</code>), an unreadable fleet database contributes zero usage (<code>packages/somm-core/src/somm_core/plans.py:376</code>), and hooks, mirroring, and learned overrides are designed so their failures cannot break the call path (<code>packages/somm/src/somm/hooks.py:246</code>).</div>
+
+<h2>Pricing without the network: the bundled cost snapshot</h2>
+
+<div class="article-mrow">
+  <p>Every call row carries a USD cost, and computing it requires no network access. Pricing is seeded and synchronized from an offline snapshot bundled into the wheel, cached in-process for ten minutes, and applied to token counts to produce per-call cost (<code>packages/somm-core/src/somm_core/pricing.py:108</code>, <code>packages/somm-core/src/somm_core/pricing.py:233</code>). Tests assert the packaged snapshot covers every paid routed provider and can populate model intelligence entirely offline (<code>tests/test_pricing_bundle.py:38</code>, <code>tests/test_pricing_bundle.py:47</code>).</p>
+  <aside class="article-marginnote article-marginnote--source"><span class="term">Snapshot origin</span> The bundle is regenerated by <code>scripts/update_pricing_bundle.py:110</code>, which reads LiteLLM's pricing data, keeps only providers and modes somm routes, normalizes prices to per-million-token values, and adds curated missing rows (<code>scripts/update_pricing_bundle.py:40</code>, <code>scripts/update_pricing_bundle.py:71</code>). Releases refresh it as part of the checklist (<code>RELEASING.md:28</code>).</aside>
+</div>
+
+<p>Synchronization is careful about ownership: a bundle refresh replaces stale seeded data but preserves manually entered prices, which stay authoritative over bundled data, and a fingerprint check skips repeat work (<code>tests/test_pricing_bundle.py:66</code>, <code>tests/test_pricing_bundle.py:84</code>). When a price is genuinely missing, the call still succeeds: cost records as zero, and paid providers emit a once-per-provider/model warning while free providers stay silent (<code>tests/test_pricing_safety.py:87</code>, <code>tests/test_pricing_safety.py:101</code>, <code>tests/test_pricing_safety.py:115</code>).</p>
+
+<div class="stat-row">
+  <div class="stat"><span class="value">10 min</span><span class="label">in-process pricing cache</span></div>
+  <div class="stat"><span class="value">$0.00</span><span class="label">cost recorded when a price is missing — visible, never blocking</span></div>
+  <div class="stat"><span class="value">1×</span><span class="label">warning per paid provider/model pair</span></div>
+</div>
+
+<h2>Plans and quotas: pacing spend across every project on the machine</h2>
+
+<div class="article-mrow">
+  <p>Cost data becomes governance at machine scope, not just project scope. A local registry tracks every project database on the machine (<code>packages/somm-core/src/somm_core/registry.py:122</code>, <code>packages/somm-core/src/somm_core/registry.py:157</code>), and the plans layer aggregates usage across all of them to calculate pay-as-you-go burn rates or metered-window pacing — it can even infer quota ceilings from observed 429 events (<code>packages/somm-core/src/somm_core/plans.py:370</code>, <code>packages/somm-core/src/somm_core/plans.py:521</code>, <code>packages/somm-core/src/somm_core/plans.py:627</code>).</p>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">Fleet</span> The set of registered somm project databases on one machine. Plan pacing sums requests, tokens, or spend across the whole fleet, so a quota shared by three projects is paced as one pool (<code>tests/test_plans.py:172</code>).</aside>
+</div>
+
+<p>Provider plans load from TOML with modes, quotas, units, windows, and soft utilization targets (<code>tests/test_plans.py:37</code>). Calendar-window limits flag overuse only when usage both exceeds the soft target <em>and</em> runs ahead of elapsed time; rolling windows use direct utilization because they lack a fixed calendar progression (<code>tests/test_plans.py:139</code>, <code>tests/test_plans.py:149</code>). The resulting status feeds routing directly:</p>
+
+<table>
+  <thead>
+    <tr><th>Pacing state</th><th>Meaning</th><th>Router response</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>ok</code></td><td>Usage is within the plan's pace</td><td>Provider stays in normal preference order</td></tr>
+    <tr><td><code>over_pace</code></td><td>Usage is ahead of the soft target for the window</td><td>Provider is deferred behind normal providers</td></tr>
+    <tr><td><code>exhausted</code></td><td>The quota window is used up</td><td>Provider is removed from the chain</td></tr>
+  </tbody>
+</table>
+
+<p>All of this remains advisory in the fail-open sense established above: a broken or absent plan governor falls back to the original provider chain, preserving availability (<code>tests/test_plans.py:272</code>, <code>tests/test_plans.py:281</code>). The hard line stays where it was — the per-workload daily budget, checked before dispatch, which no amount of fallback can route around.</p>
+
+<div class="callout"><span class="callout-title">The substrate in one sentence</span> One owner-only SQLite file per project holds immutable calls and prompt versions, revisioned workloads, opt-in samples, datasets, receipts, and decisions — and the privacy and budget rules are enforced in the same code that reads and writes it.</div>
+
+<div class="card-grid">
+  <a class="card" href="life-of-a-call.html"><h3>The Life of a Call</h3><p>How a single <code>generate()</code> becomes the immutable row described here — routing, fallback, and the telemetry writer.</p></a>
+  <a class="card" href="intelligence-loop.html"><h3>The Intelligence Loop</h3><p>How workers consume calls, samples, and receipts to grade quality and produce evidence-backed recommendations.</p></a>
+  <a class="card" href="engineering-reference.html"><h3>Engineering Reference</h3><p>Migrations, the writer queue, spill-and-replay, and the rest of the machinery underneath the schema.</p></a>
+</div>
+<footer class="colophon article-full" style="margin-left:var(--sp-6);margin-right:var(--sp-6)">
+  Generated 2026-07-10 by <a href="https://github.com/lavallee/artoo">artoo</a> v0.1.0 (explainer generator).<br>
+  Describes <code>somm</code> at commit <code>cc8ebd4</code>.<br>
+  Workers: analysis: codex, synthesis: claude.<br>
+  Machine-written from a deterministic inventory plus per-area code analysis; verify load-bearing claims against the source.
+</footer>
+</main>
+<script src="lib/vendor/mermaid.min.js"></script>
+<script src="lib/artoo-kit/kit.js"></script>
+</body>
+</html>

@@ -1,0 +1,83 @@
+{
+ "site_title": "somm explained",
+ "tagline": "How a zero-config Python library routes LLM calls, records every one in local SQLite, and turns accumulated telemetry into evidence-backed model recommendations.",
+ "pages": [
+  {
+   "slug": "index",
+   "title": "Overview",
+   "purpose": "Introduce what somm is, the problem it solves, and the shape of the system: a local-first telemetry substrate with routing, evaluation, and intelligence layered on top \u2014 no hosted control plane, no commercial dependencies on the hot path.",
+   "sections": [
+    "What somm is: telemetry, routing, and an intelligence loop",
+    "The core bet: local-first, privacy-first, zero-config",
+    "Workloads, not providers, as the stable identity",
+    "The seven packages at a glance",
+    "By the numbers: 42k lines of Python, 6 publishable packages, one SQLite schema",
+    "How to read this site"
+   ]
+  },
+  {
+   "slug": "life-of-a-call",
+   "title": "The Life of a Call",
+   "purpose": "Walk one SommLLM.generate() call end to end: workload resolution and policy, pre-call hooks, capability-filtered routing with fallback and cooldowns, budget enforcement, and the immutable Call record it leaves behind.",
+   "sections": [
+    "Entry point: somm.llm(project=...) and the workload contract",
+    "Policy first: privacy class, daily budget, and capability requirements",
+    "Routing: filter incapable models, pace quotas, cool transient failures",
+    "Recording the call: tokens, cost, latency, outcome, provenance",
+    "When things break: transient fallthrough vs. fatal SOMM_* errors",
+    "The write path: batched telemetry with JSONL spill for resilience"
+   ]
+  },
+  {
+   "slug": "data-and-privacy",
+   "title": "The Data Substrate",
+   "purpose": "Explain the SQLite data model that everything shares \u2014 append-only calls, workload revisions, prompts, samples, datasets, and decisions \u2014 and the privacy and cost guarantees built into it.",
+   "sections": [
+    "One project-local database: .somm/calls.sqlite",
+    "Append-only telemetry: immutable calls, mutable pointers via call_updates",
+    "Prompt versions, workload revisions, and audit history",
+    "Privacy classes: PRIVATE workloads fail closed rather than egress",
+    "Pricing without the network: the bundled cost snapshot",
+    "Plans and quotas: pacing spend across every project on the machine"
+   ]
+  },
+  {
+   "slug": "intelligence-loop",
+   "title": "The Intelligence Loop",
+   "purpose": "Show how raw telemetry becomes advice: the service tier's scheduled workers refresh model intelligence, shadow-grade sampled calls against a gold model, and emit propose-only recommendations that an operator explicitly applies.",
+   "sections": [
+    "somm serve: dashboard, proxy, OTLP ingest, and the scheduler",
+    "Model intelligence: bundled pricing plus OpenRouter, Ollama, and Hugging Face signals",
+    "Shadow evaluation: sampled, opt-in grading with receipts",
+    "From evidence to recommendations: the agent worker",
+    "Propose-only by design: humans apply, somm suggests",
+    "Durable datasets, campaigns, and prompt optimization"
+   ]
+  },
+  {
+   "slug": "agents-and-integrations",
+   "title": "Agents and Integrations",
+   "purpose": "Cover the surfaces that let existing code and coding agents plug in: drop-in compatibility shims, the LangChain chat model, the 14-tool MCP server with cross-project decision memory, and the packaged agent skills.",
+   "sections": [
+    "Drop-in adoption: the OpenAI shim and legacy-wrapper compat layer",
+    "SommChatModel: LangChain and LangGraph without leaving somm",
+    "somm-mcp: telemetry, advice, compare, and replay over stdio",
+    "Decision memory: record a model choice once, recall it across projects",
+    "somm-skill: teaching coding agents to instrument their own calls"
+   ]
+  },
+  {
+   "slug": "engineering-reference",
+   "title": "Engineering Reference",
+   "purpose": "A reference page for contributors: the uv workspace layout, CI and release machinery, performance and security gates, the test strategy, and the key CLI commands.",
+   "sections": [
+    "Workspace layout: six packages, one shared version",
+    "CI gates: lint, tests on 3.12/3.13, pip-audit, and the perf budget",
+    "Release discipline: the version gate, trusted publishing, and rerunnable publishes",
+    "Test strategy: isolated machine state, offline pricing, and the blocklist scanner",
+    "CLI quick reference: generate, status, doctor, compare, serve",
+    "Canonical errors: the SOMM_* catalog"
+   ]
+  }
+ ]
+}

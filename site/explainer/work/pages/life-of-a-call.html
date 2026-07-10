@@ -1,0 +1,131 @@
+<header class="article-header">
+  <p class="article-kicker">somm explained · The Life of a Call</p>
+  <h1 class="article-title">The Life of a Call</h1>
+  <p class="article-dek">One <code>SommLLM.generate()</code> call, followed end to end: how a named workload becomes a policy check, a capability-filtered route, a provider dispatch with fallback — and finally an immutable row in a local SQLite ledger.</p>
+</header>
+
+<h2>Entry point: <code>somm.llm(project=...)</code> and the workload contract</h2>
+
+<div class="article-mrow">
+  <p>Everything starts with a client. <code>somm.llm(project=...)</code> constructs a <code>SommLLM</code>, and that constructor does real work: it initializes a project repository, the configured provider adapters, a health tracker, the router, pricing data, and an asynchronous telemetry writer (<code>packages/somm/src/somm/client.py:666</code>). There is no service to stand up first — the primary call path is self-hosted and locally recorded, designed to work with minimal configuration (<code>packages/somm/README.md:3</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Workload</span> a stable, named task identity that carries policy — privacy class, daily budget, capability requirements. Workloads represent tasks rather than providers, so telemetry stays comparable when routing changes (<code>skillopt/somm.candidate.md:44</code>).
+  </aside>
+</div>
+
+<div class="article-mrow">
+  <p>Every call is tagged with a workload, and the workload is a contract, not a label. When <code>generate()</code> runs, it first registers or validates the workload for this call (<code>packages/somm/src/somm/client.py:910</code>). In the default <em>observe</em> mode, an unknown workload is auto-registered so adoption stays frictionless; in <em>strict</em> mode, a missing registration is an error — the same mechanism doubles as enforceable governance (<code>packages/somm/src/somm/client.py:658</code>).</p>
+  <aside class="article-marginnote article-marginnote--source">
+    <span class="term">Pipeline order</span> the canonical sequence — resolve workload policy, run mutable <code>pre_call</code> hooks, route across capable providers with fallback, record an immutable <code>calls</code> row, then run inline and background observers — is documented at <code>docs/plugins.md:9</code>.
+  </aside>
+</div>
+
+<h2>Policy first: privacy class, daily budget, and capability requirements</h2>
+
+<p>Workloads declared with <code>SommLLM.register_workload(...)</code> carry privacy, budget, and capability requirements (<code>docs/errors/SOMM_WORKLOAD_UNREGISTERED.md:19</code>, <code>docs/BLUEPRINT.md:118</code>). Before any provider is contacted, <code>generate()</code> merges the workload's declared capabilities with capabilities inferred from the request itself, then runs ordered, mutable <code>pre_call</code> hooks registered through <code>hooks.register_hook(...)</code> (<code>packages/somm/src/somm/client.py:910</code>, <code>packages/somm/src/somm/hooks.py:160</code>).</p>
+
+<div class="article-mrow">
+  <p>Hooks are deliberately weak in two ways. Hook events omit prompt and response bodies, and a failing hook cannot break the call path — hooks fail open, because auxiliary intelligence must never take down live inference (<code>docs/plugins.md:79</code>, <code>packages/somm/src/somm/hooks.py:246</code>). Budgets are the opposite: they fail closed. After the hooks run, <code>generate()</code> checks the workload's daily budget, and a refusal is fatal (<code>packages/somm/src/somm/client.py:571</code>).</p>
+  <aside class="article-marginnote article-marginnote--callout">
+    <span class="term">Privacy is a routing constraint</span> a workload registered with <code>PrivacyClass.PRIVATE</code> is restricted to local providers; if none are available, the call fails rather than sending data upstream (<code>examples/private_workload.py:27</code>).
+  </aside>
+</div>
+
+<div class="callout callout--warn">
+  <span class="callout-title">Budget refusal happens before dispatch — by design</span>
+  The check runs before any provider is selected, so fallback can never route around a spent cap. A rejected call creates no spend and stops with a fatal <code>SOMM_BUDGET_EXCEEDED</code> error (<code>docs/errors/SOMM_BUDGET_EXCEEDED.md:23</code>).
+</div>
+
+<h2>Routing: filter incapable models, pace quotas, cool transient failures</h2>
+
+<p>With policy satisfied, the call dispatches either to a pinned provider or to the preference-ordered router (<code>packages/somm/src/somm/client.py:910</code>). Pins are "try first" by default — if the pinned route fails, the router can still fall back — while <code>no_fallback=True</code> supplies pinned-or-bust semantics for experiments where rerouting would invalidate results (<code>packages/somm/src/somm/client.py:1133</code>).</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["SommLLM.generate()"] --> B["Resolve workload policy<br/>(auto-register in observe mode)"]
+    B --> C["Merge declared + inferred capabilities"]
+    C --> D["Run mutable pre_call hooks<br/>(fail open)"]
+    D --> E{"Daily budget?"}
+    E -- "exceeded" --> F["SOMM_BUDGET_EXCEEDED<br/>fatal, no dispatch"]
+    E -- "ok" --> G{"Provider pin?"}
+    G -- "pinned" --> H["Try pin first"]
+    G -- "unpinned" --> I["Preference-ordered router"]
+    I --> J["Filter explicitly incapable<br/>provider/model pairs"]
+    J --> K["Apply plan governor:<br/>defer over-paced, drop blocked"]
+    K --> L["Skip cooled providers"]
+    L --> M["Dispatch"]
+    H --> M
+    M -- "transient failure" --> N["Cool provider,<br/>fall through to next"]
+    N --> M
+    M -- "success" --> O["Normalize result +<br/>immutable Call record"]
+    O --> P["Batched telemetry write"]
+    P --> Q["post_call hooks (inline)<br/>post_process (background)"]
+</pre>
+</div>
+
+<p>The router applies three filters before any network access (<code>packages/somm/src/somm/routing.py:158</code>):</p>
+
+<ul>
+  <li><strong>Capability.</strong> Provider/model pairs that are <em>explicitly</em> incapable of the request's requirements are removed; pairs with unknown capability values remain eligible, so incomplete metadata never silently shrinks the candidate pool (<code>docs/multimodal.md:75</code>).</li>
+  <li><strong>Quota pacing.</strong> Provider plans classify usage as <code>ok</code>, <code>over_pace</code>, or <code>exhausted</code>; the plan governor keeps normal providers first, defers over-paced ones, and removes blocked ones (<code>tests/test_plans.py:262</code>). A broken or absent governor fails open to the original provider chain, preserving availability (<code>tests/test_plans.py:272</code>). Quota ceilings can even be inferred from observed 429 events in past telemetry (<code>packages/somm-core/src/somm_core/plans.py:627</code>).</li>
+  <li><strong>Cooldowns.</strong> Providers recently seen failing transiently are skipped. Cooldown state lives in SQLite — with separate model-level and provider-wide entries — so it survives process restarts (<code>docs/BLUEPRINT.md:187</code>).</li>
+</ul>
+
+<h2>Recording the call: tokens, cost, latency, outcome, provenance</h2>
+
+<div class="article-mrow">
+  <p>Whatever happens at dispatch, the call leaves a normalized <code>Call</code> record: provider/model attribution, tokens, cost, latency, hashes, outcome, errors, correlation data, cache usage, and citations (<code>packages/somm/src/somm/client.py:1265</code>). In <code>somm-core</code>'s data model, calls are immutable telemetry events; late outcome changes go into a separate <code>call_updates</code> table, preserving a deterministic audit history rather than rewriting the original row (<code>packages/somm-core/src/somm_core/models.py:225</code>, <code>packages/somm-core/src/somm_core/repository.py:1403</code>, <code>docs/BLUEPRINT.md:56</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Outcome</span> a typed quality signal the application can attach after the fact via <code>result.mark(somm.Outcome...)</code> — recorded as an update, never as a mutation of the call itself (<code>skillopt/somm.candidate.md:103</code>).
+  </aside>
+</div>
+
+<p>Cost is computed locally: <code>cost_for_call()</code> converts token counts into per-call USD using pricing seeded from an offline bundled snapshot and cached for ten minutes (<code>packages/somm-core/src/somm_core/pricing.py:233</code>, <code>packages/somm-core/src/somm_core/pricing.py:108</code>). Missing pricing fails open to zero cost with a once-per-provider/model warning for paid providers — visible, but never blocking a call (<code>packages/somm-core/src/somm_core/pricing.py:240</code>, <code>tests/test_pricing_safety.py:87</code>).</p>
+
+<p>What the record does <em>not</em> contain matters just as much. Prompt and response bodies are stored only through opt-in sampling (<code>packages/somm-core/src/somm_core/repository.py:642</code>); shadow body capture is opt-in, deterministically sampled, size-capped, and forbidden for private workloads (<code>packages/somm/src/somm/client.py:850</code>). The full privacy story is on <a href="data-and-privacy.html">The Data Substrate</a>.</p>
+
+<h2>When things break: transient fallthrough vs. fatal <code>SOMM_*</code> errors</h2>
+
+<p>somm splits failure into two regimes. Transient failures — timeouts, rate limits, 5xx responses, insufficient credit — cool the offending provider and fall through to the next candidate. Fatal policy or configuration failures stop immediately, and each has a canonical <code>SOMM_*</code> page documenting the problem, cause, behavior, and fix (<code>docs/errors/index.html:28</code>). Budget exhaustion and privacy violations are on the fatal side precisely so that fallback can never launder a policy refusal into a successful call.</p>
+
+<blockquote class="article-pullquote">
+  Failures are deliberately visible and bounded in telemetry rather than silently swallowed.
+  <cite>— somm design decisions, <code>README.md:162</code></cite>
+</blockquote>
+
+<p>Failed calls are still calls: they land in the same ledger with their error details, and <code>somm calls --status error</code> surfaces them from the CLI — it's the route bug reports are asked to include (<code>.github/ISSUE_TEMPLATE/bug_report.md:28</code>). Integrations follow the same philosophy: the LangChain adapter raises failures by default so retry and circuit-breaker middleware can react, with an opt-in mode that returns an empty message carrying failure metadata instead (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:63</code>).</p>
+
+<h2>The write path: batched telemetry with JSONL spill for resilience</h2>
+
+<p>Telemetry never blocks the hot path. A per-process writer queue batches short writes into the project-local SQLite database — <code>.somm/calls.sqlite</code> (<code>README.md:67</code>) — keeping the no-service-required call path fast (<code>packages/somm/src/somm/telemetry.py:38</code>, <code>notes/PLAN.md:1179</code>). If database writes fail, records spill to permission-restricted JSONL files for later atomic replay, so telemetry degrades to disk rather than being lost (<code>packages/somm/src/somm/telemetry.py:270</code>).</p>
+
+<p>The database underneath is built for this pattern: constructing a <code>Repository</code> creates a permission-restricted SQLite file, applies packaged migrations automatically, and configures WAL, foreign keys, and per-thread, fork-aware connections (<code>packages/somm-core/src/somm_core/repository.py:177</code>). Migrations commit DDL and version stamps together, so a database is never left partially upgraded (<code>packages/somm-core/src/somm_core/schema.py:91</code>).</p>
+
+<p>The whole round trip is cheap enough to gate in CI:</p>
+
+<div class="stat-row">
+  <div class="stat"><span class="value">500</span><span class="label">warmed <code>generate()</code> calls in the CI perf gate</span></div>
+  <div class="stat"><span class="value">p50</span><span class="label">the only latency that fails the build (p95 is reported)</span></div>
+  <div class="stat"><span class="value">v19</span><span class="label">current SQLite schema version</span></div>
+  <div class="stat"><span class="value">10 min</span><span class="label">pricing cache TTL for cost computation</span></div>
+</div>
+
+<p>The performance check runs the warmed hot path against a fake provider and a temporary repository, isolating somm's own overhead from network and provider latency; only median latency gates CI, reducing sensitivity to noisy outliers (<code>scripts/check_perf_budget.py:69</code>, <code>scripts/check_perf_budget.py:100</code>). Schema v19 is where the original workload/prompt/call ledger has evolved to (<code>packages/somm-core/src/somm_core/version.py:7</code>).</p>
+
+<p>Once the row is written, this call's life is over — but its afterlife is the point. Every downstream service consumes calls without rewriting them: evaluation, model intelligence, and recommendations all read the same ledger (<code>docs/BLUEPRINT.md:171</code>).</p>
+
+<div class="card-grid">
+  <a class="card" href="data-and-privacy.html">
+    <h3>The Data Substrate</h3>
+    <p>The SQLite schema the Call record lands in: immutability, owner-only permissions, opt-in body capture, and <code>call_updates</code>.</p>
+  </a>
+  <a class="card" href="intelligence-loop.html">
+    <h3>The Intelligence Loop</h3>
+    <p>How accumulated call telemetry becomes shadow evaluations, model intelligence, and evidence-backed recommendations.</p>
+  </a>
+  <a class="card" href="agents-and-integrations.html">
+    <h3>Agents and Integrations</h3>
+    <p>The same call path behind LangChain, an OpenAI-shaped shim, MCP tools, and an Anthropic-compatible proxy.</p>
+  </a>
+</div>

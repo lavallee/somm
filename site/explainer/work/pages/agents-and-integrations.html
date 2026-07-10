@@ -1,0 +1,205 @@
+<header class="article-header">
+  <p class="article-kicker">somm explained · 05</p>
+  <h1 class="article-title">Agents and Integrations</h1>
+  <p class="article-dek">somm is designed to be grafted on, not built around. Two compatibility shims absorb existing call sites, a LangChain chat model absorbs agent frameworks, a 14-tool MCP server hands the accumulated telemetry to coding agents, and a packaged skill teaches those agents to instrument their own calls.</p>
+</header>
+
+<div class="article-mrow">
+  <p>Every surface on this page converges on the same two primitives: <code>SommLLM.generate()</code> for execution and the project-local SQLite repository for memory. The shims and the LangChain adapter feed calls <em>into</em> that pipeline; the MCP server and the agent skill read intelligence back <em>out</em> of it. Nothing here adds a second data path — a call made through the OpenAI shim lands in the same immutable <code>calls</code> ledger as one made natively, and an MCP comparison run records ordinary telemetry like any other call (<code>packages/somm-mcp/src/somm_mcp/server.py:663</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Workload</span> the stable name that tags every call with its task identity, privacy class, and budget. Integrations pass workloads through untouched, which is what keeps telemetry comparable across surfaces (<code>packages/somm-skill/src/somm_skill/SKILL.md:44</code>).
+  </aside>
+</div>
+
+<div class="article-breakout">
+  <div class="diagram">
+    <pre class="mermaid">
+flowchart LR
+    subgraph adopt["Existing code plugs in"]
+        shim["OpenAI shim<br/>openai_chat_completions()"]
+        compat["GenericLLMCompat<br/>legacy-wrapper drop-in"]
+        lc["SommChatModel<br/>LangChain / LangGraph"]
+    end
+    subgraph agents["Coding agents plug in"]
+        mcp["somm-mcp<br/>14 stdio tools"]
+        skill["somm-skill<br/>SKILL.md + SOMMELIER.md"]
+    end
+    gen["SommLLM.generate()<br/>routing / budgets / hooks"]
+    db[("project SQLite<br/>calls / evals / decisions")]
+    global[("global cross-project<br/>decision repository")]
+    shim --> gen
+    compat --> gen
+    lc --> gen
+    mcp -->|"compare / replay"| gen
+    skill -. "teaches agents to call" .-> gen
+    gen --> db
+    mcp <--> db
+    mcp -. "best-effort mirror" .-> global
+    </pre>
+  </div>
+</div>
+
+<h2>Drop-in adoption: the OpenAI shim and legacy-wrapper compat layer</h2>
+
+<p>The <code>examples/</code> area exists to prove a claim: adding somm to an existing Python application should take minimal code changes (<code>examples/README.md:3</code>). It demonstrates two adoption paths, one for codebases with their own LLM wrapper class and one for codebases written against the OpenAI SDK shape.</p>
+
+<div class="article-mrow">
+  <p>For the wrapper case, <code>GenericLLMCompat</code> replaces the original LLM class at import time. Calls to <code>.generate()</code> keep the result fields the surrounding code already reads, while cost and provenance metadata arrive as additions rather than replacements (<code>examples/drop_in_wrapper.py:33</code>, <code>examples/drop_in_wrapper.py:36</code>). For batch work, <code>.probe_providers(n)</code> returns provider slots so a job can be striped across whichever providers are actually available (<code>examples/drop_in_wrapper.py:62</code>). Each client is explicitly closed in a <code>try/finally</code> block — a lifecycle pattern the examples apply consistently (<code>examples/drop_in_wrapper.py:39</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Provider pin</span> a <code>provider/model</code> prefix in the model name that pins execution to one route. An unprefixed model name leaves provider selection to somm's router (<code>examples/openai_swap_in.py:44</code>).
+  </aside>
+</div>
+
+<p>The OpenAI shim, <code>openai_chat_completions(...)</code>, accepts chat-completion arguments and preserves the access pattern existing code depends on — <code>resp.choices[0].message.content</code> still works (<code>examples/openai_swap_in.py:21</code>, <code>examples/openai_swap_in.py:24</code>). Somm-specific metadata is exposed as optional extra attributes on the response, so nothing downstream has to change to ignore it (<code>examples/openai_swap_in.py:36</code>).</p>
+
+<p>The third example shows the privacy machinery working through a shim-shaped call site. A sensitive workload is registered once with <code>PrivacyClass.PRIVATE</code>; every subsequent call using that workload is restricted to local providers (<code>examples/private_workload.py:18</code>, <code>examples/private_workload.py:27</code>).</p>
+
+<div class="callout callout--success">
+  <span class="callout-title">Fail closed, not open</span>
+  If no local provider is available for a private workload, the call fails rather than sending data upstream, and attempting shadow evaluation on it raises <code>SommPrivacyViolation</code> (<code>examples/private_workload.py:27</code>, <code>examples/private_workload.py:36</code>). The example layers a zero-dollar daily budget on top as a second, independent safeguard (<code>examples/private_workload.py:24</code>).
+</div>
+
+<p>Once a shim is in place, the accumulated record is inspectable immediately: <code>somm status</code> and <code>somm tail</code> read the telemetry, and <code>somm serve</code> brings up the dashboard (<code>examples/README.md:70</code>, <code>examples/README.md:78</code>).</p>
+
+<h2>SommChatModel: LangChain and LangGraph without leaving somm</h2>
+
+<div class="article-mrow">
+  <p><code>somm-langchain</code> lets LangChain, LangGraph, and Deep Agents applications use somm as a standard chat model, preserving LangChain call sites while somm handles routing, telemetry, cost tracking, fallback, and model memory (<code>packages/somm-langchain/README.md:3</code>). <code>SommChatModel</code> subclasses LangChain's <code>BaseChatModel</code>; during generation it extracts and joins system messages, translates human, assistant, and tool messages into somm's provider-neutral format, and calls <code>SommLLM.generate()</code> with the workload, routing pins, sampling settings, and tools (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:79</code>).</p>
+  <aside class="article-marginnote article-marginnote--source">
+    <span class="term">One export</span> <code>SommChatModel</code> is the package's sole public symbol (<code>packages/somm-langchain/src/somm_langchain/__init__.py:3</code>) — the whole integration fits in a single class.
+  </aside>
+</div>
+
+<p>The translation is bidirectional and careful about tool calling. Going in, assistant tool calls become <code>tool_use</code> blocks and tool results become user-side <code>tool_result</code> blocks, with system prompts passed separately (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:173</code>). Coming back, the somm result becomes an <code>AIMessage</code> inside a <code>ChatGeneration</code>, carrying tool calls, provider/model provenance, latency, cost, outcome, and token usage (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:118</code>). <code>bind_tools()</code> accepts LangChain-compatible tool definitions, normalizes them through OpenAI's common schema, and unwraps them to somm's neutral schema immediately before generation (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:152</code>).</p>
+
+<p>Several small decisions reward attention:</p>
+
+<ul>
+  <li><strong>Failures raise by default</strong>, so LangChain retry or circuit-breaker middleware can react; callers can instead request an empty message carrying failure metadata (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:63</code>).</li>
+  <li><strong>Pins are optional.</strong> Model and provider overrides exist, but absent them, routing stays with somm (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:57</code>).</li>
+  <li><strong>Reasoning content is preserved across tool-calling turns</strong>, because some thinking-model providers reject subsequent requests without it (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:122</code>).</li>
+  <li><strong>Text-only assistant turns collapse to plain strings</strong> for interoperability, while mixed text/tool turns keep structured blocks (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:236</code>). Unknown LangChain message subclasses are forwarded as user text on a best-effort basis rather than rejected (<code>packages/somm-langchain/src/somm_langchain/chat_model.py:210</code>).</li>
+</ul>
+
+<div class="callout callout--warn">
+  <span class="callout-title">Streaming: not yet established</span>
+  The inspected implementation defines synchronous generation but no explicit streaming override, so package-specific streaming behavior through the LangChain adapter is currently unclear. Native streaming exists on the client itself via <code>SommLLM.stream()</code>.
+</div>
+
+<h2>somm-mcp: telemetry, advice, compare, and replay over stdio</h2>
+
+<div class="article-mrow">
+  <p>The <code>somm-mcp</code> command loads project configuration, constructs the full configured provider chain, builds a <code>FastMCP</code> server, and starts its stdio transport (<code>packages/somm-mcp/src/somm_mcp/cli.py:27</code>). <code>build_server</code> opens the project's SQLite-backed <code>Repository</code>, indexes the supplied providers by name, and registers closures as MCP tools (<code>packages/somm-mcp/src/somm_mcp/server.py:59</code>). The result: an MCP-capable coding agent can inspect LLM usage, manage workloads and prompts, compare or replay model calls, and reuse routing decisions — without a commercial service anywhere in the hot path.</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">MCP</span> the tool-call protocol spoken by coding agents. somm-mcp serves it over stdio: <code>somm-mcp [--project PROJECT]</code> launches the server (<code>packages/somm-mcp/src/somm_mcp/cli.py:12</code>).
+  </aside>
+</div>
+
+<div class="article-pullnumber">
+  <span class="num">14</span>
+  <span class="label">MCP tools registered by the current server (<code>packages/somm-mcp/src/somm_mcp/server.py:1</code>)</span>
+</div>
+
+<table>
+  <thead>
+    <tr><th>Concern</th><th>Tools</th><th>Registered at</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Telemetry</td><td><code>somm_stats</code>, <code>somm_search_calls</code> — summarize or filter recorded calls</td><td><code>server.py:72</code></td></tr>
+    <tr><td>Guidance</td><td><code>somm_recommend</code>, <code>somm_inbox</code> — workload guidance and recommendation items</td><td><code>server.py:117</code></td></tr>
+    <tr><td>Recommendation lifecycle</td><td><code>somm_apply_recommendation</code>, <code>somm_dismiss_recommendation</code></td><td><code>server.py:197</code></td></tr>
+    <tr><td>Model advice</td><td><code>somm_advise</code> — rank models under capability, provider, price, context, and modality constraints</td><td><code>server.py:232</code></td></tr>
+    <tr><td>Decision memory</td><td><code>somm_record_decision</code>, <code>somm_search_decisions</code></td><td><code>server.py:310</code></td></tr>
+    <tr><td>Registration</td><td><code>somm_register_workload</code>, <code>somm_register_prompt</code></td><td><code>server.py:436</code></td></tr>
+    <tr><td>Evaluation</td><td><code>somm_eval_promote_call</code> — promote a sampled call into a dataset</td><td><code>server.py:509</code></td></tr>
+    <tr><td>Execution</td><td><code>somm_compare</code>, <code>somm_replay</code> — side-by-side calls, or rerun a captured call</td><td><code>server.py:549</code></td></tr>
+  </tbody>
+</table>
+
+<p>The intelligence-facing tools are layered on evidence, not vibes: <code>somm_recommend</code> combines open recommendations with model rankings from shadow evaluations, and when no evaluation data exists it falls back to model-intelligence candidates and prior decisions (<code>packages/somm-mcp/src/somm_mcp/server.py:117</code>). The execution tools instantiate a real <code>SommLLM</code> with explicit providers, record normal telemetry, and always close the client; replay additionally requires captured samples and refuses private workloads outright (<code>packages/somm-mcp/src/somm_mcp/server.py:663</code>).</p>
+
+<div class="callout">
+  <span class="callout-title">Built for hostile inputs and missing providers</span>
+  Recorded response bodies returned through MCP are truncated to 4,000 characters and wrapped as untrusted data, reducing the surface for prompt injection against the calling agent (<code>packages/somm-mcp/src/somm_mcp/server.py:49</code>). Provider-dependent tools stay discoverable even when no providers are configured, returning structured errors instead of vanishing from the catalog (<code>packages/somm-mcp/src/somm_mcp/server.py:28</code>). Compare enforces configurable fan-out and token ceilings, with elevated — but still bounded — caps available (<code>packages/somm-mcp/src/somm_mcp/server.py:577</code>).
+</div>
+
+<div class="callout callout--warn">
+  <span class="callout-title">Known documentation drift</span>
+  The package README advertises 10 tools while the current server registers 14 (<code>packages/somm-mcp/README.md:7</code> vs. <code>packages/somm-mcp/src/somm_mcp/server.py:1</code>). Trust the server. The project's security worklist also flags MCP comparison limits among the surfaces still slated for hardening (<code>notes/SOUNDCHECK-WORKLIST-2026-07-10.md:23</code>).
+</div>
+
+<h2>Decision memory: record a model choice once, recall it across projects</h2>
+
+<p>Most telemetry in somm is per-project. Decision memory is the deliberate exception: when an agent (or a person driving one) commits to a model choice, <code>somm_record_decision</code> writes that judgment locally and best-effort mirrors it to a global cross-project repository, where <code>somm_search_decisions</code> can recall it from any other project on the machine (<code>packages/somm-mcp/src/somm_mcp/server.py:360</code>, <code>packages/somm-mcp/src/somm_mcp/server.py:310</code>).</p>
+
+<div class="diagram">
+  <pre class="mermaid">
+sequenceDiagram
+    participant A as Coding agent
+    participant M as somm-mcp
+    participant L as Project repository
+    participant G as Global repository
+    A->>M: somm_search_decisions — recall related prior choices
+    A->>M: somm_advise — rank live candidates under constraints
+    M->>L: model intelligence + shadow-eval evidence
+    A->>M: somm_record_decision — committed choice + rationale
+    M->>L: write decision
+    M--)G: best-effort mirror (cross-project recall)
+  </pre>
+</div>
+
+<p>The three-step sequence — recall, advise, record — is codified as the model-selection lifecycle in <code>SOMMELIER.md</code>: first recall related cross-project decisions, then request ranked live candidates through <code>somm_advise</code>, then record the user's committed choice along with its rationale (<code>packages/somm-skill/src/somm_skill/SOMMELIER.md:17</code>, <code>packages/somm-skill/src/somm_skill/SOMMELIER.md:40</code>, <code>packages/somm-skill/src/somm_skill/SOMMELIER.md:110</code>).</p>
+
+<blockquote class="article-pullquote">
+  Past model decisions inform recommendations but are deliberately non-authoritative — model intelligence changes.
+  <cite>— design note, <code>packages/somm-skill/src/somm_skill/SOMMELIER.md:36</code></cite>
+</blockquote>
+
+<p>That stance matters. A decision recorded in April against last quarter's pricing and capability data should shape, not dictate, a choice made in July. The recall step surfaces precedent; the advise step re-ranks against current evidence; only then is a new decision recorded.</p>
+
+<h2>somm-skill: teaching coding agents to instrument their own calls</h2>
+
+<div class="article-mrow">
+  <p>The last integration surface contains no runtime code at all. <code>somm-skill</code> packages two Markdown resources — onboarding instructions for coding agents working on Python projects that use somm (<code>packages/somm-skill/README.md:3</code>). The Python module is a docstring; consumers load or copy the bundled Markdown, including via <code>importlib.resources</code> in the documented Claude Code installation flow (<code>packages/somm-skill/src/somm_skill/__init__.py:1</code>, <code>packages/somm-skill/README.md:19</code>).</p>
+  <aside class="article-marginnote article-marginnote--def">
+    <span class="term">Shadow evaluation</span> opt-in sampling of production calls for asynchronous grading against a gold model. The skill enables it only for quality-sensitive workloads; prompt-body capture is always disabled for private ones (<code>packages/somm-skill/src/somm_skill/SKILL.md:66</code>, <code>packages/somm-skill/src/somm_skill/SKILL.md:83</code>). Details on <a href="intelligence-loop.html">The Intelligence Loop</a>.
+  </aside>
+</div>
+
+<div class="stat-row">
+  <div class="stat"><span class="value">2</span><span class="label">Markdown resources: SKILL.md + SOMMELIER.md</span></div>
+  <div class="stat"><span class="value">0</span><span class="label">runtime dependencies (<code>packages/somm-skill/pyproject.toml:4</code>)</span></div>
+  <div class="stat"><span class="value">5/5</span><span class="label">held-out behavioral checks passed (<code>skillopt/somm.md:35</code>)</span></div>
+</div>
+
+<p><code>SKILL.md</code> is the operating manual: create a client with <code>somm.llm()</code>, tag every generation with a stable workload, register that workload with privacy and budget controls, and mark results with typed outcomes (<code>packages/somm-skill/src/somm_skill/SKILL.md:24</code>, <code>packages/somm-skill/src/somm_skill/SKILL.md:44</code>, <code>packages/somm-skill/src/somm_skill/SKILL.md:103</code>). It encodes operational judgment too — CLI subscription seats are pinned-only, preserving scarce quota for grading and low-volume work rather than exposing it to hot-loop routing (<code>packages/somm-skill/src/somm_skill/SKILL.md:124</code>). Because it ships as plain package resources, the same guidance travels to Claude, Codex, Cursor, Windsurf, and other agent packaging formats (<code>packages/somm-skill/README.md:34</code>).</p>
+
+<div class="article-mrow">
+  <p>The guidance itself is treated as a tested artifact, not prose. <code>scripts/score_skill.py</code> grades a candidate <code>SKILL.md</code> with deterministic behavioral string and regex checks, split into training and held-out cases; only the held-out aggregate is emitted for the optimizer (<code>scripts/score_skill.py:39</code>, <code>scripts/score_skill.py:133</code>). The most recent optimization run improved the skill from 4/5 to 5/5 held-out checks by converting safety-critical rules into protected uppercase <code>NEVER</code>/<code>DO NOT</code> guardrails, then stopped because no failing case remained (<code>skillopt/somm.md:35</code>, <code>skillopt/somm.md:54</code>).</p>
+  <aside class="article-marginnote article-marginnote--source">
+    <span class="term">Provenance</span> the optimization record acknowledges that regex scoring can accept incorrect API guidance, which motivated exact-symbol checks such as <code>budget_cap_usd_daily</code> (<code>skillopt/somm.md:138</code>, <code>skillopt/somm.md:146</code>).
+  </aside>
+</div>
+
+<p>Together, the skill and the MCP server close a loop the earlier pages set up: agents write instrumented calls (skill), those calls accumulate into evidence (substrate), workers turn evidence into recommendations (intelligence loop), and the same agents read the recommendations back and record their choices (MCP). Each surface is separable; none is required for the one before it to work.</p>
+
+<h2>Where to go next</h2>
+
+<div class="card-grid">
+  <a class="card" href="life-of-a-call.html">
+    <h3>The Life of a Call</h3>
+    <p>What actually happens when a shim or SommChatModel call reaches <code>SommLLM.generate()</code>: workload resolution, hooks, routing, fallback, and the telemetry write.</p>
+  </a>
+  <a class="card" href="data-and-privacy.html">
+    <h3>The Data Substrate</h3>
+    <p>The SQLite ledger every integration shares — and the privacy enforcement that makes replay refuse private workloads.</p>
+  </a>
+  <a class="card" href="intelligence-loop.html">
+    <h3>The Intelligence Loop</h3>
+    <p>Where <code>somm_recommend</code>'s evidence comes from: shadow evaluation, model-intelligence refresh, and the recommendation agent.</p>
+  </a>
+  <a class="card" href="engineering-reference.html">
+    <h3>Engineering Reference</h3>
+    <p>Package layout, CI gates, and the release machinery behind the six-package workspace these integrations ship in.</p>
+  </a>
+</div>
