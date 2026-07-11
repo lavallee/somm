@@ -167,7 +167,10 @@ def test_status_json_with_rows(tmp_path, capsys, monkeypatch):
     assert row["p95_latency_ms"] == 50
     assert row["p95_ttft_ms"] == 10
     assert row["tpot_ms"] == 10
+    assert row["input_tokens_per_second"] == 200
     assert row["output_tokens_per_second"] == 100
+    assert row["total_tokens_per_second"] == 300
+    assert row["requests_per_second"] == 20
     assert row["cache_tokens_in"] == 4
     assert row["cache_tokens_out"] == 1
     assert row["cache_read_ratio"] == 0.4

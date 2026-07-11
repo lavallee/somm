@@ -87,13 +87,20 @@ _SERVING_STATS_KEYS = (
     "p95_ttft_ms",
     "p99_ttft_ms",
     "tpot_ms",
+    "input_tokens_per_second",
     "output_tokens_per_second",
     "total_tokens_per_second",
+    "requests_per_second",
     "cache_read_ratio",
     "goodput_slo_latency_ms",
     "goodput_calls",
     "goodput_under_slo",
+    "goodput_requests_per_second",
+    "goodput_output_tokens_per_second",
+    "goodput_total_tokens_per_second",
+    "goodput_tokens_in",
     "goodput_tokens_out",
+    "goodput_tokens_total",
 )
 
 
@@ -153,6 +160,7 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                         SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS n_failed,
                         SUM(CASE WHEN outcome = 'ok' THEN 1 ELSE 0 END) AS n_ok,
                         SUM(CASE WHEN outcome = 'ok' THEN latency_ms ELSE 0 END) AS ok_latency_ms_sum,
+                        SUM(CASE WHEN outcome = 'ok' THEN tokens_in ELSE 0 END) AS ok_tokens_in,
                         SUM(CASE WHEN outcome = 'ok' THEN tokens_out ELSE 0 END) AS ok_tokens_out,
                         SUM(CASE WHEN outcome = 'ok' THEN tokens_in + tokens_out ELSE 0 END) AS ok_tokens_total,
                         AVG(
@@ -178,9 +186,33 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                                 WHEN goodput_slo_latency_ms IS NOT NULL
                                  AND outcome = 'ok'
                                  AND latency_ms <= goodput_slo_latency_ms
+                                THEN latency_ms ELSE 0
+                            END
+                        ) AS goodput_latency_ms_sum,
+                        SUM(
+                            CASE
+                                WHEN goodput_slo_latency_ms IS NOT NULL
+                                 AND outcome = 'ok'
+                                 AND latency_ms <= goodput_slo_latency_ms
+                                THEN tokens_in ELSE 0
+                            END
+                        ) AS goodput_tokens_in_raw,
+                        SUM(
+                            CASE
+                                WHEN goodput_slo_latency_ms IS NOT NULL
+                                 AND outcome = 'ok'
+                                 AND latency_ms <= goodput_slo_latency_ms
                                 THEN tokens_out ELSE 0
                             END
-                        ) AS goodput_tokens_out_raw
+                        ) AS goodput_tokens_out_raw,
+                        SUM(
+                            CASE
+                                WHEN goodput_slo_latency_ms IS NOT NULL
+                                 AND outcome = 'ok'
+                                 AND latency_ms <= goodput_slo_latency_ms
+                                THEN tokens_in + tokens_out ELSE 0
+                            END
+                        ) AS goodput_tokens_total_raw
                     FROM base
                     GROUP BY {group_cols_sql}
                 ),
@@ -251,12 +283,20 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                     r.tpot_ms,
                     CASE
                         WHEN r.ok_latency_ms_sum > 0
+                        THEN r.ok_tokens_in * 1000.0 / r.ok_latency_ms_sum
+                    END AS input_tokens_per_second,
+                    CASE
+                        WHEN r.ok_latency_ms_sum > 0
                         THEN r.ok_tokens_out * 1000.0 / r.ok_latency_ms_sum
                     END AS output_tokens_per_second,
                     CASE
                         WHEN r.ok_latency_ms_sum > 0
                         THEN r.ok_tokens_total * 1000.0 / r.ok_latency_ms_sum
                     END AS total_tokens_per_second,
+                    CASE
+                        WHEN r.ok_latency_ms_sum > 0
+                        THEN r.n_ok * 1000.0 / r.ok_latency_ms_sum
+                    END AS requests_per_second,
                     CASE
                         WHEN r.tokens_in > 0
                         THEN r.cache_tokens_in * 1.0 / r.tokens_in
@@ -271,9 +311,29 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                         ELSE r.goodput_calls_raw * 1.0 / r.n_ok
                     END AS goodput_under_slo,
                     CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL OR r.goodput_latency_ms_sum = 0 THEN NULL
+                        ELSE r.goodput_calls_raw * 1000.0 / r.goodput_latency_ms_sum
+                    END AS goodput_requests_per_second,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL OR r.goodput_latency_ms_sum = 0 THEN NULL
+                        ELSE r.goodput_tokens_out_raw * 1000.0 / r.goodput_latency_ms_sum
+                    END AS goodput_output_tokens_per_second,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL OR r.goodput_latency_ms_sum = 0 THEN NULL
+                        ELSE r.goodput_tokens_total_raw * 1000.0 / r.goodput_latency_ms_sum
+                    END AS goodput_total_tokens_per_second,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL THEN NULL
+                        ELSE r.goodput_tokens_in_raw
+                    END AS goodput_tokens_in,
+                    CASE
                         WHEN r.goodput_slo_latency_ms IS NULL THEN NULL
                         ELSE r.goodput_tokens_out_raw
-                    END AS goodput_tokens_out
+                    END AS goodput_tokens_out,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL THEN NULL
+                        ELSE r.goodput_tokens_total_raw
+                    END AS goodput_tokens_total
                 FROM rollup r
                 LEFT JOIN latency_percentiles lp
                   ON {lp_join_sql}

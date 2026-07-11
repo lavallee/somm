@@ -174,6 +174,7 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
     assert row["cache_tokens_in"] == 10
     assert row["cache_tokens_out"] == 7
     assert row["cache_read_ratio"] == pytest.approx(10 / 16)
+    assert row["input_tokens_per_second"] == pytest.approx(15_000 / 700)
     assert row["p50_latency_ms"] == 200
     assert row["p95_latency_ms"] == 400
     assert row["p99_latency_ms"] == 400
@@ -183,10 +184,16 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
     assert row["tpot_ms"] == pytest.approx((8.0 + 7.5 + 7.5) / 3)
     assert row["output_tokens_per_second"] == pytest.approx(73_000 / 700)
     assert row["total_tokens_per_second"] == pytest.approx(88_000 / 700)
+    assert row["requests_per_second"] == pytest.approx(3_000 / 700)
     assert row["goodput_slo_latency_ms"] == 200
     assert row["goodput_calls"] == 2
     assert row["goodput_under_slo"] == pytest.approx(2 / 3)
+    assert row["goodput_requests_per_second"] == pytest.approx(2_000 / 300)
+    assert row["goodput_output_tokens_per_second"] == pytest.approx(32_000 / 300)
+    assert row["goodput_total_tokens_per_second"] == pytest.approx(42_000 / 300)
+    assert row["goodput_tokens_in"] == 10
     assert row["goodput_tokens_out"] == 32
+    assert row["goodput_tokens_total"] == 42
 
     global_row = repo.stats_global_by_workload(since_days=1)[0]
     assert global_row["project"] == "repo-test"
