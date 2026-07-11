@@ -1,5 +1,5 @@
 {
- "generated_on": "2026-07-02",
+ "generated_on": "2026-07-11",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "license": "MIT (LiteLLM); see source",
  "models": [
@@ -248,8 +248,8 @@
   {
    "provider": "anthropic",
    "model": "claude-sonnet-5",
-   "price_in_per_1m": 3.0,
-   "price_out_per_1m": 15.0,
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
    "context_window": 1000000,
    "capabilities": {
     "tools": true,
@@ -1868,6 +1868,50 @@
   },
   {
    "provider": "openai",
+   "model": "gpt-5.6",
+   "price_in_per_1m": 5.0,
+   "price_out_per_1m": 30.0,
+   "context_window": 1050000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.6-luna",
+   "price_in_per_1m": 1.0,
+   "price_out_per_1m": 6.0,
+   "context_window": 1050000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.6-sol",
+   "price_in_per_1m": 5.0,
+   "price_out_per_1m": 30.0,
+   "context_window": 1050000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.6-terra",
+   "price_in_per_1m": 2.5,
+   "price_out_per_1m": 15.0,
+   "context_window": 1050000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
    "model": "gpt-audio",
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 10.0,
@@ -1952,6 +1996,26 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 16.0,
    "context_window": 32000,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-realtime-2.1",
+   "price_in_per_1m": 4.0,
+   "price_out_per_1m": 24.0,
+   "context_window": 128000,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-realtime-2.1-mini",
+   "price_in_per_1m": 0.6,
+   "price_out_per_1m": 2.4,
+   "context_window": 128000,
    "capabilities": {
     "tools": true
    }

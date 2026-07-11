@@ -7,6 +7,14 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-07-11
+
+### Release status
+
+- `0.13.0` remains beta/pre-1.0. The release expands the service/proxy
+  surface and serving telemetry, but does not declare stable public API, MCP
+  contracts, service contracts, or migration semantics.
+
 ### Added
 
 - **Serving performance rollups**: workload/provider/model stats now include
