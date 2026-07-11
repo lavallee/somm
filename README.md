@@ -544,7 +544,17 @@ provider is opt-in via its own env var.
 | `SOMM_INPROCESS_WORKERS` | `0` | `1` runs the intelligence-loop scheduler inside your process (needs somm-service) |
 | `SOMM_CROSS_PROJECT` | `0` | `1` mirrors telemetry to `~/.somm/global.sqlite` |
 | `SOMM_GLOBAL_PATH` | `~/.somm/global.sqlite` | mirror file location |
+| `SOMM_KEY_PROFILE` | — | named key profile; see below |
 | `SOMM_ENABLE_HF_INTEL` | `0` | `1` enables the opt-in HuggingFace intel worker |
+
+**Named key profiles.** Set `key_profile = "research"` in a repo's
+`[tool.somm]` (or `SOMM_KEY_PROFILE=research`) and every provider key
+resolves from `<NAME>_API_KEY_RESEARCH` before falling back to plain
+`<NAME>_API_KEY` — AWS_PROFILE-style. One environment can hold several
+provisioned keys per provider (per product, team, or deploy stage), so
+your provider dashboards attribute spend to the profile that incurred
+it while the code keeps reading one config attribute. No profile set →
+exactly the single-key behavior above.
 
 The `claude` / `codex` CLI executors are auto-detected when the binary
 is on PATH, but never join the default routing order — reach them via

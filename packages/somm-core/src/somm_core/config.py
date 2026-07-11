@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -25,6 +26,12 @@ from somm_core.registry import registered_db_path
 class Config:
     project: str = "default"
     mode: str = "observe"  # "observe" | "strict"
+    # Named key profile (AWS_PROFILE-style): when set, provider keys
+    # resolve from <NAME>_API_KEY_<PROFILE> before <NAME>_API_KEY, so one
+    # environment can hold several provisioned keys per provider (per
+    # product, team, or environment) and provider dashboards attribute
+    # spend per profile. Unset → exactly the old single-key behavior.
+    key_profile: str | None = None
     db_dir: Path = field(default_factory=lambda: Path("./.somm"))
     spool_dir: Path = field(default_factory=lambda: Path("./.somm/spool"))
     ollama_url: str = "http://localhost:11434"
@@ -97,7 +104,7 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         with pyproject.open("rb") as f:
             data = tomllib.load(f)
         somm_cfg = data.get("tool", {}).get("somm", {})
-        for key in ("project", "mode", "ollama_url", "ollama_model"):
+        for key in ("project", "mode", "ollama_url", "ollama_model", "key_profile"):
             if key in somm_cfg:
                 setattr(cfg, key, somm_cfg[key])
         if "db_dir" in somm_cfg:
@@ -110,6 +117,7 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         "SOMM_MODE": "mode",
         "SOMM_OLLAMA_URL": "ollama_url",
         "SOMM_OLLAMA_MODEL": "ollama_model",
+        "SOMM_KEY_PROFILE": "key_profile",
     }
     for env_var, attr in env_map.items():
         if env_var in os.environ:
@@ -118,8 +126,21 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         cfg.db_dir = Path(os.environ["SOMM_DB_DIR"])
         explicit_db_dir = True
         db_dir_base = cwd
-    if "OPENROUTER_API_KEY" in os.environ:
-        cfg.openrouter_api_key = os.environ["OPENROUTER_API_KEY"]
+    def _key_env(base: str) -> str | None:
+        """Resolve a provider key honouring the named key profile:
+        <base>_<PROFILE> wins, plain <base> is the fallback — so setting
+        a profile never breaks an environment that only has plain keys."""
+        if cfg.key_profile:
+            suffix = re.sub(r"[^A-Za-z0-9]+", "_", cfg.key_profile).upper().strip("_")
+            if suffix:
+                val = os.environ.get(f"{base}_{suffix}")
+                if val:
+                    return val
+        return os.environ.get(base)
+
+    _openrouter_key = _key_env("OPENROUTER_API_KEY")
+    if _openrouter_key:
+        cfg.openrouter_api_key = _openrouter_key
     if "SOMM_OPENROUTER_ROSTER" in os.environ:
         cfg.openrouter_roster = [
             m.strip() for m in os.environ["SOMM_OPENROUTER_ROSTER"].split(",") if m.strip()
@@ -183,7 +204,11 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         ("PERPLEXITY_API_KEY", "perplexity_api_key"),
         ("SOMM_PERPLEXITY_MODEL", "perplexity_model"),
     ):
-        if env_var in os.environ:
+        if env_var.endswith("_API_KEY"):
+            val = _key_env(env_var)
+            if val:
+                setattr(cfg, attr, val)
+        elif env_var in os.environ:
             setattr(cfg, attr, os.environ[env_var])
     if "SOMM_HTTP_TIMEOUT" in os.environ:
         with contextlib.suppress(ValueError):
