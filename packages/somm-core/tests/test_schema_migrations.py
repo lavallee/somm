@@ -21,8 +21,8 @@ def test_v10_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
         tables = {
             row[0]
             for row in conn.execute(
@@ -61,8 +61,8 @@ def test_v11_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
         call_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
         }
@@ -104,8 +104,8 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
 
         tables = {
             row[0]
@@ -152,8 +152,8 @@ def test_v13_database_upgrades_to_v14_prompt_label_weights(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
         label_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(prompt_labels)").fetchall()
         }
@@ -174,8 +174,8 @@ def test_v14_database_upgrades_to_v15_workload_policy(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
         workload_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
@@ -196,8 +196,8 @@ def test_v15_database_upgrades_to_v16_datasets(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
         tables = {
             row[0]
             for row in conn.execute(
@@ -255,8 +255,8 @@ def test_v16_database_upgrades_to_v17_eval_receipts(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
         tables = {
             row[0]
             for row in conn.execute(
@@ -309,8 +309,8 @@ def test_v17_database_upgrades_to_v18_campaigns(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
         tables = {
             row[0]
             for row in conn.execute(
@@ -374,8 +374,8 @@ def test_v18_database_upgrades_to_v19_model_aliases(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 19
-        assert current_schema_version(conn) == 19
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
         tables = {
             row[0]
             for row in conn.execute(
@@ -401,6 +401,28 @@ def test_v18_database_upgrades_to_v19_model_aliases(tmp_path):
             ).fetchall()
         }
         assert "idx_model_aliases_canonical" in indexes
+
+
+def test_v19_database_upgrades_to_v20_workload_serving_slos(tmp_path):
+    db_path = tmp_path / "v19.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 19:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        assert current_schema_version(conn) == 19
+
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 20
+        assert current_schema_version(conn) == 20
+        workload_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
+        }
+        assert {"max_p95_ttft_ms", "max_tpot_ms"}.issubset(workload_columns)
 
 
 def test_repository_model_alias_roundtrip(tmp_path):

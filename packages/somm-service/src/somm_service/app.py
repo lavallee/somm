@@ -9,14 +9,13 @@ HTTP surface:
   GET /api/sessions            JSON session/trace groups
   GET /api/version             JSON service + schema version
   GET /api/recommendations     JSON open recs
+  GET /api/spend/today         JSON spend by workload for current UTC day
   POST /api/recommendations/{id}/dismiss
   POST /api/recommendations/{id}/apply
   POST /api/otlp/v1/traces     Lenient OTLP JSON trace ingest
   POST /v1/traces              Alias for OTLP JSON trace ingest
   POST /v1/messages            Anthropic Messages-compatible LLM proxy
-                                (non-streaming v1; budget-gated; uses litellm
-                                as a library; streaming + /v1/chat/completions
-                                are explicit follow-ups)
+  POST /v1/chat/completions    OpenAI Chat Completions-compatible LLM proxy
 
 Design tokens + a11y spec applied inline (v0.1 ships
 tokens in-HTML; `packages/somm-service/web/tokens.css` lands when we extract).
@@ -60,7 +59,12 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from somm_service.http_limits import PayloadTooLarge, read_bounded_json
-from somm_service.proxy import _anthropic_error, messages_endpoint
+from somm_service.proxy import (
+    _anthropic_error,
+    _openai_error,
+    chat_completions_endpoint,
+    messages_endpoint,
+)
 
 _CSP = "default-src 'none'; style-src 'unsafe-inline'"
 _LOCAL_HEADER = "x-somm-local"
@@ -73,6 +77,7 @@ _READ_PROTECTED_PATHS = {
     "/api/sessions",
     "/api/version",
     "/api/recommendations",
+    "/api/spend/today",
 }
 
 
@@ -231,26 +236,50 @@ class LocalSecurityMiddleware:
         )
         protected_admin = method == "POST" and path.startswith("/api/recommendations/")
         protected_messages = method == "POST" and path == "/v1/messages"
+        protected_chat = method == "POST" and path == "/v1/chat/completions"
         protected_otlp = method == "POST" and path in (
             "/api/otlp/v1/traces",
             "/v1/traces",
         )
 
-        if protected_read or protected_admin or protected_messages or protected_otlp:
+        if (
+            protected_read
+            or protected_admin
+            or protected_messages
+            or protected_chat
+            or protected_otlp
+        ):
             if not self._is_authorized(headers):
-                response = self._forbidden(protected_messages)
+                response = self._forbidden(
+                    "anthropic" if protected_messages else "openai" if protected_chat else None
+                )
                 self._set_security_headers(response)
                 await response(scope, receive, send)
                 return
-            if (protected_messages or protected_otlp) and not self._is_json_request(headers):
-                response = _anthropic_error(
-                    error_type="invalid_request_error",
-                    message=f"POST {path} requires Content-Type: application/json",
-                    status=415,
-                ) if protected_messages else JSONResponse(
-                    {"ok": False, "error": f"POST {path} requires Content-Type: application/json"},
-                    status_code=415,
-                )
+            if (
+                (protected_messages or protected_chat or protected_otlp)
+                and not self._is_json_request(headers)
+            ):
+                if protected_messages:
+                    response = _anthropic_error(
+                        error_type="invalid_request_error",
+                        message=f"POST {path} requires Content-Type: application/json",
+                        status=415,
+                    )
+                elif protected_chat:
+                    response = _openai_error(
+                        error_type="invalid_request_error",
+                        message=f"POST {path} requires Content-Type: application/json",
+                        status=415,
+                    )
+                else:
+                    response = JSONResponse(
+                        {
+                            "ok": False,
+                            "error": f"POST {path} requires Content-Type: application/json",
+                        },
+                        status_code=415,
+                    )
                 self._set_security_headers(response)
                 await response(scope, receive, send)
                 return
@@ -291,13 +320,19 @@ class LocalSecurityMiddleware:
         return media_type == "application/json"
 
     @staticmethod
-    def _forbidden(anthropic_shape: bool) -> JSONResponse:
+    def _forbidden(error_shape: str | None) -> JSONResponse:
         message = (
             "authentication required: send Authorization: Bearer <token>, or for "
             "same-origin dashboard requests send X-Somm-Local: 1"
         )
-        if anthropic_shape:
+        if error_shape == "anthropic":
             return _anthropic_error(
+                error_type="authentication_error",
+                message=message,
+                status=403,
+            )
+        if error_shape == "openai":
+            return _openai_error(
                 error_type="authentication_error",
                 message=message,
                 status=403,
@@ -446,7 +481,7 @@ _HTML_SHELL = """<!DOCTYPE html>
 
 <footer>
     somm is self-hosted. Binds <code>localhost</code> only by default. Data stays on disk.
-    <br>Endpoints: <a href="/health">/health</a> · <a href="/api/status">/api/status</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/calls">/api/calls</a> · <a href="/api/sessions">/api/sessions</a>
+    <br>Endpoints: <a href="/health">/health</a> · <a href="/api/status">/api/status</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/calls">/api/calls</a> · <a href="/api/sessions">/api/sessions</a> · <a href="/api/spend/today">/api/spend/today</a>
   </footer>
 </body>
 </html>
@@ -467,6 +502,12 @@ def _render_table(stats: list[dict]) -> str:
             f"<td class='num'>{s['tokens_in'] or 0}</td>"
             f"<td class='num'>{s['tokens_out'] or 0}</td>"
             f"<td class='num'>{s['n_failed']}</td>"
+            f"<td class='num'>{_fmt_table_int(s.get('p95_latency_ms'))}</td>"
+            f"<td class='num'>{_fmt_table_int(s.get('p95_ttft_ms'))}</td>"
+            f"<td class='num'>{_fmt_table_float(s.get('tpot_ms'))}</td>"
+            f"<td class='num'>{_fmt_table_float(s.get('output_tokens_per_second'))}</td>"
+            f"<td class='num'>{_fmt_table_pct(s.get('cache_read_ratio'))}</td>"
+            f"<td class='num'>{_fmt_table_pct(s.get('goodput_under_slo'))}</td>"
             "</tr>"
         )
     return (
@@ -475,10 +516,31 @@ def _render_table(stats: list[dict]) -> str:
         "<th>workload</th><th>provider</th><th>model</th>"
         "<th class='num'>calls</th><th class='num'>tok in</th>"
         "<th class='num'>tok out</th><th class='num'>fail</th>"
+        "<th class='num'>p95 ms</th><th class='num'>ttft p95</th>"
+        "<th class='num'>tpot</th><th class='num'>out/s</th>"
+        "<th class='num'>cache</th><th class='num'>good</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
     )
+
+
+def _fmt_table_int(value: object) -> str:
+    if value is None:
+        return "-"
+    return str(int(round(float(value))))
+
+
+def _fmt_table_float(value: object) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.1f}"
+
+
+def _fmt_table_pct(value: object) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value) * 100:.0f}%"
 
 
 def _esc(s: str) -> str:
@@ -515,6 +577,54 @@ def _status_payload(cfg: Config, repo: Repository, *, window: int) -> dict:
         "failure_rate": 0.0 if total_calls == 0 else total_failed / total_calls,
         "total_cost_usd": total_cost,
         "active_workloads": len({s["workload"] for s in stats}),
+        "load": _load_payload(cfg, repo),
+    }
+
+
+def _load_payload(cfg: Config, repo: Repository) -> dict:
+    with repo._open() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS calls_per_minute,
+                SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS failed_per_minute,
+                COUNT(DISTINCT workload_id) AS active_workloads,
+                COUNT(DISTINCT provider) AS active_providers,
+                COUNT(DISTINCT model) AS active_models,
+                SUM(tokens_in) AS input_tokens_per_minute,
+                SUM(tokens_out) AS output_tokens_per_minute,
+                AVG(CASE WHEN outcome = 'ok' THEN latency_ms END) AS mean_latency_ms,
+                AVG(CASE WHEN outcome = 'ok' THEN ttft_ms END) AS mean_ttft_ms,
+                AVG(
+                    CASE
+                        WHEN outcome = 'ok'
+                         AND ttft_ms IS NOT NULL
+                         AND tokens_out > 1
+                         AND latency_ms >= ttft_ms
+                        THEN ((latency_ms - ttft_ms) * 1.0 / (tokens_out - 1))
+                    END
+                ) AS mean_tpot_ms
+            FROM calls
+            WHERE project = ?
+              AND ts >= datetime('now', '-60 seconds')
+            """,
+            (cfg.project,),
+        ).fetchone()
+    calls = int(row[0] or 0)
+    failed = int(row[1] or 0)
+    return {
+        "window_seconds": 60,
+        "calls_per_minute": calls,
+        "failed_per_minute": failed,
+        "failure_rate": (failed / calls) if calls else 0.0,
+        "active_workloads": int(row[2] or 0),
+        "active_providers": int(row[3] or 0),
+        "active_models": int(row[4] or 0),
+        "input_tokens_per_minute": int(row[5] or 0),
+        "output_tokens_per_minute": int(row[6] or 0),
+        "mean_latency_ms": row[7],
+        "mean_ttft_ms": row[8],
+        "mean_tpot_ms": row[9],
     }
 
 
@@ -1282,6 +1392,18 @@ async def _api_version(request: Request) -> JSONResponse:
     )
 
 
+async def _api_spend_today(request: Request) -> JSONResponse:
+    from somm.cli import spend_today
+
+    cfg: Config = request.app.state.config
+    rows = spend_today(
+        cfg.db_path,
+        cfg.project,
+        cfg.budget_default_cap_usd_daily,
+    )
+    return JSONResponse({"project": cfg.project, "rows": rows})
+
+
 def create_app(config: Config | None = None) -> Starlette:
     cfg = config or load_config()
     repo = Repository(cfg.db_path)
@@ -1297,11 +1419,13 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/api/sessions", _api_sessions),
             Route("/api/version", _api_version),
             Route("/api/recommendations", _api_recommendations),
+            Route("/api/spend/today", _api_spend_today),
             Route("/api/recommendations/{rec_id:int}/dismiss", _api_rec_dismiss, methods=["POST"]),
             Route("/api/recommendations/{rec_id:int}/apply", _api_rec_apply, methods=["POST"]),
             Route("/api/otlp/v1/traces", _api_otlp_traces, methods=["POST"]),
             Route("/v1/traces", _api_otlp_traces, methods=["POST"]),
             Route("/v1/messages", messages_endpoint, methods=["POST"]),
+            Route("/v1/chat/completions", chat_completions_endpoint, methods=["POST"]),
         ],
     )
     app.add_middleware(

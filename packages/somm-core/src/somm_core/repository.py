@@ -67,6 +67,341 @@ def _is_number(value: object) -> bool:
     )
 
 
+_SERVING_STATS_KEYS = (
+    "workload",
+    "provider",
+    "model",
+    "n_calls",
+    "tokens_in",
+    "tokens_out",
+    "cache_tokens_in",
+    "cache_tokens_out",
+    "cost_usd",
+    "latency_ms_avg",
+    "n_failed",
+    "n_ok",
+    "p50_latency_ms",
+    "p95_latency_ms",
+    "p99_latency_ms",
+    "p50_ttft_ms",
+    "p95_ttft_ms",
+    "p99_ttft_ms",
+    "tpot_ms",
+    "input_tokens_per_second",
+    "output_tokens_per_second",
+    "total_tokens_per_second",
+    "requests_per_second",
+    "cache_read_ratio",
+    "goodput_slo_latency_ms",
+    "goodput_slo_ttft_ms",
+    "goodput_slo_tpot_ms",
+    "goodput_calls",
+    "goodput_under_slo",
+    "goodput_requests_per_second",
+    "goodput_output_tokens_per_second",
+    "goodput_total_tokens_per_second",
+    "goodput_tokens_in",
+    "goodput_tokens_out",
+    "goodput_tokens_total",
+)
+
+
+def _serving_stats_row(row, *, include_project: bool = False) -> dict:
+    out: dict = {}
+    idx = 0
+    if include_project:
+        out["project"] = row[idx]
+        idx += 1
+    for key in _SERVING_STATS_KEYS:
+        out[key] = row[idx]
+        idx += 1
+    return out
+
+
+def _serving_stats_sql(*, include_project: bool) -> str:
+    group_cols = ["workload", "provider", "model"]
+    if include_project:
+        group_cols.insert(0, "project")
+    group_cols_sql = ", ".join(group_cols)
+    select_group_cols_sql = ",\n                    ".join(f"r.{col}" for col in group_cols)
+    lp_join_sql = " AND ".join(f"lp.{col} = r.{col}" for col in group_cols)
+    tp_join_sql = " AND ".join(f"tp.{col} = r.{col}" for col in group_cols)
+    where_sql = "c.ts >= datetime('now', ?)" if include_project else "c.project = ? AND c.ts >= datetime('now', ?)"
+    has_goodput_slo_sql = (
+        "goodput_slo_latency_ms IS NOT NULL "
+        "OR goodput_slo_ttft_ms IS NOT NULL "
+        "OR goodput_slo_tpot_ms IS NOT NULL"
+    )
+    meets_goodput_slo_sql = f"""
+                                ({has_goodput_slo_sql})
+                                 AND outcome = 'ok'
+                                 AND (
+                                    goodput_slo_latency_ms IS NULL
+                                    OR latency_ms <= goodput_slo_latency_ms
+                                 )
+                                 AND (
+                                    goodput_slo_ttft_ms IS NULL
+                                    OR (
+                                        ttft_ms IS NOT NULL
+                                        AND ttft_ms <= goodput_slo_ttft_ms
+                                    )
+                                 )
+                                 AND (
+                                    goodput_slo_tpot_ms IS NULL
+                                    OR (
+                                        call_tpot_ms IS NOT NULL
+                                        AND call_tpot_ms <= goodput_slo_tpot_ms
+                                    )
+                                 )
+    """
+    return f"""
+                WITH base AS (
+                    SELECT
+                        c.project,
+                        COALESCE(w.name, '(unregistered)') AS workload,
+                        c.provider,
+                        c.model,
+                        c.tokens_in,
+                        c.tokens_out,
+                        c.cache_tokens_in,
+                        c.cache_tokens_out,
+                        c.cost_usd,
+                        c.latency_ms,
+                        c.ttft_ms,
+                        c.outcome,
+                        w.max_p95_latency_ms AS goodput_slo_latency_ms,
+                        w.max_p95_ttft_ms AS goodput_slo_ttft_ms,
+                        w.max_tpot_ms AS goodput_slo_tpot_ms
+                    FROM calls c
+                    LEFT JOIN workloads w
+                      ON w.id = c.workload_id
+                     AND w.project = c.project
+                    WHERE {where_sql}
+                ),
+                scored AS (
+                    SELECT
+                        *,
+                        CASE
+                            WHEN outcome = 'ok'
+                             AND ttft_ms IS NOT NULL
+                             AND tokens_out > 1
+                             AND latency_ms >= ttft_ms
+                            THEN ((latency_ms - ttft_ms) * 1.0 / (tokens_out - 1))
+                        END AS call_tpot_ms
+                    FROM base
+                ),
+                rollup AS (
+                    SELECT
+                        {group_cols_sql},
+                        COUNT(*) AS n_calls,
+                        SUM(tokens_in) AS tokens_in,
+                        SUM(tokens_out) AS tokens_out,
+                        SUM(COALESCE(cache_tokens_in, 0)) AS cache_tokens_in,
+                        SUM(COALESCE(cache_tokens_out, 0)) AS cache_tokens_out,
+                        SUM(cost_usd) AS cost_usd,
+                        AVG(latency_ms) AS latency_ms_avg,
+                        SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS n_failed,
+                        SUM(CASE WHEN outcome = 'ok' THEN 1 ELSE 0 END) AS n_ok,
+                        SUM(CASE WHEN outcome = 'ok' THEN latency_ms ELSE 0 END) AS ok_latency_ms_sum,
+                        SUM(CASE WHEN outcome = 'ok' THEN tokens_in ELSE 0 END) AS ok_tokens_in,
+                        SUM(CASE WHEN outcome = 'ok' THEN tokens_out ELSE 0 END) AS ok_tokens_out,
+                        SUM(CASE WHEN outcome = 'ok' THEN tokens_in + tokens_out ELSE 0 END) AS ok_tokens_total,
+                        AVG(
+                            call_tpot_ms
+                        ) AS tpot_ms,
+                        MAX(goodput_slo_latency_ms) AS goodput_slo_latency_ms,
+                        MAX(goodput_slo_ttft_ms) AS goodput_slo_ttft_ms,
+                        MAX(goodput_slo_tpot_ms) AS goodput_slo_tpot_ms,
+                        SUM(
+                            CASE
+                                WHEN {meets_goodput_slo_sql}
+                                THEN 1 ELSE 0
+                            END
+                        ) AS goodput_calls_raw,
+                        SUM(
+                            CASE
+                                WHEN {meets_goodput_slo_sql}
+                                THEN latency_ms ELSE 0
+                            END
+                        ) AS goodput_latency_ms_sum,
+                        SUM(
+                            CASE
+                                WHEN {meets_goodput_slo_sql}
+                                THEN tokens_in ELSE 0
+                            END
+                        ) AS goodput_tokens_in_raw,
+                        SUM(
+                            CASE
+                                WHEN {meets_goodput_slo_sql}
+                                THEN tokens_out ELSE 0
+                            END
+                        ) AS goodput_tokens_out_raw,
+                        SUM(
+                            CASE
+                                WHEN {meets_goodput_slo_sql}
+                                THEN tokens_in + tokens_out ELSE 0
+                            END
+                        ) AS goodput_tokens_total_raw
+                    FROM scored
+                    GROUP BY {group_cols_sql}
+                ),
+                ok_latencies AS (
+                    SELECT
+                        {group_cols_sql},
+                        latency_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY {group_cols_sql}
+                            ORDER BY latency_ms ASC
+                        ) AS rn,
+                        COUNT(*) OVER (
+                            PARTITION BY {group_cols_sql}
+                        ) AS n
+                    FROM scored
+                    WHERE outcome = 'ok'
+                ),
+                latency_percentiles AS (
+                    SELECT
+                        {group_cols_sql},
+                        MAX(CASE WHEN rn = ((50 * n + 99) / 100) THEN latency_ms END) AS p50_latency_ms,
+                        MAX(CASE WHEN rn = ((95 * n + 99) / 100) THEN latency_ms END) AS p95_latency_ms,
+                        MAX(CASE WHEN rn = ((99 * n + 99) / 100) THEN latency_ms END) AS p99_latency_ms
+                    FROM ok_latencies
+                    GROUP BY {group_cols_sql}
+                ),
+                ok_ttft AS (
+                    SELECT
+                        {group_cols_sql},
+                        ttft_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY {group_cols_sql}
+                            ORDER BY ttft_ms ASC
+                        ) AS rn,
+                        COUNT(*) OVER (
+                            PARTITION BY {group_cols_sql}
+                        ) AS n
+                    FROM scored
+                    WHERE outcome = 'ok'
+                      AND ttft_ms IS NOT NULL
+                ),
+                ttft_percentiles AS (
+                    SELECT
+                        {group_cols_sql},
+                        MAX(CASE WHEN rn = ((50 * n + 99) / 100) THEN ttft_ms END) AS p50_ttft_ms,
+                        MAX(CASE WHEN rn = ((95 * n + 99) / 100) THEN ttft_ms END) AS p95_ttft_ms,
+                        MAX(CASE WHEN rn = ((99 * n + 99) / 100) THEN ttft_ms END) AS p99_ttft_ms
+                    FROM ok_ttft
+                    GROUP BY {group_cols_sql}
+                )
+                SELECT
+                    {select_group_cols_sql},
+                    r.n_calls,
+                    r.tokens_in,
+                    r.tokens_out,
+                    r.cache_tokens_in,
+                    r.cache_tokens_out,
+                    r.cost_usd,
+                    r.latency_ms_avg,
+                    r.n_failed,
+                    r.n_ok,
+                    lp.p50_latency_ms,
+                    lp.p95_latency_ms,
+                    lp.p99_latency_ms,
+                    tp.p50_ttft_ms,
+                    tp.p95_ttft_ms,
+                    tp.p99_ttft_ms,
+                    r.tpot_ms,
+                    CASE
+                        WHEN r.ok_latency_ms_sum > 0
+                        THEN r.ok_tokens_in * 1000.0 / r.ok_latency_ms_sum
+                    END AS input_tokens_per_second,
+                    CASE
+                        WHEN r.ok_latency_ms_sum > 0
+                        THEN r.ok_tokens_out * 1000.0 / r.ok_latency_ms_sum
+                    END AS output_tokens_per_second,
+                    CASE
+                        WHEN r.ok_latency_ms_sum > 0
+                        THEN r.ok_tokens_total * 1000.0 / r.ok_latency_ms_sum
+                    END AS total_tokens_per_second,
+                    CASE
+                        WHEN r.ok_latency_ms_sum > 0
+                        THEN r.n_ok * 1000.0 / r.ok_latency_ms_sum
+                    END AS requests_per_second,
+                    CASE
+                        WHEN r.tokens_in > 0
+                        THEN r.cache_tokens_in * 1.0 / r.tokens_in
+                    END AS cache_read_ratio,
+                    r.goodput_slo_latency_ms,
+                    r.goodput_slo_ttft_ms,
+                    r.goodput_slo_tpot_ms,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL
+                         AND r.goodput_slo_ttft_ms IS NULL
+                         AND r.goodput_slo_tpot_ms IS NULL
+                        THEN NULL
+                        ELSE r.goodput_calls_raw
+                    END AS goodput_calls,
+                    CASE
+                        WHEN (
+                            r.goodput_slo_latency_ms IS NULL
+                            AND r.goodput_slo_ttft_ms IS NULL
+                            AND r.goodput_slo_tpot_ms IS NULL
+                        ) OR r.n_ok = 0 THEN NULL
+                        ELSE r.goodput_calls_raw * 1.0 / r.n_ok
+                    END AS goodput_under_slo,
+                    CASE
+                        WHEN (
+                            r.goodput_slo_latency_ms IS NULL
+                            AND r.goodput_slo_ttft_ms IS NULL
+                            AND r.goodput_slo_tpot_ms IS NULL
+                        ) OR r.goodput_latency_ms_sum = 0 THEN NULL
+                        ELSE r.goodput_calls_raw * 1000.0 / r.goodput_latency_ms_sum
+                    END AS goodput_requests_per_second,
+                    CASE
+                        WHEN (
+                            r.goodput_slo_latency_ms IS NULL
+                            AND r.goodput_slo_ttft_ms IS NULL
+                            AND r.goodput_slo_tpot_ms IS NULL
+                        ) OR r.goodput_latency_ms_sum = 0 THEN NULL
+                        ELSE r.goodput_tokens_out_raw * 1000.0 / r.goodput_latency_ms_sum
+                    END AS goodput_output_tokens_per_second,
+                    CASE
+                        WHEN (
+                            r.goodput_slo_latency_ms IS NULL
+                            AND r.goodput_slo_ttft_ms IS NULL
+                            AND r.goodput_slo_tpot_ms IS NULL
+                        ) OR r.goodput_latency_ms_sum = 0 THEN NULL
+                        ELSE r.goodput_tokens_total_raw * 1000.0 / r.goodput_latency_ms_sum
+                    END AS goodput_total_tokens_per_second,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL
+                         AND r.goodput_slo_ttft_ms IS NULL
+                         AND r.goodput_slo_tpot_ms IS NULL
+                        THEN NULL
+                        ELSE r.goodput_tokens_in_raw
+                    END AS goodput_tokens_in,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL
+                         AND r.goodput_slo_ttft_ms IS NULL
+                         AND r.goodput_slo_tpot_ms IS NULL
+                        THEN NULL
+                        ELSE r.goodput_tokens_out_raw
+                    END AS goodput_tokens_out,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL
+                         AND r.goodput_slo_ttft_ms IS NULL
+                         AND r.goodput_slo_tpot_ms IS NULL
+                        THEN NULL
+                        ELSE r.goodput_tokens_total_raw
+                    END AS goodput_tokens_total
+                FROM rollup r
+                LEFT JOIN latency_percentiles lp
+                  ON {lp_join_sql}
+                LEFT JOIN ttft_percentiles tp
+                  ON {tp_join_sql}
+                ORDER BY r.cost_usd DESC NULLS LAST
+                """
+
+
 def _validate_workload_policy(policy: dict | None) -> dict | None:
     if policy is None:
         return None
@@ -243,9 +578,9 @@ class Repository:
         workload_id: str,
     ) -> dict | None:
         row = conn.execute(
-            "SELECT max_p95_latency_ms, max_capability_failure_rate, "
-            "max_cost_per_call_usd, budget_cap_usd_daily, shadow_config_json, "
-            "policy_json "
+            "SELECT max_p95_latency_ms, max_p95_ttft_ms, max_tpot_ms, "
+            "max_capability_failure_rate, max_cost_per_call_usd, "
+            "budget_cap_usd_daily, shadow_config_json, policy_json "
             "FROM workloads WHERE id = ?",
             (workload_id,),
         ).fetchone()
@@ -253,11 +588,13 @@ class Repository:
             return None
         return {
             "max_p95_latency_ms": row[0],
-            "max_capability_failure_rate": row[1],
-            "max_cost_per_call_usd": row[2],
-            "budget_cap_usd_daily": row[3],
-            "shadow_config": json.loads(row[4]) if row[4] else None,
-            "policy": json.loads(row[5]) if row[5] else None,
+            "max_p95_ttft_ms": row[1],
+            "max_tpot_ms": row[2],
+            "max_capability_failure_rate": row[3],
+            "max_cost_per_call_usd": row[4],
+            "budget_cap_usd_daily": row[5],
+            "shadow_config": json.loads(row[6]) if row[6] else None,
+            "policy": json.loads(row[7]) if row[7] else None,
         }
 
     def _record_workload_revision_in_tx(
@@ -312,6 +649,8 @@ class Repository:
         privacy_class: PrivacyClass = PrivacyClass.INTERNAL,
         capabilities_required: list[str] | None = None,
         max_p95_latency_ms: int | None = None,
+        max_p95_ttft_ms: int | None = None,
+        max_tpot_ms: float | None = None,
         max_capability_failure_rate: float | None = None,
         max_cost_per_call_usd: float | None = None,
         policy: dict | None = None,
@@ -327,9 +666,10 @@ class Repository:
                         id, name, project, description,
                         input_schema_json, output_schema_json, quality_criteria_json,
                         budget_cap_usd_daily, privacy_class, capabilities_required_json,
-                        max_p95_latency_ms, max_capability_failure_rate,
-                        max_cost_per_call_usd, policy_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_p95_latency_ms, max_p95_ttft_ms, max_tpot_ms,
+                        max_capability_failure_rate, max_cost_per_call_usd,
+                        policy_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         wid,
@@ -343,6 +683,8 @@ class Repository:
                         privacy_class.value,
                         json.dumps(capabilities_required) if capabilities_required else None,
                         max_p95_latency_ms,
+                        max_p95_ttft_ms,
+                        max_tpot_ms,
                         max_capability_failure_rate,
                         max_cost_per_call_usd,
                         json.dumps(policy, sort_keys=True) if policy else None,
@@ -364,6 +706,8 @@ class Repository:
             privacy_class=privacy_class,
             capabilities_required=list(capabilities_required or []),
             max_p95_latency_ms=max_p95_latency_ms,
+            max_p95_ttft_ms=max_p95_ttft_ms,
+            max_tpot_ms=max_tpot_ms,
             max_capability_failure_rate=max_capability_failure_rate,
             max_cost_per_call_usd=max_cost_per_call_usd,
             policy=policy,
@@ -375,8 +719,8 @@ class Repository:
                 "SELECT id, name, description, input_schema_json, output_schema_json, "
                 "quality_criteria_json, budget_cap_usd_daily, privacy_class, "
                 "capabilities_required_json, "
-                "max_p95_latency_ms, max_capability_failure_rate, "
-                "max_cost_per_call_usd, policy_json "
+                "max_p95_latency_ms, max_p95_ttft_ms, max_tpot_ms, "
+                "max_capability_failure_rate, max_cost_per_call_usd, policy_json "
                 "FROM workloads WHERE project = ? AND name = ? "
                 "ORDER BY created_at DESC LIMIT 1",
                 (project, name),
@@ -394,9 +738,11 @@ class Repository:
             privacy_class=PrivacyClass(row[7]),
             capabilities_required=json.loads(row[8]) if row[8] else [],
             max_p95_latency_ms=row[9],
-            max_capability_failure_rate=row[10],
-            max_cost_per_call_usd=row[11],
-            policy=json.loads(row[12]) if row[12] else None,
+            max_p95_ttft_ms=row[10],
+            max_tpot_ms=row[11],
+            max_capability_failure_rate=row[12],
+            max_cost_per_call_usd=row[13],
+            policy=json.loads(row[14]) if row[14] else None,
         )
 
     def set_workload_constraints(
@@ -404,6 +750,8 @@ class Repository:
         workload_id: str,
         *,
         max_p95_latency_ms: int | None = None,
+        max_p95_ttft_ms: int | None = None,
+        max_tpot_ms: float | None = None,
         max_capability_failure_rate: float | None = None,
         max_cost_per_call_usd: float | None = None,
         clear: bool = False,
@@ -427,6 +775,8 @@ class Repository:
                     cursor = conn.execute(
                         "UPDATE workloads SET "
                         "max_p95_latency_ms = NULL, "
+                        "max_p95_ttft_ms = NULL, "
+                        "max_tpot_ms = NULL, "
                         "max_capability_failure_rate = NULL, "
                         "max_cost_per_call_usd = NULL "
                         "WHERE id = ?",
@@ -445,6 +795,12 @@ class Repository:
                 if max_p95_latency_ms is not None:
                     sets.append("max_p95_latency_ms = ?")
                     values.append(max_p95_latency_ms)
+                if max_p95_ttft_ms is not None:
+                    sets.append("max_p95_ttft_ms = ?")
+                    values.append(max_p95_ttft_ms)
+                if max_tpot_ms is not None:
+                    sets.append("max_tpot_ms = ?")
+                    values.append(max_tpot_ms)
                 if max_capability_failure_rate is not None:
                     sets.append("max_capability_failure_rate = ?")
                     values.append(max_capability_failure_rate)
@@ -605,6 +961,8 @@ class Repository:
                 cursor = conn.execute(
                     "UPDATE workloads SET "
                     "max_p95_latency_ms = ?, "
+                    "max_p95_ttft_ms = ?, "
+                    "max_tpot_ms = ?, "
                     "max_capability_failure_rate = ?, "
                     "max_cost_per_call_usd = ?, "
                     "budget_cap_usd_daily = ?, "
@@ -613,6 +971,8 @@ class Repository:
                     "WHERE id = ?",
                     (
                         config.get("max_p95_latency_ms"),
+                        config.get("max_p95_ttft_ms"),
+                        config.get("max_tpot_ms"),
                         config.get("max_capability_failure_rate"),
                         config.get("max_cost_per_call_usd"),
                         config.get("budget_cap_usd_daily"),
@@ -1413,40 +1773,18 @@ class Repository:
     def stats_by_workload(self, project: str, since_days: int = 7) -> list[dict]:
         with self._open() as conn:
             rows = conn.execute(
-                """
-                SELECT
-                    COALESCE(w.name, '(unregistered)') AS workload,
-                    c.provider,
-                    c.model,
-                    COUNT(*) AS n_calls,
-                    SUM(c.tokens_in) AS tokens_in,
-                    SUM(c.tokens_out) AS tokens_out,
-                    SUM(c.cost_usd) AS cost_usd,
-                    AVG(c.latency_ms) AS latency_ms_avg,
-                    SUM(CASE WHEN c.outcome != 'ok' THEN 1 ELSE 0 END) AS n_failed
-                FROM calls c
-                LEFT JOIN workloads w ON w.id = c.workload_id
-                WHERE c.project = ?
-                  AND c.ts >= datetime('now', ?)
-                GROUP BY workload, c.provider, c.model
-                ORDER BY cost_usd DESC NULLS LAST
-                """,
+                _serving_stats_sql(include_project=False),
                 (project, f"-{since_days} days"),
             ).fetchall()
-        return [
-            {
-                "workload": r[0],
-                "provider": r[1],
-                "model": r[2],
-                "n_calls": r[3],
-                "tokens_in": r[4],
-                "tokens_out": r[5],
-                "cost_usd": r[6],
-                "latency_ms_avg": r[7],
-                "n_failed": r[8],
-            }
-            for r in rows
-        ]
+        return [_serving_stats_row(r) for r in rows]
+
+    def stats_global_by_workload(self, since_days: int = 7) -> list[dict]:
+        with self._open() as conn:
+            rows = conn.execute(
+                _serving_stats_sql(include_project=True),
+                (f"-{since_days} days",),
+            ).fetchall()
+        return [_serving_stats_row(r, include_project=True) for r in rows]
 
     def workload_frontier(
         self,
@@ -1477,16 +1815,19 @@ class Repository:
         """
         with self._open() as conn:
             wl_row = conn.execute(
-                "SELECT max_p95_latency_ms, max_capability_failure_rate, "
-                "max_cost_per_call_usd FROM workloads WHERE id = ?",
+                "SELECT max_p95_latency_ms, max_p95_ttft_ms, max_tpot_ms, "
+                "max_capability_failure_rate, max_cost_per_call_usd "
+                "FROM workloads WHERE id = ?",
                 (workload_id,),
             ).fetchone()
             if wl_row is None:
                 return []
             constraints = {
                 "max_p95_latency_ms": wl_row[0],
-                "max_capability_failure_rate": wl_row[1],
-                "max_cost_per_call_usd": wl_row[2],
+                "max_p95_ttft_ms": wl_row[1],
+                "max_tpot_ms": wl_row[2],
+                "max_capability_failure_rate": wl_row[3],
+                "max_cost_per_call_usd": wl_row[4],
             }
             rows = conn.execute(
                 """
@@ -1497,6 +1838,15 @@ class Repository:
                         SUM(CASE WHEN outcome = 'ok' THEN 1 ELSE 0 END) AS n_ok,
                         SUM(is_capability_signal) AS n_capability_failures,
                         SUM(is_detractor) AS n_detractors,
+                        AVG(
+                            CASE
+                                WHEN outcome = 'ok'
+                                 AND ttft_ms IS NOT NULL
+                                 AND tokens_out > 1
+                                 AND latency_ms >= ttft_ms
+                                THEN ((latency_ms - ttft_ms) * 1.0 / (tokens_out - 1))
+                            END
+                        ) AS tpot_ms,
                         AVG(CASE WHEN outcome = 'ok' THEN cost_usd END) AS mean_cost_per_ok_call,
                         SUM(cost_usd) AS total_cost_usd
                     FROM v_calls_classified
@@ -1529,6 +1879,33 @@ class Repository:
                         MAX(CASE WHEN rn = ((95 * n + 99) / 100) THEN latency_ms END) AS p95_latency_ms
                     FROM ok_latencies
                     GROUP BY provider, model
+                ),
+                ok_ttft AS (
+                    SELECT
+                        provider,
+                        model,
+                        ttft_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY provider, model
+                            ORDER BY ttft_ms ASC
+                        ) AS rn,
+                        COUNT(*) OVER (
+                            PARTITION BY provider, model
+                        ) AS n
+                    FROM v_calls_classified
+                    WHERE workload_id = ?
+                      AND ts >= datetime('now', ?)
+                      AND outcome = 'ok'
+                      AND ttft_ms IS NOT NULL
+                ),
+                ttft_percentiles AS (
+                    SELECT
+                        provider,
+                        model,
+                        MAX(CASE WHEN rn = ((50 * n + 99) / 100) THEN ttft_ms END) AS p50_ttft_ms,
+                        MAX(CASE WHEN rn = ((95 * n + 99) / 100) THEN ttft_ms END) AS p95_ttft_ms
+                    FROM ok_ttft
+                    GROUP BY provider, model
                 )
                 SELECT
                     r.provider, r.model,
@@ -1536,16 +1913,29 @@ class Repository:
                     r.n_ok,
                     r.n_capability_failures,
                     r.n_detractors,
+                    r.tpot_ms,
                     r.mean_cost_per_ok_call,
                     r.total_cost_usd,
                     lp.p50_latency_ms,
-                    lp.p95_latency_ms
+                    lp.p95_latency_ms,
+                    tp.p50_ttft_ms,
+                    tp.p95_ttft_ms
                 FROM rollup r
                 LEFT JOIN latency_percentiles lp
                   ON lp.provider = r.provider
                  AND lp.model = r.model
+                LEFT JOIN ttft_percentiles tp
+                  ON tp.provider = r.provider
+                 AND tp.model = r.model
                 """,
-                (workload_id, f"-{since_days} days", workload_id, f"-{since_days} days"),
+                (
+                    workload_id,
+                    f"-{since_days} days",
+                    workload_id,
+                    f"-{since_days} days",
+                    workload_id,
+                    f"-{since_days} days",
+                ),
             ).fetchall()
 
         out: list[dict] = []
@@ -1556,14 +1946,27 @@ class Repository:
             n_det = r[5] or 0
             cap_rate = (n_cap / n_calls) if n_calls else 0.0
             det_rate = (n_det / n_calls) if n_calls else 0.0
-            p50 = r[8]
-            p95 = r[9]
-            mean_cost = r[6]
+            tpot = r[6]
+            mean_cost = r[7]
+            p50 = r[9]
+            p95 = r[10]
+            p50_ttft = r[11]
+            p95_ttft = r[12]
             fitness = {
                 "exceeds_max_p95_latency_ms": (
                     None
                     if constraints["max_p95_latency_ms"] is None or p95 is None
                     else p95 > constraints["max_p95_latency_ms"]
+                ),
+                "exceeds_max_p95_ttft_ms": (
+                    None
+                    if constraints["max_p95_ttft_ms"] is None or p95_ttft is None
+                    else p95_ttft > constraints["max_p95_ttft_ms"]
+                ),
+                "exceeds_max_tpot_ms": (
+                    None
+                    if constraints["max_tpot_ms"] is None or tpot is None
+                    else tpot > constraints["max_tpot_ms"]
                 ),
                 "exceeds_max_capability_failure_rate": (
                     None
@@ -1588,8 +1991,11 @@ class Repository:
                     "detractor_rate": det_rate,
                     "p50_latency_ms": p50,
                     "p95_latency_ms": p95,
+                    "p50_ttft_ms": p50_ttft,
+                    "p95_ttft_ms": p95_ttft,
+                    "tpot_ms": tpot,
                     "mean_cost_per_ok_call": mean_cost,
-                    "total_cost_usd": r[7],
+                    "total_cost_usd": r[8],
                     "fitness": fitness,
                 }
             )

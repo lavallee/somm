@@ -142,6 +142,36 @@ def test_openai_sends_bearer_and_system(monkeypatch):
     assert body["messages"][1]["role"] == "user"
 
 
+def test_openai_sends_response_format(monkeypatch):
+    captured = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["body"] = _json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"ok":true}'}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "unit",
+            "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+            "strict": True,
+        },
+    }
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    p.generate(SommRequest(prompt="hi", response_format=response_format))
+
+    assert captured["body"]["response_format"] == response_format
+
+
 def test_openai_gpt5_uses_max_completion_tokens(monkeypatch):
     captured = {}
 
@@ -977,6 +1007,39 @@ def test_ollama_sends_keep_alive_by_default(monkeypatch):
                            temperature=0.2, max_tokens=10))
 
     assert captured["payload"].get("keep_alive") == "30m"
+
+
+def test_ollama_sends_json_schema_format(monkeypatch):
+    """Ollama uses its native `format` field for schema-constrained JSON."""
+    from somm.providers.ollama import OllamaProvider
+
+    captured: dict = {}
+
+    def handler(request):
+        import json as _json
+
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"message": {"content": '{"ok":true}'}, "prompt_eval_count": 1, "eval_count": 1},
+        )
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+
+    p = OllamaProvider()
+    p.generate(
+        SommRequest(
+            prompt="hi",
+            model="qwen2.5:7b",
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "unit", "schema": schema, "strict": True},
+            },
+        )
+    )
+
+    assert captured["payload"]["format"] == schema
 
 
 def test_ollama_keep_alive_opt_out_with_empty_string(monkeypatch):

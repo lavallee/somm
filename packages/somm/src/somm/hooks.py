@@ -89,6 +89,7 @@ class PreCallContext:
     tools: list[Any]
     tool_choice: Any
     project: str
+    response_format: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __setattr__(self, name: str, value: Any) -> None:

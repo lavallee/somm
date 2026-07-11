@@ -120,7 +120,9 @@ class Workload:
     capabilities_required: list[str] = field(default_factory=list)
     # Adequacy thresholds (schema v6+). Make "is this model performing
     # adequately?" queryable rather than judgment-call. None = unset.
-    max_p95_latency_ms: int | None = None              # Tier 1: timeliness
+    max_p95_latency_ms: int | None = None              # Tier 1: end-to-end timeliness
+    max_p95_ttft_ms: int | None = None                 # Tier 1: first-token timeliness
+    max_tpot_ms: float | None = None                   # Tier 1: decode-token timeliness
     max_capability_failure_rate: float | None = None   # Tier 2/3: 0–1 (e.g. 0.05 = 5%)
     max_cost_per_call_usd: float | None = None         # cost ceiling per ok call
     policy: dict | None = None

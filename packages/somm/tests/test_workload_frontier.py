@@ -23,6 +23,8 @@ def _mk_call(
     model: str,
     outcome: Outcome,
     latency_ms: int = 100,
+    ttft_ms: int | None = None,
+    tokens_out: int = 10,
     cost_usd: float = 0.0,
     project: str = "p",
     ts: datetime | None = None,
@@ -36,13 +38,14 @@ def _mk_call(
         provider=provider,
         model=model,
         tokens_in=10,
-        tokens_out=10,
+        tokens_out=tokens_out,
         latency_ms=latency_ms,
         cost_usd=cost_usd,
         outcome=outcome,
         error_kind=None,
         prompt_hash="h",
         response_hash="h",
+        ttft_ms=ttft_ms,
     )
 
 
@@ -80,6 +83,8 @@ def test_frontier_fitness_unset_when_constraint_unset(repo: Repository) -> None:
     row = repo.workload_frontier(wl.id)[0]
     assert row["fitness"]["exceeds_max_capability_failure_rate"] is None
     assert row["fitness"]["exceeds_max_p95_latency_ms"] is None
+    assert row["fitness"]["exceeds_max_p95_ttft_ms"] is None
+    assert row["fitness"]["exceeds_max_tpot_ms"] is None
     assert row["fitness"]["exceeds_max_cost_per_call_usd"] is None
 
 
@@ -88,18 +93,33 @@ def test_frontier_fitness_flags_on_violation(repo: Repository) -> None:
         name="w1",
         project="p",
         max_p95_latency_ms=100,
+        max_p95_ttft_ms=50,
+        max_tpot_ms=5.0,
         max_capability_failure_rate=0.10,
         max_cost_per_call_usd=0.0001,
     )
     # 10 ok, 2 bad_json → cap rate 16.7% (> 10%)
     for _ in range(10):
-        repo.write_call(_mk_call(workload_id=wl.id, provider="paid", model="big", outcome=Outcome.OK, latency_ms=300, cost_usd=0.0005))
+        repo.write_call(
+            _mk_call(
+                workload_id=wl.id,
+                provider="paid",
+                model="big",
+                outcome=Outcome.OK,
+                latency_ms=300,
+                ttft_ms=100,
+                tokens_out=11,
+                cost_usd=0.0005,
+            )
+        )
     for _ in range(2):
         repo.write_call(_mk_call(workload_id=wl.id, provider="paid", model="big", outcome=Outcome.BAD_JSON, latency_ms=300))
 
     row = repo.workload_frontier(wl.id)[0]
     assert row["fitness"]["exceeds_max_capability_failure_rate"] is True
     assert row["fitness"]["exceeds_max_p95_latency_ms"] is True
+    assert row["fitness"]["exceeds_max_p95_ttft_ms"] is True
+    assert row["fitness"]["exceeds_max_tpot_ms"] is True
     assert row["fitness"]["exceeds_max_cost_per_call_usd"] is True
 
 
@@ -140,12 +160,16 @@ def test_set_workload_constraints_partial_update(repo: Repository) -> None:
         name="w1",
         project="p",
         max_p95_latency_ms=500,
+        max_p95_ttft_ms=125,
+        max_tpot_ms=15.0,
         max_capability_failure_rate=0.05,
     )
     repo.set_workload_constraints(wl.id, max_cost_per_call_usd=0.01)
     refreshed = repo.workload_by_name("w1", "p")
     assert refreshed is not None
     assert refreshed.max_p95_latency_ms == 500
+    assert refreshed.max_p95_ttft_ms == 125
+    assert refreshed.max_tpot_ms == 15.0
     assert refreshed.max_capability_failure_rate == 0.05
     assert refreshed.max_cost_per_call_usd == 0.01
 
@@ -155,12 +179,16 @@ def test_set_workload_constraints_clear(repo: Repository) -> None:
         name="w1",
         project="p",
         max_p95_latency_ms=500,
+        max_p95_ttft_ms=125,
+        max_tpot_ms=15.0,
         max_capability_failure_rate=0.05,
     )
     repo.set_workload_constraints(wl.id, clear=True)
     refreshed = repo.workload_by_name("w1", "p")
     assert refreshed is not None
     assert refreshed.max_p95_latency_ms is None
+    assert refreshed.max_p95_ttft_ms is None
+    assert refreshed.max_tpot_ms is None
     assert refreshed.max_capability_failure_rate is None
     assert refreshed.max_cost_per_call_usd is None
 

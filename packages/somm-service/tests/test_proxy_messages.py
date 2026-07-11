@@ -59,6 +59,23 @@ def _fake_completion_response(
     )
 
 
+def _fake_stream_chunks() -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="hel"), finish_reason=None)],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="lo"), finish_reason=None)],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="stop")],
+            usage={"prompt_tokens": 5, "completion_tokens": 2},
+        ),
+    ]
+
+
 def _auth_headers(app, **extra: str) -> dict[str, str]:
     return {"authorization": f"Bearer {app.state.service_token.value}", **extra}
 
@@ -447,6 +464,76 @@ def test_messages_route_upstream_provider_error_returns_502(tmp_path):
         rows = conn.execute("SELECT outcome FROM calls").fetchall()
     assert len(rows) == 1
     assert rows[0][0] == "upstream_error"
+
+
+def test_messages_route_streams_sse_and_writes_telemetry_row(tmp_path):
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    repo.register_workload(name="stream_wl", project=cfg.project)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    with patch(
+        "somm_service.proxy.litellm.completion",
+        return_value=iter(_fake_stream_chunks()),
+    ) as mock_comp:
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 8,
+                "stream": True,
+            },
+            headers=_auth_headers(app, **{"x-somm-workload": "stream_wl"}),
+        )
+
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert "event: message_start" in r.text
+    assert '"text":"hel"' in r.text
+    assert '"text":"lo"' in r.text
+    assert "event: message_stop" in r.text
+
+    kwargs = mock_comp.call_args.kwargs
+    assert kwargs["stream"] is True
+    assert kwargs["timeout"] == cfg.http_timeout
+
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT outcome, tokens_in, tokens_out FROM calls"
+        ).fetchone()
+    assert row == ("ok", 5, 2)
+
+
+def test_messages_route_streaming_upstream_error_records_failed_call(tmp_path):
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    repo.register_workload(name="stream_wl", project=cfg.project)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    with patch(
+        "somm_service.proxy.litellm.completion",
+        side_effect=RuntimeError("provider down"),
+    ):
+        r = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": True,
+            },
+            headers=_auth_headers(app, **{"x-somm-workload": "stream_wl"}),
+        )
+
+    assert r.status_code == 200
+    assert "event: error" in r.text
+    assert "provider down" in r.text
+
+    with repo._open() as conn:
+        row = conn.execute("SELECT outcome, error_kind FROM calls").fetchone()
+    assert row == ("upstream_error", "RuntimeError")
 
 
 def test_messages_route_respects_x_somm_project_header(tmp_path):

@@ -41,6 +41,13 @@ or provider-specific SDKs directly in project code. somm wraps ten providers
 Perplexity, `claude`/`codex` CLI seats) with telemetry, routing, cost
 tracking, and provenance for free.
 
+If you are integrating a tool that only accepts a provider-compatible HTTP
+base URL, run `somm serve` and point it at the authenticated proxy instead:
+`/v1/messages` for Anthropic Messages (including `stream: true` SSE) or
+`/v1/chat/completions` for OpenAI Chat Completions. Still pre-register and
+send `X-Somm-Workload`; the proxy uses the same budget gate and telemetry
+ledger as `somm.llm()`.
+
 ### 2. Tag every call with a `workload`
 
 A workload is the *task*, not the call. "extract_contacts_from_article" is a

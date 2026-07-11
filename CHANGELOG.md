@@ -7,6 +7,36 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added
+
+- **Serving performance rollups**: workload/provider/model stats now include
+  p50/p95/p99 latency, p50/p95/p99 TTFT, TPOT, input/output/total token
+  throughput, request throughput, prompt-cache read/write tokens,
+  cache-read ratio, and goodput against workload SLOs for `max_p95_latency_ms`,
+  `max_p95_ttft_ms`, and `max_tpot_ms`.
+- **Benchmark CLI**: `somm bench latency` and `somm bench throughput` run
+  normal instrumented calls and summarize latency, TTFT, TPOT, request
+  throughput, and token throughput.
+- **Prefix-cache advice**: `somm cache-advice` flags high-input-token
+  workload/provider/model rows with low cache-read ratios.
+- **Native structured-output hints**: `generate_structured()` now passes
+  JSON Schema hints through provider requests for adapters that support
+  native guided JSON generation while retaining validation and retry checks.
+- **Service load metrics**: `/api/status` now includes one-minute call,
+  token, failure, and active workload/provider/model counters.
+- **Service proxy compatibility**: `/v1/messages` now supports Anthropic
+  `stream: true` SSE responses, and `/v1/chat/completions` adds an
+  OpenAI-compatible non-streaming chat gateway. Both paths use the same
+  workload budget gate, timeout, body limit, auth, and `calls.sqlite`
+  telemetry ledger.
+- **Spend read API**: `/api/spend/today` returns current UTC-day spend by
+  workload for the service project, including effective daily budget caps.
+
+### Changed
+
+- CI now exposes the release-version gate as a standalone `release-gate` check
+  so branch rulesets can require the 0.x/1.0 guardrail directly.
+
 ## [0.12.0] — 2026-07-10
 
 ### Release status
