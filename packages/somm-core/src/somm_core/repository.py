@@ -67,6 +67,209 @@ def _is_number(value: object) -> bool:
     )
 
 
+_SERVING_STATS_KEYS = (
+    "workload",
+    "provider",
+    "model",
+    "n_calls",
+    "tokens_in",
+    "tokens_out",
+    "cost_usd",
+    "latency_ms_avg",
+    "n_failed",
+    "n_ok",
+    "p50_latency_ms",
+    "p95_latency_ms",
+    "p99_latency_ms",
+    "p50_ttft_ms",
+    "p95_ttft_ms",
+    "p99_ttft_ms",
+    "tpot_ms",
+    "output_tokens_per_second",
+    "total_tokens_per_second",
+    "goodput_slo_latency_ms",
+    "goodput_calls",
+    "goodput_under_slo",
+    "goodput_tokens_out",
+)
+
+
+def _serving_stats_row(row, *, include_project: bool = False) -> dict:
+    out: dict = {}
+    idx = 0
+    if include_project:
+        out["project"] = row[idx]
+        idx += 1
+    for key in _SERVING_STATS_KEYS:
+        out[key] = row[idx]
+        idx += 1
+    return out
+
+
+def _serving_stats_sql(*, include_project: bool) -> str:
+    group_cols = ["workload", "provider", "model"]
+    if include_project:
+        group_cols.insert(0, "project")
+    group_cols_sql = ", ".join(group_cols)
+    select_group_cols_sql = ",\n                    ".join(f"r.{col}" for col in group_cols)
+    lp_join_sql = " AND ".join(f"lp.{col} = r.{col}" for col in group_cols)
+    tp_join_sql = " AND ".join(f"tp.{col} = r.{col}" for col in group_cols)
+    where_sql = "c.ts >= datetime('now', ?)" if include_project else "c.project = ? AND c.ts >= datetime('now', ?)"
+    return f"""
+                WITH base AS (
+                    SELECT
+                        c.project,
+                        COALESCE(w.name, '(unregistered)') AS workload,
+                        c.provider,
+                        c.model,
+                        c.tokens_in,
+                        c.tokens_out,
+                        c.cost_usd,
+                        c.latency_ms,
+                        c.ttft_ms,
+                        c.outcome,
+                        w.max_p95_latency_ms AS goodput_slo_latency_ms
+                    FROM calls c
+                    LEFT JOIN workloads w
+                      ON w.id = c.workload_id
+                     AND w.project = c.project
+                    WHERE {where_sql}
+                ),
+                rollup AS (
+                    SELECT
+                        {group_cols_sql},
+                        COUNT(*) AS n_calls,
+                        SUM(tokens_in) AS tokens_in,
+                        SUM(tokens_out) AS tokens_out,
+                        SUM(cost_usd) AS cost_usd,
+                        AVG(latency_ms) AS latency_ms_avg,
+                        SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS n_failed,
+                        SUM(CASE WHEN outcome = 'ok' THEN 1 ELSE 0 END) AS n_ok,
+                        SUM(CASE WHEN outcome = 'ok' THEN latency_ms ELSE 0 END) AS ok_latency_ms_sum,
+                        SUM(CASE WHEN outcome = 'ok' THEN tokens_out ELSE 0 END) AS ok_tokens_out,
+                        SUM(CASE WHEN outcome = 'ok' THEN tokens_in + tokens_out ELSE 0 END) AS ok_tokens_total,
+                        AVG(
+                            CASE
+                                WHEN outcome = 'ok'
+                                 AND ttft_ms IS NOT NULL
+                                 AND tokens_out > 1
+                                 AND latency_ms >= ttft_ms
+                                THEN ((latency_ms - ttft_ms) * 1.0 / (tokens_out - 1))
+                            END
+                        ) AS tpot_ms,
+                        MAX(goodput_slo_latency_ms) AS goodput_slo_latency_ms,
+                        SUM(
+                            CASE
+                                WHEN goodput_slo_latency_ms IS NOT NULL
+                                 AND outcome = 'ok'
+                                 AND latency_ms <= goodput_slo_latency_ms
+                                THEN 1 ELSE 0
+                            END
+                        ) AS goodput_calls_raw,
+                        SUM(
+                            CASE
+                                WHEN goodput_slo_latency_ms IS NOT NULL
+                                 AND outcome = 'ok'
+                                 AND latency_ms <= goodput_slo_latency_ms
+                                THEN tokens_out ELSE 0
+                            END
+                        ) AS goodput_tokens_out_raw
+                    FROM base
+                    GROUP BY {group_cols_sql}
+                ),
+                ok_latencies AS (
+                    SELECT
+                        {group_cols_sql},
+                        latency_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY {group_cols_sql}
+                            ORDER BY latency_ms ASC
+                        ) AS rn,
+                        COUNT(*) OVER (
+                            PARTITION BY {group_cols_sql}
+                        ) AS n
+                    FROM base
+                    WHERE outcome = 'ok'
+                ),
+                latency_percentiles AS (
+                    SELECT
+                        {group_cols_sql},
+                        MAX(CASE WHEN rn = ((50 * n + 99) / 100) THEN latency_ms END) AS p50_latency_ms,
+                        MAX(CASE WHEN rn = ((95 * n + 99) / 100) THEN latency_ms END) AS p95_latency_ms,
+                        MAX(CASE WHEN rn = ((99 * n + 99) / 100) THEN latency_ms END) AS p99_latency_ms
+                    FROM ok_latencies
+                    GROUP BY {group_cols_sql}
+                ),
+                ok_ttft AS (
+                    SELECT
+                        {group_cols_sql},
+                        ttft_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY {group_cols_sql}
+                            ORDER BY ttft_ms ASC
+                        ) AS rn,
+                        COUNT(*) OVER (
+                            PARTITION BY {group_cols_sql}
+                        ) AS n
+                    FROM base
+                    WHERE outcome = 'ok'
+                      AND ttft_ms IS NOT NULL
+                ),
+                ttft_percentiles AS (
+                    SELECT
+                        {group_cols_sql},
+                        MAX(CASE WHEN rn = ((50 * n + 99) / 100) THEN ttft_ms END) AS p50_ttft_ms,
+                        MAX(CASE WHEN rn = ((95 * n + 99) / 100) THEN ttft_ms END) AS p95_ttft_ms,
+                        MAX(CASE WHEN rn = ((99 * n + 99) / 100) THEN ttft_ms END) AS p99_ttft_ms
+                    FROM ok_ttft
+                    GROUP BY {group_cols_sql}
+                )
+                SELECT
+                    {select_group_cols_sql},
+                    r.n_calls,
+                    r.tokens_in,
+                    r.tokens_out,
+                    r.cost_usd,
+                    r.latency_ms_avg,
+                    r.n_failed,
+                    r.n_ok,
+                    lp.p50_latency_ms,
+                    lp.p95_latency_ms,
+                    lp.p99_latency_ms,
+                    tp.p50_ttft_ms,
+                    tp.p95_ttft_ms,
+                    tp.p99_ttft_ms,
+                    r.tpot_ms,
+                    CASE
+                        WHEN r.ok_latency_ms_sum > 0
+                        THEN r.ok_tokens_out * 1000.0 / r.ok_latency_ms_sum
+                    END AS output_tokens_per_second,
+                    CASE
+                        WHEN r.ok_latency_ms_sum > 0
+                        THEN r.ok_tokens_total * 1000.0 / r.ok_latency_ms_sum
+                    END AS total_tokens_per_second,
+                    r.goodput_slo_latency_ms,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL THEN NULL
+                        ELSE r.goodput_calls_raw
+                    END AS goodput_calls,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL OR r.n_ok = 0 THEN NULL
+                        ELSE r.goodput_calls_raw * 1.0 / r.n_ok
+                    END AS goodput_under_slo,
+                    CASE
+                        WHEN r.goodput_slo_latency_ms IS NULL THEN NULL
+                        ELSE r.goodput_tokens_out_raw
+                    END AS goodput_tokens_out
+                FROM rollup r
+                LEFT JOIN latency_percentiles lp
+                  ON {lp_join_sql}
+                LEFT JOIN ttft_percentiles tp
+                  ON {tp_join_sql}
+                ORDER BY r.cost_usd DESC NULLS LAST
+                """
+
+
 def _validate_workload_policy(policy: dict | None) -> dict | None:
     if policy is None:
         return None
@@ -1413,40 +1616,18 @@ class Repository:
     def stats_by_workload(self, project: str, since_days: int = 7) -> list[dict]:
         with self._open() as conn:
             rows = conn.execute(
-                """
-                SELECT
-                    COALESCE(w.name, '(unregistered)') AS workload,
-                    c.provider,
-                    c.model,
-                    COUNT(*) AS n_calls,
-                    SUM(c.tokens_in) AS tokens_in,
-                    SUM(c.tokens_out) AS tokens_out,
-                    SUM(c.cost_usd) AS cost_usd,
-                    AVG(c.latency_ms) AS latency_ms_avg,
-                    SUM(CASE WHEN c.outcome != 'ok' THEN 1 ELSE 0 END) AS n_failed
-                FROM calls c
-                LEFT JOIN workloads w ON w.id = c.workload_id
-                WHERE c.project = ?
-                  AND c.ts >= datetime('now', ?)
-                GROUP BY workload, c.provider, c.model
-                ORDER BY cost_usd DESC NULLS LAST
-                """,
+                _serving_stats_sql(include_project=False),
                 (project, f"-{since_days} days"),
             ).fetchall()
-        return [
-            {
-                "workload": r[0],
-                "provider": r[1],
-                "model": r[2],
-                "n_calls": r[3],
-                "tokens_in": r[4],
-                "tokens_out": r[5],
-                "cost_usd": r[6],
-                "latency_ms_avg": r[7],
-                "n_failed": r[8],
-            }
-            for r in rows
-        ]
+        return [_serving_stats_row(r) for r in rows]
+
+    def stats_global_by_workload(self, since_days: int = 7) -> list[dict]:
+        with self._open() as conn:
+            rows = conn.execute(
+                _serving_stats_sql(include_project=True),
+                (f"-{since_days} days",),
+            ).fetchall()
+        return [_serving_stats_row(r, include_project=True) for r in rows]
 
     def workload_frontier(
         self,

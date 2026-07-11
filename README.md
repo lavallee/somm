@@ -376,6 +376,11 @@ GET /api/version
 GET /api/recommendations
 ```
 
+`/api/stats`, `somm status --json`, and MCP `somm_stats` include serving
+rollups by workload/provider/model: latency and TTFT p50/p95/p99, TPOT,
+observed token throughput, and goodput against `max_p95_latency_ms` when a
+workload SLO is set.
+
 Polyglot apps can send OpenTelemetry JSON traces without importing the
 Python SDK:
 

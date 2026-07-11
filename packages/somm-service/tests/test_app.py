@@ -95,6 +95,49 @@ def test_api_stats_empty(client):
     assert data["rows"] == []
 
 
+def test_api_stats_includes_serving_profile(client):
+    c, cfg, app = client
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(
+        name="svc_profile",
+        project=cfg.project,
+        max_p95_latency_ms=75,
+    )
+    repo.write_call(
+        Call(
+            id=str(uuid.uuid4()),
+            ts=datetime.now(UTC),
+            project=cfg.project,
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="fake",
+            model="m",
+            tokens_in=10,
+            tokens_out=5,
+            latency_ms=50,
+            cost_usd=0.0,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="p",
+            response_hash="r",
+            ttft_ms=10,
+        )
+    )
+
+    r = c.get("/api/stats", headers=_auth_headers(app))
+    assert r.status_code == 200
+    row = r.json()["rows"][0]
+    assert row["p95_latency_ms"] == 50
+    assert row["p99_ttft_ms"] == 10
+    assert row["tpot_ms"] == 10
+    assert row["goodput_slo_latency_ms"] == 75
+    assert row["goodput_under_slo"] == 1.0
+
+    home = c.get("/", headers=_LOCAL_HEADERS)
+    assert "p95 ms" in home.text
+    assert "ttft p95" in home.text
+
+
 def test_status_calls_and_sessions_api(client):
     c, cfg, _ = client
     repo = Repository(cfg.db_path)

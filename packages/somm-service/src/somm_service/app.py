@@ -467,6 +467,11 @@ def _render_table(stats: list[dict]) -> str:
             f"<td class='num'>{s['tokens_in'] or 0}</td>"
             f"<td class='num'>{s['tokens_out'] or 0}</td>"
             f"<td class='num'>{s['n_failed']}</td>"
+            f"<td class='num'>{_fmt_table_int(s.get('p95_latency_ms'))}</td>"
+            f"<td class='num'>{_fmt_table_int(s.get('p95_ttft_ms'))}</td>"
+            f"<td class='num'>{_fmt_table_float(s.get('tpot_ms'))}</td>"
+            f"<td class='num'>{_fmt_table_float(s.get('output_tokens_per_second'))}</td>"
+            f"<td class='num'>{_fmt_table_pct(s.get('goodput_under_slo'))}</td>"
             "</tr>"
         )
     return (
@@ -475,10 +480,31 @@ def _render_table(stats: list[dict]) -> str:
         "<th>workload</th><th>provider</th><th>model</th>"
         "<th class='num'>calls</th><th class='num'>tok in</th>"
         "<th class='num'>tok out</th><th class='num'>fail</th>"
+        "<th class='num'>p95 ms</th><th class='num'>ttft p95</th>"
+        "<th class='num'>tpot</th><th class='num'>out/s</th>"
+        "<th class='num'>good</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
     )
+
+
+def _fmt_table_int(value: object) -> str:
+    if value is None:
+        return "-"
+    return str(int(round(float(value))))
+
+
+def _fmt_table_float(value: object) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.1f}"
+
+
+def _fmt_table_pct(value: object) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value) * 100:.0f}%"
 
 
 def _esc(s: str) -> str:

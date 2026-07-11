@@ -70,7 +70,7 @@ def build_server(
 
     @server.tool()
     def somm_stats(since_days: int = 7) -> dict:
-        """Rolled-up call counts + token + cost + failure stats per (workload, provider, model).
+        """Rolled-up cost, failure, and serving performance stats per workload/provider/model.
 
         Args:
             since_days: Window in days (default 7).
