@@ -143,14 +143,14 @@ flowchart LR
 <div class="stat-row">
   <div class="stat"><span class="value">42k</span><span class="label">lines of Python</span></div>
   <div class="stat"><span class="value">6</span><span class="label">publishable packages</span></div>
-  <div class="stat"><span class="value">v19</span><span class="label">one shared SQLite schema</span></div>
+  <div class="stat"><span class="value">v20</span><span class="label">one shared SQLite schema</span></div>
   <div class="stat"><span class="value">14</span><span class="label">MCP tools for agents</span></div>
 </div>
 
 <div class="article-mrow">
-  <p>The single schema is the load-bearing number. Schema v19 evolves the original workload/prompt/call ledger into decisions, workload revisions, datasets, evaluation receipts, campaigns, and canonical model aliases (<code>packages/somm-core/src/somm_core/version.py:7</code>) — and every layer of the system, from the router to the dashboard to the MCP tools, reads and writes that one model. Migrations commit DDL and version stamps together, so a database is never left partially upgraded (<code>packages/somm-core/src/somm_core/schema.py:91</code>). A release gate requires every workspace package to share a single version with exact internal pins (<code>scripts/check_release_gate.py:54</code>), and CI runs the whole matrix on Python 3.12 and 3.13 (<code>.github/workflows/ci.yml:9</code>).</p>
+  <p>The single schema is the load-bearing number. Schema v20 evolves the original workload/prompt/call ledger into decisions, workload revisions, datasets, evaluation receipts, campaigns, canonical model aliases, and serving SLOs (<code>packages/somm-core/src/somm_core/version.py:7</code>) — and every layer of the system, from the router to the dashboard to the MCP tools, reads and writes that one model. Migrations commit DDL and version stamps together, so a database is never left partially upgraded (<code>packages/somm-core/src/somm_core/schema.py:91</code>). A release gate requires every workspace package to share a single version with exact internal pins (<code>scripts/check_release_gate.py:54</code>), and CI runs the whole matrix on Python 3.12 and 3.13 (<code>.github/workflows/ci.yml:9</code>).</p>
   <aside class="article-marginnote article-marginnote--callout">
-    <span class="term">Honest footnote</span> The snapshot has known drift: the workspace says <code>0.12.0</code> beta while <code>roster.toml</code> still says <code>1.0.0</code> — a version the changelog identifies as mistakenly published (<code>CHANGELOG.md:14</code>). The MCP README advertises 10 tools; the server registers 14 (<code>packages/somm-mcp/README.md:7</code>).
+    <span class="term">Honest footnote</span> The 0.13.0 release path corrected the earlier roster/version drift and brought the MCP README back into line with the server's 14 registered tools.
   </aside>
 </div>
 
