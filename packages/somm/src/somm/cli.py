@@ -1089,7 +1089,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(
             f"{'project':<18} {'workload':<20} {'provider':<10} {'model':<16} "
             f"{'n':>6} {'tok_in':>8} {'tok_out':>8} {'cost':>10} {'fail':>6} "
-            f"{'p95':>7} {'ttft95':>7} {'tpot':>7} {'out/s':>8} {'good':>6}"
+            f"{'p95':>7} {'ttft95':>7} {'tpot':>7} {'out/s':>8} {'cache':>6} {'good':>6}"
         )
         for s in stats:
             cost_s = f"${(s['cost_usd'] or 0):.4f}"
@@ -1101,6 +1101,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
                 f"{_fmt_stat_int(s.get('p95_ttft_ms')):>7} "
                 f"{_fmt_stat_float(s.get('tpot_ms')):>7} "
                 f"{_fmt_stat_float(s.get('output_tokens_per_second')):>8} "
+                f"{_fmt_stat_pct(s.get('cache_read_ratio')):>6} "
                 f"{_fmt_stat_pct(s.get('goodput_under_slo')):>6}"
             )
         return 0
@@ -1130,7 +1131,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(
         f"{'workload':<24} {'provider':<12} {'model':<18} "
         f"{'n':>6} {'tok_in':>8} {'tok_out':>8} {'cost':>10} {'fail':>6} "
-        f"{'p95':>7} {'ttft95':>7} {'tpot':>7} {'out/s':>8} {'good':>6}"
+        f"{'p95':>7} {'ttft95':>7} {'tpot':>7} {'out/s':>8} {'cache':>6} {'good':>6}"
     )
     for s in stats:
         cost_s = f"${(s['cost_usd'] or 0):.4f}"
@@ -1142,6 +1143,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
             f"{_fmt_stat_int(s.get('p95_ttft_ms')):>7} "
             f"{_fmt_stat_float(s.get('tpot_ms')):>7} "
             f"{_fmt_stat_float(s.get('output_tokens_per_second')):>8} "
+            f"{_fmt_stat_pct(s.get('cache_read_ratio')):>6} "
             f"{_fmt_stat_pct(s.get('goodput_under_slo')):>6}"
         )
     return 0

@@ -112,6 +112,8 @@ def test_status_with_rows(tmp_path, capsys, monkeypatch):
             prompt_hash="a",
             response_hash="b",
             ttft_ms=10,
+            cache_tokens_in=4,
+            cache_tokens_out=1,
         )
     )
     # Patch load_config to use our temp cfg
@@ -147,6 +149,8 @@ def test_status_json_with_rows(tmp_path, capsys, monkeypatch):
             prompt_hash="a",
             response_hash="b",
             ttft_ms=10,
+            cache_tokens_in=4,
+            cache_tokens_out=1,
         )
     )
     monkeypatch.chdir(tmp_path)
@@ -164,6 +168,9 @@ def test_status_json_with_rows(tmp_path, capsys, monkeypatch):
     assert row["p95_ttft_ms"] == 10
     assert row["tpot_ms"] == 10
     assert row["output_tokens_per_second"] == 100
+    assert row["cache_tokens_in"] == 4
+    assert row["cache_tokens_out"] == 1
+    assert row["cache_read_ratio"] == 0.4
     assert row["goodput_under_slo"] is None
 
 

@@ -74,6 +74,8 @@ _SERVING_STATS_KEYS = (
     "n_calls",
     "tokens_in",
     "tokens_out",
+    "cache_tokens_in",
+    "cache_tokens_out",
     "cost_usd",
     "latency_ms_avg",
     "n_failed",
@@ -87,6 +89,7 @@ _SERVING_STATS_KEYS = (
     "tpot_ms",
     "output_tokens_per_second",
     "total_tokens_per_second",
+    "cache_read_ratio",
     "goodput_slo_latency_ms",
     "goodput_calls",
     "goodput_under_slo",
@@ -124,6 +127,8 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                         c.model,
                         c.tokens_in,
                         c.tokens_out,
+                        c.cache_tokens_in,
+                        c.cache_tokens_out,
                         c.cost_usd,
                         c.latency_ms,
                         c.ttft_ms,
@@ -141,6 +146,8 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                         COUNT(*) AS n_calls,
                         SUM(tokens_in) AS tokens_in,
                         SUM(tokens_out) AS tokens_out,
+                        SUM(COALESCE(cache_tokens_in, 0)) AS cache_tokens_in,
+                        SUM(COALESCE(cache_tokens_out, 0)) AS cache_tokens_out,
                         SUM(cost_usd) AS cost_usd,
                         AVG(latency_ms) AS latency_ms_avg,
                         SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS n_failed,
@@ -229,6 +236,8 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                     r.n_calls,
                     r.tokens_in,
                     r.tokens_out,
+                    r.cache_tokens_in,
+                    r.cache_tokens_out,
                     r.cost_usd,
                     r.latency_ms_avg,
                     r.n_failed,
@@ -248,6 +257,10 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                         WHEN r.ok_latency_ms_sum > 0
                         THEN r.ok_tokens_total * 1000.0 / r.ok_latency_ms_sum
                     END AS total_tokens_per_second,
+                    CASE
+                        WHEN r.tokens_in > 0
+                        THEN r.cache_tokens_in * 1.0 / r.tokens_in
+                    END AS cache_read_ratio,
                     r.goodput_slo_latency_ms,
                     CASE
                         WHEN r.goodput_slo_latency_ms IS NULL THEN NULL

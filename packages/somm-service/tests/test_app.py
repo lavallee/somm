@@ -121,6 +121,8 @@ def test_api_stats_includes_serving_profile(client):
             prompt_hash="p",
             response_hash="r",
             ttft_ms=10,
+            cache_tokens_in=4,
+            cache_tokens_out=1,
         )
     )
 
@@ -130,12 +132,14 @@ def test_api_stats_includes_serving_profile(client):
     assert row["p95_latency_ms"] == 50
     assert row["p99_ttft_ms"] == 10
     assert row["tpot_ms"] == 10
+    assert row["cache_read_ratio"] == 0.4
     assert row["goodput_slo_latency_ms"] == 75
     assert row["goodput_under_slo"] == 1.0
 
     home = c.get("/", headers=_LOCAL_HEADERS)
     assert "p95 ms" in home.text
     assert "ttft p95" in home.text
+    assert "cache" in home.text
 
 
 def test_status_calls_and_sessions_api(client):

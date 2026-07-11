@@ -471,6 +471,7 @@ def _render_table(stats: list[dict]) -> str:
             f"<td class='num'>{_fmt_table_int(s.get('p95_ttft_ms'))}</td>"
             f"<td class='num'>{_fmt_table_float(s.get('tpot_ms'))}</td>"
             f"<td class='num'>{_fmt_table_float(s.get('output_tokens_per_second'))}</td>"
+            f"<td class='num'>{_fmt_table_pct(s.get('cache_read_ratio'))}</td>"
             f"<td class='num'>{_fmt_table_pct(s.get('goodput_under_slo'))}</td>"
             "</tr>"
         )
@@ -482,7 +483,7 @@ def _render_table(stats: list[dict]) -> str:
         "<th class='num'>tok out</th><th class='num'>fail</th>"
         "<th class='num'>p95 ms</th><th class='num'>ttft p95</th>"
         "<th class='num'>tpot</th><th class='num'>out/s</th>"
-        "<th class='num'>good</th>"
+        "<th class='num'>cache</th><th class='num'>good</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"

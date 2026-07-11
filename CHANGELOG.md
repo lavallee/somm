@@ -11,7 +11,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 - **Serving performance rollups**: workload/provider/model stats now include
   p50/p95/p99 latency, p50/p95/p99 TTFT, TPOT, output and total token
-  throughput, and goodput against a workload's `max_p95_latency_ms` SLO.
+  throughput, prompt-cache read/write tokens, cache-read ratio, and goodput
+  against a workload's `max_p95_latency_ms` SLO.
 
 ### Changed
 

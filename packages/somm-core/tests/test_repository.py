@@ -112,11 +112,13 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
         max_p95_latency_ms=200,
     )
     ok_calls = [
-        (100, 20, 11, 5),
-        (200, 50, 21, 5),
-        (400, 100, 41, 5),
+        (100, 20, 11, 5, 2, 1),
+        (200, 50, 21, 5, 3, 2),
+        (400, 100, 41, 5, 4, 3),
     ]
-    for idx, (latency_ms, ttft_ms, tokens_out, tokens_in) in enumerate(ok_calls):
+    for idx, (latency_ms, ttft_ms, tokens_out, tokens_in, cache_in, cache_out) in enumerate(
+        ok_calls
+    ):
         repo.write_call(
             Call(
                 id=f"ok-{idx}",
@@ -135,6 +137,8 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
                 prompt_hash=f"p-ok-{idx}",
                 response_hash=f"r-ok-{idx}",
                 ttft_ms=ttft_ms,
+                cache_tokens_in=cache_in,
+                cache_tokens_out=cache_out,
             )
         )
     repo.write_call(
@@ -155,6 +159,8 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
             prompt_hash="p-failed",
             response_hash="r-failed",
             ttft_ms=10,
+            cache_tokens_in=1,
+            cache_tokens_out=1,
         )
     )
 
@@ -164,6 +170,10 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
     assert row["n_calls"] == 4
     assert row["n_ok"] == 3
     assert row["n_failed"] == 1
+    assert row["tokens_in"] == 16
+    assert row["cache_tokens_in"] == 10
+    assert row["cache_tokens_out"] == 7
+    assert row["cache_read_ratio"] == pytest.approx(10 / 16)
     assert row["p50_latency_ms"] == 200
     assert row["p95_latency_ms"] == 400
     assert row["p99_latency_ms"] == 400
