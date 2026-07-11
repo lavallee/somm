@@ -7,6 +7,16 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added
+
+- **Named key profiles** (`somm-core`): set `key_profile` in `[tool.somm]`
+  (or `SOMM_KEY_PROFILE`) and provider keys resolve from
+  `<NAME>_API_KEY_<PROFILE>` before falling back to `<NAME>_API_KEY`,
+  AWS_PROFILE-style. Lets one environment hold several provisioned keys
+  per provider (per product, team, or deploy stage) so provider
+  dashboards attribute spend per profile. No profile set → behavior
+  unchanged.
+
 ## [0.13.0] — 2026-07-11
 
 ### Release status
