@@ -1,8 +1,10 @@
 """somm CLI entry point — grouped subcommands.
 
 Commands:
-    somm status          roll-up per (workload, provider, model)
-    somm generate        one-shot LLM call through somm
+  somm status          roll-up per (workload, provider, model)
+  somm cache-advice    find low prefix-cache reuse opportunities
+  somm bench           run latency/throughput probes through somm
+  somm generate        one-shot LLM call through somm
     somm tail            live call stream
   somm compare         run a prompt through N models side-by-side
   somm frontier        adequacy frontier per (provider, model) for a workload
@@ -12,7 +14,7 @@ Commands:
   somm backfill-costs  recompute cost_usd for calls missing pricing
   somm plans           metered-plan quota usage + pacing
   somm drain-spool     replay spooled telemetry into the DB
-  somm workload        register and inspect project workloads
+  somm workload        register, constrain, and inspect project workloads
   somm prompt          manage prompt versions, labels, and A/B variants
   somm eval            promote calls to datasets and run eval gates
   somm optimize        propose a prompt fork from failing graded calls
@@ -105,6 +107,11 @@ def _cmd_workload_add(args: argparse.Namespace) -> int:
         output_schema=template["output_schema"],
         quality_criteria=template["quality_criteria"],
         privacy_class=PrivacyClass(args.privacy_class),
+        max_p95_latency_ms=args.max_p95_latency_ms,
+        max_p95_ttft_ms=args.max_p95_ttft_ms,
+        max_tpot_ms=args.max_tpot_ms,
+        max_capability_failure_rate=args.max_capability_failure_rate,
+        max_cost_per_call_usd=args.max_cost_per_call_usd,
     )
     print(f"registered workload {wl.name!r} for project {cfg.project!r}")
     print(f"privacy_class: {wl.privacy_class.value}")
@@ -128,6 +135,8 @@ def _workload_rows(repo: Repository, project: str) -> list[dict]:
                 w.privacy_class,
                 w.capabilities_required_json,
                 w.max_p95_latency_ms,
+                w.max_p95_ttft_ms,
+                w.max_tpot_ms,
                 w.max_capability_failure_rate,
                 w.max_cost_per_call_usd,
                 w.created_at,
@@ -152,10 +161,12 @@ def _workload_rows(repo: Repository, project: str) -> list[dict]:
             "privacy_class": r[7],
             "capabilities_required": json.loads(r[8]) if r[8] else [],
             "max_p95_latency_ms": r[9],
-            "max_capability_failure_rate": r[10],
-            "max_cost_per_call_usd": r[11],
-            "created_at": r[12],
-            "call_count": r[13],
+            "max_p95_ttft_ms": r[10],
+            "max_tpot_ms": r[11],
+            "max_capability_failure_rate": r[12],
+            "max_cost_per_call_usd": r[13],
+            "created_at": r[14],
+            "call_count": r[15],
         }
         for r in rows
     ]
@@ -195,6 +206,8 @@ def _cmd_workload_show(args: argparse.Namespace) -> int:
     print(f"capabilities_required: {', '.join(row['capabilities_required']) or '—'}")
     print("constraints:")
     print(f"  max_p95_latency_ms: {row['max_p95_latency_ms'] if row['max_p95_latency_ms'] is not None else '—'}")
+    print(f"  max_p95_ttft_ms: {row['max_p95_ttft_ms'] if row['max_p95_ttft_ms'] is not None else '—'}")
+    print(f"  max_tpot_ms: {row['max_tpot_ms'] if row['max_tpot_ms'] is not None else '—'}")
     print(f"  max_capability_failure_rate: {row['max_capability_failure_rate'] if row['max_capability_failure_rate'] is not None else '—'}")
     print(f"  max_cost_per_call_usd: {row['max_cost_per_call_usd'] if row['max_cost_per_call_usd'] is not None else '—'}")
     print("input_schema:")
@@ -207,6 +220,38 @@ def _cmd_workload_show(args: argparse.Namespace) -> int:
             print(f"  - {item}")
     else:
         print("quality_criteria: —")
+    return 0
+
+
+def _cmd_workload_set_constraints(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    wl = repo.workload_by_name(args.name, cfg.project)
+    if wl is None:
+        print(f"No workload {args.name!r} registered for project {cfg.project!r}.", file=sys.stderr)
+        return 2
+    if not args.clear and all(
+        value is None
+        for value in (
+            args.max_p95_latency_ms,
+            args.max_p95_ttft_ms,
+            args.max_tpot_ms,
+            args.max_capability_failure_rate,
+            args.max_cost_per_call_usd,
+        )
+    ):
+        print("No constraints supplied; pass at least one --max-* option or --clear.", file=sys.stderr)
+        return 2
+    repo.set_workload_constraints(
+        wl.id,
+        max_p95_latency_ms=args.max_p95_latency_ms,
+        max_p95_ttft_ms=args.max_p95_ttft_ms,
+        max_tpot_ms=args.max_tpot_ms,
+        max_capability_failure_rate=args.max_capability_failure_rate,
+        max_cost_per_call_usd=args.max_cost_per_call_usd,
+        clear=args.clear,
+    )
+    print(f"updated constraints for workload {wl.name!r}")
     return 0
 
 
@@ -1149,6 +1194,79 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prefix_cache_advice(
+    stats: list[dict],
+    *,
+    min_tokens_in: int,
+    max_cache_read_ratio: float,
+) -> list[dict]:
+    out: list[dict] = []
+    for row in stats:
+        tokens_in = int(row.get("tokens_in") or 0)
+        if tokens_in < min_tokens_in:
+            continue
+        cache_read_ratio = row.get("cache_read_ratio")
+        effective_ratio = float(cache_read_ratio or 0.0)
+        if effective_ratio > max_cache_read_ratio:
+            continue
+        cache_tokens_in = int(row.get("cache_tokens_in") or 0)
+        n_calls = int(row.get("n_calls") or 0)
+        issue = "no_cache_reads" if cache_tokens_in == 0 else "low_cache_reuse"
+        out.append(
+            {
+                "workload": row["workload"],
+                "provider": row["provider"],
+                "model": row["model"],
+                "n_calls": n_calls,
+                "tokens_in": tokens_in,
+                "cache_tokens_in": cache_tokens_in,
+                "cache_read_ratio": effective_ratio,
+                "issue": issue,
+                "advice": (
+                    "Stabilize repeated system/context prefixes and batch calls with "
+                    "shared prefixes together so provider prefix caches can hit."
+                ),
+            }
+        )
+    return sorted(out, key=lambda row: (row["cache_read_ratio"], -row["tokens_in"]))
+
+
+def _cmd_cache_advice(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    stats = repo.stats_by_workload(cfg.project, since_days=args.since)
+    rows = _prefix_cache_advice(
+        stats,
+        min_tokens_in=args.min_tokens_in,
+        max_cache_read_ratio=args.max_cache_read_ratio,
+    )
+    payload = {
+        "project": cfg.project,
+        "window_days": args.since,
+        "count": len(rows),
+        "rows": rows,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    if not rows:
+        print("No prefix-cache opportunities found for the current thresholds.")
+        return 0
+    print(f"Prefix-cache advice: {cfg.project}  ({args.since}d window)")
+    print(
+        f"{'workload':<24} {'provider':<12} {'model':<18} {'n':>6} "
+        f"{'tok_in':>9} {'cache':>7} issue"
+    )
+    for row in rows:
+        print(
+            f"{row['workload'][:23]:<24} {row['provider'][:11]:<12} "
+            f"{row['model'][:17]:<18} {row['n_calls']:>6} "
+            f"{row['tokens_in']:>9} {_fmt_stat_pct(row['cache_read_ratio']):>7} "
+            f"{row['issue']}"
+        )
+    return 0
+
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     if args.prompt_file and args.prompt:
         raise ValueError("pass either PROMPT or --prompt-file, not both")
@@ -1199,6 +1317,166 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
     else:
         print(result.text)
+    return 0
+
+
+def _bench_prompt(args: argparse.Namespace) -> str:
+    if args.prompt_file and args.prompt:
+        raise ValueError("pass either PROMPT or --prompt-file, not both")
+    if args.prompt_file:
+        return Path(args.prompt_file).read_text(encoding="utf-8")
+    if args.prompt == "-":
+        return sys.stdin.read()
+    if not args.prompt:
+        raise ValueError("prompt is required (pass PROMPT, --prompt-file, or '-')")
+    return args.prompt
+
+
+def _bench_tpot_ms(result) -> float | None:
+    if result.ttft_ms is None or result.tokens_out <= 1:
+        return None
+    if result.latency_ms < result.ttft_ms:
+        return None
+    return (result.latency_ms - result.ttft_ms) / (result.tokens_out - 1)
+
+
+def _bench_percentile(values: list[float | int | None], pct: int) -> float | None:
+    ordered = sorted(float(v) for v in values if v is not None)
+    if not ordered:
+        return None
+    index = max(0, min(len(ordered) - 1, (pct * len(ordered) + 99) // 100 - 1))
+    return ordered[index]
+
+
+def _bench_summary(rows: list[dict], *, wall_seconds: float) -> dict:
+    ok_rows = [row for row in rows if row["outcome"] == Outcome.OK.value]
+    total_latency_ms = sum(row["latency_ms"] for row in ok_rows)
+    total_input_tokens = sum(row["tokens_in"] for row in ok_rows)
+    total_output_tokens = sum(row["tokens_out"] for row in ok_rows)
+    total_tokens = total_input_tokens + total_output_tokens
+    total_cost = sum(row["cost_usd"] for row in rows)
+    return {
+        "calls": len(rows),
+        "ok_calls": len(ok_rows),
+        "failed_calls": len(rows) - len(ok_rows),
+        "wall_seconds": wall_seconds,
+        "latency_ms": {
+            "p50": _bench_percentile([row["latency_ms"] for row in ok_rows], 50),
+            "p95": _bench_percentile([row["latency_ms"] for row in ok_rows], 95),
+            "p99": _bench_percentile([row["latency_ms"] for row in ok_rows], 99),
+            "mean": (total_latency_ms / len(ok_rows)) if ok_rows else None,
+        },
+        "ttft_ms": {
+            "p50": _bench_percentile([row["ttft_ms"] for row in ok_rows], 50),
+            "p95": _bench_percentile([row["ttft_ms"] for row in ok_rows], 95),
+            "p99": _bench_percentile([row["ttft_ms"] for row in ok_rows], 99),
+        },
+        "tpot_ms": {
+            "mean": (
+                sum(row["tpot_ms"] for row in ok_rows if row["tpot_ms"] is not None)
+                / len([row for row in ok_rows if row["tpot_ms"] is not None])
+            )
+            if any(row["tpot_ms"] is not None for row in ok_rows)
+            else None,
+            "p95": _bench_percentile([row["tpot_ms"] for row in ok_rows], 95),
+        },
+        "throughput": {
+            "requests_per_second": (len(ok_rows) / wall_seconds) if wall_seconds > 0 else None,
+            "input_tokens_per_second": (total_input_tokens / wall_seconds) if wall_seconds > 0 else None,
+            "output_tokens_per_second": (total_output_tokens / wall_seconds) if wall_seconds > 0 else None,
+            "total_tokens_per_second": (total_tokens / wall_seconds) if wall_seconds > 0 else None,
+        },
+        "tokens": {
+            "input": total_input_tokens,
+            "output": total_output_tokens,
+            "total": total_tokens,
+        },
+        "cost_usd": total_cost,
+    }
+
+
+def _cmd_bench(args: argparse.Namespace) -> int:
+    if args.iterations < 1:
+        print("--iterations must be >= 1", file=sys.stderr)
+        return 2
+    if args.warmup < 0:
+        print("--warmup must be >= 0", file=sys.stderr)
+        return 2
+    cfg = load_config(project=args.project)
+    prompt = _bench_prompt(args)
+    workload = args.workload or f"bench_{args.bench_cmd}"
+    from somm.client import SommLLM
+
+    llm = SommLLM(config=cfg)
+    rows: list[dict] = []
+    start: float | None = None
+    try:
+        for idx in range(args.warmup + args.iterations):
+            if idx == args.warmup:
+                start = time.monotonic()
+            result = llm.generate(
+                prompt,
+                workload=workload,
+                provider=args.provider,
+                model=args.model,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                no_fallback=args.no_fallback,
+            )
+            if idx < args.warmup:
+                continue
+            rows.append(
+                {
+                    "call_id": result.call_id,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "outcome": result.outcome.value,
+                    "latency_ms": result.latency_ms,
+                    "ttft_ms": result.ttft_ms,
+                    "tpot_ms": _bench_tpot_ms(result),
+                    "tokens_in": result.tokens_in,
+                    "tokens_out": result.tokens_out,
+                    "cost_usd": result.cost_usd,
+                    "error_kind": result.error_kind,
+                }
+            )
+    finally:
+        llm.close()
+    wall_seconds = time.monotonic() - (start or time.monotonic())
+    summary = _bench_summary(rows, wall_seconds=wall_seconds)
+    payload = {
+        "mode": args.bench_cmd,
+        "project": cfg.project,
+        "workload": workload,
+        "iterations": args.iterations,
+        "warmup": args.warmup,
+        "summary": summary,
+        "runs": rows,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    lat = summary["latency_ms"]
+    ttft = summary["ttft_ms"]
+    tpot = summary["tpot_ms"]
+    thr = summary["throughput"]
+    print(f"bench {args.bench_cmd}: {cfg.project}/{workload}  n={args.iterations} warmup={args.warmup}")
+    print(
+        "latency_ms "
+        f"p50={_fmt_stat_float(lat['p50'])} "
+        f"p95={_fmt_stat_float(lat['p95'])} "
+        f"p99={_fmt_stat_float(lat['p99'])} "
+        f"ttft95={_fmt_stat_float(ttft['p95'])} "
+        f"tpot_mean={_fmt_stat_float(tpot['mean'])}"
+    )
+    print(
+        "throughput "
+        f"req/s={_fmt_stat_float(thr['requests_per_second'])} "
+        f"out_tok/s={_fmt_stat_float(thr['output_tokens_per_second'])} "
+        f"total_tok/s={_fmt_stat_float(thr['total_tokens_per_second'])} "
+        f"cost=${summary['cost_usd']:.4f}"
+    )
     return 0
 
 
@@ -1434,6 +1712,8 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
 
     cons = {
         "max_p95_latency_ms": wl.max_p95_latency_ms,
+        "max_p95_ttft_ms": wl.max_p95_ttft_ms,
+        "max_tpot_ms": wl.max_tpot_ms,
         "max_capability_failure_rate": wl.max_capability_failure_rate,
         "max_cost_per_call_usd": wl.max_cost_per_call_usd,
     }
@@ -1444,13 +1724,15 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
     print(f"Constraints: {cons_pretty or '(none set — inspect with `somm workload show <name>`)'}")
     print(
         f"\n{'provider':<14} {'model':<28} {'n':>5} {'cap%':>6} {'det%':>6} "
-        f"{'p50ms':>7} {'p95ms':>7} {'$/ok':>9} fitness"
+        f"{'p50ms':>7} {'p95ms':>7} {'ttft95':>7} {'tpot':>7} {'$/ok':>9} fitness"
     )
     for r in rows:
         cap_pct = 100.0 * r["capability_failure_rate"]
         det_pct = 100.0 * r["detractor_rate"]
         p50 = r["p50_latency_ms"] if r["p50_latency_ms"] is not None else "-"
         p95 = r["p95_latency_ms"] if r["p95_latency_ms"] is not None else "-"
+        ttft95 = r["p95_ttft_ms"] if r["p95_ttft_ms"] is not None else "-"
+        tpot = _fmt_stat_float(r["tpot_ms"])
         cost = r["mean_cost_per_ok_call"]
         cost_s = f"${cost:.5f}" if cost is not None else "-"
         flags = []
@@ -1459,12 +1741,17 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
             flags.append("UNFIT(cap)")
         if f["exceeds_max_p95_latency_ms"]:
             flags.append("UNFIT(slow)")
+        if f["exceeds_max_p95_ttft_ms"]:
+            flags.append("UNFIT(ttft)")
+        if f["exceeds_max_tpot_ms"]:
+            flags.append("UNFIT(tpot)")
         if f["exceeds_max_cost_per_call_usd"]:
             flags.append("UNFIT($)")
         fitness_s = ",".join(flags) if flags else "ok"
         print(
             f"{r['provider'][:13]:<14} {r['model'][:27]:<28} {r['n_calls']:>5} "
-            f"{cap_pct:>5.1f}% {det_pct:>5.1f}% {str(p50):>7} {str(p95):>7} {cost_s:>9} {fitness_s}"
+            f"{cap_pct:>5.1f}% {det_pct:>5.1f}% {str(p50):>7} {str(p95):>7} "
+            f"{str(ttft95):>7} {tpot:>7} {cost_s:>9} {fitness_s}"
         )
     return 0
 
@@ -2062,6 +2349,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ps.set_defaults(func=_cmd_status)
 
+    pcache = sub.add_parser("cache-advice", help="find low prefix-cache reuse opportunities")
+    pcache.add_argument("--project", default=None)
+    pcache.add_argument("--since", type=int, default=7, help="window in days (default 7)")
+    pcache.add_argument("--min-tokens-in", type=int, default=1_000)
+    pcache.add_argument("--max-cache-read-ratio", type=float, default=0.20)
+    pcache.add_argument("--json", action="store_true", help="emit stable JSON")
+    pcache.set_defaults(func=_cmd_cache_advice)
+
     pg = sub.add_parser("generate", help="one-shot LLM call through somm")
     pg.add_argument("prompt", nargs="?", help="prompt text, or '-' to read stdin")
     pg.add_argument("--prompt-file", default=None, help="read prompt text from a file")
@@ -2074,6 +2369,24 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--temperature", type=float, default=0.0)
     pg.add_argument("--json", action="store_true", help="emit a machine-readable result")
     pg.set_defaults(func=_cmd_generate)
+
+    pb = sub.add_parser("bench", help="run latency and throughput probes")
+    pb_sub = pb.add_subparsers(dest="bench_cmd", required=True)
+    for bench_cmd, default_iterations in (("latency", 5), ("throughput", 10)):
+        pbench = pb_sub.add_parser(bench_cmd, help=f"run a {bench_cmd} benchmark")
+        pbench.add_argument("prompt", nargs="?", help="prompt text, or '-' to read stdin")
+        pbench.add_argument("--prompt-file", default=None, help="read prompt text from a file")
+        pbench.add_argument("--project", default=None)
+        pbench.add_argument("--workload", default=None)
+        pbench.add_argument("--provider", default=None)
+        pbench.add_argument("--model", default=None)
+        pbench.add_argument("--iterations", type=int, default=default_iterations)
+        pbench.add_argument("--warmup", type=int, default=0)
+        pbench.add_argument("--max-tokens", type=int, default=256)
+        pbench.add_argument("--temperature", type=float, default=0.0)
+        pbench.add_argument("--no-fallback", action="store_true")
+        pbench.add_argument("--json", action="store_true", help="emit a machine-readable result")
+        pbench.set_defaults(func=_cmd_bench)
 
     pt = sub.add_parser("tail", help="stream new calls as they land")
     pt.add_argument("--project", default=None)
@@ -2131,6 +2444,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="freeform",
         help="built-in workload template (default: freeform)",
     )
+    pwa.add_argument("--max-p95-latency-ms", type=int, default=None)
+    pwa.add_argument("--max-p95-ttft-ms", type=int, default=None)
+    pwa.add_argument("--max-tpot-ms", type=float, default=None)
+    pwa.add_argument("--max-capability-failure-rate", type=float, default=None)
+    pwa.add_argument("--max-cost-per-call-usd", type=float, default=None)
     pwa.set_defaults(func=_cmd_workload_add)
 
     pwl = pw_sub.add_parser("list", help="list registered workloads")
@@ -2141,6 +2459,17 @@ def build_parser() -> argparse.ArgumentParser:
     pws.add_argument("name", help="workload name")
     pws.add_argument("--project", default=None)
     pws.set_defaults(func=_cmd_workload_show)
+
+    pwc = pw_sub.add_parser("set-constraints", help="update workload adequacy constraints")
+    pwc.add_argument("name", help="workload name")
+    pwc.add_argument("--project", default=None)
+    pwc.add_argument("--max-p95-latency-ms", type=int, default=None)
+    pwc.add_argument("--max-p95-ttft-ms", type=int, default=None)
+    pwc.add_argument("--max-tpot-ms", type=float, default=None)
+    pwc.add_argument("--max-capability-failure-rate", type=float, default=None)
+    pwc.add_argument("--max-cost-per-call-usd", type=float, default=None)
+    pwc.add_argument("--clear", action="store_true", help="clear all workload constraints")
+    pwc.set_defaults(func=_cmd_workload_set_constraints)
 
     pprompt = sub.add_parser("prompt", help="manage prompt versions, labels, and A/B variants")
     pprompt_sub = pprompt.add_subparsers(dest="prompt_cmd", required=True)

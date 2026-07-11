@@ -111,6 +111,10 @@ class OllamaProvider:
             # Ollama 0.4+ accepts OpenAI-shaped tool declarations on
             # /api/chat. The box runs 0.20.x, well past that floor.
             payload["tools"] = [_translate_tool_to_openai(t) for t in request.tools]
+        if request.response_format is not None:
+            ollama_format = _ollama_response_format(request.response_format)
+            if ollama_format is not None:
+                payload["format"] = ollama_format
 
         t0 = time.monotonic()
         with self._client() as client:
@@ -250,6 +254,15 @@ class OllamaProvider:
         from somm_core.parse import estimate_prompt_tokens
 
         return estimate_prompt_tokens(text, image_token_cost=1000)
+
+
+def _ollama_response_format(response_format: dict) -> dict | str | None:
+    if response_format.get("type") == "json_object":
+        return "json"
+    if response_format.get("type") != "json_schema":
+        return None
+    schema = response_format.get("json_schema", {}).get("schema")
+    return schema if isinstance(schema, dict) else None
 
 
 def _parse_ollama_tool_calls(raw_tool_calls: list[dict]) -> list[ToolCall]:

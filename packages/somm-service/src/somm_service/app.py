@@ -542,6 +542,54 @@ def _status_payload(cfg: Config, repo: Repository, *, window: int) -> dict:
         "failure_rate": 0.0 if total_calls == 0 else total_failed / total_calls,
         "total_cost_usd": total_cost,
         "active_workloads": len({s["workload"] for s in stats}),
+        "load": _load_payload(cfg, repo),
+    }
+
+
+def _load_payload(cfg: Config, repo: Repository) -> dict:
+    with repo._open() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS calls_per_minute,
+                SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS failed_per_minute,
+                COUNT(DISTINCT workload_id) AS active_workloads,
+                COUNT(DISTINCT provider) AS active_providers,
+                COUNT(DISTINCT model) AS active_models,
+                SUM(tokens_in) AS input_tokens_per_minute,
+                SUM(tokens_out) AS output_tokens_per_minute,
+                AVG(CASE WHEN outcome = 'ok' THEN latency_ms END) AS mean_latency_ms,
+                AVG(CASE WHEN outcome = 'ok' THEN ttft_ms END) AS mean_ttft_ms,
+                AVG(
+                    CASE
+                        WHEN outcome = 'ok'
+                         AND ttft_ms IS NOT NULL
+                         AND tokens_out > 1
+                         AND latency_ms >= ttft_ms
+                        THEN ((latency_ms - ttft_ms) * 1.0 / (tokens_out - 1))
+                    END
+                ) AS mean_tpot_ms
+            FROM calls
+            WHERE project = ?
+              AND ts >= datetime('now', '-60 seconds')
+            """,
+            (cfg.project,),
+        ).fetchone()
+    calls = int(row[0] or 0)
+    failed = int(row[1] or 0)
+    return {
+        "window_seconds": 60,
+        "calls_per_minute": calls,
+        "failed_per_minute": failed,
+        "failure_rate": (failed / calls) if calls else 0.0,
+        "active_workloads": int(row[2] or 0),
+        "active_providers": int(row[3] or 0),
+        "active_models": int(row[4] or 0),
+        "input_tokens_per_minute": int(row[5] or 0),
+        "output_tokens_per_minute": int(row[6] or 0),
+        "mean_latency_ms": row[7],
+        "mean_ttft_ms": row[8],
+        "mean_tpot_ms": row[9],
     }
 
 

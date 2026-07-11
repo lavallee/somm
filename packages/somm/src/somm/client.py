@@ -146,6 +146,19 @@ def _structured_retry_system(system: str, raw: str, error: str) -> str:
     return f"{system.rstrip()}\n\n{feedback}" if system else feedback
 
 
+def _json_schema_response_format(schema_doc: Any | None) -> dict | None:
+    if not isinstance(schema_doc, dict):
+        return None
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "somm_structured_output",
+            "schema": schema_doc,
+            "strict": True,
+        },
+    }
+
+
 def _validate_structured_json_schema(parsed: dict | list, schema: dict) -> dict | list:
     try:
         import jsonschema
@@ -923,6 +936,7 @@ class SommLLM:
         tools: list[dict] | None = None,
         messages: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        response_format: dict | None = None,
         wait: float | None = _WAIT_UNSET,
         session_id: str | None = None,
         parent_call_id: str | None = None,
@@ -1014,6 +1028,7 @@ class SommLLM:
             tools=tools or [],
             messages=messages,
             tool_choice=tool_choice,
+            response_format=response_format,
         )
 
         short_circuit: hooks.ShortCircuit | None = None
@@ -1032,6 +1047,7 @@ class SommLLM:
                 tools=tools or [],
                 tool_choice=tool_choice,
                 project=self.config.project,
+                response_format=response_format,
             )
             short_circuit = hooks.fire_pre_call(ctx)
             prompt_text = ctx.prompt
@@ -1043,6 +1059,7 @@ class SommLLM:
             temperature = ctx.temperature
             tools = ctx.tools
             tool_choice = ctx.tool_choice
+            response_format = ctx.response_format
             if messages is not None:
                 call_prompt_id = None
             elif isinstance(prompt, Prompt) and prompt_text == original_prompt_text:
@@ -1065,6 +1082,7 @@ class SommLLM:
                 tools=tools or [],
                 messages=messages,
                 tool_choice=tool_choice,
+                response_format=response_format,
             )
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
@@ -1901,6 +1919,7 @@ class SommLLM:
         """
         schema_kind, schema_doc = _classify_structured_schema(schema)
         base_system = _structured_system(system, schema_doc)
+        response_format = _json_schema_response_format(schema_doc)
         last_raw = ""
         last_error = "no response"
         last_result: SommResult | None = None
@@ -1921,6 +1940,7 @@ class SommLLM:
                 temperature=temperature + (attempt * _STRUCTURED_TEMPERATURE_JITTER),
                 model=model,
                 provider=provider,
+                response_format=response_format,
                 wait=wait,
                 session_id=session_id,
                 parent_call_id=parent_call_id,

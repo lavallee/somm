@@ -55,6 +55,10 @@ class SommRequest:
     tools: list[dict] = field(default_factory=list)
     messages: list[dict] | None = None
     tool_choice: str | dict | None = None
+    # Provider-native structured-output hint. OpenAI-compatible adapters pass
+    # this through as response_format; Ollama maps it to format. Validation
+    # still belongs to SommLLM.generate_structured().
+    response_format: dict | None = None
 
 
 @dataclass(slots=True)

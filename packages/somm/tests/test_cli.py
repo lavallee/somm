@@ -227,6 +227,101 @@ def test_generate_json_uses_somm_llm(tmp_path, capsys, monkeypatch):
     assert data["call_id"] == "call-1"
 
 
+def test_cache_advice_json_flags_low_cache_reuse(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="cache_heavy", project=cfg.project)
+    for idx in range(2):
+        repo.write_call(
+            Call(
+                id=str(uuid.uuid4()),
+                ts=datetime.now(UTC),
+                project=cfg.project,
+                workload_id=wl.id,
+                prompt_id=None,
+                provider="fake",
+                model="m",
+                tokens_in=1_000,
+                tokens_out=10,
+                latency_ms=100,
+                cost_usd=0.0,
+                outcome=Outcome.OK,
+                error_kind=None,
+                prompt_hash=f"p-{idx}",
+                response_hash=f"r-{idx}",
+                cache_tokens_in=0,
+                cache_tokens_out=0,
+            )
+        )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", cfg.project)
+
+    rc = main(["cache-advice", "--project", cfg.project, "--json"])
+    data = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert data["count"] == 1
+    row = data["rows"][0]
+    assert row["workload"] == "cache_heavy"
+    assert row["tokens_in"] == 2_000
+    assert row["cache_read_ratio"] == 0.0
+    assert row["issue"] == "no_cache_reads"
+
+
+def test_bench_latency_json_uses_somm_llm(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", cfg.project)
+
+    class FakeLLM:
+        instances = []
+
+        def __init__(self, config):
+            self.config = config
+            self.calls = 0
+            self.seen = []
+            FakeLLM.instances.append(self)
+
+        def generate(self, prompt, **kwargs):
+            self.calls += 1
+            self.seen.append((prompt, kwargs))
+            latency = 100 * self.calls
+            ttft = 20 if self.calls == 1 else 50
+            tokens_out = 11 if self.calls == 1 else 21
+            return SommResult(
+                text="ok",
+                provider="fake",
+                model="fake-model",
+                tokens_in=5,
+                tokens_out=tokens_out,
+                latency_ms=latency,
+                cost_usd=0.0,
+                call_id=f"call-{self.calls}",
+                ttft_ms=ttft,
+            )
+
+        def close(self):
+            pass
+
+    import somm.client as client_mod
+
+    monkeypatch.setattr(client_mod, "SommLLM", FakeLLM)
+
+    rc = main(["bench", "latency", "hello", "--iterations", "2", "--provider", "fake", "--json"])
+    data = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert data["mode"] == "latency"
+    assert data["workload"] == "bench_latency"
+    assert data["summary"]["latency_ms"]["p50"] == 100
+    assert data["summary"]["latency_ms"]["p95"] == 200
+    assert data["summary"]["ttft_ms"]["p95"] == 50
+    assert data["summary"]["tpot_ms"]["mean"] == 7.75
+    assert [row["call_id"] for row in data["runs"]] == ["call-1", "call-2"]
+    assert FakeLLM.instances[0].seen[0][1]["workload"] == "bench_latency"
+    assert FakeLLM.instances[0].seen[0][1]["provider"] == "fake"
+
+
 def test_generate_json_error_envelope(capsys):
     rc = main(["generate", "--json"])
     captured = capsys.readouterr()
@@ -440,8 +535,42 @@ def test_workload_add_freeform_list_and_show(tmp_path, capsys, monkeypatch):
     assert "privacy_class: internal" in show_out
     assert "call_count: 1" in show_out
     assert "max_p95_latency_ms: —" in show_out
+    assert "max_p95_ttft_ms: —" in show_out
+    assert "max_tpot_ms: —" in show_out
     assert "input_schema:\n  —" in show_out
     assert "output_schema:\n  —" in show_out
+
+    assert (
+        main(
+            [
+                "workload",
+                "set-constraints",
+                "drafting",
+                "--project",
+                "cli-workload",
+                "--max-p95-latency-ms",
+                "400",
+                "--max-p95-ttft-ms",
+                "120",
+                "--max-tpot-ms",
+                "18.5",
+                "--max-capability-failure-rate",
+                "0.05",
+                "--max-cost-per-call-usd",
+                "0.01",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main(["workload", "show", "drafting", "--project", "cli-workload"]) == 0
+    show_out = capsys.readouterr().out
+    assert "max_p95_latency_ms: 400" in show_out
+    assert "max_p95_ttft_ms: 120" in show_out
+    assert "max_tpot_ms: 18.5" in show_out
+    assert "max_capability_failure_rate: 0.05" in show_out
+    assert "max_cost_per_call_usd: 0.01" in show_out
 
 
 def test_eval_promote_call_creates_dataset(tmp_path, capsys, monkeypatch):
@@ -596,6 +725,8 @@ def test_corrected_command_hints_parse_against_real_parsers():
         ["workload", "add", "orders", "--from-example", "freeform"],
         ["workload", "list"],
         ["workload", "show", "orders"],
+        ["workload", "set-constraints", "orders", "--max-p95-ttft-ms", "100"],
+        ["bench", "latency", "hello", "--iterations", "1"],
         ["prompt", "list", "--workload", "orders"],
         ["prompt", "show", "--workload", "orders", "--version", "v1"],
         ["prompt", "register", "--workload", "orders", "--body", "hello"],
@@ -624,6 +755,7 @@ def test_corrected_command_hints_parse_against_real_parsers():
         ["plugin", "list"],
         ["plugin", "info", "cache"],
         ["frontier", "--workload", "orders"],
+        ["cache-advice"],
         ["compare", "hello", "--models", "ollama/g"],
         ["spend"],
         ["plans"],

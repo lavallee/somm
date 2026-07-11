@@ -332,6 +332,8 @@ Add to Claude Code / Cursor / Windsurf:
 ```bash
 somm status [--project P] [--since N] [--global] [--json]
                                                     # rollup (per-project / cross-project)
+somm cache-advice [--json]                         # prefix-cache reuse opportunities
+somm bench latency|throughput <prompt> [--json]    # instrumented serving probes
 somm generate <prompt> [--workload W] [--json]      # one-shot LLM call through somm
 somm tail [--workload NAME] [--poll-interval S]    # live call stream
 somm compare <prompt> --models p/m,p/m             # side-by-side N-model comparison
@@ -340,7 +342,7 @@ somm spend [--json]                                # today's spend vs daily budg
 somm plans [--json] [--project-only]               # metered-plan quota usage + pacing (fleet-wide)
 somm backfill-costs [--since N] [--dry-run]        # recompute $0 calls that now have pricing
 somm drain-spool                                   # replay spooled telemetry into the DB
-somm workload add/list/show                        # register and inspect workloads
+somm workload add/list/show/set-constraints        # register and inspect workloads
 somm prompt list/show/register/fork/diff/label     # immutable prompt versions + mutable labels
 somm eval promote-call/run                         # durable datasets + synchronous eval gates
 somm optimize --workload NAME                      # propose a prompt fork from failing graded calls
@@ -380,7 +382,12 @@ GET /api/recommendations
 rollups by workload/provider/model: latency and TTFT p50/p95/p99, TPOT,
 observed request throughput, input/output/total token throughput,
 prompt-cache read/write tokens, cache-read ratio, and goodput against
-`max_p95_latency_ms` when a workload SLO is set.
+`max_p95_latency_ms`, `max_p95_ttft_ms`, and `max_tpot_ms` when workload SLOs
+are set.
+
+`somm cache-advice` turns cache-read ratios into a small worklist for repeated
+prefix workloads. `somm bench latency` and `somm bench throughput` run normal
+instrumented calls and summarize latency, TTFT, TPOT, and token throughput.
 
 Polyglot apps can send OpenTelemetry JSON traces without importing the
 Python SDK:

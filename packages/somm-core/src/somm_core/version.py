@@ -4,4 +4,4 @@ Every somm package imports these constants. Release process bumps both together.
 """
 
 VERSION = "0.12.0"
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20

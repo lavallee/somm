@@ -102,6 +102,8 @@ def test_api_stats_includes_serving_profile(client):
         name="svc_profile",
         project=cfg.project,
         max_p95_latency_ms=75,
+        max_p95_ttft_ms=15,
+        max_tpot_ms=10.0,
     )
     repo.write_call(
         Call(
@@ -136,6 +138,8 @@ def test_api_stats_includes_serving_profile(client):
     assert row["requests_per_second"] == 20
     assert row["cache_read_ratio"] == 0.4
     assert row["goodput_slo_latency_ms"] == 75
+    assert row["goodput_slo_ttft_ms"] == 15
+    assert row["goodput_slo_tpot_ms"] == 10.0
     assert row["goodput_under_slo"] == 1.0
     assert row["goodput_requests_per_second"] == 20
     assert row["goodput_output_tokens_per_second"] == 100
@@ -181,6 +185,10 @@ def test_status_calls_and_sessions_api(client):
     status = c.get("/api/status", headers=_LOCAL_HEADERS).json()
     assert status["total_calls"] == 2
     assert status["health"] == "healthy"
+    assert status["load"]["calls_per_minute"] == 2
+    assert status["load"]["active_workloads"] == 1
+    assert status["load"]["active_models"] == 2
+    assert status["load"]["output_tokens_per_minute"] == 6
 
     calls = c.get("/api/calls", params={"q": "child-model"}, headers=_LOCAL_HEADERS).json()
     assert calls["count"] == 1

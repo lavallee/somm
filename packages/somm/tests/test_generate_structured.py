@@ -79,6 +79,14 @@ def test_generate_structured_pydantic_returns_model_and_result(tmp_path):
     assert result.provider == "fake"
     assert result.outcome == Outcome.OK
     assert "Respond with ONLY valid JSON matching this schema" in provider.requests[0].system
+    assert provider.requests[0].response_format == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "somm_structured_output",
+            "schema": WineNote.model_json_schema(),
+            "strict": True,
+        },
+    }
 
 
 def test_generate_structured_json_schema_retries_with_feedback(tmp_path):
@@ -110,6 +118,14 @@ def test_generate_structured_json_schema_retries_with_feedback(tmp_path):
     assert result.outcome == Outcome.OK
     assert len(provider.requests) == 2
     assert provider.requests[0].system.startswith("You are precise.")
+    assert provider.requests[0].response_format == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "somm_structured_output",
+            "schema": schema,
+            "strict": True,
+        },
+    }
     assert "Your previous response failed:" in provider.requests[1].system
     assert '{"wine":"Riesling"}' in provider.requests[1].system
     assert "region" in provider.requests[1].system

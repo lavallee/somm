@@ -12,11 +12,15 @@ def test_register_workload_records_initial_config_revision(tmp_path):
         project="p",
         budget_cap_usd_daily=5.0,
         max_p95_latency_ms=500,
+        max_p95_ttft_ms=150,
+        max_tpot_ms=25.0,
         max_capability_failure_rate=0.05,
     )
 
     assert repo.current_workload_revision(wl.id) == {
         "max_p95_latency_ms": 500,
+        "max_p95_ttft_ms": 150,
+        "max_tpot_ms": 25.0,
         "max_capability_failure_rate": 0.05,
         "max_cost_per_call_usd": None,
         "budget_cap_usd_daily": 5.0,
@@ -36,12 +40,16 @@ def test_set_workload_constraints_records_snapshots_and_keeps_live_row(tmp_path)
         project="p",
         budget_cap_usd_daily=2.0,
         max_p95_latency_ms=500,
+        max_p95_ttft_ms=200,
+        max_tpot_ms=40.0,
     )
 
     repo.set_workload_constraints(wl.id, max_cost_per_call_usd=0.01)
     repo.set_workload_constraints(
         wl.id,
         max_p95_latency_ms=250,
+        max_p95_ttft_ms=125,
+        max_tpot_ms=12.5,
         max_capability_failure_rate=0.1,
     )
 
@@ -49,6 +57,8 @@ def test_set_workload_constraints_records_snapshots_and_keeps_live_row(tmp_path)
     assert [row["revision"] for row in revisions] == [1, 2, 3]
     assert revisions[1]["config"] == {
         "max_p95_latency_ms": 500,
+        "max_p95_ttft_ms": 200,
+        "max_tpot_ms": 40.0,
         "max_capability_failure_rate": None,
         "max_cost_per_call_usd": 0.01,
         "budget_cap_usd_daily": 2.0,
@@ -57,6 +67,8 @@ def test_set_workload_constraints_records_snapshots_and_keeps_live_row(tmp_path)
     }
     assert revisions[2]["config"] == {
         "max_p95_latency_ms": 250,
+        "max_p95_ttft_ms": 125,
+        "max_tpot_ms": 12.5,
         "max_capability_failure_rate": 0.1,
         "max_cost_per_call_usd": 0.01,
         "budget_cap_usd_daily": 2.0,
@@ -68,6 +80,8 @@ def test_set_workload_constraints_records_snapshots_and_keeps_live_row(tmp_path)
     refreshed = repo.workload_by_name("w1", "p")
     assert refreshed is not None
     assert refreshed.max_p95_latency_ms == 250
+    assert refreshed.max_p95_ttft_ms == 125
+    assert refreshed.max_tpot_ms == 12.5
     assert refreshed.max_capability_failure_rate == 0.1
     assert refreshed.max_cost_per_call_usd == 0.01
 

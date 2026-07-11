@@ -110,6 +110,8 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
         name="serving-profile",
         project="repo-test",
         max_p95_latency_ms=200,
+        max_p95_ttft_ms=60,
+        max_tpot_ms=8.0,
     )
     ok_calls = [
         (100, 20, 11, 5, 2, 1),
@@ -186,6 +188,8 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
     assert row["total_tokens_per_second"] == pytest.approx(88_000 / 700)
     assert row["requests_per_second"] == pytest.approx(3_000 / 700)
     assert row["goodput_slo_latency_ms"] == 200
+    assert row["goodput_slo_ttft_ms"] == 60
+    assert row["goodput_slo_tpot_ms"] == 8.0
     assert row["goodput_calls"] == 2
     assert row["goodput_under_slo"] == pytest.approx(2 / 3)
     assert row["goodput_requests_per_second"] == pytest.approx(2_000 / 300)
