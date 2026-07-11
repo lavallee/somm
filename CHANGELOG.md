@@ -24,6 +24,13 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   native guided JSON generation while retaining validation and retry checks.
 - **Service load metrics**: `/api/status` now includes one-minute call,
   token, failure, and active workload/provider/model counters.
+- **Service proxy compatibility**: `/v1/messages` now supports Anthropic
+  `stream: true` SSE responses, and `/v1/chat/completions` adds an
+  OpenAI-compatible non-streaming chat gateway. Both paths use the same
+  workload budget gate, timeout, body limit, auth, and `calls.sqlite`
+  telemetry ledger.
+- **Spend read API**: `/api/spend/today` returns current UTC-day spend by
+  workload for the service project, including effective daily budget caps.
 
 ### Changed
 

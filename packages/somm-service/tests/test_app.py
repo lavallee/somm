@@ -95,6 +95,44 @@ def test_api_stats_empty(client):
     assert data["rows"] == []
 
 
+def test_api_spend_today_reports_current_project_rows(client):
+    c, cfg, app = client
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(
+        name="daily_spend",
+        project=cfg.project,
+        budget_cap_usd_daily=1.5,
+    )
+    repo.write_call(
+        Call(
+            id=str(uuid.uuid4()),
+            ts=datetime.now(UTC),
+            project=cfg.project,
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="fake",
+            model="m",
+            tokens_in=10,
+            tokens_out=5,
+            latency_ms=50,
+            cost_usd=0.25,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="p",
+            response_hash="r",
+        )
+    )
+
+    assert c.get("/api/spend/today").status_code == 403
+    r = c.get("/api/spend/today", headers=_auth_headers(app))
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "project": cfg.project,
+        "rows": [{"workload": "daily_spend", "spent_usd": 0.25, "cap_usd": 1.5}],
+    }
+
+
 def test_api_stats_includes_serving_profile(client):
     c, cfg, app = client
     repo = Repository(cfg.db_path)

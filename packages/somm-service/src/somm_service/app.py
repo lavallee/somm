@@ -9,14 +9,13 @@ HTTP surface:
   GET /api/sessions            JSON session/trace groups
   GET /api/version             JSON service + schema version
   GET /api/recommendations     JSON open recs
+  GET /api/spend/today         JSON spend by workload for current UTC day
   POST /api/recommendations/{id}/dismiss
   POST /api/recommendations/{id}/apply
   POST /api/otlp/v1/traces     Lenient OTLP JSON trace ingest
   POST /v1/traces              Alias for OTLP JSON trace ingest
   POST /v1/messages            Anthropic Messages-compatible LLM proxy
-                                (non-streaming v1; budget-gated; uses litellm
-                                as a library; streaming + /v1/chat/completions
-                                are explicit follow-ups)
+  POST /v1/chat/completions    OpenAI Chat Completions-compatible LLM proxy
 
 Design tokens + a11y spec applied inline (v0.1 ships
 tokens in-HTML; `packages/somm-service/web/tokens.css` lands when we extract).
@@ -60,7 +59,12 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from somm_service.http_limits import PayloadTooLarge, read_bounded_json
-from somm_service.proxy import _anthropic_error, messages_endpoint
+from somm_service.proxy import (
+    _anthropic_error,
+    _openai_error,
+    chat_completions_endpoint,
+    messages_endpoint,
+)
 
 _CSP = "default-src 'none'; style-src 'unsafe-inline'"
 _LOCAL_HEADER = "x-somm-local"
@@ -73,6 +77,7 @@ _READ_PROTECTED_PATHS = {
     "/api/sessions",
     "/api/version",
     "/api/recommendations",
+    "/api/spend/today",
 }
 
 
@@ -231,26 +236,50 @@ class LocalSecurityMiddleware:
         )
         protected_admin = method == "POST" and path.startswith("/api/recommendations/")
         protected_messages = method == "POST" and path == "/v1/messages"
+        protected_chat = method == "POST" and path == "/v1/chat/completions"
         protected_otlp = method == "POST" and path in (
             "/api/otlp/v1/traces",
             "/v1/traces",
         )
 
-        if protected_read or protected_admin or protected_messages or protected_otlp:
+        if (
+            protected_read
+            or protected_admin
+            or protected_messages
+            or protected_chat
+            or protected_otlp
+        ):
             if not self._is_authorized(headers):
-                response = self._forbidden(protected_messages)
+                response = self._forbidden(
+                    "anthropic" if protected_messages else "openai" if protected_chat else None
+                )
                 self._set_security_headers(response)
                 await response(scope, receive, send)
                 return
-            if (protected_messages or protected_otlp) and not self._is_json_request(headers):
-                response = _anthropic_error(
-                    error_type="invalid_request_error",
-                    message=f"POST {path} requires Content-Type: application/json",
-                    status=415,
-                ) if protected_messages else JSONResponse(
-                    {"ok": False, "error": f"POST {path} requires Content-Type: application/json"},
-                    status_code=415,
-                )
+            if (
+                (protected_messages or protected_chat or protected_otlp)
+                and not self._is_json_request(headers)
+            ):
+                if protected_messages:
+                    response = _anthropic_error(
+                        error_type="invalid_request_error",
+                        message=f"POST {path} requires Content-Type: application/json",
+                        status=415,
+                    )
+                elif protected_chat:
+                    response = _openai_error(
+                        error_type="invalid_request_error",
+                        message=f"POST {path} requires Content-Type: application/json",
+                        status=415,
+                    )
+                else:
+                    response = JSONResponse(
+                        {
+                            "ok": False,
+                            "error": f"POST {path} requires Content-Type: application/json",
+                        },
+                        status_code=415,
+                    )
                 self._set_security_headers(response)
                 await response(scope, receive, send)
                 return
@@ -291,13 +320,19 @@ class LocalSecurityMiddleware:
         return media_type == "application/json"
 
     @staticmethod
-    def _forbidden(anthropic_shape: bool) -> JSONResponse:
+    def _forbidden(error_shape: str | None) -> JSONResponse:
         message = (
             "authentication required: send Authorization: Bearer <token>, or for "
             "same-origin dashboard requests send X-Somm-Local: 1"
         )
-        if anthropic_shape:
+        if error_shape == "anthropic":
             return _anthropic_error(
+                error_type="authentication_error",
+                message=message,
+                status=403,
+            )
+        if error_shape == "openai":
+            return _openai_error(
                 error_type="authentication_error",
                 message=message,
                 status=403,
@@ -446,7 +481,7 @@ _HTML_SHELL = """<!DOCTYPE html>
 
 <footer>
     somm is self-hosted. Binds <code>localhost</code> only by default. Data stays on disk.
-    <br>Endpoints: <a href="/health">/health</a> · <a href="/api/status">/api/status</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/calls">/api/calls</a> · <a href="/api/sessions">/api/sessions</a>
+    <br>Endpoints: <a href="/health">/health</a> · <a href="/api/status">/api/status</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/calls">/api/calls</a> · <a href="/api/sessions">/api/sessions</a> · <a href="/api/spend/today">/api/spend/today</a>
   </footer>
 </body>
 </html>
@@ -1357,6 +1392,18 @@ async def _api_version(request: Request) -> JSONResponse:
     )
 
 
+async def _api_spend_today(request: Request) -> JSONResponse:
+    from somm.cli import spend_today
+
+    cfg: Config = request.app.state.config
+    rows = spend_today(
+        cfg.db_path,
+        cfg.project,
+        cfg.budget_default_cap_usd_daily,
+    )
+    return JSONResponse({"project": cfg.project, "rows": rows})
+
+
 def create_app(config: Config | None = None) -> Starlette:
     cfg = config or load_config()
     repo = Repository(cfg.db_path)
@@ -1372,11 +1419,13 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/api/sessions", _api_sessions),
             Route("/api/version", _api_version),
             Route("/api/recommendations", _api_recommendations),
+            Route("/api/spend/today", _api_spend_today),
             Route("/api/recommendations/{rec_id:int}/dismiss", _api_rec_dismiss, methods=["POST"]),
             Route("/api/recommendations/{rec_id:int}/apply", _api_rec_apply, methods=["POST"]),
             Route("/api/otlp/v1/traces", _api_otlp_traces, methods=["POST"]),
             Route("/v1/traces", _api_otlp_traces, methods=["POST"]),
             Route("/v1/messages", messages_endpoint, methods=["POST"]),
+            Route("/v1/chat/completions", chat_completions_endpoint, methods=["POST"]),
         ],
     )
     app.add_middleware(

@@ -376,6 +376,7 @@ GET /api/calls?window=7&q=gemma&limit=100
 GET /api/sessions?window=7
 GET /api/version
 GET /api/recommendations
+GET /api/spend/today
 ```
 
 `/api/stats`, `somm status --json`, and MCP `somm_stats` include serving
@@ -388,6 +389,19 @@ are set.
 `somm cache-advice` turns cache-read ratios into a small worklist for repeated
 prefix workloads. `somm bench latency` and `somm bench throughput` run normal
 instrumented calls and summarize latency, TTFT, TPOT, and token throughput.
+
+The service also exposes authenticated, budget-gated provider-compatible
+proxy routes for clients that need an HTTP base URL:
+
+```text
+POST /v1/messages            # Anthropic Messages, including stream:true SSE
+POST /v1/chat/completions    # OpenAI Chat Completions, non-streaming
+```
+
+Use `X-Somm-Workload` to bind calls to a pre-registered workload and
+`X-Somm-Project` when a service instance needs to write under a project other
+than its default. Calls share the same budget gate, timeout, body-size limit,
+cost accounting, and `calls.sqlite` ledger as `somm.llm()`.
 
 Polyglot apps can send OpenTelemetry JSON traces without importing the
 Python SDK:

@@ -57,8 +57,8 @@ refusal isn't a spend event.
    ```
 
 **Note.** This gate is shared between the `SommLLM` library path and
-the `somm-service` `/v1/messages` proxy — one ledger, one policy,
-regardless of which path a call comes through.
+the `somm-service` `/v1/messages` and `/v1/chat/completions` proxies —
+one ledger, one policy, regardless of which path a call comes through.
 
 **Related.**
 - [`SOMM_PROVIDERS_EXHAUSTED`](./SOMM_PROVIDERS_EXHAUSTED.md) — a
