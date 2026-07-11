@@ -13,6 +13,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   p50/p95/p99 latency, p50/p95/p99 TTFT, TPOT, output and total token
   throughput, and goodput against a workload's `max_p95_latency_ms` SLO.
 
+### Changed
+
+- CI now exposes the release-version gate as a standalone `release-gate` check
+  so branch rulesets can require the 0.x/1.0 guardrail directly.
+
 ## [0.12.0] — 2026-07-10
 
 ### Release status
