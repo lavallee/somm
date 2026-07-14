@@ -297,6 +297,21 @@ on every `calls` row) and/or **call observers** (an event dict after
 every call) — explicitly via `somm.hooks`, or automatically through the
 `somm.hooks` entry-point group. Hook failures never break the call path.
 
+Task and project runners can stamp one call without process-global setup:
+
+```python
+result = llm.generate(
+    prompt=task_prompt,
+    workload="delegated_task",
+    correlation_id=task_id,
+)
+```
+
+When a runner crosses a process or service boundary, catch `SommError` and
+serialize `somm.describe_error(error)`. The returned, versioned dictionary uses
+canonical `SOMM_*` codes plus retry metadata, so callers never need to parse
+tracebacks or provider-specific messages.
+
 ### MCP — talk to your telemetry from the agent's side
 
 `somm-mcp` ships **14 stdio tools** any MCP-capable agent can call:

@@ -69,6 +69,19 @@ def test_correlation_id_lands_in_calls_row(tmp_path):
     assert row[0] == "corr-123"
 
 
+def test_explicit_correlation_id_overrides_process_hook(tmp_path):
+    hooks.set_correlation_provider(lambda: "ambient")
+    events: list[dict] = []
+    hooks.add_call_observer(events.append)
+    llm = _make_llm(tmp_path)
+    llm.generate(prompt="hi", workload="w", correlation_id="job-42")
+    llm._writer.flush()
+    with llm.repo._open() as conn:
+        row = conn.execute("SELECT correlation_id FROM calls").fetchone()
+    assert row[0] == "job-42"
+    assert events[0]["correlation_id"] == "job-42"
+
+
 def test_no_provider_means_null_correlation(tmp_path):
     llm = _make_llm(tmp_path)
     llm.generate(prompt="hi", workload="w")

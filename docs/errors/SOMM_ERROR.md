@@ -18,12 +18,13 @@ seeing this exact code in a message, either:
 1. If you caught the base class, narrow the `except` to the concrete
    subclass to get the specific code and matching fix page:
    ```python
+   import somm
    from somm.errors import SommError, SommProviderError
 
    try:
        llm.generate(prompt, workload="my_workload")
    except SommError as e:
-       print(type(e).__name__, e.code)   # narrow from here
+       print(somm.describe_error(e))  # stable JSON-safe code + retry metadata
    ```
 
 2. If you're implementing a third-party provider or extension, give

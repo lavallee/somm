@@ -940,6 +940,7 @@ class SommLLM:
         wait: float | None = _WAIT_UNSET,
         session_id: str | None = None,
         parent_call_id: str | None = None,
+        correlation_id: str | None = None,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -970,6 +971,10 @@ class SommLLM:
         cooling down. Omit it to use ``SOMM_WAIT_ON_EXHAUSTED`` when set.
         Pass ``None`` or ``0`` to fail fast; pass positive seconds to wait up
         to that deadline before recording and raising final exhaustion.
+
+        ``correlation_id`` ties telemetry directly to an external task, job,
+        or request. It takes precedence over the process-wide correlation hook,
+        which remains useful for framework integrations.
         """
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
@@ -1329,7 +1334,11 @@ class SommLLM:
             # real content rather than an ignored arg.
             prompt_hash=stable_hash(messages if messages is not None else prompt_text),
             response_hash=stable_hash(text),
-            correlation_id=(correlation_id := hooks.current_correlation_id()),
+            correlation_id=(
+                effective_correlation_id := correlation_id
+                if correlation_id is not None
+                else hooks.current_correlation_id()
+            ),
             temperature=temperature,
             max_tokens=max_tokens,
             session_id=session_id,
@@ -1341,7 +1350,7 @@ class SommLLM:
         self._writer.submit(call)
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
         _fire_call_hooks(_call_event(
-            call_id=call_id, correlation_id=correlation_id,
+            call_id=call_id, correlation_id=effective_correlation_id,
             project=self.config.project, workload=workload,
             provider=actual_provider, model=actual_model,
             outcome=outcome.value, tokens_in=tokens_in, tokens_out=tokens_out,

@@ -8,6 +8,8 @@ exception carries a canonical SOMM_* code so error messages stay consistent
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class SommError(Exception):
     """Base for all somm exceptions."""
@@ -156,6 +158,36 @@ class SommStructuredError(SommError):
     """Strict structured-output generation failed after corrective retries."""
 
     code = "SOMM_STRUCTURED_OUTPUT_FAILED"
+
+
+def describe_error(error: SommError) -> dict[str, Any]:
+    """Return a stable, JSON-safe error description for external runners.
+
+    Exception class names are an implementation detail. Task runners and
+    service adapters should dispatch on the canonical ``code`` and can use the
+    retry metadata here without parsing a traceback or provider message.
+    """
+    retryable = isinstance(error, (SommTransientError, SommProvidersExhausted))
+    description: dict[str, Any] = {
+        "schema_version": 1,
+        "code": error.code,
+        "message": str(error),
+        "retryable": retryable,
+    }
+
+    retry_after_s = getattr(error, "retry_after_s", None)
+    if retry_after_s is None:
+        retry_after_s = getattr(error, "next_cool_in_s", None)
+    if retry_after_s is None and isinstance(error, SommTransientError):
+        retry_after_s = error.cooldown_s
+    if retry_after_s is not None:
+        description["retry_after_s"] = float(retry_after_s)
+
+    for field in ("model", "workload", "spent_usd", "cap_usd", "required", "skipped"):
+        value = getattr(error, field, None)
+        if value not in (None, "", [], ()):
+            description[field] = value
+    return description
 
 
 # Phrases providers use when the account is out of money/quota. Matched
