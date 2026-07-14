@@ -10,6 +10,7 @@ from somm.errors import (
     SommPrivacyViolation,
     SommProvidersExhausted,
     SommStrictMode,
+    describe_error,
 )
 
 _CORE_MODEL_EXPORTS = {"EmbedResult", "Outcome", "PrivacyClass", "SommResult"}
@@ -64,4 +65,5 @@ __all__ = [
     "SommPrivacyViolation",
     "SommProvidersExhausted",
     "SommStrictMode",
+    "describe_error",
 ]
