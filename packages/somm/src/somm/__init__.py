@@ -41,6 +41,8 @@ def __getattr__(name: str):
         return value
     if name == "hooks":
         return importlib.import_module("somm.hooks")
+    if name == "harnesses":
+        return importlib.import_module("somm.harnesses")
     if name == "provenance":
         from somm.provenance import provenance
 
@@ -52,6 +54,7 @@ __all__ = [
     "SommLLM",
     "llm",
     "hooks",
+    "harnesses",
     "provenance",
     "extract_json",
     "EmbedResult",

@@ -7,7 +7,25 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-14
+
+### Release status
+
+- `0.14.0` remains beta/pre-1.0. The new harness API is public but may still
+  evolve as additional task runners adopt it.
+
 ### Added
+
+- **Reusable coding-agent harness API**: `somm.harnesses` executes one Claude
+  Code, Codex, or OpenCode workspace attempt through a provider-neutral
+  request, handle, capability, result, and outcome contract. It supports
+  asynchronous outer supervision, synchronous one-shot execution, native
+  session resume, safe-by-default permissions, JSON event normalization,
+  final-text extraction, usage capture, and correlation IDs.
+- **Explicit runner boundary**: harness execution remains independent of job
+  queues, retries, watchdog policy, worktrees, verification, releases, and
+  escalation, allowing Fab and other project runners to depend on Somm without
+  introducing a reverse dependency.
 
 - **Named key profiles** (`somm-core`): set `key_profile` in `[tool.somm]`
   (or `SOMM_KEY_PROFILE`) and provider keys resolve from

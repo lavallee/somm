@@ -289,6 +289,30 @@ LangGraph, and `deepagents` apps get telemetry, routing, and model
 memory without changing agent-framework call sites — including
 `bind_tools()`. See [`packages/somm-langchain`](./packages/somm-langchain).
 
+### Autonomous coding-agent harnesses
+
+Somm also provides a neutral one-attempt execution API for Claude Code,
+Codex, and OpenCode. It normalizes invocation, streamed native events,
+session/resume IDs, final text, usage, and termination reasons without taking
+over a task runner's queue or retry policy:
+
+```python
+from somm import harnesses
+from somm.harnesses import HarnessRequest
+
+result = harnesses.run("codex", HarnessRequest(
+    prompt="Fix the failing tests",
+    cwd="~/src/my-project",
+    capture_dir="./runs/task-42",
+    correlation_id="task-42",
+), timeout=1800)
+print(result.outcome, result.final_text)
+```
+
+Use `harnesses.start()` plus `harnesses.inspect()` when a scheduler needs to
+own watchdogs and cancellation. Permission bypass is explicit and off by
+default. See [`docs/agent-harnesses.md`](./docs/agent-harnesses.md).
+
 ### Extension hooks
 
 External tools can observe somm without somm knowing about them:
@@ -595,7 +619,8 @@ Six packages:
 - **`somm-core`** — schema, migrations, repository, config, parse
   helpers (incl. multimodal content-block + capability helpers)
 - **`somm`** — `SommLLM`, providers, routing, streaming, embeddings,
-  tool calling, sommelier, compat shims, hooks, CLI
+  tool calling, one-attempt coding-agent harnesses, sommelier, compat shims,
+  hooks, CLI
 - **`somm-service`** — starlette web admin + HTTP API + scheduler + 3 workers
 - **`somm-mcp`** — stdio MCP server with 14 tools
 - **`somm-langchain`** — `SommChatModel` adapter for LangChain/LangGraph/deepagents
@@ -615,6 +640,7 @@ your own process with `SOMM_INPROCESS_WORKERS=1`.
 - 🗺️ [**ROADMAP.md**](./ROADMAP.md) — what's next, what's deferred, what's not planned
 - 📜 [**CHANGELOG.md**](./CHANGELOG.md) — release log
 - 🔧 [**Tool calling**](./docs/tool-calling.md) — neutral schema + per-provider adapters
+- 🤖 [**Coding-agent harnesses**](./docs/agent-harnesses.md) — one-attempt Claude, Codex, and OpenCode execution
 - [**Plugins and hooks**](./docs/plugins.md) — hook phases, reference plugins, and provider entry points
 - 🖼️ [**Multimodal prompts**](./docs/multimodal.md) — image blocks +
   capability-aware routing
@@ -642,7 +668,7 @@ internal names or personal paths.
 
 ## Status
 
-**v0.13.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
+**v0.14.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
 the public API, MCP tools, service contracts, and migration semantics are not
 yet declared stable. See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

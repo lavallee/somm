@@ -6,7 +6,9 @@ The main library: `SommLLM` — one call wraps telemetry, provider routing
 across ten providers, tool calling, streaming, embeddings, multimodal
 dispatch, cost tracking, budget gates, online evaluation, durable eval
 gates, prompt optimization proposals, experiment campaigns, and
-cross-project model memory (the sommelier). Zero-config, privacy-first,
+cross-project model memory (the sommelier). It also exposes a neutral
+one-attempt harness API for Claude Code, Codex, and OpenCode so task runners
+do not reimplement CLI and event-stream adapters. Zero-config, privacy-first,
 no phone-home.
 
 ```python
@@ -15,6 +17,18 @@ import somm
 llm = somm.llm(project="my_app")
 result = llm.generate(prompt="Reply with exactly: pong", workload="ping")
 print(result.text, result.provider, result.cost_usd)
+```
+
+```python
+from somm import harnesses
+from somm.harnesses import HarnessRequest
+
+result = harnesses.run("codex", HarnessRequest(
+    prompt="Fix the failing tests",
+    cwd="~/src/my-project",
+    capture_dir="./runs/task-1",
+))
+print(result.outcome, result.final_text)
 ```
 
 Full documentation, design docs, and examples live in the
