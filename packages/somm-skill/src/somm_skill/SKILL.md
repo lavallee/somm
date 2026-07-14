@@ -18,6 +18,7 @@ Trigger when you are about to:
 - Refactor an existing LLM wrapper in the project.
 - Choose between models or providers.
 - Tune a prompt.
+- Launch Claude Code, Codex, or OpenCode as an autonomous workspace agent.
 
 ## Rules
 
@@ -174,7 +175,32 @@ processes — no dedicated service needed. Alternatively run `somm serve`.
 somm warns at startup when grading is configured but no worker has ever
 run.
 
-### 9. NEVER ship these patterns
+### 9. Use `somm.harnesses` for autonomous coding-agent attempts
+
+Do not confuse a subscription-seat provider call with a coding-agent run.
+`llm.generate(provider="claude-cli")` is intentionally an isolated,
+single-shot text generator. When the task needs repository access, tools, or
+native session resume, use the harness API:
+
+```python
+from somm import harnesses
+from somm.harnesses import HarnessRequest
+
+result = harnesses.run("codex", HarnessRequest(
+    prompt="Implement the accepted change",
+    cwd=repo,
+    capture_dir=run_dir,
+    correlation_id=task_id,
+), timeout=1800)
+```
+
+Schedulers that own cancellation or inactivity checks should use
+`harnesses.start()` and `harnesses.inspect()`. Keep `allow_unsafe=False`
+unless the caller has explicitly authorized and isolated the workspace. Somm
+executes one attempt; queues, retries, failover, verification, and releases
+belong to the outer task runner.
+
+### 10. NEVER ship these patterns
 
 These are guardrails, not style preferences — DO NOT weaken or remove them.
 
