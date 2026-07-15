@@ -29,6 +29,11 @@ isn't earning its keep.
   it is an agent that watches telemetry, sources current model intel, and
   proposes better routing — with one-command apply. Recommendation → apply is
   the compounding flywheel.
+- **Model and harness are one observed treatment.** For agentic work, raw model
+  identity is not enough: permission translation, context management, event
+  handling, and resume behavior change the result. Somm provides a portable
+  one-attempt contract across supported harnesses and learns from the pair,
+  while outer runners retain durable workflow policy.
 
 ## Non-goals
 
@@ -40,11 +45,17 @@ isn't earning its keep.
   behind a feature flag. Sovereignty-first.
 - A hosted multi-tenant SaaS. The bet is one developer, many projects — not a
   team platform. Postgres is an optional extra, not a pivot.
+- A durable job runner or software-factory control plane. Somm does not own
+  queues, cross-attempt retry, worktrees, verification, release, approval, or
+  project intent; Fab and George do.
 
 ## Engine map
 
 - **library** (`somm`) — the one-line drop-in: ten providers, tool calling,
   streaming, embeddings, retries/fallbacks, local telemetry capture.
+- **harnesses** (`somm.harnesses`) — one provider-neutral coding-agent attempt:
+  executable discovery, arguments and permissions, native-event normalization,
+  session identity, final output, usage, and portable termination.
 - **sommelier** — the ranking brain: cross-project model memory, prior-decision
   recall, shadow-eval + intel signals → a recommended model with reasons.
 - **service** (`somm-service`) — scheduled workers (intel refresh, graders) +
