@@ -29,6 +29,7 @@ sessions.txt
 # Author-local notes not for open source
 notes/
 .claude/
+.codex/skills/
 
 # Editor
 .vscode/

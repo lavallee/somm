@@ -43,6 +43,60 @@ Cross-cutting 1.0 work shipped the hot-path/import performance budget,
 the threat-model doc, CI supply-chain checks, the one-shot
 `somm generate` CLI, and the installable `somm-skill` package.
 
+## After 0.14 — make the harness substrate portable and learnable
+
+The reusable Claude/Codex/OpenCode harness layer is shipped. The next arc is to
+make one attempt dependable for every outer runner without pulling Fab's
+persistent supervision into Somm.
+
+### Attempt receipt conformance
+
+Define and fixture the fields every supported harness must return: actual
+provider/model/harness and versions, session id, ordered normalized events,
+final output, usage, artifacts exposed by the harness, and portable termination
+reason. Preserve the raw native coordinate for debugging, but never require a
+caller to parse provider-specific streams.
+
+- **Graduation:** the same conformance suite passes for Claude, Codex, and
+  OpenCode, with unavailable fields explicit rather than guessed.
+- **Boundary:** retry policy, liveness, worktrees, verification, repair,
+  release, and human escalation remain in Fab or another outer runner.
+
+### Capability and permission profiles
+
+Expose what each harness can actually do — resume, structured events, usage,
+mid-run input, permission modes, and artifact references — as a versioned
+capability record. Translate one caller intent into native flags and report the
+profile actually granted.
+
+- **Graduation:** callers can make a deterministic admission decision without
+  harness-name conditionals.
+- **Safety:** a missing or unknown permission mapping fails closed; it never
+  silently widens access.
+
+### Model + harness outcome memory
+
+Record harness identity and version beside model, workload, permission profile,
+tool count, termination, cost, and caller-supplied outcome correlation. Let the
+sommelier compare model/harness pairs only when the workload and outer policy
+are sufficiently comparable.
+
+- **Graduation:** at least one recommendation changes because observed harness
+  fit beats a model-only prior, with the supporting calls visible.
+- **Non-claim:** a Fab retry/repair success is not automatically an attempt
+  quality win; caller outcomes remain separately typed.
+
+### Event-envelope stability
+
+Version the normalized event envelope and publish additive-change rules so Fab
+and other runners can upgrade independently. Keep the minimal stable event set
+small; native detail stays in an opaque payload or raw artifact.
+
+- **Graduation:** an older consumer can read a newer additive receipt, and
+  golden fixtures catch semantic drift in termination and usage.
+- **Rejection:** no Somm-owned workflow graph, approval queue, verifier, or
+  operator dashboard grows out of this envelope.
+
 ## Recommendation quality
 
 ### Cross-provider model-id canonicalization
