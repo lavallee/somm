@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import builtins
 import time
+import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from somm import hooks
@@ -88,6 +91,100 @@ def _tmp_config(tmp_path: Path) -> Config:
 
 def _llm(tmp_path: Path, provider: FakeProvider) -> SommLLM:
     return SommLLM(config=_tmp_config(tmp_path), providers=[provider], on_error=lambda _: None)
+
+
+def _install_fake_otel(monkeypatch):
+    state = SimpleNamespace(providers=[], exporters=[], processors=[])
+
+    class FakeStatusCode:
+        ERROR = "error"
+
+    class FakeStatus:
+        def __init__(self, code):
+            self.code = code
+
+    class FakeSpan:
+        def __init__(self, name):
+            self.name = name
+            self.attributes = {}
+            self.status = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeTracer:
+        def __init__(self):
+            self.spans = []
+
+        def start_as_current_span(self, name):
+            span = FakeSpan(name)
+            self.spans.append(span)
+            return span
+
+    class FakeTracerProvider:
+        def __init__(self, *, shutdown_on_exit=True):
+            self.shutdown_on_exit = shutdown_on_exit
+            self.tracer = FakeTracer()
+            self.processors = []
+            self.force_flush_calls = 0
+            self.shutdown_calls = 0
+            state.providers.append(self)
+
+        def add_span_processor(self, processor):
+            self.processors.append(processor)
+
+        def get_tracer(self, _name):
+            return self.tracer
+
+        def force_flush(self):
+            self.force_flush_calls += 1
+            return True
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    class FakeExporter:
+        def __init__(self, *, endpoint):
+            self.endpoint = endpoint
+            self.shutdown_calls = 0
+            state.exporters.append(self)
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    class FakeBatchSpanProcessor:
+        def __init__(self, exporter):
+            self.exporter = exporter
+            self.shutdown_calls = 0
+            state.processors.append(self)
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    fallback_tracer = FakeTracer()
+    trace_api = SimpleNamespace(get_tracer=lambda _name: fallback_tracer)
+    monkeypatch.setattr(
+        otel_exporter,
+        "_load_trace_api",
+        lambda: (trace_api, FakeStatus, FakeStatusCode),
+    )
+    monkeypatch.setattr(
+        otel_exporter,
+        "_load_otlp_components",
+        lambda: (FakeTracerProvider, FakeExporter, FakeBatchSpanProcessor),
+    )
+    state.provider_cls = FakeTracerProvider
+    state.fallback_tracer = fallback_tracer
+    return state
 
 
 def test_cache_wrap_populates_and_proxy_hit_skips_provider(tmp_path):
@@ -280,6 +377,138 @@ def test_notifier_network_failure_is_swallowed(monkeypatch, caplog):
     hooks.shutdown_hooks(wait=True)
 
     assert "somm notifier webhook failed" in caplog.text
+
+
+def test_otel_exporter_entry_point_and_extra_are_packaged():
+    package_config = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert package_config["project"]["entry-points"]["somm.plugins"] == {
+        "otel_exporter": "somm.plugins.otel_exporter:register_from_env"
+    }
+    assert "opentelemetry-exporter-otlp-proto-http>=1.20" in (
+        package_config["project"]["optional-dependencies"]["otel"]
+    )
+
+
+def test_otel_register_from_env_unset_is_dependency_and_thread_free(monkeypatch):
+    monkeypatch.delenv("SOMM_OTEL_ENDPOINT", raising=False)
+    before_hooks = hooks.registered_hooks()
+    before_executor = hooks._post_process_executor
+
+    def unexpected_import():
+        raise AssertionError("unset endpoint must not load OpenTelemetry")
+
+    monkeypatch.setattr(otel_exporter, "_load_trace_api", unexpected_import)
+    monkeypatch.setattr(otel_exporter, "_load_otlp_components", unexpected_import)
+
+    otel_exporter.register_from_env()
+
+    assert hooks.registered_hooks() == before_hooks
+    assert hooks._post_process_executor is before_executor
+    assert otel_exporter._owned_tracer_provider is None
+
+
+def test_otel_register_from_env_constructs_provider_and_emits_genai_span(monkeypatch):
+    endpoint = "https://collector.example.test/custom/traces"
+    monkeypatch.setenv("SOMM_OTEL_ENDPOINT", endpoint)
+    state = _install_fake_otel(monkeypatch)
+
+    otel_exporter.register_from_env()
+    hooks.fire_post_process(
+        {
+            "call_id": "c-env",
+            "project": "proj",
+            "workload": "configured",
+            "provider": "openai",
+            "model": "gpt-test",
+            "outcome": "ok",
+            "tokens_in": 13,
+            "tokens_out": 5,
+            "cost_usd": 0.025,
+        }
+    )
+    hooks.shutdown_hooks(wait=True)
+
+    assert len(state.providers) == 1
+    assert state.providers[0].shutdown_on_exit is False
+    assert state.providers[0].processors == [state.processors[0]]
+    assert state.processors[0].exporter is state.exporters[0]
+    assert state.exporters[0].endpoint == endpoint
+    assert len(state.providers[0].tracer.spans) == 1
+    span = state.providers[0].tracer.spans[0]
+    assert span.name == "llm configured"
+    assert span.attributes["gen_ai.system"] == "openai"
+    assert span.attributes["gen_ai.request.model"] == "gpt-test"
+    assert span.attributes["gen_ai.response.model"] == "gpt-test"
+    assert span.attributes["gen_ai.usage.input_tokens"] == 13
+    assert span.attributes["gen_ai.usage.output_tokens"] == 5
+    assert span.attributes["somm.call_id"] == "c-env"
+
+
+def test_otel_register_from_env_is_idempotent_and_cleans_up_owned_provider(monkeypatch):
+    monkeypatch.setenv("SOMM_OTEL_ENDPOINT", "https://collector.example.test/v1/traces")
+    state = _install_fake_otel(monkeypatch)
+
+    otel_exporter.register_from_env()
+    otel_exporter.register_from_env()
+
+    active = [
+        name
+        for name, _priority in hooks.registered_hooks()[hooks.POST_PROCESS]
+        if name.endswith("otel_exporter._post_process")
+    ]
+    assert len(state.providers) == 1
+    assert len(state.exporters) == 1
+    assert len(state.processors) == 1
+    assert len(active) == 1
+
+    provider = state.providers[0]
+    otel_exporter.unregister()
+    otel_exporter.unregister()
+
+    assert provider.force_flush_calls == 1
+    assert provider.shutdown_calls == 1
+    assert hooks.registered_hooks()[hooks.POST_PROCESS] == []
+
+
+def test_otel_manual_registration_cycles_do_not_close_caller_provider(monkeypatch):
+    state = _install_fake_otel(monkeypatch)
+    provider = state.provider_cls()
+
+    otel_exporter.register(tracer_provider=provider)
+    otel_exporter.register(tracer_provider=provider)
+    assert len(hooks.registered_hooks()[hooks.POST_PROCESS]) == 1
+
+    otel_exporter.unregister()
+    otel_exporter.unregister()
+    assert provider.force_flush_calls == 0
+    assert provider.shutdown_calls == 0
+
+    otel_exporter.register(tracer_provider=provider)
+    assert len(hooks.registered_hooks()[hooks.POST_PROCESS]) == 1
+    otel_exporter.unregister()
+    assert provider.force_flush_calls == 0
+    assert provider.shutdown_calls == 0
+
+
+def test_otel_register_from_env_reports_missing_optional_dependencies(monkeypatch):
+    monkeypatch.setenv("SOMM_OTEL_ENDPOINT", "https://collector.example.test/v1/traces")
+    real_import = builtins.__import__
+
+    def without_opentelemetry(name, *args, **kwargs):
+        if name == "opentelemetry" or name.startswith("opentelemetry."):
+            raise ImportError("simulated missing OpenTelemetry")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_opentelemetry)
+
+    with pytest.raises(ImportError, match=r"pip install somm\[otel\]"):
+        otel_exporter.register_from_env()
+
+    assert hooks.registered_hooks()[hooks.POST_PROCESS] == []
+    assert otel_exporter._owned_tracer_provider is None
 
 
 def test_otel_exporter_emits_span():

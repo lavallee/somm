@@ -21,13 +21,20 @@ dependencies = [
 [project.optional-dependencies]
 litellm = ["litellm>=1.50"]
 tokenizers = ["tiktoken>=0.7"]
-otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+otel = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
 pydantic = ["pydantic>=2"]
 jsonschema = ["jsonschema>=4"]
 postgres = ["psycopg[binary]>=3.2"]
 
 [project.scripts]
 somm = "somm.cli:main"
+
+[project.entry-points."somm.plugins"]
+otel_exporter = "somm.plugins.otel_exporter:register_from_env"
 
 [project.urls]
 Homepage = "https://github.com/lavallee/somm"
