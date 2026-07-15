@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import atexit
+import contextlib
+import os
+import threading
 from typing import Any
 
 from somm import hooks
@@ -10,6 +14,41 @@ _registered = False
 _tracer: Any = None
 _status_cls: Any = None
 _status_code_cls: Any = None
+_owned_tracer_provider: Any = None
+_lifecycle_lock = threading.RLock()
+
+
+def _load_trace_api() -> tuple[Any, Any, Any]:
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider  # noqa: F401
+        from opentelemetry.trace import Status, StatusCode
+    except ImportError as exc:
+        raise ImportError(
+            "OpenTelemetry support requires: pip install somm[otel]"
+        ) from exc
+    return trace, Status, StatusCode
+
+
+def _load_otlp_components() -> tuple[Any, Any, Any]:
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError as exc:
+        raise ImportError(
+            "OTLP HTTP export requires: pip install somm[otel]"
+        ) from exc
+    return TracerProvider, OTLPSpanExporter, BatchSpanProcessor
+
+
+def _flush_and_shutdown(provider: Any) -> None:
+    with contextlib.suppress(Exception):
+        provider.force_flush()
+    with contextlib.suppress(Exception):
+        provider.shutdown()
 
 
 def _post_process(event: dict[str, Any]) -> None:
@@ -47,28 +86,104 @@ def register(tracer_provider=None) -> None:
             ``pip install somm[otel]``.
     """
     global _registered, _tracer, _status_cls, _status_code_cls
-    try:
-        from opentelemetry import trace
-        from opentelemetry.sdk.trace import TracerProvider  # noqa: F401
-        from opentelemetry.trace import Status, StatusCode
-    except ImportError as exc:
-        raise ImportError("OpenTelemetry support requires: pip install somm[otel]") from exc
+    global _owned_tracer_provider
 
-    _status_cls = Status
-    _status_code_cls = StatusCode
+    trace, status_cls, status_code_cls = _load_trace_api()
     provider = tracer_provider
-    _tracer = (
+    tracer = (
         provider.get_tracer("somm.plugins.otel_exporter")
         if provider is not None
         else trace.get_tracer("somm.plugins.otel_exporter")
     )
-    if not _registered:
-        hooks.register_hook(hooks.POST_PROCESS, _post_process)
+
+    owned_provider = None
+    with _lifecycle_lock:
+        if _owned_tracer_provider is not None and provider is not _owned_tracer_provider:
+            owned_provider = _owned_tracer_provider
+            _owned_tracer_provider = None
+        _status_cls = status_cls
+        _status_code_cls = status_code_cls
+        _tracer = tracer
+        if not _registered:
+            hooks.register_hook(hooks.POST_PROCESS, _post_process)
+            _registered = True
+
+    if owned_provider is not None:
+        _flush_and_shutdown(owned_provider)
+
+
+def register_from_env() -> None:
+    """Configure OTLP HTTP/protobuf span export from ``SOMM_OTEL_ENDPOINT``.
+
+    ``SOMM_OTEL_ENDPOINT`` is the full traces endpoint. When it is absent or
+    empty, this function is a no-op and does not import the optional
+    OpenTelemetry dependencies, register a hook, or start a batch processor.
+    """
+    global _registered, _tracer, _status_cls, _status_code_cls
+    global _owned_tracer_provider
+
+    endpoint = os.environ.get("SOMM_OTEL_ENDPOINT")
+    if not endpoint:
+        return
+
+    with _lifecycle_lock:
+        if _registered:
+            return
+
+        _trace, status_cls, status_code_cls = _load_trace_api()
+        tracer_provider_cls, exporter_cls, processor_cls = _load_otlp_components()
+        provider = None
+        exporter = None
+        processor = None
+        processor_attached = False
+        try:
+            provider = tracer_provider_cls(shutdown_on_exit=False)
+            exporter = exporter_cls(endpoint=endpoint)
+            processor = processor_cls(exporter)
+            provider.add_span_processor(processor)
+            processor_attached = True
+            tracer = provider.get_tracer("somm.plugins.otel_exporter")
+            hooks.register_hook(hooks.POST_PROCESS, _post_process)
+        except Exception:
+            if provider is not None:
+                _flush_and_shutdown(provider)
+            if processor is not None and not processor_attached:
+                with contextlib.suppress(Exception):
+                    processor.shutdown()
+            elif exporter is not None and processor is None:
+                with contextlib.suppress(Exception):
+                    exporter.shutdown()
+            raise
+
+        _status_cls = status_cls
+        _status_code_cls = status_code_cls
+        _tracer = tracer
+        _owned_tracer_provider = provider
         _registered = True
 
 
 def unregister() -> None:
-    """Remove the OpenTelemetry hook."""
-    global _registered
-    hooks.unregister_hook(hooks.POST_PROCESS, _post_process)
-    _registered = False
+    """Remove the hook and close only a plugin-owned tracer provider."""
+    global _registered, _tracer, _status_cls, _status_code_cls
+    global _owned_tracer_provider
+
+    with _lifecycle_lock:
+        hooks.unregister_hook(hooks.POST_PROCESS, _post_process)
+        provider = _owned_tracer_provider
+        _owned_tracer_provider = None
+        _registered = False
+        _tracer = None
+        _status_cls = None
+        _status_code_cls = None
+
+    if provider is not None:
+        _flush_and_shutdown(provider)
+
+
+def _shutdown_at_exit() -> None:
+    if _owned_tracer_provider is not None:
+        hooks.shutdown_hooks(wait=True)
+    unregister()
+
+
+atexit.register(_shutdown_at_exit)

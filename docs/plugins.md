@@ -161,8 +161,47 @@ The reference plugins live in `packages/somm/src/somm/plugins/`.
   Enable with `somm.plugins.notifier.register(webhook_url="https://...")`.
 - `otel_exporter` (`somm.plugins.otel_exporter`): OpenTelemetry spans for
   completed calls. It runs in `post_process`.
-  Install with `pip install somm[otel]`, then enable with
-  `somm.plugins.otel_exporter.register()`.
+  Install with `pip install somm[otel]`.
+
+### OpenTelemetry export
+
+Set `SOMM_OTEL_ENDPOINT` to the full OTLP HTTP/protobuf traces endpoint before
+constructing the first `SommLLM`:
+
+```bash
+export SOMM_OTEL_ENDPOINT="https://collector.example.com/v1/traces"
+```
+
+Somm's built-in `somm.plugins` entry point then creates an SDK
+`TracerProvider`, an OTLP HTTP/protobuf span exporter, and a
+`BatchSpanProcessor`. Completed calls become `gen_ai` spans through the same
+`post_process` hook used by manual registration. The endpoint is used exactly
+as configured; Somm does not append `/v1/traces`.
+
+When `SOMM_OTEL_ENDPOINT` is unset or empty, entry-point activation is a no-op:
+no hook is registered, no optional OpenTelemetry module is imported, and no
+batch-processing thread is started. This preserves Somm's default behavior and
+dependency footprint.
+
+Applications that already manage a tracer provider can register it directly:
+
+```python
+from somm import hooks
+from somm.plugins import otel_exporter
+
+otel_exporter.register(tracer_provider=application_tracer_provider)
+```
+
+`register()` remains idempotent and never takes ownership of a caller-supplied
+provider. `otel_exporter.unregister()` is safe to call repeatedly. It removes
+the hook and flushes and shuts down the provider only when Somm created that
+provider from `SOMM_OTEL_ENDPOINT`; caller-supplied providers retain their
+application-managed lifecycle. At interpreter shutdown, Somm drains queued
+`post_process` work before applying the same cleanup to an environment-created
+provider. For an explicit orderly shutdown, call
+`hooks.shutdown_hooks(wait=True)` before `otel_exporter.unregister()`. If
+switching configurations in a long-running process, call `unregister()` before
+setting a new endpoint and registering again.
 
 Inspect the local catalog with:
 

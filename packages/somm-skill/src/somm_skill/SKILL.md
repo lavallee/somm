@@ -200,6 +200,14 @@ unless the caller has explicitly authorized and isolated the workspace. Somm
 executes one attempt; queues, retries, failover, verification, and releases
 belong to the outer task runner.
 
+To export completed-call spans, install `somm[otel]` and set
+`SOMM_OTEL_ENDPOINT` to the collector's full OTLP HTTP/protobuf traces endpoint
+(including `/v1/traces` when the collector requires it). Leave it unset to keep
+OpenTelemetry hooks and background processors disabled. Applications that
+already own an SDK tracer provider should instead call
+`somm.plugins.otel_exporter.register(tracer_provider=provider)` and retain
+responsibility for that provider's shutdown.
+
 ### 10. NEVER ship these patterns
 
 These are guardrails, not style preferences — DO NOT weaken or remove them.

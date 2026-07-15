@@ -7,6 +7,15 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added
+
+- **Endpoint-driven OTLP HTTP export**: installing `somm[otel]` and setting
+  `SOMM_OTEL_ENDPOINT` to a full traces endpoint now activates the existing
+  GenAI `post_process` span hook through Somm's plugin entry point. An unset
+  endpoint remains a dependency- and thread-free no-op, while plugin-owned
+  providers are flushed and shut down without taking ownership of manually
+  supplied tracer providers.
+
 ## [0.14.0] — 2026-07-14
 
 ### Release status
