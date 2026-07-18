@@ -27,6 +27,12 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   providers are flushed and shut down without taking ownership of manually
   supplied tracer providers.
 
+### Fixed
+
+- Load the new outcome-custody exports lazily so importing `somm` remains
+  within its startup budget, and require MCP 1.28.1 or newer to exclude known
+  vulnerabilities in older releases.
+
 ## [0.14.0] — 2026-07-14
 
 ### Release status

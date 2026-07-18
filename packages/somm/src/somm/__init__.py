@@ -12,14 +12,13 @@ from somm.errors import (
     SommStrictMode,
     describe_error,
 )
-from somm.outcome_evidence import (
-    OutcomeEvidenceAssessment,
-    OutcomeEvidenceState,
-    assess_outcome_snapshot,
-)
-from somm.procedure_outcomes import record_procedure_outcome
 
 _CORE_MODEL_EXPORTS = {"EmbedResult", "Outcome", "PrivacyClass", "SommResult"}
+_OUTCOME_EVIDENCE_EXPORTS = {
+    "OutcomeEvidenceAssessment",
+    "OutcomeEvidenceState",
+    "assess_outcome_snapshot",
+}
 
 
 def llm(*args, **kwargs):
@@ -45,6 +44,16 @@ def __getattr__(name: str):
         value = getattr(module, name)
         globals()[name] = value
         return value
+    if name in _OUTCOME_EVIDENCE_EXPORTS:
+        module = importlib.import_module("somm.outcome_evidence")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name == "record_procedure_outcome":
+        from somm.procedure_outcomes import record_procedure_outcome
+
+        globals()[name] = record_procedure_outcome
+        return record_procedure_outcome
     if name == "hooks":
         return importlib.import_module("somm.hooks")
     if name == "harnesses":
