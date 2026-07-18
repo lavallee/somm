@@ -34,6 +34,7 @@ def _stream(*events: dict) -> str:
 def test_registry_and_unknown_harness() -> None:
     assert harnesses.get("codex") is harnesses.get("codex-cli")
     assert harnesses.get("claude-cli").capabilities.max_turns is True
+    assert harnesses.get("codex").capabilities.reasoning_effort is True
     assert harnesses.get("opencode").capabilities.agent_selection is True
     with pytest.raises(ValueError, match="unknown harness"):
         harnesses.get("missing")
@@ -55,13 +56,16 @@ def test_claude_argv_and_result(tmp_path: Path) -> None:
     request = _request(
         tmp_path,
         model="sonnet",
+        reasoning_effort="high",
         max_turns=20,
         session_id="sess-1",
         correlation_id="job-1",
+        executable="/opt/claude",
     )
     argv = adapter.build_argv(request)
-    assert argv[:3] == ["claude", "-p", "do it"]
+    assert argv[:3] == ["/opt/claude", "-p", "do it"]
     assert argv[argv.index("--model") + 1] == "sonnet"
+    assert argv[argv.index("--effort") + 1] == "high"
     assert argv[argv.index("--max-turns") + 1] == "20"
     assert argv[argv.index("--resume") + 1] == "sess-1"
     assert "--permission-mode" in argv
@@ -99,11 +103,18 @@ def test_claude_max_turns_and_real_rate_limit(tmp_path: Path) -> None:
 
 def test_codex_argv_resume_and_result(tmp_path: Path) -> None:
     adapter = harnesses.get("codex")
-    request = _request(tmp_path, model="gpt-5.4", session_id="thread-1")
+    request = _request(
+        tmp_path,
+        model="gpt-5.6",
+        reasoning_effort="high",
+        session_id="thread-1",
+        executable="/opt/codex",
+    )
     argv = adapter.build_argv(request)
-    assert argv[:3] == ["codex", "exec", "resume"]
+    assert argv[:3] == ["/opt/codex", "exec", "resume"]
     assert argv[-2:] == ["thread-1", "do it"]
     assert "--dangerously-bypass-approvals-and-sandbox" in argv
+    assert argv[argv.index("--config") + 1] == 'model_reasoning_effort="high"'
 
     stdout = _write(tmp_path, "stdout", _stream(
         {"type": "thread.started", "thread_id": "thread-1"},

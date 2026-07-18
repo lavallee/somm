@@ -16,6 +16,7 @@ request = HarnessRequest(
     cwd=Path("~/src/my-project").expanduser(),
     capture_dir=Path("./run-001"),
     model=None,                    # let the harness choose its default
+    reasoning_effort=None,         # e.g. "medium" or "high" when supported
     allow_unsafe=False,            # permission bypass is always explicit
     correlation_id="task-001",
 )
@@ -45,11 +46,11 @@ result = harnesses.inspect(
 
 ## Stable names and capabilities
 
-| Name | Executable | Resume | Turn limit | Agent selection |
-|---|---|---:|---:|---:|
-| `claude-cli` | `claude` | yes | yes | no |
-| `codex` (`codex-cli` alias) | `codex` | yes | no | no |
-| `opencode` | `opencode` | yes | no | yes |
+| Name | Executable | Resume | Turn limit | Agent selection | Reasoning effort |
+|---|---|---:|---:|---:|---:|
+| `claude-cli` | `claude` | yes | yes | no | yes |
+| `codex` (`codex-cli` alias) | `codex` | yes | no | no | yes |
+| `opencode` | `opencode` | yes | no | yes | no |
 
 Use `harnesses.available()` for installed canonical names and
 `harnesses.get(name).capabilities` before relying on an optional feature.
@@ -88,6 +89,10 @@ other project runners without making Somm depend on any of them.
 `allow_unsafe=False` is the default. When true, adapters translate the request
 to each CLI's explicit permission-bypass flag. Only an outer runner that has
 already established workspace isolation and authorization should enable it.
+
+`executable=` can pin a specific CLI path when PATH is not authoritative (for
+example, when a maintained per-user installation should win over an older
+system binary).
 
 `extra=` passes harness-specific arguments through unchanged. Treat it as an
 escape hatch; portable integrations should prefer typed request fields and

@@ -25,7 +25,7 @@ class OpenCodeHarness:
         return shutil.which("opencode") is not None
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
-        argv = ["opencode", "run", "--format", "json"]
+        argv = [request.resolved_executable("opencode"), "run", "--format", "json"]
         if request.allow_unsafe:
             argv.append("--dangerously-skip-permissions")
         if request.model:

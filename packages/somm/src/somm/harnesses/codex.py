@@ -20,13 +20,13 @@ from .base import (
 
 class CodexHarness:
     name = "codex"
-    capabilities = HarnessCapabilities(resume=True)
+    capabilities = HarnessCapabilities(resume=True, reasoning_effort=True)
 
     def is_available(self) -> bool:
         return shutil.which("codex") is not None
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
-        argv = ["codex", "exec"]
+        argv = [request.resolved_executable("codex"), "exec"]
         if request.session_id:
             argv.append("resume")
         argv.append("--json")
@@ -35,6 +35,11 @@ class CodexHarness:
         argv.append("--skip-git-repo-check")
         if request.model:
             argv.extend(["--model", request.model])
+        if request.reasoning_effort:
+            argv.extend([
+                "--config",
+                f"model_reasoning_effort={json.dumps(request.reasoning_effort)}",
+            ])
         argv.extend(str(arg) for arg in request.extra)
         if request.session_id:
             argv.append(request.session_id)
