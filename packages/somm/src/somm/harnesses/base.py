@@ -59,6 +59,7 @@ class HarnessRequest:
     allow_unsafe: bool = False
     correlation_id: str | None = None
     executable: str | Path | None = None
+    prompt_via_stdin: bool = False
 
     def resolved_cwd(self) -> str:
         path = Path(self.cwd).expanduser()
@@ -133,7 +134,11 @@ class AgentHarness(Protocol):
 
 
 def launch_process(
-    argv: list[str], request: HarnessRequest, *, env: dict[str, str] | None = None
+    argv: list[str],
+    request: HarnessRequest,
+    *,
+    env: dict[str, str] | None = None,
+    stdin_data: str | bytes | None = None,
 ) -> HarnessHandle:
     """Launch an adapter command with durable stdout/stderr captures."""
 
@@ -149,9 +154,13 @@ def launch_process(
             cwd=request.resolved_cwd(),
             stdout=stdout_fh,
             stderr=stderr_fh,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             env=env,
         )
+        if stdin_data is not None and proc.stdin is not None:
+            payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
+            proc.stdin.write(payload)
+            proc.stdin.close()
     except Exception:
         stdout_fh.close()
         stderr_fh.close()

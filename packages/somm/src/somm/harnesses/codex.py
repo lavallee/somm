@@ -43,11 +43,15 @@ class CodexHarness:
         argv.extend(str(arg) for arg in request.extra)
         if request.session_id:
             argv.append(request.session_id)
-        argv.append(request.prompt)
+        argv.append("-" if request.prompt_via_stdin else request.prompt)
         return argv
 
     def start(self, request: HarnessRequest):
-        return launch_process(self.build_argv(request), request)
+        return launch_process(
+            self.build_argv(request),
+            request,
+            stdin_data=request.prompt if request.prompt_via_stdin else None,
+        )
 
     @staticmethod
     def parse_terminal(path: Path) -> dict | None:

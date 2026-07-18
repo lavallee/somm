@@ -17,6 +17,7 @@ request = HarnessRequest(
     capture_dir=Path("./run-001"),
     model=None,                    # let the harness choose its default
     reasoning_effort=None,         # e.g. "medium" or "high" when supported
+    prompt_via_stdin=False,        # use for large Codex evidence packets
     allow_unsafe=False,            # permission bypass is always explicit
     correlation_id="task-001",
 )
@@ -93,6 +94,9 @@ already established workspace isolation and authorization should enable it.
 `executable=` can pin a specific CLI path when PATH is not authoritative (for
 example, when a maintained per-user installation should win over an older
 system binary).
+
+`prompt_via_stdin=True` keeps large prompts out of the process argument list.
+The Codex adapter translates it to `codex exec -` and writes the prompt to stdin.
 
 `extra=` passes harness-specific arguments through unchanged. Treat it as an
 escape hatch; portable integrations should prefer typed request fields and

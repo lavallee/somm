@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from somm import harnesses
 from somm.harnesses import HarnessOutcome, HarnessRequest
+from somm.harnesses import codex as codex_module
 
 
 def _request(tmp_path: Path, **overrides) -> HarnessRequest:
@@ -129,6 +130,34 @@ def test_codex_argv_resume_and_result(tmp_path: Path) -> None:
     assert result.final_text == "Shipped."
     assert result.session_id == "thread-1"
     assert result.usage["input_tokens"] == 11
+
+
+def test_codex_argv_can_read_prompt_from_stdin(tmp_path: Path) -> None:
+    adapter = harnesses.get("codex")
+    request = _request(tmp_path, prompt="a large evidence packet", prompt_via_stdin=True)
+
+    argv = adapter.build_argv(request)
+
+    assert argv[-1] == "-"
+    assert "a large evidence packet" not in argv
+
+
+def test_codex_start_passes_prompt_as_stdin(tmp_path: Path, monkeypatch) -> None:
+    adapter = harnesses.get("codex")
+    request = _request(tmp_path, prompt="large packet", prompt_via_stdin=True)
+    seen = {}
+
+    def fake_launch(argv, req, *, stdin_data=None):
+        seen.update(argv=argv, request=req, stdin_data=stdin_data)
+        return object()
+
+    monkeypatch.setattr(codex_module, "launch_process", fake_launch)
+
+    adapter.start(request)
+
+    assert seen["argv"][-1] == "-"
+    assert seen["request"] is request
+    assert seen["stdin_data"] == "large packet"
 
 
 def test_codex_failed_event_normalizes_auth(tmp_path: Path) -> None:
