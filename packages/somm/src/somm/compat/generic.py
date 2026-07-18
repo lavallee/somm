@@ -79,6 +79,7 @@ class GenericLLMCompat:
         workload: str | None = None,
         temperature: float = 0.2,
         model: str | None = None,
+        correlation_id: str | None = None,
     ) -> LegacyLLMResult:
         """Same signature as most legacy wrappers. Returns LegacyLLMResult."""
         r = self._llm.generate(
@@ -89,6 +90,7 @@ class GenericLLMCompat:
             temperature=temperature,
             model=model,
             provider=provider,
+            correlation_id=correlation_id,
         )
         return LegacyLLMResult(
             text=r.text,
