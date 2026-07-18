@@ -20,7 +20,13 @@ def _cfg(tmp_path: Path, project: str = "spend-test") -> Config:
     return cfg
 
 
-def _call(project: str, workload_id: str | None, cost_usd: float) -> Call:
+def _call(
+    project: str,
+    workload_id: str | None,
+    cost_usd: float,
+    *,
+    budget_eligible: bool = True,
+) -> Call:
     return Call(
         id=str(uuid.uuid4()),
         ts=datetime.now(UTC),
@@ -37,6 +43,7 @@ def _call(project: str, workload_id: str | None, cost_usd: float) -> Call:
         error_kind=None,
         prompt_hash="a",
         response_hash="b",
+        budget_eligible=budget_eligible,
     )
 
 
@@ -48,12 +55,8 @@ def test_spend_today_sums_per_workload(tmp_path):
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
 
-    wl1 = repo.register_workload(
-        name="summarize", project=cfg.project, budget_cap_usd_daily=1.00
-    )
-    wl2 = repo.register_workload(
-        name="classify", project=cfg.project, budget_cap_usd_daily=0.50
-    )
+    wl1 = repo.register_workload(name="summarize", project=cfg.project, budget_cap_usd_daily=1.00)
+    wl2 = repo.register_workload(name="classify", project=cfg.project, budget_cap_usd_daily=0.50)
 
     repo.write_call(_call(cfg.project, wl1.id, 0.10))
     repo.write_call(_call(cfg.project, wl1.id, 0.05))
@@ -72,6 +75,18 @@ def test_spend_today_sums_per_workload(tmp_path):
 
     # sorted by spent_usd desc → classify ($0.20) before summarize ($0.15)
     assert rows[0]["workload"] == "classify"
+
+
+def test_spend_today_excludes_foreign_imports(tmp_path):
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="native", project=cfg.project)
+    repo.write_call(_call(cfg.project, wl.id, 0.25))
+    repo.write_call(_call(cfg.project, wl.id, 999.0, budget_eligible=False))
+
+    rows = spend_today(cfg.db_path, cfg.project, default_cap=None)
+
+    assert rows == [{"workload": "native", "spent_usd": 0.25, "cap_usd": None}]
 
 
 def test_spend_today_default_cap_fallback(tmp_path):
@@ -141,9 +156,7 @@ def test_cmd_spend_prints_table(tmp_path, capsys, monkeypatch):
     cfg = _cfg(tmp_path, "spend-table")
     repo = Repository(cfg.db_path)
 
-    wl = repo.register_workload(
-        name="my-task", project=cfg.project, budget_cap_usd_daily=1.00
-    )
+    wl = repo.register_workload(name="my-task", project=cfg.project, budget_cap_usd_daily=1.00)
     repo.write_call(_call(cfg.project, wl.id, 0.25))
 
     monkeypatch.chdir(tmp_path)
@@ -210,9 +223,7 @@ def test_cmd_spend_json_output_shape(tmp_path, capsys, monkeypatch):
     cfg = _cfg(tmp_path, "spend-json-shape")
     repo = Repository(cfg.db_path)
 
-    wl = repo.register_workload(
-        name="summarize", project=cfg.project, budget_cap_usd_daily=1.00
-    )
+    wl = repo.register_workload(name="summarize", project=cfg.project, budget_cap_usd_daily=1.00)
     repo.write_call(_call(cfg.project, wl.id, 0.25))
 
     monkeypatch.chdir(tmp_path)

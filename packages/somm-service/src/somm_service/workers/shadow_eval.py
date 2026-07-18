@@ -33,6 +33,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from uuid import NAMESPACE_URL, uuid5
 
 from somm_core.graders import (
     build_binary_judge_prompt,
@@ -40,6 +41,9 @@ from somm_core.graders import (
     normalize_binary_criteria,
     parse_binary_judge_response,
 )
+from somm_core.models import Call, Outcome
+from somm_core.parse import stable_hash
+from somm_core.pricing import cost_for_call
 
 if TYPE_CHECKING:
     from somm.providers.base import SommProvider
@@ -80,7 +84,6 @@ class EvalOutcome:
     judge_score: float | None
     gold_response_hash: str | None
     judge_reason: dict | None = None
-    extra_cost_usd: float = 0.0
     notes: list[str] = field(default_factory=list)
 
 
@@ -143,16 +146,17 @@ class ShadowEvalWorker:
                 # the per-run batch, deterministically ordered.
                 sampled = _deterministic_sample(calls, 1.0, cfg.max_grades_per_run)
                 for call_row in sampled:
-                    if not self._claim_lease(call_row["call_id"]):
+                    eval_result_id = self._claim_lease(call_row["call_id"])
+                    if eval_result_id is None:
                         continue
                     try:
-                        outcome = self._grade_call(call_row, cfg)
+                        outcome = self._grade_call(call_row, cfg, eval_result_id)
                     except Exception as e:
                         _log.warning("shadow: grade failed for %s: %s", call_row["call_id"], e)
                         summary["errors"].append(f"{call_row['call_id']}: {e}")
                         self._release_lease(call_row["call_id"])
                         continue
-                    self._write_result(call_row, cfg, outcome)
+                    self._write_result(call_row, cfg, outcome, eval_result_id)
                     summary["calls_graded"] += 1
                     spent = self._shadow_spent_today(workload_id)
                     if spent >= cfg.budget_usd_daily:
@@ -199,24 +203,13 @@ class ShadowEvalWorker:
     def _shadow_spent_today(self, workload_id: str) -> float:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         with self.repo._open() as conn:
-            # Shadow costs are recorded as the gold-model call's cost on the
-            # source call's cost_usd? No — shadow calls land as new rows with
-            # workload_id = <some shadow tag>. Simpler: track cost in the
-            # eval_results row directly via a column? For v0.3b, approximate:
-            # cost of gold call = (tokens_in + tokens_out) * price / 1M —
-            # but we store it inline on eval_results as judge_score's sibling
-            # would be awkward. Cleanest: add a shadow_calls tag to the cost
-            # column in a D3b+1 patch. For now, compute from tokens we stored
-            # on the eval_result itself via the notes field.
             row = conn.execute(
                 """
-                SELECT COALESCE(SUM(
-                    json_extract(notes.value, '$.cost_usd')
-                ), 0)
-                FROM eval_results er, json_each(COALESCE(er.judge_reason, '[]')) notes
-                WHERE er.call_id IN (
-                    SELECT id FROM calls WHERE workload_id = ? AND date(ts) = ?
-                )
+                SELECT COALESCE(SUM(cost_usd), 0)
+                FROM calls
+                WHERE workload_id = ? AND date(ts) = ?
+                  AND observation_role IN ('shadow_gold', 'shadow_judge')
+                  AND budget_eligible != 0
                 """,
                 (workload_id, today),
             ).fetchone()
@@ -228,8 +221,8 @@ class ShadowEvalWorker:
     # ------------------------------------------------------------------
     # Lease + write
 
-    def _claim_lease(self, call_id: str) -> bool:
-        """Atomic lease acquisition. Returns True if acquired."""
+    def _claim_lease(self, call_id: str) -> int | None:
+        """Atomic lease acquisition. Returns its eval-result id when acquired."""
         now = datetime.now(UTC)
         stale_before = now - timedelta(seconds=self.lease_window_s)
         with self.repo._open() as conn:
@@ -241,23 +234,31 @@ class ShadowEvalWorker:
             if existing:
                 eval_id, started_at, judge = existing
                 if judge is not None:
-                    return False  # already graded
+                    return None  # already graded
+                if (
+                    started_at is None
+                    and conn.execute(
+                        "SELECT gold_model != 'pending' FROM eval_results WHERE id = ?",
+                        (eval_id,),
+                    ).fetchone()[0]
+                ):
+                    return None
                 # existing in-flight — check lease
                 started = _parse_ts(started_at) if started_at else None
                 if started and started > stale_before:
-                    return False
+                    return None
                 conn.execute(
                     "UPDATE eval_results SET grading_started_at = ? WHERE id = ?",
                     (now.isoformat(), eval_id),
                 )
-                return True
+                return int(eval_id)
             # No existing row — insert a lease placeholder
             conn.execute(
                 "INSERT INTO eval_results (call_id, gold_model, grading_started_at) "
                 "VALUES (?, ?, ?)",
                 (call_id, "pending", now.isoformat()),
             )
-        return True
+            return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
     def _release_lease(self, call_id: str) -> None:
         """Delete the lease placeholder outright.
@@ -288,20 +289,30 @@ class ShadowEvalWorker:
             )
             return cur.rowcount
 
-    def _write_result(self, call_row: dict, cfg: ShadowConfig, outcome: EvalOutcome) -> None:
-        # Repurpose judge_reason as a JSON array with per-signal metadata; the
-        # `cost_usd` used for budget accounting lives inside it. Not beautiful
-        # but avoids another migration for v0.3b.
-        notes = [
-            {
-                "cost_usd": _latest_cost(self.repo, call_row["call_id"], cfg)
-                + outcome.extra_cost_usd
-            }
-        ]
+    def _write_result(
+        self,
+        call_row: dict,
+        cfg: ShadowConfig,
+        outcome: EvalOutcome,
+        eval_result_id: int,
+    ) -> None:
+        # judge_reason remains a display projection. Monetary truth lives in
+        # the linked shadow_gold/shadow_judge Call rows and is merely summed
+        # here for compatibility with older consumers.
+        with self.repo._open() as conn:
+            auxiliary_cost = float(
+                conn.execute(
+                    "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
+                    "WHERE eval_result_id = ? AND observation_role "
+                    "IN ('shadow_gold', 'shadow_judge')",
+                    (eval_result_id,),
+                ).fetchone()[0]
+                or 0.0
+            )
+        notes = [{"cost_usd": auxiliary_cost, "cost_projection": "linked_calls"}]
         notes.extend({"note": n} for n in outcome.notes)
         if outcome.judge_reason is not None:
             notes.append({"judge": outcome.judge_reason})
-        eval_result_id = None
         with self.repo._open() as conn:
             conn.execute(
                 """
@@ -314,7 +325,7 @@ class ShadowEvalWorker:
                     judge_reason = ?,
                     grading_started_at = NULL,
                     ts = CURRENT_TIMESTAMP
-                WHERE call_id = ?
+                WHERE id = ? AND call_id = ?
                 """,
                 (
                     cfg.gold_model,
@@ -323,14 +334,10 @@ class ShadowEvalWorker:
                     outcome.text_similarity_score,  # embedding_score column reused
                     outcome.judge_score,
                     json.dumps(notes),
+                    eval_result_id,
                     call_row["call_id"],
                 ),
             )
-            row = conn.execute(
-                "SELECT id FROM eval_results WHERE call_id = ?",
-                (call_row["call_id"],),
-            ).fetchone()
-            eval_result_id = int(row[0]) if row else None
         if eval_result_id is not None:
             score = (
                 outcome.judge_score
@@ -361,7 +368,7 @@ class ShadowEvalWorker:
     # ------------------------------------------------------------------
     # Grading
 
-    def _grade_call(self, call_row: dict, cfg: ShadowConfig) -> EvalOutcome:
+    def _grade_call(self, call_row: dict, cfg: ShadowConfig, eval_result_id: int) -> EvalOutcome:
         from somm.providers.base import SommRequest
 
         # Fetch the original prompt body + response text — we stored hashes,
@@ -387,25 +394,48 @@ class ShadowEvalWorker:
                 gold_response_hash=None,
                 notes=[f"gold_provider {cfg.gold_provider!r} not configured"],
             )
-        gold = provider.generate(
-            SommRequest(prompt=prompt, model=cfg.gold_model, temperature=0.0, max_tokens=1024)
+        gold_request = SommRequest(
+            prompt=prompt, model=cfg.gold_model, temperature=0.0, max_tokens=1024
+        )
+        try:
+            gold = provider.generate(gold_request)
+        except Exception as exc:
+            self._record_auxiliary_call(
+                call_row=call_row,
+                eval_result_id=eval_result_id,
+                role="shadow_gold",
+                index=0,
+                provider=cfg.gold_provider,
+                model=cfg.gold_model,
+                prompt=prompt,
+                error=exc,
+            )
+            raise
+        gold_call = self._record_auxiliary_call(
+            call_row=call_row,
+            eval_result_id=eval_result_id,
+            role="shadow_gold",
+            index=0,
+            provider=cfg.gold_provider,
+            model=cfg.gold_model,
+            prompt=prompt,
+            response=gold,
         )
         gold_text = gold.text
 
         scores = grade_response_pair(response, gold_text, judge=cfg.judge)
         judge_score = scores.judge_score
         judge_reason = None
-        judge_cost_usd = 0.0
         judge_notes: list[str] = []
         if cfg.judge:
-            judge_score, judge_reason, judge_cost_usd, judge_notes = self._run_judge(
+            judge_score, judge_reason, judge_notes = self._run_judge(
                 original_prompt=prompt,
                 production_text=response,
                 gold_text=gold_text,
                 judge_cfg=cfg.judge,
+                call_row=call_row,
+                eval_result_id=eval_result_id,
             )
-
-        from somm_core.parse import stable_hash
 
         return EvalOutcome(
             call_id=call_row["call_id"],
@@ -414,8 +444,8 @@ class ShadowEvalWorker:
             judge_score=judge_score,
             gold_response_hash=stable_hash(gold_text),
             judge_reason=judge_reason,
-            extra_cost_usd=judge_cost_usd,
             notes=[
+                f"gold_call_id={gold_call.id}",
                 f"gold_tokens_in={gold.tokens_in}",
                 f"gold_tokens_out={gold.tokens_out}",
                 *scores.notes,
@@ -440,15 +470,16 @@ class ShadowEvalWorker:
         production_text: str,
         gold_text: str,
         judge_cfg: dict,
-    ) -> tuple[float | None, dict | None, float, list[str]]:
+        call_row: dict,
+        eval_result_id: int,
+    ) -> tuple[float | None, dict | None, list[str]]:
         from somm.providers.base import SommRequest
-        from somm_core.pricing import cost_for_call
 
         try:
             criteria = normalize_binary_criteria(judge_cfg.get("criteria"))
             specs = _judge_specs(judge_cfg)
         except ValueError as exc:
-            return None, {"error": str(exc)}, 0.0, [f"judge_config_error={exc}"]
+            return None, {"error": str(exc)}, [f"judge_config_error={exc}"]
 
         prompt = build_binary_judge_prompt(
             original_prompt=original_prompt,
@@ -457,9 +488,8 @@ class ShadowEvalWorker:
             criteria=criteria,
         )
         receipts: list[dict[str, Any]] = []
-        cost_usd = 0.0
         notes: list[str] = []
-        for spec in specs:
+        for index, spec in enumerate(specs):
             provider_name = spec.get("provider")
             model = spec.get("model")
             if not provider_name or not model:
@@ -481,19 +511,25 @@ class ShadowEvalWorker:
                         prompt=prompt,
                         model=str(model),
                         temperature=0.0,
-                        max_tokens=int(spec.get("max_tokens") or judge_cfg.get("max_tokens") or 512),
+                        max_tokens=int(
+                            spec.get("max_tokens") or judge_cfg.get("max_tokens") or 512
+                        ),
                     )
                 )
-                parsed = parse_binary_judge_response(response.text, criteria)
-                cost_usd += cost_for_call(
-                    self.repo,
-                    str(provider_name),
-                    str(model),
-                    response.tokens_in,
-                    response.tokens_out,
+                judge_call = self._record_auxiliary_call(
+                    call_row=call_row,
+                    eval_result_id=eval_result_id,
+                    role="shadow_judge",
+                    index=index,
+                    provider=str(provider_name),
+                    model=str(model),
+                    prompt=prompt,
+                    response=response,
                 )
+                parsed = parse_binary_judge_response(response.text, criteria)
                 receipts.append(
                     {
+                        "call_id": judge_call.id,
                         "provider": provider_name,
                         "model": model,
                         "tokens_in": response.tokens_in,
@@ -502,9 +538,20 @@ class ShadowEvalWorker:
                     }
                 )
             except Exception as exc:  # noqa: BLE001 — a judge failure should not drop base grades
+                judge_call = self._record_auxiliary_call(
+                    call_row=call_row,
+                    eval_result_id=eval_result_id,
+                    role="shadow_judge",
+                    index=index,
+                    provider=str(provider_name),
+                    model=str(model),
+                    prompt=prompt,
+                    error=exc,
+                )
                 notes.append(f"judge_error={type(exc).__name__}: {exc}")
                 receipts.append(
                     {
+                        "call_id": judge_call.id,
                         "provider": provider_name,
                         "model": model,
                         "error": f"{type(exc).__name__}: {exc}",
@@ -513,12 +560,105 @@ class ShadowEvalWorker:
 
         usable = [r for r in receipts if isinstance(r.get("result"), dict)]
         if not usable:
-            return None, {"criteria": [c.name for c in criteria], "judges": receipts}, cost_usd, notes
+            return None, {"criteria": [c.name for c in criteria], "judges": receipts}, notes
 
         aggregate = _aggregate_judge_votes(criteria, usable)
         aggregate["mode"] = "panel" if len(usable) > 1 else "single"
         aggregate["judges"] = receipts
-        return float(aggregate["score"]), aggregate, cost_usd, notes
+        return float(aggregate["score"]), aggregate, notes
+
+    def _record_auxiliary_call(
+        self,
+        *,
+        call_row: dict,
+        eval_result_id: int,
+        role: str,
+        index: int,
+        provider: str,
+        model: str,
+        prompt: str,
+        response=None,
+        error: Exception | None = None,
+    ) -> Call:
+        """Persist one actual gold/judge request as an idempotent Call row."""
+        call_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                ":".join(
+                    (
+                        "somm-shadow",
+                        call_row["call_id"],
+                        str(eval_result_id),
+                        role,
+                        str(index),
+                        provider,
+                        model,
+                    )
+                ),
+            )
+        )
+        existing = self.repo.get_call(call_id)
+        if existing is not None:
+            return existing
+
+        raw = response.raw if response is not None else None
+        request_id, billing_id = _provider_custody(raw)
+        actual_model = str(response.model) if response is not None else model
+        tokens_in = int(response.tokens_in) if response is not None else 0
+        tokens_out = int(response.tokens_out) if response is not None else 0
+        reported_cost = _reported_cost(raw)
+        if reported_cost is None:
+            cost_usd = cost_for_call(self.repo, provider, actual_model, tokens_in, tokens_out)
+            cost_basis = "computed"
+            cost_accuracy = "estimated"
+            cost_source = "somm:model_intel"
+        else:
+            cost_usd = reported_cost
+            cost_basis = "reported"
+            cost_accuracy = "actual"
+            cost_source = f"{provider}:response"
+        call = Call(
+            id=call_id,
+            ts=datetime.now(UTC),
+            project=call_row["project"],
+            workload_id=call_row["workload_id"],
+            prompt_id=None,
+            provider=provider,
+            model=actual_model,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            latency_ms=int(response.latency_ms) if response is not None else 0,
+            cost_usd=cost_usd,
+            outcome=Outcome.OK if error is None else Outcome.UPSTREAM_ERROR,
+            error_kind=type(error).__name__ if error is not None else None,
+            error_detail=str(error) if error is not None else None,
+            prompt_hash=stable_hash(prompt),
+            response_hash=(
+                stable_hash(response.text)
+                if response is not None
+                else stable_hash(
+                    {
+                        "error_kind": type(error).__name__ if error is not None else "unknown",
+                        "error_detail": str(error) if error is not None else "",
+                    }
+                )
+            ),
+            parent_call_id=call_row["call_id"],
+            cost_basis=cost_basis,
+            cost_kind=_cost_kind(provider),
+            cost_accuracy=cost_accuracy,
+            cost_source=cost_source,
+            pricing_version=_pricing_version(self.repo, provider, actual_model),
+            observation_role=role,
+            source_call_id=call_row["call_id"],
+            eval_result_id=eval_result_id,
+            provider_request_id=request_id,
+            billing_id=billing_id,
+            origin="native",
+            budget_eligible=True,
+        )
+        self.repo.write_call(call)
+        return call
 
 
 # ---------------------------------------------------------------------------
@@ -628,16 +768,62 @@ def _parse_ts(raw: str | None) -> datetime | None:
         return None
 
 
-def _latest_cost(repo: Repository, call_id: str, cfg: ShadowConfig) -> float:
-    """Estimate cost of this shadow call from model_intel + the original call's tokens."""
-    from somm_core.pricing import cost_for_call
+def _provider_custody(raw: dict | None) -> tuple[str | None, str | None]:
+    if not isinstance(raw, dict):
+        return None, None
+    request_id = next(
+        (
+            str(raw[key])
+            for key in ("request_id", "requestId", "response_id", "id")
+            if raw.get(key) not in (None, "")
+        ),
+        None,
+    )
+    billing_id = next(
+        (
+            str(raw[key])
+            for key in ("billing_id", "billingId", "invoice_id")
+            if raw.get(key) not in (None, "")
+        ),
+        None,
+    )
+    return request_id, billing_id
 
+
+def _reported_cost(raw: dict | None) -> float | None:
+    if not isinstance(raw, dict):
+        return None
+    values = [raw.get("cost_usd"), raw.get("cost")]
+    usage = raw.get("usage")
+    if isinstance(usage, dict):
+        values.extend((usage.get("cost_usd"), usage.get("cost")))
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _pricing_version(repo: Repository, provider: str, model: str) -> str | None:
     with repo._open() as conn:
         row = conn.execute(
-            "SELECT tokens_in, tokens_out FROM calls WHERE id = ?",
-            (call_id,),
+            "SELECT source, last_seen FROM model_intel WHERE provider = ? AND model = ?",
+            (provider, model),
         ).fetchone()
     if not row:
-        return 0.0
-    tokens_in, tokens_out = row[0] or 0, row[1] or 0
-    return cost_for_call(repo, cfg.gold_provider, cfg.gold_model, tokens_in, tokens_out)
+        return None
+    return f"{row[0]}@{row[1]}"
+
+
+def _cost_kind(provider: str) -> str:
+    """Classify computed value using the same plan semantics as pacing."""
+    try:
+        from somm_core.plans import load_plans, plan_for
+
+        mode = plan_for(provider, load_plans()).mode
+    except Exception:
+        mode = "payg"
+    return "notional" if mode == "metered" else "marginal"

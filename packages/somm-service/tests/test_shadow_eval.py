@@ -87,6 +87,7 @@ class _GoldProvider:
             tokens_in=15,
             tokens_out=8,
             latency_ms=10,
+            raw={"id": "gold-request-1"},
         )
 
     def stream(self, request):  # pragma: no cover
@@ -122,6 +123,10 @@ class _JudgeProvider:
             tokens_in=12,
             tokens_out=6,
             latency_ms=10,
+            raw={
+                "request_id": f"{self.name}-request-1",
+                "billing_id": f"{self.name}-billing-1",
+            },
         )
 
     def stream(self, request):  # pragma: no cover
@@ -232,6 +237,103 @@ def test_shadow_judge_scores_binary_rubric(tmp_path):
     assert len(receipts) == 1
     assert receipts[0].payload["judge"]["mode"] == "single"
     assert receipts[0].score == 0.5
+
+
+def test_shadow_requests_are_first_class_exact_once_calls(tmp_path):
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload(name="accounted_shadow", project=cfg.project)
+    repo.set_shadow_config(
+        wl.id,
+        {
+            "gold_provider": "gold",
+            "gold_model": "gold-m",
+            "sample_rate": 1.0,
+            "budget_usd_daily": 5.0,
+            "judge": {
+                "provider": "judge",
+                "model": "judge-m",
+                "criteria": ["correctness", "completeness"],
+            },
+        },
+    )
+    write_intel(repo, "gold", "gold-m", 1.0, 4.0, None, None, "test")
+    write_intel(repo, "judge", "judge-m", 1.0, 1.0, None, None, "test")
+    source_call_id = _insert_call(
+        repo, wl.id, cfg.project, prompt_body="prompt", response_body="candidate"
+    )
+    worker = ShadowEvalWorker(repo, providers=[_GoldProvider("gold"), _JudgeProvider()])
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first["calls_graded"] == 1
+    assert second["calls_graded"] == 0
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT id, observation_role, source_call_id, eval_result_id, "
+            "parent_call_id, provider_request_id, billing_id, cost_usd, "
+            "cost_basis, cost_accuracy, origin, budget_eligible "
+            "FROM calls ORDER BY observation_role"
+        ).fetchall()
+        eval_id, reason_json = conn.execute(
+            "SELECT id, judge_reason FROM eval_results WHERE call_id = ?",
+            (source_call_id,),
+        ).fetchone()
+    assert len(rows) == 3
+    by_role = {row[1]: row for row in rows}
+    assert set(by_role) == {"production", "shadow_gold", "shadow_judge"}
+
+    gold = by_role["shadow_gold"]
+    judge = by_role["shadow_judge"]
+    for row in (gold, judge):
+        assert row[2] == source_call_id
+        assert row[3] == eval_id
+        assert row[4] == source_call_id
+        assert row[8:10] == ("computed", "estimated")
+        assert row[10:12] == ("native", 1)
+    assert gold[5:7] == ("gold-request-1", None)
+    assert judge[5:7] == ("judge-request-1", "judge-billing-1")
+    assert gold[7] == pytest.approx((15 * 1.0 + 8 * 4.0) / 1_000_000)
+    assert judge[7] == pytest.approx((12 * 1.0 + 6 * 1.0) / 1_000_000)
+    projected = json.loads(reason_json)[0]
+    assert projected["cost_projection"] == "linked_calls"
+    assert projected["cost_usd"] == pytest.approx(gold[7] + judge[7])
+
+
+def test_shadow_preserves_provider_reported_cost(tmp_path):
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload(name="reported_shadow", project=cfg.project)
+    repo.set_shadow_config(
+        wl.id,
+        {
+            "gold_provider": "reported-gold",
+            "gold_model": "reported-m",
+            "sample_rate": 1.0,
+            "budget_usd_daily": 5.0,
+        },
+    )
+    _insert_call(repo, wl.id, cfg.project, "prompt", "response")
+
+    class _ReportedGold(_GoldProvider):
+        name = "reported-gold"
+
+        def generate(self, request):
+            response = super().generate(request)
+            response.model = "reported-m"
+            response.raw = {
+                "id": "reported-request-1",
+                "cost_usd": 0.0123,
+            }
+            return response
+
+    ShadowEvalWorker(repo, providers=[_ReportedGold()]).run_once()
+
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT cost_usd, cost_basis, cost_accuracy, cost_source "
+            "FROM calls WHERE observation_role = 'shadow_gold'"
+        ).fetchone()
+    assert row == (0.0123, "reported", "actual", "reported-gold:response")
 
 
 def test_shadow_judge_panel_majority_vote(tmp_path):
@@ -480,16 +582,33 @@ def test_failed_grade_releases_candidate_back_to_pool(tmp_path):
     wl = repo.register_workload(name="retryable", project=cfg.project)
     repo.set_shadow_config(
         wl.id,
-        {"gold_provider": "gold", "gold_model": "gold-m",
-         "sample_rate": 1.0, "budget_usd_daily": 5.0},
+        {
+            "gold_provider": "gold",
+            "gold_model": "gold-m",
+            "sample_rate": 1.0,
+            "budget_usd_daily": 5.0,
+        },
     )
     call_id = str(uuid.uuid4())
-    repo.write_call(Call(
-        id=call_id, ts=datetime.now(UTC), project=cfg.project,
-        workload_id=wl.id, prompt_id=None, provider="ollama", model="m",
-        tokens_in=10, tokens_out=5, latency_ms=50, cost_usd=0.0,
-        outcome=Outcome.OK, error_kind=None, prompt_hash="a", response_hash="b",
-    ))
+    repo.write_call(
+        Call(
+            id=call_id,
+            ts=datetime.now(UTC),
+            project=cfg.project,
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="ollama",
+            model="m",
+            tokens_in=10,
+            tokens_out=5,
+            latency_ms=50,
+            cost_usd=0.0,
+            outcome=Outcome.OK,
+            error_kind=None,
+            prompt_hash="a",
+            response_hash="b",
+        )
+    )
     repo.write_sample(call_id, "the prompt", "the response")
 
     class _FailingGold:
@@ -504,9 +623,21 @@ def test_failed_grade_releases_candidate_back_to_pool(tmp_path):
     assert summary["errors"]
     with repo._open() as conn:
         n = conn.execute("SELECT COUNT(*) FROM eval_results").fetchone()[0]
+        failed = conn.execute(
+            "SELECT observation_role, source_call_id, outcome, error_kind, "
+            "error_detail, tokens_in, tokens_out, cost_usd "
+            "FROM calls WHERE observation_role = 'shadow_gold'"
+        ).fetchone()
     assert n == 0  # lease deleted, not buried
+    assert failed[:4] == ("shadow_gold", call_id, "upstream_error", "RuntimeError")
+    assert failed[4:] == ("simulated 429", 0, 0, 0.0)
 
     # Candidate resurfaces and grades once the gold provider recovers.
     worker2 = ShadowEvalWorker(repo, providers=[_GoldProvider()])
     summary2 = worker2.run_once()
     assert summary2["calls_graded"] == 1
+    with repo._open() as conn:
+        attempts = conn.execute(
+            "SELECT outcome FROM calls WHERE observation_role = 'shadow_gold' ORDER BY ts"
+        ).fetchall()
+    assert attempts == [("upstream_error",), ("ok",)]

@@ -21,8 +21,8 @@ def test_v10_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
         tables = {
             row[0]
             for row in conn.execute(
@@ -32,9 +32,7 @@ def test_v10_database_upgrades_to_current_schema(tmp_path):
         assert "prompt_labels" in tables
         assert "prompt_label_history" in tables
 
-        prompt_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(prompts)").fetchall()
-        }
+        prompt_columns = {row[1] for row in conn.execute("PRAGMA table_info(prompts)").fetchall()}
         assert "parent_prompt_id" in prompt_columns
 
         indexes = {
@@ -61,11 +59,9 @@ def test_v11_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
-        call_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
-        }
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
+        call_columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()}
         assert {
             "ttft_ms",
             "session_id",
@@ -95,17 +91,15 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
             conn.commit()
 
-        conn.execute(
-            "INSERT INTO workloads (id, name, project) VALUES ('w1', 'work', 'proj')"
-        )
+        conn.execute("INSERT INTO workloads (id, name, project) VALUES ('w1', 'work', 'proj')")
         conn.commit()
 
         assert current_schema_version(conn) == 12
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
 
         tables = {
             row[0]
@@ -116,8 +110,7 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
         assert "workload_revisions" in tables
 
         columns = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(workload_revisions)").fetchall()
+            row[1] for row in conn.execute("PRAGMA table_info(workload_revisions)").fetchall()
         }
         assert {
             "id",
@@ -152,8 +145,8 @@ def test_v13_database_upgrades_to_v14_prompt_label_weights(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
         label_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(prompt_labels)").fetchall()
         }
@@ -174,8 +167,8 @@ def test_v14_database_upgrades_to_v15_workload_policy(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
         workload_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
@@ -196,8 +189,8 @@ def test_v15_database_upgrades_to_v16_datasets(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
         tables = {
             row[0]
             for row in conn.execute(
@@ -206,9 +199,7 @@ def test_v15_database_upgrades_to_v16_datasets(tmp_path):
         }
         assert {"datasets", "dataset_items"}.issubset(tables)
 
-        dataset_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(datasets)").fetchall()
-        }
+        dataset_columns = {row[1] for row in conn.execute("PRAGMA table_info(datasets)").fetchall()}
         assert {
             "id",
             "project",
@@ -255,8 +246,8 @@ def test_v16_database_upgrades_to_v17_eval_receipts(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
         tables = {
             row[0]
             for row in conn.execute(
@@ -265,9 +256,7 @@ def test_v16_database_upgrades_to_v17_eval_receipts(tmp_path):
         }
         assert "eval_receipts" in tables
 
-        columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(eval_receipts)").fetchall()
-        }
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(eval_receipts)").fetchall()}
         assert {
             "id",
             "eval_result_id",
@@ -309,8 +298,8 @@ def test_v17_database_upgrades_to_v18_campaigns(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
         tables = {
             row[0]
             for row in conn.execute(
@@ -374,8 +363,8 @@ def test_v18_database_upgrades_to_v19_model_aliases(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
         tables = {
             row[0]
             for row in conn.execute(
@@ -417,12 +406,44 @@ def test_v19_database_upgrades_to_v20_workload_serving_slos(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 20
-        assert current_schema_version(conn) == 20
+        assert upgraded == SCHEMA_VERSION == 22
+        assert current_schema_version(conn) == 22
         workload_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
         assert {"max_p95_ttft_ms", "max_tpot_ms"}.issubset(workload_columns)
+
+
+def test_v21_database_upgrades_to_v22_call_custody(tmp_path):
+    db_path = tmp_path / "v21.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 21:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        assert current_schema_version(conn) == 21
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 22
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
+        assert {
+            "observation_role",
+            "source_call_id",
+            "eval_result_id",
+            "provider_request_id",
+            "billing_id",
+            "origin",
+            "budget_eligible",
+        }.issubset(columns)
+        indexes = {
+            row[1]
+            for row in conn.execute("SELECT type, name FROM sqlite_master WHERE type = 'index'")
+        }
+        assert "idx_calls_source_call" in indexes
+        assert "idx_calls_provider_request" in indexes
 
 
 def test_repository_model_alias_roundtrip(tmp_path):
@@ -439,12 +460,11 @@ def test_repository_model_alias_roundtrip(tmp_path):
         repo.canonical_model_id("openrouter", "google/gemini-2.5-flash")
         == "google/gemini-2.5-flash"
     )
-    assert repo.canonical_model_id("anthropic", "claude-sonnet") == (
-        "anthropic/claude-sonnet"
+    assert repo.canonical_model_id("anthropic", "claude-sonnet") == ("anthropic/claude-sonnet")
+    assert (
+        repo.model_alias_map()[("openrouter", "google/gemini-2.5-flash")]
+        == "google/gemini-2.5-flash"
     )
-    assert repo.model_alias_map()[
-        ("openrouter", "google/gemini-2.5-flash")
-    ] == "google/gemini-2.5-flash"
     aliases = repo.model_aliases("google/gemini-2.5-flash")
     assert len(aliases) == 1
     assert aliases[0].provider == "openrouter"
@@ -475,9 +495,7 @@ def test_migration_and_version_stamp_are_atomic(tmp_path, monkeypatch):
             return bad_sql
 
     orig = schema_mod._list_migrations
-    monkeypatch.setattr(
-        schema_mod, "_list_migrations", lambda: [(bad_version, _FakePath())]
-    )
+    monkeypatch.setattr(schema_mod, "_list_migrations", lambda: [(bad_version, _FakePath())])
     try:
         raised = False
         try:

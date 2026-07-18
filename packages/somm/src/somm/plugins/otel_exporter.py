@@ -24,9 +24,7 @@ def _load_trace_api() -> tuple[Any, Any, Any]:
         from opentelemetry.sdk.trace import TracerProvider  # noqa: F401
         from opentelemetry.trace import Status, StatusCode
     except ImportError as exc:
-        raise ImportError(
-            "OpenTelemetry support requires: pip install somm[otel]"
-        ) from exc
+        raise ImportError("OpenTelemetry support requires: pip install somm[otel]") from exc
     return trace, Status, StatusCode
 
 
@@ -38,9 +36,7 @@ def _load_otlp_components() -> tuple[Any, Any, Any]:
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
     except ImportError as exc:
-        raise ImportError(
-            "OTLP HTTP export requires: pip install somm[otel]"
-        ) from exc
+        raise ImportError("OTLP HTTP export requires: pip install somm[otel]") from exc
     return TracerProvider, OTLPSpanExporter, BatchSpanProcessor
 
 
@@ -68,6 +64,18 @@ def _post_process(event: dict[str, Any]) -> None:
                 "somm.cost_usd": float(event.get("cost_usd") or 0.0),
                 "somm.workload": workload,
                 "somm.project": event.get("project") or "",
+                "somm.cost_basis": event.get("cost_basis") or "unknown",
+                "somm.cost_kind": event.get("cost_kind") or "unknown",
+                "somm.cost_accuracy": event.get("cost_accuracy") or "unknown",
+                "somm.cost_source": event.get("cost_source") or "",
+                "somm.pricing_version": event.get("pricing_version") or "",
+                "somm.observation_role": event.get("observation_role") or "production",
+                "somm.source_call_id": event.get("source_call_id") or "",
+                "somm.eval_result_id": int(event.get("eval_result_id") or 0),
+                "somm.provider_request_id": event.get("provider_request_id") or "",
+                "somm.billing_id": event.get("billing_id") or "",
+                "somm.origin": event.get("origin") or "native",
+                "somm.budget_eligible": bool(event.get("budget_eligible", True)),
             }
             for key, value in attrs.items():
                 span.set_attribute(key, value)

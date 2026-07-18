@@ -126,7 +126,11 @@ def _serving_stats_sql(*, include_project: bool) -> str:
     select_group_cols_sql = ",\n                    ".join(f"r.{col}" for col in group_cols)
     lp_join_sql = " AND ".join(f"lp.{col} = r.{col}" for col in group_cols)
     tp_join_sql = " AND ".join(f"tp.{col} = r.{col}" for col in group_cols)
-    where_sql = "c.ts >= datetime('now', ?)" if include_project else "c.project = ? AND c.ts >= datetime('now', ?)"
+    where_sql = (
+        "c.ts >= datetime('now', ?)"
+        if include_project
+        else "c.project = ? AND c.ts >= datetime('now', ?)"
+    )
     has_goodput_slo_sql = (
         "goodput_slo_latency_ms IS NOT NULL "
         "OR goodput_slo_ttft_ms IS NOT NULL "
@@ -177,6 +181,8 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                       ON w.id = c.workload_id
                      AND w.project = c.project
                     WHERE {where_sql}
+                      AND c.observation_role = 'production'
+                      AND c.budget_eligible != 0
                 ),
                 scored AS (
                     SELECT
@@ -605,8 +611,7 @@ class Repository:
         created_by: str | None,
     ) -> int:
         revision = conn.execute(
-            "SELECT COALESCE(MAX(revision), 0) + 1 "
-            "FROM workload_revisions WHERE workload_id = ?",
+            "SELECT COALESCE(MAX(revision), 0) + 1 FROM workload_revisions WHERE workload_id = ?",
             (workload_id,),
         ).fetchone()[0]
         conn.execute(
@@ -785,9 +790,7 @@ class Repository:
                     if cursor.rowcount:
                         snapshot = self._workload_config_snapshot(conn, workload_id)
                         if snapshot is not None:
-                            self._record_workload_revision_in_tx(
-                                conn, workload_id, snapshot, None
-                            )
+                            self._record_workload_revision_in_tx(conn, workload_id, snapshot, None)
                     conn.execute("COMMIT")
                     return
                 sets: list[str] = []
@@ -819,9 +822,7 @@ class Repository:
                 if cursor.rowcount:
                     snapshot = self._workload_config_snapshot(conn, workload_id)
                     if snapshot is not None:
-                        self._record_workload_revision_in_tx(
-                            conn, workload_id, snapshot, None
-                        )
+                        self._record_workload_revision_in_tx(conn, workload_id, snapshot, None)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -921,8 +922,7 @@ class Repository:
         configs = {int(row[0]): json.loads(row[1]) for row in rows}
         if rev_a not in configs or rev_b not in configs:
             raise ValueError(
-                f"workload {workload_id!r} does not have revisions "
-                f"{rev_a!r} and {rev_b!r}"
+                f"workload {workload_id!r} does not have revisions {rev_a!r} and {rev_b!r}"
             )
         old = configs[rev_a]
         new = configs[rev_b]
@@ -1045,9 +1045,7 @@ class Repository:
                 if cursor.rowcount:
                     snapshot = self._workload_config_snapshot(conn, workload_id)
                     if snapshot is not None:
-                        self._record_workload_revision_in_tx(
-                            conn, workload_id, snapshot, None
-                        )
+                        self._record_workload_revision_in_tx(conn, workload_id, snapshot, None)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -1620,10 +1618,13 @@ class Repository:
                     outcome, error_kind, error_detail, prompt_hash, response_hash,
                     correlation_id, temperature, max_tokens, top_p, stop_sequences_json,
                     ttft_ms, session_id, parent_call_id, cache_tokens_in,
-                    cache_tokens_out, citations_json
+                    cache_tokens_out, citations_json, cost_basis, cost_kind,
+                    cost_accuracy, cost_source, pricing_version, observation_role,
+                    source_call_id, eval_result_id, provider_request_id, billing_id,
+                    origin, budget_eligible
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -1654,6 +1655,18 @@ class Repository:
                     call.cache_tokens_in,
                     call.cache_tokens_out,
                     call.citations_json,
+                    call.cost_basis,
+                    call.cost_kind,
+                    call.cost_accuracy,
+                    call.cost_source,
+                    call.pricing_version,
+                    call.observation_role,
+                    call.source_call_id,
+                    call.eval_result_id,
+                    call.provider_request_id,
+                    call.billing_id,
+                    call.origin,
+                    int(call.budget_eligible),
                 ),
             )
 
@@ -1673,10 +1686,13 @@ class Repository:
                         outcome, error_kind, error_detail, prompt_hash, response_hash,
                         correlation_id, temperature, max_tokens, top_p, stop_sequences_json,
                         ttft_ms, session_id, parent_call_id, cache_tokens_in,
-                        cache_tokens_out, citations_json
+                        cache_tokens_out, citations_json, cost_basis, cost_kind,
+                        cost_accuracy, cost_source, pricing_version, observation_role,
+                        source_call_id, eval_result_id, provider_request_id, billing_id,
+                        origin, budget_eligible
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     [
@@ -1708,6 +1724,18 @@ class Repository:
                             c.cache_tokens_in,
                             c.cache_tokens_out,
                             c.citations_json,
+                            c.cost_basis,
+                            c.cost_kind,
+                            c.cost_accuracy,
+                            c.cost_source,
+                            c.pricing_version,
+                            c.observation_role,
+                            c.source_call_id,
+                            c.eval_result_id,
+                            c.provider_request_id,
+                            c.billing_id,
+                            c.origin,
+                            int(c.budget_eligible),
                         )
                         for c in calls
                     ],
@@ -1725,7 +1753,10 @@ class Repository:
                 "prompt_hash, response_hash, error_detail, correlation_id, "
                 "temperature, max_tokens, top_p, stop_sequences_json, ttft_ms, "
                 "session_id, parent_call_id, cache_tokens_in, cache_tokens_out, "
-                "citations_json FROM calls WHERE id = ?",
+                "citations_json, cost_basis, cost_kind, cost_accuracy, cost_source, "
+                "pricing_version, observation_role, source_call_id, eval_result_id, "
+                "provider_request_id, billing_id, origin, budget_eligible "
+                "FROM calls WHERE id = ?",
                 (call_id,),
             ).fetchone()
         if not row:
@@ -1758,6 +1789,18 @@ class Repository:
             cache_tokens_in=row[24],
             cache_tokens_out=row[25],
             citations_json=row[26],
+            cost_basis=row[27],
+            cost_kind=row[28],
+            cost_accuracy=row[29],
+            cost_source=row[30],
+            pricing_version=row[31],
+            observation_role=row[32],
+            source_call_id=row[33],
+            eval_result_id=row[34],
+            provider_request_id=row[35],
+            billing_id=row[36],
+            origin=row[37],
+            budget_eligible=bool(row[38]),
         )
 
     def record_outcome_update(self, call_id: str, outcome: Outcome) -> None:
@@ -1852,6 +1895,8 @@ class Repository:
                     FROM v_calls_classified
                     WHERE workload_id = ?
                       AND ts >= datetime('now', ?)
+                      AND observation_role = 'production'
+                      AND budget_eligible != 0
                     GROUP BY provider, model
                 ),
                 ok_latencies AS (
@@ -1870,6 +1915,8 @@ class Repository:
                     WHERE workload_id = ?
                       AND ts >= datetime('now', ?)
                       AND outcome = 'ok'
+                      AND observation_role = 'production'
+                      AND budget_eligible != 0
                 ),
                 latency_percentiles AS (
                     SELECT
@@ -1897,6 +1944,8 @@ class Repository:
                       AND ts >= datetime('now', ?)
                       AND outcome = 'ok'
                       AND ttft_ms IS NOT NULL
+                      AND observation_role = 'production'
+                      AND budget_eligible != 0
                 ),
                 ttft_percentiles AS (
                     SELECT
@@ -2002,7 +2051,9 @@ class Repository:
         out.sort(
             key=lambda x: (
                 x["capability_failure_rate"],
-                x["mean_cost_per_ok_call"] if x["mean_cost_per_ok_call"] is not None else float("inf"),
+                x["mean_cost_per_ok_call"]
+                if x["mean_cost_per_ok_call"] is not None
+                else float("inf"),
             )
         )
         return out
@@ -2287,6 +2338,8 @@ class Repository:
                 WHERE (? IS NULL OR c.project = ?)
                   AND c.ts >= datetime('now', ?)
                   AND c.workload_id IS NOT NULL
+                  AND c.observation_role = 'production'
+                  AND c.budget_eligible != 0
                 GROUP BY c.workload_id, c.provider, c.model
                 HAVING n_calls >= ? AND n_stripped >= ?
                 """,

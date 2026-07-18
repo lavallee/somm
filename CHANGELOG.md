@@ -9,6 +9,17 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+- **Honest local-cost provenance**: native Ollama calls now record
+  `unknown/included/unknown` with source `local-included-unpriced` rather than
+  presenting the backward-compatible numeric `$0` sentinel as computed
+  marginal economic cost. Token telemetry remains intact for a future local
+  resource-rate calculation.
+- **Procedure outcome custody**: `record_procedure_outcome` writes a replay-safe
+  Somm eval receipt carrying exact Milton/Chip/Spindle origin, explicit
+  baseline and promoted implementation/profile/model/harness tuples, the Fab
+  execution receipt, and the baseline plus post-promotion call/score. Both
+  arms retain native Somm call IDs; Somm records the measurement while the
+  external calibration consumer owns interpretation.
 - **Endpoint-driven OTLP HTTP export**: installing `somm[otel]` and setting
   `SOMM_OTEL_ENDPOINT` to a full traces endpoint now activates the existing
   GenAI `post_process` span hook through Somm's plugin entry point. An unset

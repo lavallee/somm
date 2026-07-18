@@ -161,8 +161,8 @@ def _log_service_token(token: ServiceToken, *, host: str, port: int) -> None:
         print(
             "somm service token created: "
             f"{token.path} "
-            "(use: curl -H \"Authorization: Bearer $(cat "
-            f"{token.path})\" http://{host}:{port}/v1/messages)"
+            '(use: curl -H "Authorization: Bearer $(cat '
+            f'{token.path})" http://{host}:{port}/v1/messages)'
         )
         return
     print(f"somm service token loaded from {token.path}")
@@ -230,9 +230,7 @@ class LocalSecurityMiddleware:
         method = scope["method"]
         path = scope["path"]
         protected_read = (
-            method in ("GET", "HEAD")
-            and path in _READ_PROTECTED_PATHS
-            and not self._public_read
+            method in ("GET", "HEAD") and path in _READ_PROTECTED_PATHS and not self._public_read
         )
         protected_admin = method == "POST" and path.startswith("/api/recommendations/")
         protected_messages = method == "POST" and path == "/v1/messages"
@@ -257,9 +255,8 @@ class LocalSecurityMiddleware:
                 await response(scope, receive, send)
                 return
             if (
-                (protected_messages or protected_chat or protected_otlp)
-                and not self._is_json_request(headers)
-            ):
+                protected_messages or protected_chat or protected_otlp
+            ) and not self._is_json_request(headers):
                 if protected_messages:
                     response = _anthropic_error(
                         error_type="invalid_request_error",
@@ -1119,8 +1116,7 @@ def _bounded_attr_value(value: object, *, max_chars: int, depth: int = 0) -> obj
         return str(value)[:max_chars]
     if isinstance(value, list):
         return [
-            _bounded_attr_value(item, max_chars=max_chars, depth=depth + 1)
-            for item in value[:50]
+            _bounded_attr_value(item, max_chars=max_chars, depth=depth + 1) for item in value[:50]
         ]
     if isinstance(value, dict):
         return {
@@ -1141,9 +1137,7 @@ def _bounded_attr_key(key: object, *, max_chars: int) -> str:
 def _bound_attrs(attrs: dict[str, object], *, max_chars: int) -> dict[str, object]:
     max_chars = max(1, int(max_chars))
     return {
-        _bounded_attr_key(key, max_chars=max_chars): _bounded_attr_value(
-            value, max_chars=max_chars
-        )
+        _bounded_attr_key(key, max_chars=max_chars): _bounded_attr_value(value, max_chars=max_chars)
         for key, value in attrs.items()
     }
 
@@ -1152,9 +1146,7 @@ def _iter_otlp_spans(payload: dict, *, max_attr_chars: int):
     for resource_span in payload.get("resourceSpans", []) or []:
         if not isinstance(resource_span, dict):
             continue
-        resource_attrs = _otel_attrs(
-            (resource_span.get("resource") or {}).get("attributes")
-        )
+        resource_attrs = _otel_attrs((resource_span.get("resource") or {}).get("attributes"))
         span_groups = []
         span_groups.extend(resource_span.get("scopeSpans", []) or [])
         span_groups.extend(resource_span.get("instrumentationLibrarySpans", []) or [])
@@ -1197,6 +1189,20 @@ def _as_float(value: object, default: float = 0.0) -> float:
         return default
 
 
+def _as_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def _span_time(value: object) -> datetime:
     nanos = _as_int(value, 0)
     if nanos <= 0:
@@ -1223,7 +1229,7 @@ def _outcome_for_span(span: dict) -> tuple[Outcome, str | None]:
     status = span.get("status") or {}
     code = status.get("code") if isinstance(status, dict) else None
     if code in ("STATUS_CODE_ERROR", "ERROR", 2):
-        return Outcome.ERROR, str(status.get("message") or "otel_status_error")
+        return Outcome.UPSTREAM_ERROR, str(status.get("message") or "otel_status_error")
     return Outcome.OK, None
 
 
@@ -1239,9 +1245,7 @@ def _call_from_otlp_span(
         trace_id = stable_hash({"span": span, "attrs": attrs})
     if not span_id:
         span_id = stable_hash({"span": span.get("name"), "attrs": attrs})
-    provider = str(
-        _attr(attrs, "somm.provider", "gen_ai.system", "llm.provider", default="otel")
-    )
+    provider = str(_attr(attrs, "somm.provider", "gen_ai.system", "llm.provider", default="otel"))
     model = str(
         _attr(
             attrs,
@@ -1263,12 +1267,21 @@ def _call_from_otlp_span(
     )
     workload_id = repo.register_workload(name=workload, project=cfg.project).id
     outcome, error_kind = _outcome_for_span(span)
+    explicit_call_id = _attr(attrs, "somm.call_id")
+    call_id = str(explicit_call_id) if explicit_call_id else _call_id_for_span(trace_id, span_id)
     parent_span_id = str(span.get("parentSpanId") or "")
-    parent_call_id = _call_id_for_span(trace_id, parent_span_id) if parent_span_id else None
+    parent_call_id_value = _attr(attrs, "somm.parent_call_id")
+    parent_call_id = (
+        str(parent_call_id_value)
+        if parent_call_id_value
+        else _call_id_for_span(trace_id, parent_span_id)
+        if parent_span_id
+        else None
+    )
     prompt_hash = stable_hash({"trace_id": trace_id, "span_id": span_id, "side": "prompt"})
     response_hash = stable_hash({"trace_id": trace_id, "span_id": span_id, "side": "response"})
     return Call(
-        id=_call_id_for_span(trace_id, span_id),
+        id=call_id,
         ts=_span_time(span.get("startTimeUnixNano")),
         project=cfg.project,
         workload_id=workload_id,
@@ -1306,8 +1319,32 @@ def _call_from_otlp_span(
         cache_tokens_in=_as_int(
             _attr(attrs, "somm.cache_tokens_in", "gen_ai.usage.cache_read_input_tokens"),
             0,
-        ) or None,
+        )
+        or None,
         cache_tokens_out=_as_int(_attr(attrs, "somm.cache_tokens_out"), 0) or None,
+        cost_basis=str(_attr(attrs, "somm.cost_basis", default="reported")),
+        cost_kind=str(_attr(attrs, "somm.cost_kind", default="unknown")),
+        cost_accuracy=str(_attr(attrs, "somm.cost_accuracy", default="unknown")),
+        cost_source=str(_attr(attrs, "somm.cost_source", default="otlp")),
+        pricing_version=(
+            str(value) if (value := _attr(attrs, "somm.pricing_version", default="")) else None
+        ),
+        # An OTLP row that is not already in this repository is imported
+        # evidence. Preserve it, but never let it silently enter native budget,
+        # pacing, or recommendation arithmetic.
+        observation_role="imported",
+        source_call_id=(
+            str(value) if (value := _attr(attrs, "somm.source_call_id", default="")) else None
+        ),
+        eval_result_id=(
+            _as_int(value) if (value := _attr(attrs, "somm.eval_result_id", default="")) else None
+        ),
+        provider_request_id=(
+            str(value) if (value := _attr(attrs, "somm.provider_request_id", default="")) else None
+        ),
+        billing_id=(str(value) if (value := _attr(attrs, "somm.billing_id", default="")) else None),
+        origin="foreign_imported",
+        budget_eligible=False,
     )
 
 
@@ -1337,10 +1374,22 @@ def _ingest_otlp_payload(
 
     ingested = 0
     duplicates = 0
+    attached = 0
+    conflicts = 0
     skipped = 0
     for span, attrs in spans:
         try:
             call = _call_from_otlp_span(repo, cfg, span, attrs)
+            existing = repo.get_call(call.id)
+            if existing is not None:
+                # Native export -> same repository import is an attachment,
+                # not a new monetary observation. Refuse an ID collision whose
+                # immutable provider/model identity does not match.
+                if (existing.provider, existing.model) != (call.provider, call.model):
+                    conflicts += 1
+                else:
+                    attached += 1
+                continue
             repo.write_call(call)
             ingested += 1
         except sqlite3.IntegrityError:
@@ -1351,6 +1400,8 @@ def _ingest_otlp_payload(
         "ok": True,
         "ingested": ingested,
         "duplicates": duplicates,
+        "attached": attached,
+        "conflicts": conflicts,
         "skipped": skipped,
     }, 200
 
@@ -1365,7 +1416,9 @@ async def _api_otlp_traces(request: Request) -> JSONResponse:
     except json.JSONDecodeError:
         return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
     if not isinstance(payload, dict):
-        return JSONResponse({"ok": False, "error": "OTLP payload must be an object"}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "error": "OTLP payload must be an object"}, status_code=400
+        )
     result, status = _ingest_otlp_payload(
         repo,
         cfg,

@@ -35,12 +35,12 @@ class AdviseConstraints:
     'don't filter on this dimension'."""
 
     capabilities: list[str] = field(default_factory=list)
-    providers: list[str] | None = None   # whitelist; None = any
+    providers: list[str] | None = None  # whitelist; None = any
     max_price_in_per_1m: float | None = None
     max_price_out_per_1m: float | None = None
     min_context_window: int | None = None
-    free_only: bool = False               # shortcut: both prices == 0
-    workload: str | None = None           # for scoping shadow-eval lookup
+    free_only: bool = False  # shortcut: both prices == 0
+    workload: str | None = None  # for scoping shadow-eval lookup
     limit: int = 8
     # --- 0.2.2 additions -------------------------------------------------
     required_output_modalities: list[str] | None = None
@@ -77,7 +77,7 @@ class Candidate:
     score: float
     reasons: list[str]
     score_breakdown: dict
-    shadow_score: float | None = None   # set when shadow-eval data exists
+    shadow_score: float | None = None  # set when shadow-eval data exists
 
     def as_dict(self) -> dict:
         return {
@@ -136,6 +136,7 @@ META_ROUTER_PATTERNS: tuple[str, ...] = (
 
 def _fnmatches_any(s: str, patterns) -> bool:
     import fnmatch
+
     return any(fnmatch.fnmatchcase(s, p) for p in patterns)
 
 
@@ -204,8 +205,7 @@ def _plan_annotation(provider: str) -> str:
                     worst[st.provider] = st
             for name, st in worst.items():
                 notes[name] = (
-                    f"metered plan {st.used_pct:.0f}% used, "
-                    f"pace {st.pace_ratio:.1f}x ({st.state})"
+                    f"metered plan {st.used_pct:.0f}% used, pace {st.pace_ratio:.1f}x ({st.state})"
                 )
         except Exception:
             pass
@@ -222,14 +222,14 @@ def _advise_with_reasons(
     rows = _fetch_intel(repo, constraints)
     alias_map = _safe_model_alias_map(repo)
     shadow_map = _shadow_map_for_workload(repo, constraints.workload, alias_map)
-    required_out = [
-        m.lower() for m in (constraints.required_output_modalities or [])
-    ]
+    required_out = [m.lower() for m in (constraints.required_output_modalities or [])]
     exclude_patterns = tuple(constraints.exclude_models or ())
 
     filter_stats: dict[str, int] = {
-        "capability": 0, "output_modality": 0,
-        "meta_router": 0, "excluded": 0,
+        "capability": 0,
+        "output_modality": 0,
+        "meta_router": 0,
+        "excluded": 0,
     }
     candidates: list[Candidate] = []
     for r in rows:
@@ -295,9 +295,7 @@ def _advise_with_reasons(
         if shadow_score is not None:
             reasons.insert(0, f"shadow score {shadow_score:.2f}")
 
-        score, score_breakdown = _score(
-            price_in, price_out, ctx, r.get("last_seen"), shadow_score
-        )
+        score, score_breakdown = _score(price_in, price_out, ctx, r.get("last_seen"), shadow_score)
         # Unknown-capability penalty — once per unknown capability so that
         # (vision?, tool_use?) scores lower than (vision?) which scores
         # lower than (vision✓). Clamp so 0.0 actually hides rather than
@@ -338,10 +336,10 @@ def _advise_with_reasons(
     # Primary: score desc. Tiebreakers: shadow_score desc, last_seen desc,
     # model asc. Use Python's stable sort by sorting secondary keys first
     # then the primary; stable sort preserves tie-group order.
-    candidates.sort(key=lambda c: c.model)                              # 4th key
+    candidates.sort(key=lambda c: c.model)  # 4th key
     candidates.sort(key=lambda c: _ts_epoch(c.last_seen), reverse=True)  # 3rd key
-    candidates.sort(key=lambda c: c.shadow_score or 0.0, reverse=True)   # 2nd key
-    candidates.sort(key=lambda c: c.score, reverse=True)                 # primary
+    candidates.sort(key=lambda c: c.shadow_score or 0.0, reverse=True)  # 2nd key
+    candidates.sort(key=lambda c: c.score, reverse=True)  # primary
     returned_candidates = candidates[: constraints.limit] if apply_limit else candidates
     return _AdviseResult(
         candidates=returned_candidates,
@@ -415,10 +413,9 @@ def _merge_alias_metadata(kept: Candidate, dropped: Candidate) -> None:
     for reason in dropped.reasons:
         if reason.startswith("also seen as ") and reason not in kept.reasons:
             kept.reasons.append(reason)
-    kept.score_breakdown["aliases_considered"] = (
-        int(kept.score_breakdown.get("aliases_considered", 1))
-        + int(dropped.score_breakdown.get("aliases_considered", 1))
-    )
+    kept.score_breakdown["aliases_considered"] = int(
+        kept.score_breakdown.get("aliases_considered", 1)
+    ) + int(dropped.score_breakdown.get("aliases_considered", 1))
 
 
 def _ts_epoch(ts: str | None) -> float:
@@ -468,8 +465,11 @@ def consult(
     result = _advise_with_reasons(repo, constraints, apply_limit=False)
     cands = result.candidates
     priors = _search_prior_decisions(
-        repo, question=question, workload=constraints.workload,
-        limit=priors_limit, global_repo=global_repo,
+        repo,
+        question=question,
+        workload=constraints.workload,
+        limit=priors_limit,
+        global_repo=global_repo,
     )
     cands = _apply_prior_decision_signals(cands, priors, _safe_model_alias_map(repo))
     # Re-sort in case prior signals changed the order — stable on primary.
@@ -502,10 +502,22 @@ def consult(
 # didn't work." Case-insensitive substring match. Extend as we collect
 # more decisions and learn which phrasings show up.
 _NEGATIVE_OUTCOME_KEYWORDS: tuple[str, ...] = (
-    "unreliable", "not reliable", "unavailable",
-    "not capable", "incapable", "doesn't work", "failed", "failing",
-    "struggled", "refused", "timeout", "timed out",
-    "not enough", "too slow", "hallucinated", "hallucinations",
+    "unreliable",
+    "not reliable",
+    "unavailable",
+    "not capable",
+    "incapable",
+    "doesn't work",
+    "failed",
+    "failing",
+    "struggled",
+    "refused",
+    "timeout",
+    "timed out",
+    "not enough",
+    "too slow",
+    "hallucinated",
+    "hallucinations",
 )
 
 
@@ -513,6 +525,7 @@ _NEGATIVE_OUTCOME_KEYWORDS: tuple[str, ...] = (
 # the effect is multiplied by 0.5; after two, 0.25; etc. 90 days roughly
 # matches the "model intel changes" warning in SOMMELIER.md.
 _PRIOR_DECISION_HALF_LIFE_DAYS = 90.0
+
 
 def _apply_prior_decision_signals(
     candidates: list[Candidate],
@@ -546,11 +559,7 @@ def _apply_prior_decision_signals(
         negative_weight = 0.0
         for prior in matches:
             age_days = _prior_age_days(prior.get("ts"))
-            decay = (
-                2.0 ** (-age_days / _PRIOR_DECISION_HALF_LIFE_DAYS)
-                if age_days >= 0
-                else 1.0
-            )
+            decay = 2.0 ** (-age_days / _PRIOR_DECISION_HALF_LIFE_DAYS) if age_days >= 0 else 1.0
             if _prior_is_negative(prior):
                 negative_weight += decay
             else:
@@ -568,31 +577,22 @@ def _apply_prior_decision_signals(
         ts_label = (top.get("ts") or "")[:10] or "prior"
         proj_label = top.get("project") or "?"
         if negative_weight > positive_weight or _prior_is_negative(top):
-            cand.reasons.append(
-                f"prior({proj_label} {ts_label}): flagged — beta ×{effective:.2f}"
-            )
+            cand.reasons.append(f"prior({proj_label} {ts_label}): flagged — beta ×{effective:.2f}")
         else:
-            cand.reasons.append(
-                f"prior({proj_label} {ts_label}): chose — beta ×{effective:.2f}"
-            )
+            cand.reasons.append(f"prior({proj_label} {ts_label}): chose — beta ×{effective:.2f}")
     return candidates
 
 
 def _prior_is_negative(prior: dict) -> bool:
     outcome = (prior.get("outcome_note") or "").lower()
     rationale = (prior.get("rationale") or "").lower()
-    return any(
-        kw in outcome or kw in rationale
-        for kw in _NEGATIVE_OUTCOME_KEYWORDS
-    )
+    return any(kw in outcome or kw in rationale for kw in _NEGATIVE_OUTCOME_KEYWORDS)
 
 
 def _bayesian_prior_factor(positive_weight: float, negative_weight: float) -> float:
     # Beta(1,1) neutral prior. Divide by neutral mean (0.5) so no evidence is
     # 1.0, positive evidence boosts, and negative evidence penalizes.
-    posterior_mean = (1.0 + positive_weight) / (
-        2.0 + positive_weight + negative_weight
-    )
+    posterior_mean = (1.0 + positive_weight) / (2.0 + positive_weight + negative_weight)
     return max(0.5, min(1.5, posterior_mean / 0.5))
 
 
@@ -625,9 +625,7 @@ def _build_note(
     if filter_stats.get("capability"):
         ate_by.append(f"{filter_stats['capability']} missed capability")
     if filter_stats.get("output_modality"):
-        ate_by.append(
-            f"{filter_stats['output_modality']} wrong output modality"
-        )
+        ate_by.append(f"{filter_stats['output_modality']} wrong output modality")
     if filter_stats.get("meta_router"):
         ate_by.append(f"{filter_stats['meta_router']} meta-router")
     if filter_stats.get("excluded"):
@@ -671,7 +669,9 @@ def _search_prior_decisions(
             continue
         try:
             rows = candidate.search_decisions(
-                question=question, workload=workload, limit=limit,
+                question=question,
+                workload=workload,
+                limit=limit,
             )
         except Exception:  # noqa: BLE001
             rows = []
@@ -690,7 +690,9 @@ def _search_prior_decisions(
                 continue
             try:
                 rows = candidate.search_decisions(
-                    question=keyword, workload=workload, limit=limit,
+                    question=keyword,
+                    workload=workload,
+                    limit=limit,
                 )
             except Exception:  # noqa: BLE001
                 rows = []
@@ -705,11 +707,52 @@ def _search_prior_decisions(
 
 
 _RECALL_STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do",
-    "does", "for", "from", "good", "has", "have", "how", "i", "in", "is",
-    "it", "my", "of", "on", "or", "our", "should", "some", "that", "the",
-    "these", "this", "to", "use", "we", "what", "when", "where", "which",
-    "who", "why", "will", "with", "would", "you",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "can",
+    "do",
+    "does",
+    "for",
+    "from",
+    "good",
+    "has",
+    "have",
+    "how",
+    "i",
+    "in",
+    "is",
+    "it",
+    "my",
+    "of",
+    "on",
+    "or",
+    "our",
+    "should",
+    "some",
+    "that",
+    "the",
+    "these",
+    "this",
+    "to",
+    "use",
+    "we",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "will",
+    "with",
+    "would",
+    "you",
 }
 
 
@@ -723,6 +766,7 @@ def _recall_keywords(question: str | None, *, min_len: int = 4, max_keywords: in
     if not question:
         return []
     import re
+
     tokens = re.findall(r"[a-z][a-z0-9\-]+", question.lower())
     content = [t for t in tokens if len(t) >= min_len and t not in _RECALL_STOPWORDS]
     # Dedupe preserving order, then sort by length descending
@@ -819,9 +863,7 @@ def _fetch_intel(repo: Repository, c: AdviseConstraints) -> list[dict]:
         clauses.append(f"provider IN ({placeholders})")
         params.extend(c.providers)
     if c.free_only:
-        clauses.append(
-            "(COALESCE(price_in_per_1m, 0) = 0 AND COALESCE(price_out_per_1m, 0) = 0)"
-        )
+        clauses.append("(COALESCE(price_in_per_1m, 0) = 0 AND COALESCE(price_out_per_1m, 0) = 0)")
     else:
         if c.max_price_in_per_1m is not None:
             clauses.append("(price_in_per_1m IS NULL OR price_in_per_1m <= ?)")
@@ -887,6 +929,8 @@ def _shadow_map_for_workload(
             FROM eval_results er
             JOIN calls c ON c.id = er.call_id
             WHERE c.workload_id = ?
+              AND c.observation_role = 'production'
+              AND c.budget_eligible != 0
               AND (
                 er.judge_score IS NOT NULL
                 OR er.embedding_score IS NOT NULL
@@ -903,11 +947,7 @@ def _shadow_map_for_workload(
         canonical_id = _canonical_model_id(provider, model, alias_map)
         total, count = totals.get(canonical_id, (0.0, 0))
         totals[canonical_id] = (total + float(score) * int(n), count + int(n))
-    return {
-        canonical_id: total / count
-        for canonical_id, (total, count) in totals.items()
-        if count
-    }
+    return {canonical_id: total / count for canonical_id, (total, count) in totals.items() if count}
 
 
 def _score(

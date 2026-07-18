@@ -163,7 +163,9 @@ class WriterQueue:
             global _auto_drain_warned
             with _auto_drain_warned_lock:
                 if not _auto_drain_warned:
-                    print(f"[somm] spool auto-drain failed; will retry later: {exc}", file=sys.stderr)
+                    print(
+                        f"[somm] spool auto-drain failed; will retry later: {exc}", file=sys.stderr
+                    )
                     _auto_drain_warned = True
 
     def _drain(self, batch: list[Call]) -> None:
@@ -212,8 +214,7 @@ class WriterQueue:
 def _spool_has_files(spool_dir: Path) -> bool:
     spool_dir = Path(spool_dir)
     return spool_dir.exists() and (
-        any(spool_dir.glob("*.jsonl"))
-        or any(spool_dir.glob(f"*.jsonl{_SPOOL_CLAIM_MARKER}*"))
+        any(spool_dir.glob("*.jsonl")) or any(spool_dir.glob(f"*.jsonl{_SPOOL_CLAIM_MARKER}*"))
     )
 
 
@@ -323,6 +324,18 @@ def drain_spool(repo: Repository, spool_dir: Path) -> int:
                             cache_tokens_in=row.get("cache_tokens_in"),
                             cache_tokens_out=row.get("cache_tokens_out"),
                             citations_json=row.get("citations_json"),
+                            cost_basis=row.get("cost_basis", "unknown"),
+                            cost_kind=row.get("cost_kind", "unknown"),
+                            cost_accuracy=row.get("cost_accuracy", "unknown"),
+                            cost_source=row.get("cost_source"),
+                            pricing_version=row.get("pricing_version"),
+                            observation_role=row.get("observation_role", "production"),
+                            source_call_id=row.get("source_call_id"),
+                            eval_result_id=row.get("eval_result_id"),
+                            provider_request_id=row.get("provider_request_id"),
+                            billing_id=row.get("billing_id"),
+                            origin=row.get("origin", "native"),
+                            budget_eligible=bool(row.get("budget_eligible", True)),
                         )
                     )
             repo.write_calls_batch(calls)

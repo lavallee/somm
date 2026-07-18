@@ -120,11 +120,11 @@ class Workload:
     capabilities_required: list[str] = field(default_factory=list)
     # Adequacy thresholds (schema v6+). Make "is this model performing
     # adequately?" queryable rather than judgment-call. None = unset.
-    max_p95_latency_ms: int | None = None              # Tier 1: end-to-end timeliness
-    max_p95_ttft_ms: int | None = None                 # Tier 1: first-token timeliness
-    max_tpot_ms: float | None = None                   # Tier 1: decode-token timeliness
-    max_capability_failure_rate: float | None = None   # Tier 2/3: 0–1 (e.g. 0.05 = 5%)
-    max_cost_per_call_usd: float | None = None         # cost ceiling per ok call
+    max_p95_latency_ms: int | None = None  # Tier 1: end-to-end timeliness
+    max_p95_ttft_ms: int | None = None  # Tier 1: first-token timeliness
+    max_tpot_ms: float | None = None  # Tier 1: decode-token timeliness
+    max_capability_failure_rate: float | None = None  # Tier 2/3: 0–1 (e.g. 0.05 = 5%)
+    max_cost_per_call_usd: float | None = None  # cost ceiling per ok call
     policy: dict | None = None
     created_at: datetime | None = None
 
@@ -258,6 +258,25 @@ class Call:
     cache_tokens_in: int | None = None
     cache_tokens_out: int | None = None
     citations_json: str | None = None
+    # Monetary provenance is orthogonal: basis says reported vs computed;
+    # kind distinguishes marginal, notional, and subscription-included value;
+    # accuracy says actual vs estimated. Callers with no evidence say unknown.
+    cost_basis: str = "computed"
+    cost_kind: str = "unknown"
+    cost_accuracy: str = "estimated"
+    cost_source: str | None = "somm:model_intel"
+    pricing_version: str | None = None
+    # Request custody is separate from monetary provenance. Auxiliary gold and
+    # judge requests are normal observations linked to their source call/eval.
+    # Foreign OTLP rows are retained but excluded from hot-path policy by
+    # budget_eligible=False.
+    observation_role: str = "production"
+    source_call_id: str | None = None
+    eval_result_id: int | None = None
+    provider_request_id: str | None = None
+    billing_id: str | None = None
+    origin: str = "native"
+    budget_eligible: bool = True
 
 
 @dataclass(slots=True)

@@ -133,9 +133,7 @@ def sync_bundled_pricing(repo: Repository) -> int:
     try:
         from importlib import resources
 
-        data = (
-            resources.files("somm_core") / "data" / "pricing_bundle.json"
-        ).read_bytes()
+        data = (resources.files("somm_core") / "data" / "pricing_bundle.json").read_bytes()
     except Exception:
         return 0
 
@@ -206,6 +204,8 @@ def backfill_costs(
         FROM calls c
         JOIN model_intel mi ON mi.provider = c.provider AND mi.model = c.model
         WHERE (c.cost_usd IS NULL OR c.cost_usd = 0)
+          AND c.origin = 'native'
+          AND c.cost_basis != 'reported'
           AND (mi.price_in_per_1m > 0 OR mi.price_out_per_1m > 0)
           AND (c.tokens_in > 0 OR c.tokens_out > 0){window}
     """
@@ -215,12 +215,19 @@ def backfill_costs(
             return (n, round(total or 0.0, 6))
         conn.execute(
             f"""
-            UPDATE calls SET cost_usd = ROUND(
-                (calls.tokens_in * mi.price_in_per_1m
-                 + calls.tokens_out * mi.price_out_per_1m) / 1000000.0, 8)
+            UPDATE calls SET
+                cost_usd = ROUND(
+                    (calls.tokens_in * mi.price_in_per_1m
+                     + calls.tokens_out * mi.price_out_per_1m) / 1000000.0, 8),
+                cost_basis = 'computed',
+                cost_accuracy = 'estimated',
+                cost_source = 'somm:model_intel',
+                pricing_version = mi.source || '@' || mi.last_seen
             FROM model_intel mi
             WHERE mi.provider = calls.provider AND mi.model = calls.model
               AND (calls.cost_usd IS NULL OR calls.cost_usd = 0)
+              AND calls.origin = 'native'
+              AND calls.cost_basis != 'reported'
               AND (mi.price_in_per_1m > 0 OR mi.price_out_per_1m > 0)
               AND (calls.tokens_in > 0 OR calls.tokens_out > 0)
               {window.replace("c.ts", "calls.ts") if window else ""}
@@ -338,8 +345,7 @@ def merge_intel_capabilities(
 
     with repo._open() as conn:
         row = conn.execute(
-            "SELECT capabilities_json FROM model_intel "
-            "WHERE provider = ? AND model = ?",
+            "SELECT capabilities_json FROM model_intel WHERE provider = ? AND model = ?",
             (provider, model),
         ).fetchone()
         if row is None:

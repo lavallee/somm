@@ -2,8 +2,9 @@
 
 Two fundamentally different billing shapes hide behind "provider":
 
-- **payg** — pay-as-you-go per token. `calls.cost_usd` is real marginal
-  dollars; the constraint is your wallet.
+- **payg** — pay-as-you-go per token. `calls.cost_usd` is normally Somm's
+  token-times-price estimate of marginal dollars; the constraint is your
+  wallet, and the provider invoice remains the settled authority.
 - **metered** — a subscription plan with recurring usage limits (a
   coding plan, a CLI seat). Marginal dollars are ~0 inside the quota;
   `cost_usd` is *notional* (list-price equivalent). The scarce resource
@@ -251,9 +252,7 @@ def load_catalog(path: Path | None = None) -> dict[str, CatalogEntry]:
         else:
             from importlib import resources
 
-            raw = (
-                resources.files("somm_core") / "data" / "plan_catalog.toml"
-            ).read_bytes()
+            raw = (resources.files("somm_core") / "data" / "plan_catalog.toml").read_bytes()
             data = tomllib.loads(raw.decode("utf-8"))
     except Exception:
         return {}
@@ -367,6 +366,12 @@ def _provider_aliases(provider: str) -> tuple[str, ...]:
     return tuple({provider, provider.replace("-", "_"), provider.replace("_", "-")})
 
 
+def _eligible_clause(conn: sqlite3.Connection) -> str:
+    """Exclude foreign imports on v22+ while treating legacy rows as native."""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(calls)")}
+    return " AND budget_eligible != 0" if "budget_eligible" in columns else ""
+
+
 def usage_in_window(
     db_paths: list[Path],
     provider: str,
@@ -388,7 +393,8 @@ def usage_in_window(
             try:
                 row = conn.execute(
                     f"SELECT {_UNIT_SQL[limit.unit]} FROM calls "
-                    f"WHERE provider IN ({marks}) AND ts >= ? AND ts <= ?",
+                    f"WHERE provider IN ({marks}) AND ts >= ? AND ts <= ?"
+                    f"{_eligible_clause(conn)}",
                     (*aliases, start.isoformat(), end.isoformat()),
                 ).fetchone()
                 total += float(row[0] or 0)
@@ -465,7 +471,7 @@ def recent_ok_calls(
             try:
                 row = conn.execute(
                     f"SELECT COUNT(*) FROM calls WHERE provider IN ({marks}) "
-                    f"AND ts >= ? AND outcome = 'ok'",
+                    f"AND ts >= ? AND outcome = 'ok'{_eligible_clause(conn)}",
                     (*aliases, since),
                 ).fetchone()
                 total += int(row[0] or 0)
@@ -546,7 +552,7 @@ def observed_ceilings(
                 rows = conn.execute(
                     f"SELECT ts FROM calls WHERE provider IN ({marks}) "
                     f"AND ts >= ? AND {_QUOTA_ERROR_WHERE} "
-                    f"ORDER BY ts DESC LIMIT ?",
+                    f"{_eligible_clause(conn)} ORDER BY ts DESC LIMIT ?",
                     (*aliases, cutoff, max_events),
                 ).fetchall()
                 for (ts,) in rows:
@@ -578,7 +584,9 @@ def observed_ceilings(
                 break
         for unit in units:
             samples = [
-                usage_in_window(db_paths, provider, PlanLimit(window=window, quota=1, unit=unit), now=ev)
+                usage_in_window(
+                    db_paths, provider, PlanLimit(window=window, quota=1, unit=unit), now=ev
+                )
                 for ev in distinct
             ]
             samples = sorted(s for s in samples if s > 0)
@@ -613,7 +621,8 @@ def providers_with_quota_errors(
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
             try:
                 rows = conn.execute(
-                    f"SELECT DISTINCT provider FROM calls WHERE ts >= ? AND {_QUOTA_ERROR_WHERE}",
+                    f"SELECT DISTINCT provider FROM calls WHERE ts >= ? "
+                    f"AND {_QUOTA_ERROR_WHERE}{_eligible_clause(conn)}",
                     (cutoff,),
                 ).fetchall()
                 out.update(str(row[0]) for row in rows if row[0])

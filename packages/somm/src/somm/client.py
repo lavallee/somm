@@ -184,9 +184,8 @@ def _validate_structured_json_schema_light(parsed: dict | list, schema: dict) ->
         expected_types = set()
 
     if expected_types & {"object", "array"}:
-        type_matches = (
-            ("object" in expected_types and isinstance(parsed, dict))
-            or ("array" in expected_types and isinstance(parsed, list))
+        type_matches = ("object" in expected_types and isinstance(parsed, dict)) or (
+            "array" in expected_types and isinstance(parsed, list)
         )
         if not type_matches:
             expected = " or ".join(sorted(expected_types & {"object", "array"}))
@@ -371,6 +370,18 @@ def _call_event(
     max_tokens: int | None = None,
     error_kind: str | None = None,
     short_circuited: str | None = None,
+    cost_basis: str = "unknown",
+    cost_kind: str = "unknown",
+    cost_accuracy: str = "unknown",
+    cost_source: str | None = None,
+    pricing_version: str | None = None,
+    observation_role: str = "production",
+    source_call_id: str | None = None,
+    eval_result_id: int | None = None,
+    provider_request_id: str | None = None,
+    billing_id: str | None = None,
+    origin: str = "native",
+    budget_eligible: bool = True,
 ) -> dict:
     """Assemble the observer event for one completed call.
 
@@ -393,7 +404,86 @@ def _call_event(
         "max_tokens": max_tokens,
         "error_kind": error_kind,
         "short_circuited": short_circuited,
+        "cost_basis": cost_basis,
+        "cost_kind": cost_kind,
+        "cost_accuracy": cost_accuracy,
+        "cost_source": cost_source,
+        "pricing_version": pricing_version,
+        "observation_role": observation_role,
+        "source_call_id": source_call_id,
+        "eval_result_id": eval_result_id,
+        "provider_request_id": provider_request_id,
+        "billing_id": billing_id,
+        "origin": origin,
+        "budget_eligible": budget_eligible,
     }
+
+
+def _provider_custody(raw: dict | None) -> tuple[str | None, str | None]:
+    """Recover stable provider request/billing ids only when explicitly present."""
+    if not isinstance(raw, dict):
+        return None, None
+    request_id = next(
+        (
+            str(raw[key])
+            for key in ("request_id", "requestId", "response_id", "id")
+            if raw.get(key) not in (None, "")
+        ),
+        None,
+    )
+    billing_id = next(
+        (
+            str(raw[key])
+            for key in ("billing_id", "billingId", "invoice_id")
+            if raw.get(key) not in (None, "")
+        ),
+        None,
+    )
+    return request_id, billing_id
+
+
+def _computed_cost_kind(provider: str) -> str:
+    """Classify token-times-price value without confusing it for an invoice."""
+    try:
+        from somm_core.plans import load_plans, plan_for
+
+        mode = plan_for(provider, load_plans()).mode
+    except Exception:
+        mode = "payg"
+    return "notional" if mode == "metered" else "marginal"
+
+
+def _cost_provenance(
+    repo: Repository,
+    provider: str,
+    model: str,
+    *,
+    reported: bool,
+    source: str | None,
+) -> tuple[str, str, str, str | None, str | None]:
+    """Describe price provenance without treating an unpriced local call as free."""
+    if reported:
+        return "reported", "unknown", "unknown", source, None
+    if provider == "ollama":
+        # ``cost_usd`` remains the backward-compatible numeric API field, but
+        # zero here means no metered provider price, not zero economic cost.
+        return "unknown", "included", "unknown", "local-included-unpriced", None
+    return (
+        "computed",
+        _computed_cost_kind(provider),
+        "estimated",
+        source or "somm:model_intel",
+        _pricing_version(repo, provider, model),
+    )
+
+
+def _pricing_version(repo: Repository, provider: str, model: str) -> str | None:
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT source, last_seen FROM model_intel WHERE provider = ? AND model = ?",
+            (provider, model),
+        ).fetchone()
+    return f"{row[0]}@{row[1]}" if row else None
 
 
 def _fire_call_hooks(event: dict) -> None:
@@ -402,9 +492,7 @@ def _fire_call_hooks(event: dict) -> None:
     hooks.fire_post_process(stamped)
 
 
-def build_default_providers(
-    config: Config, tracker=None, full: bool = False
-) -> list[SommProvider]:
+def build_default_providers(config: Config, tracker=None, full: bool = False) -> list[SommProvider]:
     """Build the provider chain from config.
 
     Default order (sovereign-first): ollama → openrouter → deepseek →
@@ -436,7 +524,9 @@ def build_default_providers(
             logger.warning("skipping provider spec %r: provider name is built in", spec.name)
             continue
         if spec.name in seen_names:
-            logger.warning("skipping provider spec %r: provider name is already registered", spec.name)
+            logger.warning(
+                "skipping provider spec %r: provider name is already registered", spec.name
+            )
             continue
         seen_names.add(spec.name)
         plugin_specs.append(spec)
@@ -489,7 +579,9 @@ def build_default_providers(
         spec.name
         for spec in sorted(
             BUILTIN_PROVIDER_SPECS,
-            key=lambda spec: spec.default_order_rank if spec.default_order_rank is not None else 10**9,
+            key=lambda spec: (
+                spec.default_order_rank if spec.default_order_rank is not None else 10**9
+            ),
         )
         if spec.default_order_rank is not None
     ]
@@ -615,12 +707,14 @@ def enforce_workload_budget(
     with repo._open() as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
-            "WHERE workload_id = ? AND date(ts) = date('now')",
+            "WHERE workload_id = ? AND date(ts) = date('now') "
+            "AND budget_eligible != 0",
             (workload.id,),
         ).fetchone()
     spent = float(row[0]) if row else 0.0
     if spent >= cap:
         from somm.errors import SommBudgetExceeded
+
         raise SommBudgetExceeded(
             f"SOMM_BUDGET_EXCEEDED\n\n"
             f"Problem: workload {workload.name!r} has spent ${spent:.4f} today, "
@@ -629,7 +723,9 @@ def enforce_workload_budget(
             f"call was blocked before dispatch (no spend, no telemetry row).\n"
             f"Fix: raise the cap, wait for the UTC-day reset, or unset "
             f"SOMM_BUDGET_FAIL_CLOSED.",
-            workload=workload.name, spent_usd=spent, cap_usd=float(cap),
+            workload=workload.name,
+            spent_usd=spent,
+            cap_usd=float(cap),
         )
 
 
@@ -698,9 +794,7 @@ class SommLLM:
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
         self._plan_governor = _build_plan_governor(self.config)
-        self.router = Router(
-            self.providers, self._tracker, plan_governor=self._plan_governor
-        )
+        self.router = Router(self.providers, self._tracker, plan_governor=self._plan_governor)
         # Alerting hook — fires on every non-OK outcome with a small context
         # dict. Default writes a one-line warning to stderr so failures are
         # visible in the caller's terminal. Pass on_error=lambda _: None to
@@ -773,9 +867,7 @@ class SommLLM:
         self.repo.set_workload_policy(wl.id, policy)
         if self._mirror_repo is not None:
             try:
-                mirror_wl = self._mirror_repo.workload_by_name(
-                    workload, self.config.project
-                )
+                mirror_wl = self._mirror_repo.workload_by_name(workload, self.config.project)
                 if mirror_wl is not None:
                     self._mirror_repo.set_workload_policy(mirror_wl.id, policy)
             except Exception:  # noqa: BLE001
@@ -854,9 +946,7 @@ class SommLLM:
         except Exception:
             return None
 
-    def _maybe_capture_sample(
-        self, wl, call_id: str, prompt, messages, text: str, outcome
-    ) -> None:
+    def _maybe_capture_sample(self, wl, call_id: str, prompt, messages, text: str, outcome) -> None:
         """Capture prompt/response bodies for online-eval grading.
 
         A workload's shadow config is the documented opt-in for body
@@ -1005,7 +1095,11 @@ class SommLLM:
                 if _floor and _floor > max_tokens:
                     logging.getLogger("somm.client").info(
                         "somm self-heal: max_tokens %d→%d for workload=%s model=%s (%s)",
-                        max_tokens, _floor, workload, model, _ov.get("failure_signature"),
+                        max_tokens,
+                        _floor,
+                        workload,
+                        model,
+                        _ov.get("failure_signature"),
                     )
                     max_tokens = _floor
             except Exception:
@@ -1161,6 +1255,7 @@ class SommLLM:
                 # those workers recover via fallthrough instead of
                 # producing empty results.
                 from somm.errors import SommFatalError
+
                 if isinstance(exc, SommFatalError):
                     # Auth errors etc. — don't retry, but still try router
                     pass
@@ -1221,9 +1316,8 @@ class SommLLM:
                         actual_provider = chosen.name
                         if hasattr(chain_exc, "model") and chain_exc.model:
                             actual_model = chain_exc.model
-                        if (
-                            wait_on_exhausted is not None
-                            and isinstance(chain_exc, SommProvidersExhausted)
+                        if wait_on_exhausted is not None and isinstance(
+                            chain_exc, SommProvidersExhausted
                         ):
                             raise_after_record = chain_exc
         else:
@@ -1235,9 +1329,7 @@ class SommLLM:
                     policy_wait = wait_on_exhausted
                     if wait is _WAIT_UNSET and retry_cfg.get("deadline_s") is not None:
                         policy_wait = float(retry_cfg["deadline_s"])
-                    dispatch_raise_exhausted = (
-                        dispatch_raise_exhausted or policy_wait is not None
-                    )
+                    dispatch_raise_exhausted = dispatch_raise_exhausted or policy_wait is not None
                     router_result = self._policy_router(
                         wl.policy,
                         explicit_model=model is not None,
@@ -1279,15 +1371,13 @@ class SommLLM:
                 )
                 error_kind = type(exc).__name__
                 error_detail = _format_error_detail(exc, actual_provider, actual_model)
-                if (
-                    dispatch_raise_exhausted
-                    and isinstance(exc, SommProvidersExhausted)
-                ):
+                if dispatch_raise_exhausted and isinstance(exc, SommProvidersExhausted):
                     raise_after_record = exc
 
         cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
         citations = extract_citations(raw_out)
         citations_json = _citations_json(citations)
+        provider_request_id, billing_id = _provider_custody(raw_out)
 
         result = SommResult(
             text=text,
@@ -1314,6 +1404,13 @@ class SommLLM:
             citations=citations,
         )
 
+        cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version = _cost_provenance(
+            self.repo,
+            actual_provider,
+            actual_model,
+            reported=cost_usd_out is not None,
+            source=short_circuited,
+        )
         call = Call(
             id=call_id,
             ts=ts,
@@ -1346,32 +1443,62 @@ class SommLLM:
             cache_tokens_in=cache_tokens_in,
             cache_tokens_out=cache_tokens_out,
             citations_json=citations_json,
+            cost_basis=cost_basis,
+            cost_kind=cost_kind,
+            cost_accuracy=cost_accuracy,
+            cost_source=cost_source,
+            pricing_version=pricing_version,
+            provider_request_id=provider_request_id,
+            billing_id=billing_id,
         )
         self._writer.submit(call)
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
-        _fire_call_hooks(_call_event(
-            call_id=call_id, correlation_id=effective_correlation_id,
-            project=self.config.project, workload=workload,
-            provider=actual_provider, model=actual_model,
-            outcome=outcome.value, tokens_in=tokens_in, tokens_out=tokens_out,
-            latency_ms=latency_ms, cost_usd=result.cost_usd,
-            temperature=temperature, max_tokens=max_tokens,
-            error_kind=error_kind,
-            short_circuited=short_circuited,
-        ))
+        _fire_call_hooks(
+            _call_event(
+                call_id=call_id,
+                correlation_id=effective_correlation_id,
+                project=self.config.project,
+                workload=workload,
+                provider=actual_provider,
+                model=actual_model,
+                outcome=outcome.value,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                latency_ms=latency_ms,
+                cost_usd=result.cost_usd,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                error_kind=error_kind,
+                short_circuited=short_circuited,
+                cost_basis=call.cost_basis,
+                cost_kind=call.cost_kind,
+                cost_accuracy=call.cost_accuracy,
+                cost_source=call.cost_source,
+                pricing_version=call.pricing_version,
+                observation_role=call.observation_role,
+                source_call_id=call.source_call_id,
+                eval_result_id=call.eval_result_id,
+                provider_request_id=call.provider_request_id,
+                billing_id=call.billing_id,
+                origin=call.origin,
+                budget_eligible=call.budget_eligible,
+            )
+        )
 
         # Fire the on_error alerter whenever the call did not succeed.
         if outcome != Outcome.OK and self._on_error is not None:
             try:
-                self._on_error({
-                    "call_id": call_id,
-                    "workload": workload,
-                    "provider": actual_provider,
-                    "model": actual_model,
-                    "outcome": outcome.value,
-                    "error_kind": error_kind,
-                    "error_detail": error_detail,
-                })
+                self._on_error(
+                    {
+                        "call_id": call_id,
+                        "workload": workload,
+                        "provider": actual_provider,
+                        "model": actual_model,
+                        "outcome": outcome.value,
+                        "error_kind": error_kind,
+                        "error_detail": error_detail,
+                    }
+                )
             except Exception:
                 # Alerter must not break the caller. Swallow and continue.
                 pass
@@ -1395,16 +1522,18 @@ class SommLLM:
             and self._on_fallback is not None
         ):
             try:
-                self._on_fallback({
-                    "call_id": call_id,
-                    "workload": workload,
-                    "pinned_provider": fallback_info["pinned_provider"],
-                    "pinned_model": fallback_info["pinned_model"],
-                    "actual_provider": actual_provider,
-                    "actual_model": actual_model,
-                    "error_kind": fallback_info["error_kind"],
-                    "error_detail": fallback_info["error_detail"],
-                })
+                self._on_fallback(
+                    {
+                        "call_id": call_id,
+                        "workload": workload,
+                        "pinned_provider": fallback_info["pinned_provider"],
+                        "pinned_model": fallback_info["pinned_model"],
+                        "actual_provider": actual_provider,
+                        "actual_model": actual_model,
+                        "error_kind": fallback_info["error_kind"],
+                        "error_detail": fallback_info["error_detail"],
+                    }
+                )
             except Exception:
                 # Hook must not break the caller.
                 pass
@@ -1420,7 +1549,8 @@ class SommLLM:
                 with self.repo._open() as conn:
                     row = conn.execute(
                         "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
-                        "WHERE workload_id = ? AND date(ts) = date('now')",
+                        "WHERE workload_id = ? AND date(ts) = date('now') "
+                        "AND budget_eligible != 0",
                         (wl.id,),
                     ).fetchone()
                 daily_cost = row[0] if row else 0.0
@@ -1442,6 +1572,7 @@ class SommLLM:
         # bump max_tokens, or pick a non-thinking model.
         if raise_on_empty and outcome == Outcome.EMPTY:
             from somm.errors import SommEmptyResponse
+
             raise SommEmptyResponse(
                 f"empty response from {actual_provider}/{actual_model} "
                 f"(workload={workload!r}); set raise_on_empty=False to "
@@ -1580,6 +1711,7 @@ class SommLLM:
             cost_usd = cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0)
         if short_circuit is not None:
             raw_out = short_circuit.raw
+        provider_request_id, billing_id = _provider_custody(raw_out)
 
         result = EmbedResult(
             embedding=embedding,
@@ -1599,6 +1731,13 @@ class SommLLM:
         # response_hash: sha256 of the joined float repr. Cheap dedup
         # signal in calls.sqlite without persisting the full vector.
         response_hash = stable_hash(",".join(f"{v:.6f}" for v in embedding))
+        cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version = _cost_provenance(
+            self.repo,
+            result.provider,
+            actual_model,
+            reported=short_circuit is not None,
+            source=short_circuited,
+        )
         call = Call(
             id=call_id,
             ts=ts,
@@ -1619,29 +1758,58 @@ class SommLLM:
             correlation_id=(correlation_id := hooks.current_correlation_id()),
             session_id=session_id,
             parent_call_id=parent_call_id,
+            cost_basis=cost_basis,
+            cost_kind=cost_kind,
+            cost_accuracy=cost_accuracy,
+            cost_source=cost_source,
+            pricing_version=pricing_version,
+            provider_request_id=provider_request_id,
+            billing_id=billing_id,
         )
         self._writer.submit(call)
-        _fire_call_hooks(_call_event(
-            call_id=call_id, correlation_id=correlation_id,
-            project=self.config.project, workload=workload,
-            provider=result.provider, model=actual_model,
-            outcome=outcome.value, tokens_in=tokens_in, tokens_out=0,
-            latency_ms=latency_ms, cost_usd=result.cost_usd,
-            error_kind=error_kind,
-            short_circuited=short_circuited,
-        ))
+        _fire_call_hooks(
+            _call_event(
+                call_id=call_id,
+                correlation_id=correlation_id,
+                project=self.config.project,
+                workload=workload,
+                provider=result.provider,
+                model=actual_model,
+                outcome=outcome.value,
+                tokens_in=tokens_in,
+                tokens_out=0,
+                latency_ms=latency_ms,
+                cost_usd=result.cost_usd,
+                error_kind=error_kind,
+                short_circuited=short_circuited,
+                cost_basis=call.cost_basis,
+                cost_kind=call.cost_kind,
+                cost_accuracy=call.cost_accuracy,
+                cost_source=call.cost_source,
+                pricing_version=call.pricing_version,
+                observation_role=call.observation_role,
+                source_call_id=call.source_call_id,
+                eval_result_id=call.eval_result_id,
+                provider_request_id=call.provider_request_id,
+                billing_id=call.billing_id,
+                origin=call.origin,
+                budget_eligible=call.budget_eligible,
+            )
+        )
 
         if outcome != Outcome.OK and self._on_error is not None:
             with contextlib.suppress(Exception):
-                self._on_error({
-                    "call_id": call_id,
-                    "workload": workload,
-                    "provider": "ollama",
-                    "model": actual_model,
-                    "outcome": outcome.value,
-                    "error_kind": error_kind,
-                    "error_detail": error_detail,
-                })
+                self._on_error(
+                    {
+                        "call_id": call_id,
+                        "workload": workload,
+                        "provider": "ollama",
+                        "model": actual_model,
+                        "outcome": outcome.value,
+                        "error_kind": error_kind,
+                        "error_detail": error_detail,
+                    }
+                )
 
         return result
 
@@ -1812,9 +1980,9 @@ class SommLLM:
                 if not actual_model:
                     actual_model = chosen.name
                 actual_provider = chosen.name
-                tokens_in = chosen.estimate_tokens(prompt_text, actual_model) + chosen.estimate_tokens(
-                    system, actual_model
-                )
+                tokens_in = chosen.estimate_tokens(
+                    prompt_text, actual_model
+                ) + chosen.estimate_tokens(system, actual_model)
                 tokens_out = chosen.estimate_tokens(text, actual_model)
                 if not text.strip():
                     outcome = Outcome.EMPTY
@@ -1840,6 +2008,7 @@ class SommLLM:
             cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
             citations = extract_citations(raw_out)
             citations_json = _citations_json(citations)
+            provider_request_id, billing_id = _provider_custody(raw_out)
             cost_usd = (
                 cost_usd_out
                 if cost_usd_out is not None
@@ -1849,6 +2018,15 @@ class SommLLM:
                     model_name,
                     tokens_in,
                     tokens_out,
+                )
+            )
+            cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version = (
+                _cost_provenance(
+                    self.repo,
+                    provider_name,
+                    model_name,
+                    reported=cost_usd_out is not None,
+                    source=short_circuited,
                 )
             )
             call = Call(
@@ -1877,19 +2055,46 @@ class SommLLM:
                 cache_tokens_in=cache_tokens_in,
                 cache_tokens_out=cache_tokens_out,
                 citations_json=citations_json,
+                cost_basis=cost_basis,
+                cost_kind=cost_kind,
+                cost_accuracy=cost_accuracy,
+                cost_source=cost_source,
+                pricing_version=pricing_version,
+                provider_request_id=provider_request_id,
+                billing_id=billing_id,
             )
             self._writer.submit(call)
-            _fire_call_hooks(_call_event(
-                call_id=call_id, correlation_id=correlation_id,
-                project=self.config.project, workload=workload,
-                provider=provider_name, model=model_name,
-                outcome=outcome.value, tokens_in=tokens_in,
-                tokens_out=tokens_out, latency_ms=latency_ms,
-                cost_usd=call.cost_usd,
-                temperature=temperature, max_tokens=max_tokens,
-                error_kind=error_kind,
-                short_circuited=short_circuited,
-            ))
+            _fire_call_hooks(
+                _call_event(
+                    call_id=call_id,
+                    correlation_id=correlation_id,
+                    project=self.config.project,
+                    workload=workload,
+                    provider=provider_name,
+                    model=model_name,
+                    outcome=outcome.value,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    latency_ms=latency_ms,
+                    cost_usd=call.cost_usd,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    error_kind=error_kind,
+                    short_circuited=short_circuited,
+                    cost_basis=call.cost_basis,
+                    cost_kind=call.cost_kind,
+                    cost_accuracy=call.cost_accuracy,
+                    cost_source=call.cost_source,
+                    pricing_version=call.pricing_version,
+                    observation_role=call.observation_role,
+                    source_call_id=call.source_call_id,
+                    eval_result_id=call.eval_result_id,
+                    provider_request_id=call.provider_request_id,
+                    billing_id=call.billing_id,
+                    origin=call.origin,
+                    budget_eligible=call.budget_eligible,
+                )
+            )
 
     def _pick_stream_provider(self, name: str | None):
         if name:
@@ -2089,9 +2294,7 @@ class SommLLM:
             if resolved is None:
                 from somm.prompts import PromptNotFound
 
-                raise PromptNotFound(
-                    f"no prompt label {label!r} for workload {wl.id!r}"
-                )
+                raise PromptNotFound(f"no prompt label {label!r} for workload {wl.id!r}")
             return resolved
         return get_prompt(self.repo, wl.id, version=version, label=label)
 
@@ -2336,4 +2539,6 @@ def _warn_mirror_unavailable(path: Path, exc: Exception) -> None:
     if key in _warned_mirror_unavailable:
         return
     _warned_mirror_unavailable.add(key)
-    print(f"[somm] global mirror unavailable at {key}: {exc}; continuing without it", file=sys.stderr)
+    print(
+        f"[somm] global mirror unavailable at {key}: {exc}; continuing without it", file=sys.stderr
+    )
