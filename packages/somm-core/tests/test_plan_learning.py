@@ -4,9 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 from somm_core.models import Call, Outcome
 from somm_core.plans import (
+    PlanLimit,
     learn_observed_limits,
     load_plans,
     observed_ceilings,
+    usage_in_window,
 )
 from somm_core.repository import Repository
 
@@ -35,9 +37,13 @@ def _call(call_id: str, ts: datetime, *, tokens: int, outcome: Outcome) -> Call:
 def test_observed_ceilings_do_not_count_calls_after_quota_event(tmp_path):
     repo = Repository(tmp_path / "calls.sqlite")
     event_at = datetime(2026, 7, 9, 12, 0, tzinfo=UTC)
-    repo.write_call(_call("before", event_at - timedelta(minutes=10), tokens=100, outcome=Outcome.OK))
+    repo.write_call(
+        _call("before", event_at - timedelta(minutes=10), tokens=100, outcome=Outcome.OK)
+    )
     repo.write_call(_call("event", event_at, tokens=0, outcome=Outcome.RATE_LIMIT))
-    repo.write_call(_call("after", event_at + timedelta(minutes=10), tokens=900, outcome=Outcome.OK))
+    repo.write_call(
+        _call("after", event_at + timedelta(minutes=10), tokens=900, outcome=Outcome.OK)
+    )
 
     ceilings = observed_ceilings(
         [repo.db_path],
@@ -51,10 +57,33 @@ def test_observed_ceilings_do_not_count_calls_after_quota_event(tmp_path):
     assert ceilings[0].estimate == 100
 
 
+def test_plan_usage_excludes_foreign_imports(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    now = datetime.now(UTC)
+    native = _call("native", now, tokens=100, outcome=Outcome.OK)
+    imported = _call("imported", now, tokens=900, outcome=Outcome.OK)
+    imported.origin = "foreign_imported"
+    imported.observation_role = "imported"
+    imported.budget_eligible = False
+    repo.write_call(native)
+    repo.write_call(imported)
+
+    used = usage_in_window(
+        [repo.db_path],
+        "claude-cli",
+        PlanLimit(window="5h", quota=10_000, unit="tokens_total"),
+        now=now,
+    )
+
+    assert used == 100
+
+
 def test_learn_observed_limits_writes_parseable_plans_toml(tmp_path):
     repo = Repository(tmp_path / "calls.sqlite")
     event_at = datetime(2026, 7, 9, 12, 0, tzinfo=UTC)
-    repo.write_call(_call("before", event_at - timedelta(minutes=10), tokens=100, outcome=Outcome.OK))
+    repo.write_call(
+        _call("before", event_at - timedelta(minutes=10), tokens=100, outcome=Outcome.OK)
+    )
     repo.write_call(_call("event", event_at, tokens=0, outcome=Outcome.RATE_LIMIT))
     plans_path = tmp_path / "plans.toml"
 

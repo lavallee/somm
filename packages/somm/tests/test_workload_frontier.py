@@ -28,6 +28,8 @@ def _mk_call(
     cost_usd: float = 0.0,
     project: str = "p",
     ts: datetime | None = None,
+    observation_role: str = "production",
+    budget_eligible: bool = True,
 ) -> Call:
     return Call(
         id=str(uuid.uuid4()),
@@ -46,6 +48,8 @@ def _mk_call(
         prompt_hash="h",
         response_hash="h",
         ttft_ms=ttft_ms,
+        observation_role=observation_role,
+        budget_eligible=budget_eligible,
     )
 
 
@@ -57,10 +61,44 @@ def repo(tmp_path: Path) -> Repository:
 def test_frontier_splits_capability_from_detractor(repo: Repository) -> None:
     wl = repo.register_workload(name="w1", project="p")
     # 4 calls on (ollama, qwen): 2 ok, 1 bad_json (capability), 1 rate_limit (detractor)
-    repo.write_call(_mk_call(workload_id=wl.id, provider="ollama", model="qwen", outcome=Outcome.OK, latency_ms=100, cost_usd=0.0))
-    repo.write_call(_mk_call(workload_id=wl.id, provider="ollama", model="qwen", outcome=Outcome.OK, latency_ms=200, cost_usd=0.0))
-    repo.write_call(_mk_call(workload_id=wl.id, provider="ollama", model="qwen", outcome=Outcome.BAD_JSON, latency_ms=150))
-    repo.write_call(_mk_call(workload_id=wl.id, provider="ollama", model="qwen", outcome=Outcome.RATE_LIMIT, latency_ms=50))
+    repo.write_call(
+        _mk_call(
+            workload_id=wl.id,
+            provider="ollama",
+            model="qwen",
+            outcome=Outcome.OK,
+            latency_ms=100,
+            cost_usd=0.0,
+        )
+    )
+    repo.write_call(
+        _mk_call(
+            workload_id=wl.id,
+            provider="ollama",
+            model="qwen",
+            outcome=Outcome.OK,
+            latency_ms=200,
+            cost_usd=0.0,
+        )
+    )
+    repo.write_call(
+        _mk_call(
+            workload_id=wl.id,
+            provider="ollama",
+            model="qwen",
+            outcome=Outcome.BAD_JSON,
+            latency_ms=150,
+        )
+    )
+    repo.write_call(
+        _mk_call(
+            workload_id=wl.id,
+            provider="ollama",
+            model="qwen",
+            outcome=Outcome.RATE_LIMIT,
+            latency_ms=50,
+        )
+    )
 
     frontier = repo.workload_frontier(wl.id)
     assert len(frontier) == 1
@@ -79,7 +117,11 @@ def test_frontier_splits_capability_from_detractor(repo: Repository) -> None:
 
 def test_frontier_fitness_unset_when_constraint_unset(repo: Repository) -> None:
     wl = repo.register_workload(name="w1", project="p")
-    repo.write_call(_mk_call(workload_id=wl.id, provider="ollama", model="qwen", outcome=Outcome.OK, cost_usd=0.001))
+    repo.write_call(
+        _mk_call(
+            workload_id=wl.id, provider="ollama", model="qwen", outcome=Outcome.OK, cost_usd=0.001
+        )
+    )
     row = repo.workload_frontier(wl.id)[0]
     assert row["fitness"]["exceeds_max_capability_failure_rate"] is None
     assert row["fitness"]["exceeds_max_p95_latency_ms"] is None
@@ -113,7 +155,15 @@ def test_frontier_fitness_flags_on_violation(repo: Repository) -> None:
             )
         )
     for _ in range(2):
-        repo.write_call(_mk_call(workload_id=wl.id, provider="paid", model="big", outcome=Outcome.BAD_JSON, latency_ms=300))
+        repo.write_call(
+            _mk_call(
+                workload_id=wl.id,
+                provider="paid",
+                model="big",
+                outcome=Outcome.BAD_JSON,
+                latency_ms=300,
+            )
+        )
 
     row = repo.workload_frontier(wl.id)[0]
     assert row["fitness"]["exceeds_max_capability_failure_rate"] is True
@@ -127,13 +177,27 @@ def test_frontier_orders_fittest_first(repo: Repository) -> None:
     wl = repo.register_workload(name="w1", project="p")
     # ollama/cheap: 100% capability fail
     for _ in range(3):
-        repo.write_call(_mk_call(workload_id=wl.id, provider="ollama", model="cheap", outcome=Outcome.BAD_JSON))
+        repo.write_call(
+            _mk_call(workload_id=wl.id, provider="ollama", model="cheap", outcome=Outcome.BAD_JSON)
+        )
     # ollama/good: 0% fail, $0.001/call
     for _ in range(3):
-        repo.write_call(_mk_call(workload_id=wl.id, provider="ollama", model="good", outcome=Outcome.OK, cost_usd=0.001))
+        repo.write_call(
+            _mk_call(
+                workload_id=wl.id,
+                provider="ollama",
+                model="good",
+                outcome=Outcome.OK,
+                cost_usd=0.001,
+            )
+        )
     # paid/best: 0% fail, $0.005/call
     for _ in range(3):
-        repo.write_call(_mk_call(workload_id=wl.id, provider="paid", model="best", outcome=Outcome.OK, cost_usd=0.005))
+        repo.write_call(
+            _mk_call(
+                workload_id=wl.id, provider="paid", model="best", outcome=Outcome.OK, cost_usd=0.005
+            )
+        )
 
     rows = repo.workload_frontier(wl.id)
     # cap-fail-rate ascending, then mean_cost ascending — good < best < cheap
@@ -151,8 +215,50 @@ def test_frontier_returns_empty_for_unknown_workload(repo: Repository) -> None:
 def test_frontier_excludes_calls_outside_window(repo: Repository) -> None:
     wl = repo.register_workload(name="w1", project="p")
     old_ts = datetime.fromisoformat("2020-01-01T00:00:00+00:00")
-    repo.write_call(_mk_call(workload_id=wl.id, provider="ollama", model="m", outcome=Outcome.OK, ts=old_ts))
+    repo.write_call(
+        _mk_call(workload_id=wl.id, provider="ollama", model="m", outcome=Outcome.OK, ts=old_ts)
+    )
     assert repo.workload_frontier(wl.id, since_days=7) == []
+
+
+def test_frontier_excludes_auxiliary_and_foreign_observations(repo: Repository) -> None:
+    wl = repo.register_workload(name="native-only", project="p")
+    repo.write_call(
+        _mk_call(
+            workload_id=wl.id,
+            provider="native",
+            model="prod",
+            outcome=Outcome.OK,
+            cost_usd=0.01,
+        )
+    )
+    repo.write_call(
+        _mk_call(
+            workload_id=wl.id,
+            provider="judge",
+            model="aux",
+            outcome=Outcome.BAD_JSON,
+            cost_usd=99.0,
+            observation_role="shadow_judge",
+        )
+    )
+    repo.write_call(
+        _mk_call(
+            workload_id=wl.id,
+            provider="foreign",
+            model="imported",
+            outcome=Outcome.BAD_JSON,
+            cost_usd=99.0,
+            observation_role="imported",
+            budget_eligible=False,
+        )
+    )
+
+    rows = repo.workload_frontier(wl.id)
+
+    assert [(row["provider"], row["model"], row["n_calls"]) for row in rows] == [
+        ("native", "prod", 1)
+    ]
 
 
 def test_set_workload_constraints_partial_update(repo: Repository) -> None:
@@ -203,7 +309,9 @@ def test_set_workload_constraints_clear(repo: Repository) -> None:
         ("100,150,200,250,300,350,400,450,500,1000", 300, 1000),
     ],
 )
-def test_percentiles_helper(csv: str | None, expected_p50: int | None, expected_p95: int | None) -> None:
+def test_percentiles_helper(
+    csv: str | None, expected_p50: int | None, expected_p95: int | None
+) -> None:
     p50, p95 = _percentiles(csv)
     assert p50 == expected_p50
     assert p95 == expected_p95

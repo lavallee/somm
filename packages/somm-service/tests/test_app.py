@@ -247,7 +247,12 @@ def test_non_loopback_host_with_local_header_cannot_read_api(client):
     assert r.status_code == 403
 
 
-def _otlp_payload(*, trace_id: str = "trace-otlp-1", span_id: str = "span-otlp-1") -> dict:
+def _otlp_payload(
+    *,
+    trace_id: str = "trace-otlp-1",
+    span_id: str = "span-otlp-1",
+    call_id: str | None = None,
+) -> dict:
     now_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
     return {
         "resourceSpans": [
@@ -281,7 +286,20 @@ def _otlp_payload(*, trace_id: str = "trace-otlp-1", span_id: str = "span-otlp-1
                                         "value": {"intValue": "3"},
                                     },
                                     {"key": "somm.workload", "value": {"stringValue": "otlp_chat"}},
-                                    {"key": "somm.session_id", "value": {"stringValue": "sess-otlp"}},
+                                    {
+                                        "key": "somm.session_id",
+                                        "value": {"stringValue": "sess-otlp"},
+                                    },
+                                    *(
+                                        [
+                                            {
+                                                "key": "somm.call_id",
+                                                "value": {"stringValue": call_id},
+                                            }
+                                        ]
+                                        if call_id is not None
+                                        else []
+                                    ),
                                 ],
                             }
                         ]
@@ -321,6 +339,56 @@ def test_otlp_trace_ingest_records_call(client):
     assert calls[0]["tokens_out"] == 3
     assert calls[0]["latency_ms"] == 25
     assert calls[0]["session_id"] == "sess-otlp"
+    with app.state.repo._open() as conn:
+        origin, role, eligible = conn.execute(
+            "SELECT origin, observation_role, budget_eligible FROM calls"
+        ).fetchone()
+    assert (origin, role, eligible) == ("foreign_imported", "imported", 0)
+
+
+def test_otlp_native_call_id_attaches_without_double_counting(client):
+    c, cfg, app = client
+    wl = app.state.repo.register_workload(name="otlp_chat", project=cfg.project)
+    native = Call(
+        id="native-call-1",
+        ts=datetime.now(UTC),
+        project=cfg.project,
+        workload_id=wl.id,
+        prompt_id=None,
+        provider="openai",
+        model="gpt-4o-mini",
+        tokens_in=7,
+        tokens_out=3,
+        latency_ms=25,
+        cost_usd=0.001,
+        outcome=Outcome.OK,
+        error_kind=None,
+        prompt_hash="prompt",
+        response_hash="response",
+    )
+    app.state.repo.write_call(native)
+
+    res = c.post(
+        "/api/otlp/v1/traces",
+        json=_otlp_payload(call_id=native.id),
+        headers=_auth_headers(app),
+    )
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "ok": True,
+        "ingested": 0,
+        "duplicates": 0,
+        "attached": 1,
+        "conflicts": 0,
+        "skipped": 0,
+    }
+    with app.state.repo._open() as conn:
+        count, cost = conn.execute(
+            "SELECT COUNT(*), SUM(cost_usd) FROM calls WHERE id = ?", (native.id,)
+        ).fetchone()
+    assert count == 1
+    assert cost == pytest.approx(0.001)
 
 
 def test_otlp_rejects_oversized_content_length_without_writes(tmp_path):
@@ -351,7 +419,9 @@ def test_otlp_rejects_over_span_cap_without_partial_writes(tmp_path):
     c = TestClient(app, base_url="http://localhost")
     payload = {"spans": []}
     for idx in range(2):
-        payload["spans"].append(_otlp_payload(trace_id=f"trace-{idx}")["resourceSpans"][0]["scopeSpans"][0]["spans"][0])
+        payload["spans"].append(
+            _otlp_payload(trace_id=f"trace-{idx}")["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+        )
 
     r = c.post(
         "/api/otlp/v1/traces",
@@ -370,9 +440,7 @@ def test_otlp_malformed_spans_skip_and_attrs_are_bounded(tmp_path):
     cfg.service_otlp_max_attr_chars = 5
     app = create_app(cfg)
     c = TestClient(app, base_url="http://localhost")
-    span = _otlp_payload(trace_id="trace-bounds")["resourceSpans"][0]["scopeSpans"][0][
-        "spans"
-    ][0]
+    span = _otlp_payload(trace_id="trace-bounds")["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
     span["attributes"].extend(
         [
             {"key": "somm.model", "value": {"stringValue": "very-long-model"}},

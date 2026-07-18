@@ -71,7 +71,7 @@ result = llm.generate(
 )
 print(result.text)             # → "pong"
 print(result.provider)         # → "ollama"
-print(f"${result.cost_usd}")   # → from seeded pricing, updates from model_intel
+print(f"${result.cost_usd}")   # → compatibility number; inspect row provenance for meaning
 ```
 
 That call just landed a row in `./.somm/calls.sqlite`. Inspect:
@@ -101,7 +101,9 @@ provider.
 
 **L3 — online evaluation.** Enable sample capture and shadow eval on
 non-private workloads, then run `somm-serve admin run-shadow`. Graded
-samples feed `somm frontier`, recommendations, and eval datasets.
+samples feed `somm frontier`, recommendations, and eval datasets. Each actual
+gold and judge provider request is a first-class `calls` row linked by
+`source_call_id` and `eval_result_id`; shadow budgets sum those rows directly.
 
 **L4 — agent loop.** Install `somm-mcp`, point your coding agent at it,
 and use `somm_advise` / `somm_record_decision` / `somm_inbox` so model
@@ -458,6 +460,40 @@ JSON bodies and over-cap span batches before writing rows. SQLite remains
 the default backend; the `somm[postgres]` extra installs the Postgres
 driver dependency for shared-deployment experiments.
 
+Somm-native spans carry `somm.call_id`. Re-ingesting one into the same ledger
+attaches to the existing call instead of creating another cost observation.
+An absent upstream call is retained under that id as `foreign_imported` and
+`budget_eligible=false`, so it remains visible evidence without entering
+native budgets, plan pacing, frontiers, or recommendations.
+
+Somm's totals are deliberately source-local: they describe mediated calls in
+this ledger, not every agent or provider account on the machine. Cross-source
+historical reconciliation and cost-per-outcome belong to Milton. Somm remains
+independently usable and never imports Milton on its routing path.
+
+For bounded retrospective comparison, Somm can validate a versioned Milton
+`(implementation, profile, served model, harness)` snapshot as evidence:
+
+```python
+from somm import assess_outcome_snapshot
+
+assessment = assess_outcome_snapshot(
+    snapshot,
+    expected_tuple={
+        "implementation": git_sha,
+        "profile": workload_id,
+        "served_model": model,
+        "harness": "codex",
+    },
+)
+```
+
+The assessment is fail-safe for unavailable, stale, sparse, confounded,
+invalid, or tuple-mismatched input. Even `ready` means only
+`eligible_for_review=True`: `policy_changed` is always false and
+`policy_action` is always null. Per-call evals, plan pacing, budget gates, and
+bounded routing recommendations remain Somm-owned.
+
 With `somm-service` installed:
 
 ```bash
@@ -469,13 +505,23 @@ somm-serve admin run-shadow             # one-shot online-eval grading pass
 
 ### PAYG vs metered plans — cost is not always dollars
 
-Not every provider bills the same way. API keys are usually **PAYG**
-(per-token dollars; `cost_usd` is real spend), but coding plans and CLI
-seats are **metered**: marginal dollars are ~0 inside a recurring
-quota, `cost_usd` is notional list-price, and the scarce resource is
-**window headroom**. Declare which is which — machine-wide, because a
-plan's quota is shared by every project on the same account — in
-`~/.somm/plans.toml`:
+Not every provider bills the same way. API keys are usually **PAYG**:
+`cost_usd` is normally Somm's token-times-price estimate of marginal spend,
+not a provider invoice. Coding plans and CLI seats are **metered**: marginal
+dollars are ~0 inside a recurring quota, `cost_usd` is notional list-price,
+and the scarce resource is **window headroom**. Calls also record
+`cost_basis`, `cost_kind`, `cost_accuracy`, `cost_source`, and
+`pricing_version`, so downstream accounting can keep reported, computed,
+marginal, and notional values distinct.
+
+Local Ollama calls are `included` and `local-included-unpriced`. Their numeric
+`cost_usd == 0` compatibility value means “no metered provider charge,” not
+zero electricity, hardware, or opportunity cost; downstream economic
+accounting should treat the dollar amount as unavailable until a local rate
+model is supplied.
+
+Declare plan shape machine-wide — a plan's quota is shared by every project on
+the same account — in `~/.somm/plans.toml`:
 
 ```toml
 [minimax]

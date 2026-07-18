@@ -135,8 +135,12 @@ class AgentWorker:
                 FROM eval_results er
                 JOIN calls c ON c.id = er.call_id
                 JOIN workloads w ON w.id = c.workload_id
-                WHERE er.judge_score IS NOT NULL OR er.structural_score IS NOT NULL
-                   OR er.embedding_score IS NOT NULL
+                WHERE (
+                    er.judge_score IS NOT NULL OR er.structural_score IS NOT NULL
+                    OR er.embedding_score IS NOT NULL
+                )
+                  AND c.observation_role = 'production'
+                  AND c.budget_eligible != 0
                 GROUP BY c.workload_id, c.provider, c.model
                 HAVING COUNT(er.id) >= ?
                 """,
@@ -171,6 +175,8 @@ class AgentWorker:
                     """
                     SELECT provider, model FROM calls
                     WHERE workload_id = ? AND ts >= ?
+                      AND observation_role = 'production'
+                      AND budget_eligible != 0
                     GROUP BY provider, model ORDER BY COUNT(*) DESC LIMIT 1
                     """,
                     (workload_id, since),
@@ -247,6 +253,8 @@ class AgentWorker:
                 SELECT DISTINCT c.workload_id, c.provider, c.model, w.name
                 FROM calls c JOIN workloads w ON w.id = c.workload_id
                 WHERE c.ts >= ?
+                  AND c.observation_role = 'production'
+                  AND c.budget_eligible != 0
                 GROUP BY c.workload_id, c.provider, c.model
                 HAVING COUNT(*) >= ?
                 """,
@@ -343,6 +351,8 @@ class AgentWorker:
                 SELECT c.workload_id, w.name, c.provider, COUNT(*) AS n
                 FROM calls c JOIN workloads w ON w.id = c.workload_id
                 WHERE c.provider IN ({placeholders}) AND c.ts >= ?
+                  AND c.observation_role = 'production'
+                  AND c.budget_eligible != 0
                 GROUP BY c.workload_id, c.provider
                 HAVING COUNT(*) >= ?
                 """,

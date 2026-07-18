@@ -7,6 +7,8 @@ autonomous spend.
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,7 @@ from somm.errors import SommBudgetExceeded
 from somm.providers.base import ProviderHealth, SommResponse
 from somm_core import Outcome
 from somm_core.config import Config
+from somm_core.models import Call
 from somm_core.pricing import write_intel
 
 
@@ -66,9 +69,7 @@ def test_blocks_when_cap_already_reached(tmp_path):
     prov = CountingProvider()
     llm = SommLLM(config=cfg, providers=[prov])
     try:
-        llm.repo.register_workload(
-            name="capped", project=cfg.project, budget_cap_usd_daily=0.0
-        )
+        llm.repo.register_workload(name="capped", project=cfg.project, budget_cap_usd_daily=0.0)
         with pytest.raises(SommBudgetExceeded) as ei:
             llm.generate("p", workload="capped", provider="fake", model="m")
         assert ei.value.code == "SOMM_BUDGET_EXCEEDED"
@@ -86,9 +87,7 @@ def test_blocks_after_accumulated_spend(tmp_path):
     try:
         # Price the fake (provider, model) so one call costs ~$2, over the cap.
         write_intel(llm.repo, "fake", "m", 1_000_000.0, 1_000_000.0, None, None, "test")
-        llm.repo.register_workload(
-            name="capped", project=cfg.project, budget_cap_usd_daily=0.50
-        )
+        llm.repo.register_workload(name="capped", project=cfg.project, budget_cap_usd_daily=0.50)
         # First call: spend starts at 0 → allowed, accumulates over the cap.
         r1 = llm.generate("p", workload="capped", provider="fake", model="m")
         assert r1.outcome == Outcome.OK and prov.calls == 1
@@ -96,10 +95,59 @@ def test_blocks_after_accumulated_spend(tmp_path):
         # Commit the telemetry row. In production the async writer drains during
         # the seconds-long real LLM call; here the fake provider is instant.
         llm._writer.flush()
+        recorded = llm.repo.get_call(r1.call_id)
+        assert recorded is not None
+        assert (
+            recorded.cost_basis,
+            recorded.cost_kind,
+            recorded.cost_accuracy,
+            recorded.cost_source,
+        ) == ("computed", "marginal", "estimated", "somm:model_intel")
+        assert recorded.pricing_version is not None
+        assert recorded.pricing_version.startswith("test@")
         # Second call: committed spend >= cap → refused before dispatch.
         with pytest.raises(SommBudgetExceeded):
             llm.generate("p", workload="capped", provider="fake", model="m")
         assert prov.calls == 1  # provider was not called the second time
+    finally:
+        llm.close()
+
+
+def test_foreign_import_does_not_trip_native_budget(tmp_path):
+    cfg = _cfg(tmp_path, fail_closed=True)
+    prov = CountingProvider()
+    llm = SommLLM(config=cfg, providers=[prov])
+    try:
+        wl = llm.repo.register_workload(
+            name="capped", project=cfg.project, budget_cap_usd_daily=0.50
+        )
+        llm.repo.write_call(
+            Call(
+                id=str(uuid.uuid4()),
+                ts=datetime.now(UTC),
+                project=cfg.project,
+                workload_id=wl.id,
+                prompt_id=None,
+                provider="foreign",
+                model="m",
+                tokens_in=1,
+                tokens_out=1,
+                latency_ms=1,
+                cost_usd=999.0,
+                outcome=Outcome.OK,
+                error_kind=None,
+                prompt_hash="foreign-prompt",
+                response_hash="foreign-response",
+                observation_role="imported",
+                origin="foreign_imported",
+                budget_eligible=False,
+            )
+        )
+
+        result = llm.generate("p", workload="capped", provider="fake", model="m")
+
+        assert result.outcome == Outcome.OK
+        assert prov.calls == 1
     finally:
         llm.close()
 
@@ -110,9 +158,7 @@ def test_inert_when_disabled(tmp_path):
     prov = CountingProvider()
     llm = SommLLM(config=cfg, providers=[prov])
     try:
-        llm.repo.register_workload(
-            name="capped", project=cfg.project, budget_cap_usd_daily=0.0
-        )
+        llm.repo.register_workload(name="capped", project=cfg.project, budget_cap_usd_daily=0.0)
         r = llm.generate("p", workload="capped", provider="fake", model="m")
         assert r.outcome == Outcome.OK and prov.calls == 1
     finally:
@@ -153,9 +199,7 @@ def test_explicit_cap_beats_default(tmp_path):
     prov = CountingProvider()
     llm = SommLLM(config=cfg, providers=[prov])
     try:
-        llm.repo.register_workload(
-            name="vip", project=cfg.project, budget_cap_usd_daily=1000.0
-        )
+        llm.repo.register_workload(name="vip", project=cfg.project, budget_cap_usd_daily=1000.0)
         r = llm.generate("p", workload="vip", provider="fake", model="m")
         assert r.outcome == Outcome.OK and prov.calls == 1
     finally:
@@ -168,9 +212,7 @@ def test_stream_blocks_when_cap_already_reached(tmp_path):
     prov = CountingProvider()
     llm = SommLLM(config=cfg, providers=[prov])
     try:
-        llm.repo.register_workload(
-            name="capped", project=cfg.project, budget_cap_usd_daily=0.0
-        )
+        llm.repo.register_workload(name="capped", project=cfg.project, budget_cap_usd_daily=0.0)
         with pytest.raises(SommBudgetExceeded) as ei:
             list(llm.stream("p", workload="capped", provider="fake", model="m"))
         assert ei.value.code == "SOMM_BUDGET_EXCEEDED"

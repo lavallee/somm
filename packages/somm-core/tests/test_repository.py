@@ -104,6 +104,41 @@ def test_repository_concurrent_threads_share_instance_without_errors(tmp_path):
     repo.close()
 
 
+def test_call_cost_provenance_round_trips(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    call = _call("provenance", "workload")
+    call.cost_basis = "reported"
+    call.cost_kind = "marginal"
+    call.cost_accuracy = "actual"
+    call.cost_source = "provider:invoice"
+    call.pricing_version = "2026-07"
+    call.observation_role = "shadow_gold"
+    call.source_call_id = "production-1"
+    call.eval_result_id = 42
+    call.provider_request_id = "provider-request-1"
+    call.billing_id = "billing-1"
+    call.origin = "native"
+    call.budget_eligible = False
+
+    repo.write_call(call)
+    recovered = repo.get_call(call.id)
+
+    assert recovered is not None
+    assert recovered.cost_basis == "reported"
+    assert recovered.cost_kind == "marginal"
+    assert recovered.cost_accuracy == "actual"
+    assert recovered.cost_source == "provider:invoice"
+    assert recovered.pricing_version == "2026-07"
+    assert recovered.observation_role == "shadow_gold"
+    assert recovered.source_call_id == "production-1"
+    assert recovered.eval_result_id == 42
+    assert recovered.provider_request_id == "provider-request-1"
+    assert recovered.billing_id == "billing-1"
+    assert recovered.origin == "native"
+    assert recovered.budget_eligible is False
+    repo.close()
+
+
 def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
     repo = Repository(tmp_path / "calls.sqlite")
     wl = repo.register_workload(

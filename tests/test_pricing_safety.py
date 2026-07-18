@@ -3,6 +3,7 @@
 Feature 1: seed_known_pricing populates model_intel on first use.
 Feature 2: cost_for_call warns on missing pricing for paid providers.
 Feature 3: generate() warns when daily budget cap is exceeded.
+Feature 4: local unpriced calls are not represented as zero economic cost.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from somm.client import _cost_provenance
 from somm_core.pricing import (
     _KNOWN_PRICING,
     _warned_missing_pricing,
@@ -79,6 +81,17 @@ def test_seed_includes_free_providers():
     assert len(ollama_rows) >= 1
     assert ollama_rows[0]["price_in_per_1m"] == 0.0
     assert ollama_rows[0]["price_out_per_1m"] == 0.0
+
+
+def test_local_price_provenance_is_included_and_unpriced():
+    repo = _fresh_repo()
+    assert _cost_provenance(
+        repo,
+        "ollama",
+        "qwen2.5:7b",
+        reported=False,
+        source=None,
+    ) == ("unknown", "included", "unknown", "local-included-unpriced", None)
 
 
 # ---- Feature 2: warn on missing pricing for paid providers ------------------

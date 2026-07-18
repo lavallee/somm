@@ -118,7 +118,11 @@ derived rollup.
 ### Events (immutable)
 
 - **`calls`** — one row per `generate()`. The only mandatory write
-  path. Fields: ids, timing, cost, outcome, hashes.
+  path. Fields: ids, timing, cost plus basis/kind/accuracy provenance,
+  outcome, hashes. Gold/judge requests are also calls, distinguished by
+  `observation_role` and linked through `source_call_id`/`eval_result_id`.
+  Provider request/billing ids are custody fields, separate from the gateway
+  call id. Foreign OTLP imports remain visible but are not budget eligible.
 - **`call_updates`** — late-arriving metadata on a call (outcome marks,
   audit trail).
 - **`samples`** — prompt/response bodies, *per-workload opt-in*.
@@ -251,12 +255,33 @@ When a call returns, cost is computed from `model_intel`, not from
 provider response metadata (which is inconsistent across providers
 and sometimes missing). If intel is missing, cost is `$0` and a
 warning fires once. The agent worker refreshes intel on a cadence.
+The row labels that amount `computed` and `estimated`; imported telemetry or a
+hook-supplied amount is labeled `reported` so retrospective consumers do not
+confuse the ledger observation with a provider invoice.
+
+Shadow evaluation follows the same rule. It prices the gold/judge response
+from that response's returned tokens unless the response itself reports a
+cost, in which case basis is `reported`. Campaign totals are projections over
+those call rows, not additional provider requests.
+
+This accounting is authoritative only for Somm's mediated ledger and hot-path
+policy: per-call recording, budget admission, plan pacing, and quota learning.
+Milton owns optional cross-source reconciliation and cost-per-outcome. The
+dependency remains one-way through a versioned JSON evidence document; core
+routing never requires Milton and never mirrors arbitrary global call rows.
 
 ### The agent worker emits *evidence*, not models
 
 Recommendations carry `evidence_json` with the numbers that produced
 them. The UI shows "switch to X: +45% quality, -80% latency (47
 shadow calls)". A recommendation without provenance isn't actionable.
+
+Milton's `milton.outcome-tuple/v1` snapshot is one admissible retrospective
+evidence input. `somm.assess_outcome_snapshot()` checks exact tuple identity,
+exclusive cutoff, freshness, sample floor, ambiguity, and producer uncertainty.
+It has no policy mutation hook: ready evidence may be reviewed by a bounded
+recommender, while stale, sparse, confounded, unavailable, invalid, and
+tuple-mismatched evidence falls back to the existing Somm data and policy.
 
 ### Providers are swappable, not fixed
 

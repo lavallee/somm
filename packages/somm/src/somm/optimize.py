@@ -109,6 +109,8 @@ def failing_prompt_cases(
             JOIN samples s ON s.call_id = c.id
             WHERE c.workload_id = ?
               AND c.prompt_id = ?
+              AND c.observation_role = 'production'
+              AND c.budget_eligible != 0
               AND COALESCE(er.judge_score, er.embedding_score, er.structural_score, 0) < ?
             ORDER BY er.ts DESC, er.id DESC
             LIMIT ?

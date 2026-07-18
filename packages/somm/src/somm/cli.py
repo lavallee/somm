@@ -202,14 +202,24 @@ def _cmd_workload_show(args: argparse.Namespace) -> int:
     print(f"privacy_class: {row['privacy_class']}")
     print(f"call_count: {row['call_count']}")
     print(f"created_at: {row['created_at']}")
-    print(f"budget_cap_usd_daily: {row['budget_cap_usd_daily'] if row['budget_cap_usd_daily'] is not None else '—'}")
+    print(
+        f"budget_cap_usd_daily: {row['budget_cap_usd_daily'] if row['budget_cap_usd_daily'] is not None else '—'}"
+    )
     print(f"capabilities_required: {', '.join(row['capabilities_required']) or '—'}")
     print("constraints:")
-    print(f"  max_p95_latency_ms: {row['max_p95_latency_ms'] if row['max_p95_latency_ms'] is not None else '—'}")
-    print(f"  max_p95_ttft_ms: {row['max_p95_ttft_ms'] if row['max_p95_ttft_ms'] is not None else '—'}")
+    print(
+        f"  max_p95_latency_ms: {row['max_p95_latency_ms'] if row['max_p95_latency_ms'] is not None else '—'}"
+    )
+    print(
+        f"  max_p95_ttft_ms: {row['max_p95_ttft_ms'] if row['max_p95_ttft_ms'] is not None else '—'}"
+    )
     print(f"  max_tpot_ms: {row['max_tpot_ms'] if row['max_tpot_ms'] is not None else '—'}")
-    print(f"  max_capability_failure_rate: {row['max_capability_failure_rate'] if row['max_capability_failure_rate'] is not None else '—'}")
-    print(f"  max_cost_per_call_usd: {row['max_cost_per_call_usd'] if row['max_cost_per_call_usd'] is not None else '—'}")
+    print(
+        f"  max_capability_failure_rate: {row['max_capability_failure_rate'] if row['max_capability_failure_rate'] is not None else '—'}"
+    )
+    print(
+        f"  max_cost_per_call_usd: {row['max_cost_per_call_usd'] if row['max_cost_per_call_usd'] is not None else '—'}"
+    )
     print("input_schema:")
     print(json.dumps(row["input_schema"], indent=2) if row["input_schema"] else "  —")
     print("output_schema:")
@@ -240,7 +250,9 @@ def _cmd_workload_set_constraints(args: argparse.Namespace) -> int:
             args.max_cost_per_call_usd,
         )
     ):
-        print("No constraints supplied; pass at least one --max-* option or --clear.", file=sys.stderr)
+        print(
+            "No constraints supplied; pass at least one --max-* option or --clear.", file=sys.stderr
+        )
         return 2
     repo.set_workload_constraints(
         wl.id,
@@ -559,13 +571,10 @@ def _cmd_prompt_promote(args: argparse.Namespace) -> int:
         return 2
 
     score = _prompt_score(repo, prompt.id)
-    min_graded_ok = (
-        args.min_graded is None or score["graded_count"] >= int(args.min_graded)
-    )
+    min_graded_ok = args.min_graded is None or score["graded_count"] >= int(args.min_graded)
     mean_gate = score["mean_gate"]
-    min_score_ok = (
-        args.min_score is None
-        or (mean_gate is not None and float(mean_gate) >= float(args.min_score))
+    min_score_ok = args.min_score is None or (
+        mean_gate is not None and float(mean_gate) >= float(args.min_score)
     )
     if not args.force and (not min_graded_ok or not min_score_ok):
         print(
@@ -600,8 +609,7 @@ def _cmd_prompt_score(args: argparse.Namespace) -> int:
             from somm.prompts import get_prompt
 
             prompts = [
-                get_prompt(repo, wl.id, version=row["version"])
-                for row in _prompt_rows(repo, wl.id)
+                get_prompt(repo, wl.id, version=row["version"]) for row in _prompt_rows(repo, wl.id)
             ]
     except PromptNotFound as exc:
         print(str(exc), file=sys.stderr)
@@ -657,6 +665,7 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
     repo = Repository(cfg.db_path)
     llm = SommLLM(config=cfg)
     try:
+
         def generate(item):
             result = llm.generate(
                 prompt=item.prompt_body,
@@ -722,11 +731,15 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     repo = Repository(cfg.db_path)
     wl = repo.workload_by_name(args.workload, cfg.project)
     if wl is None:
-        print(f"No workload {args.workload!r} registered for project {cfg.project!r}.", file=sys.stderr)
+        print(
+            f"No workload {args.workload!r} registered for project {cfg.project!r}.",
+            file=sys.stderr,
+        )
         return 2
 
     llm = SommLLM(config=cfg)
     try:
+
         def proposer(prompt: str) -> str:
             result = llm.generate(
                 prompt=prompt,
@@ -762,10 +775,7 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     finally:
         llm.close()
 
-    print(
-        f"{result.label} -> {result.proposed_prompt.version} "
-        f"({result.proposed_prompt.id[:8]})"
-    )
+    print(f"{result.label} -> {result.proposed_prompt.version} ({result.proposed_prompt.id[:8]})")
     print(f"source: {result.source_prompt.version} ({result.source_prompt.id[:8]})")
     print(f"cases: {len(result.cases)}")
     if result.rationale:
@@ -798,6 +808,7 @@ def _cmd_campaign_run(args: argparse.Namespace) -> int:
 
     llm = SommLLM(config=cfg)
     try:
+
         def generate(item):
             result = llm.generate(
                 prompt=item.prompt_body,
@@ -902,10 +913,7 @@ def _cmd_inbox_list(args: argparse.Namespace) -> int:
     if not recs:
         print("no recommendations")
         return 0
-    print(
-        f"{'id':>5} {'workload':<24} {'action':<18} "
-        f"{'conf':>6} {'state':<9} impact"
-    )
+    print(f"{'id':>5} {'workload':<24} {'action':<18} {'conf':>6} {'state':<9} impact")
     for rec in recs:
         if rec.applied_at:
             state = "applied"
@@ -1254,8 +1262,7 @@ def _cmd_cache_advice(args: argparse.Namespace) -> int:
         return 0
     print(f"Prefix-cache advice: {cfg.project}  ({args.since}d window)")
     print(
-        f"{'workload':<24} {'provider':<12} {'model':<18} {'n':>6} "
-        f"{'tok_in':>9} {'cache':>7} issue"
+        f"{'workload':<24} {'provider':<12} {'model':<18} {'n':>6} {'tok_in':>9} {'cache':>7} issue"
     )
     for row in rows:
         print(
@@ -1382,8 +1389,12 @@ def _bench_summary(rows: list[dict], *, wall_seconds: float) -> dict:
         },
         "throughput": {
             "requests_per_second": (len(ok_rows) / wall_seconds) if wall_seconds > 0 else None,
-            "input_tokens_per_second": (total_input_tokens / wall_seconds) if wall_seconds > 0 else None,
-            "output_tokens_per_second": (total_output_tokens / wall_seconds) if wall_seconds > 0 else None,
+            "input_tokens_per_second": (total_input_tokens / wall_seconds)
+            if wall_seconds > 0
+            else None,
+            "output_tokens_per_second": (total_output_tokens / wall_seconds)
+            if wall_seconds > 0
+            else None,
             "total_tokens_per_second": (total_tokens / wall_seconds) if wall_seconds > 0 else None,
         },
         "tokens": {
@@ -1461,7 +1472,9 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     ttft = summary["ttft_ms"]
     tpot = summary["tpot_ms"]
     thr = summary["throughput"]
-    print(f"bench {args.bench_cmd}: {cfg.project}/{workload}  n={args.iterations} warmup={args.warmup}")
+    print(
+        f"bench {args.bench_cmd}: {cfg.project}/{workload}  n={args.iterations} warmup={args.warmup}"
+    )
     print(
         "latency_ms "
         f"p50={_fmt_stat_float(lat['p50'])} "
@@ -1903,6 +1916,7 @@ def spend_today(
             LEFT JOIN workloads w ON w.id = c.workload_id
             WHERE c.project = ?
               AND date(c.ts) = date('now')
+              AND c.budget_eligible != 0
             GROUP BY COALESCE(w.name, '(unregistered)')
             ORDER BY spent_usd DESC
             """,
@@ -1945,9 +1959,10 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             e = catalog[key]
             age = e.age_days()
             age_s = f"verified {age}d ago" if age is not None else "unverified"
-            lims = "; ".join(
-                f"{lim.quota:g} {lim.unit}/{lim.window}" for lim in e.limits
-            ) or "no limits recorded"
+            lims = (
+                "; ".join(f"{lim.quota:g} {lim.unit}/{lim.window}" for lim in e.limits)
+                or "no limits recorded"
+            )
             print(f"  {key:<28} {e.display}")
             print(f"    {lims}  [{age_s}]")
             if e.notes:
@@ -1977,23 +1992,28 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             min_events=args.min_events,
         )
         if args.json:
-            print(json.dumps({
-                "path": str(plans_path()),
-                "dry_run": args.dry_run,
-                "updates": [
+            print(
+                json.dumps(
                     {
-                        "provider": u.provider,
-                        "window": u.window,
-                        "unit": u.unit,
-                        "old_quota": u.old_quota,
-                        "new_quota": u.new_quota,
-                        "n_events": u.n_events,
-                        "last_event": u.last_event,
-                        "action": u.action,
-                    }
-                    for u in updates
-                ],
-            }, indent=2))
+                        "path": str(plans_path()),
+                        "dry_run": args.dry_run,
+                        "updates": [
+                            {
+                                "provider": u.provider,
+                                "window": u.window,
+                                "unit": u.unit,
+                                "old_quota": u.old_quota,
+                                "new_quota": u.new_quota,
+                                "n_events": u.n_events,
+                                "last_event": u.last_event,
+                                "action": u.action,
+                            }
+                            for u in updates
+                        ],
+                    },
+                    indent=2,
+                )
+            )
             return 0
         if not updates:
             print("no observed quota ceilings to learn")
@@ -2037,21 +2057,23 @@ def _cmd_plans(args: argparse.Namespace) -> int:
     if args.json:
         out = []
         for st in statuses:
-            out.append({
-                "provider": st.provider,
-                "plan": st.plan_name,
-                "window": st.limit.window,
-                "unit": st.limit.unit,
-                "used": round(st.used, 4),
-                "quota": st.limit.quota,
-                "used_pct": round(st.used_pct, 1),
-                "elapsed_pct": round(st.elapsed_pct, 1),
-                "pace_ratio": round(st.pace_ratio, 2),
-                "projected_pct": round(st.projected_pct, 1),
-                "window_end": st.window_end.isoformat(),
-                "state": st.state,
-                "mode": st.mode,
-            })
+            out.append(
+                {
+                    "provider": st.provider,
+                    "plan": st.plan_name,
+                    "window": st.limit.window,
+                    "unit": st.limit.unit,
+                    "used": round(st.used, 4),
+                    "quota": st.limit.quota,
+                    "used_pct": round(st.used_pct, 1),
+                    "elapsed_pct": round(st.elapsed_pct, 1),
+                    "pace_ratio": round(st.pace_ratio, 2),
+                    "projected_pct": round(st.projected_pct, 1),
+                    "window_end": st.window_end.isoformat(),
+                    "state": st.state,
+                    "mode": st.mode,
+                }
+            )
         from somm_core.plans import payg_burn_rates
 
         burn = [
@@ -2108,13 +2130,10 @@ def _cmd_plans(args: argparse.Namespace) -> int:
         for line in value_lines:
             print(line)
 
-    metered_no_limits = [
-        p for p, pl in plans.items() if pl.mode == "metered" and not pl.limits
-    ]
+    metered_no_limits = [p for p, pl in plans.items() if pl.mode == "metered" and not pl.limits]
     if metered_no_limits:
         print(
-            f"\nmetered, no limits declared (labelled only): "
-            f"{', '.join(sorted(metered_no_limits))}"
+            f"\nmetered, no limits declared (labelled only): {', '.join(sorted(metered_no_limits))}"
         )
 
     # PAYG burn rates: no vendor window here — the number that matters is
@@ -2653,9 +2672,7 @@ def build_parser() -> argparse.ArgumentParser:
     psr.add_argument("--port", type=int, default=7878)
     psr.set_defaults(func=_cmd_serve)
 
-    pspend = sub.add_parser(
-        "spend", help="today's LLM spend vs daily budget cap per workload"
-    )
+    pspend = sub.add_parser("spend", help="today's LLM spend vs daily budget cap per workload")
     pspend.add_argument("--project", default=None)
     pspend.add_argument(
         "--json",

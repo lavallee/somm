@@ -15,7 +15,8 @@ fires when both are true:
 Enforcement is on *committed* daily spend (rows already written to
 `calls`), checked with a `SELECT SUM(cost_usd) ... WHERE date(ts) =
 date('now')` query. Because telemetry writes drain asynchronously
-during the seconds-long LLM call, committed spend tracks actual spend
+during the seconds-long LLM call, committed spend tracks Somm's recorded
+amount (normally a token-times-price estimate)
 closely but not instantly — the call that crosses the cap still
 completes, and only the *next* call is blocked. Overshoot is bounded to
 roughly one call plus whatever hadn't flushed yet.

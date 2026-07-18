@@ -12,6 +12,12 @@ from somm.errors import (
     SommStrictMode,
     describe_error,
 )
+from somm.outcome_evidence import (
+    OutcomeEvidenceAssessment,
+    OutcomeEvidenceState,
+    assess_outcome_snapshot,
+)
+from somm.procedure_outcomes import record_procedure_outcome
 
 _CORE_MODEL_EXPORTS = {"EmbedResult", "Outcome", "PrivacyClass", "SommResult"}
 
@@ -50,6 +56,7 @@ def __getattr__(name: str):
         return provenance
     raise AttributeError(f"module 'somm' has no attribute {name!r}")
 
+
 __all__ = [
     "SommLLM",
     "llm",
@@ -69,4 +76,8 @@ __all__ = [
     "SommProvidersExhausted",
     "SommStrictMode",
     "describe_error",
+    "OutcomeEvidenceAssessment",
+    "OutcomeEvidenceState",
+    "assess_outcome_snapshot",
+    "record_procedure_outcome",
 ]
