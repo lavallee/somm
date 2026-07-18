@@ -6,12 +6,14 @@ telemetry lands and the returned shape matches expectations.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from somm.compat import GenericLLMCompat, OpenAIChatCompletion, openai_chat_completions
 from somm.compat.generic import LegacyLLMResult
 from somm.providers.base import ProviderHealth, SommResponse
 from somm_core.config import Config
+from somm_core.pricing import write_intel
 
 
 class FakeProvider:
@@ -50,6 +52,21 @@ def _tmp_cfg(tmp_path: Path) -> Config:
     return cfg
 
 
+def _call_row(shim: GenericLLMCompat, call_id: str) -> dict:
+    shim.llm._writer.flush(timeout=2.0)
+    with sqlite3.connect(shim.llm.config.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT c.id, c.correlation_id, c.provider, c.model, c.tokens_in, "
+            "c.tokens_out, c.latency_ms, c.cost_usd, c.outcome, w.name AS workload "
+            "FROM calls AS c JOIN workloads AS w ON w.id = c.workload_id "
+            "WHERE c.id = ?",
+            (call_id,),
+        ).fetchone()
+    assert row is not None
+    return dict(row)
+
+
 # ---------------------------------------------------------------------------
 # GenericLLMCompat
 
@@ -60,22 +77,43 @@ def test_generic_compat_matches_legacy_shape(tmp_path, monkeypatch):
     p = FakeProvider("ollama")
     shim = GenericLLMCompat(project="compat-test", providers=[p])
     try:
-        r = shim.generate("hi", system="be brief", max_tokens=8)
+        write_intel(
+            shim.llm.repo,
+            "ollama",
+            "ollama-m",
+            1_000.0,
+            2_000.0,
+            None,
+            None,
+            "test",
+        )
+        r = shim.generate(
+            "hi",
+            system="be brief",
+            max_tokens=8,
+            correlation_id="compat-generate-123",
+        )
+        row = _call_row(shim, r.call_id)
     finally:
         shim.close()
 
     # Legacy fields
     assert isinstance(r, LegacyLLMResult)
     assert r.text == "ok"
-    assert r.provider == "ollama"
-    assert r.model == "ollama-m"
+    assert r.provider == row["provider"] == "ollama"
+    assert r.model == row["model"] == "ollama-m"
 
     # somm extras
-    assert r.call_id
-    assert r.tokens_in == 5
-    assert r.tokens_out == 2
-    assert r.latency_ms == 20
-    assert r.outcome == "ok"
+    assert r.call_id == row["id"]
+    assert r.tokens_in == row["tokens_in"] == 5
+    assert r.tokens_out == row["tokens_out"] == 2
+    assert r.latency_ms == row["latency_ms"] == 20
+    assert r.cost_usd == row["cost_usd"] == 0.009
+    assert r.outcome == row["outcome"] == "ok"
+
+    # Explicit correlation passes through while routing and workload defaults stay intact.
+    assert row["correlation_id"] == "compat-generate-123"
+    assert row["workload"] == "default"
 
 
 def test_generic_compat_chat_splits_messages(tmp_path, monkeypatch):
@@ -91,11 +129,15 @@ def test_generic_compat_chat_splits_messages(tmp_path, monkeypatch):
                 {"role": "user", "content": "thanks"},
             ],
             max_tokens=8,
+            correlation_id="compat-chat-456",
         )
+        row = _call_row(shim, r.call_id)
     finally:
         shim.close()
     assert r.text == "ok"
     assert p.calls == 1
+    assert row["id"] == r.call_id
+    assert row["correlation_id"] == "compat-chat-456"
 
 
 def test_generic_compat_probe_providers_alias(tmp_path, monkeypatch):
