@@ -10,13 +10,16 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from somm.cli import (
     WORKLOAD_EXAMPLES,
     _age_since,
     _age_until,
+    _dataset_judge,
     _fetch_since,
     _fmt_delta,
+    _load_eval_judge_config,
     _parse_model_specs,
     _print_comparison,
     build_parser,
@@ -74,6 +77,67 @@ def test_parse_model_specs_variants():
 def test_parse_model_specs_empty():
     assert _parse_model_specs(None) == []
     assert _parse_model_specs([""]) == []
+
+
+def test_eval_judge_config_requires_explicit_panel_and_quorum(tmp_path):
+    path = tmp_path / "judge.json"
+    path.write_text(json.dumps({
+        "min_judges": 1,
+        "criteria": ["correctness"],
+        "panel": [{"provider": "minimax", "model": "MiniMax-M3"}],
+    }))
+
+    config = _load_eval_judge_config(str(path))
+
+    assert config["min_judges"] == 1
+    assert config["panel"][0]["provider"] == "minimax"
+
+
+def test_dataset_judge_pins_every_panel_member_without_fallback():
+    class FakeLLM:
+        def __init__(self):
+            self.requests = []
+
+        def generate(self, **kwargs):
+            self.requests.append(kwargs)
+            return SommResult(
+                text=json.dumps({
+                    "criteria": [{
+                        "name": "correctness", "pass": True, "reason": "grounded",
+                    }]
+                }),
+                provider=kwargs["provider"],
+                model=kwargs["model"],
+                tokens_in=10,
+                tokens_out=5,
+                latency_ms=10,
+                cost_usd=0.0,
+                call_id=str(uuid.uuid4()),
+            )
+
+    llm = FakeLLM()
+    judge = _dataset_judge(llm, workload="qa", config={
+        "min_judges": 2,
+        "criteria": ["correctness"],
+        "panel": [
+            {"provider": "minimax", "model": "MiniMax-M2.7-highspeed"},
+            {"provider": "openrouter", "model": "nvidia/model:free"},
+        ],
+    })
+
+    grade = judge(
+        SimpleNamespace(prompt_body="question", expected_response_body="answer"),
+        SimpleNamespace(text="answer"),
+    )
+
+    assert grade.score == 1.0
+    assert grade.reason["quorum"] is True
+    assert len(grade.call_ids) == 2
+    assert all(request["no_fallback"] is True for request in llm.requests)
+    assert [(r["provider"], r["model"]) for r in llm.requests] == [
+        ("minimax", "MiniMax-M2.7-highspeed"),
+        ("openrouter", "nvidia/model:free"),
+    ]
 
 
 # ---------------------------------------------------------------------------

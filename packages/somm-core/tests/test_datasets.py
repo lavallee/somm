@@ -93,6 +93,60 @@ def test_promote_call_to_dataset_rejects_project_mismatch(tmp_path):
         repo.promote_call_to_dataset(call_id, "golden", project="other")
 
 
+def test_import_dataset_items_creates_reviewed_fixture_without_fake_call(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl = repo.register_workload("extract", "datasets")
+
+    dataset, items = repo.import_dataset_items(
+        project="datasets",
+        workload_id=wl.id,
+        name="reviewed",
+        description="Human-reviewed cases",
+        created_by="test suite",
+        items=[{
+            "prompt_body": "classify this source",
+            "expected_response_body": '{"accepted": false}',
+            "metadata": {"reviewer": "operator"},
+        }],
+    )
+    repeated = repo.import_dataset_items(
+        project="datasets",
+        workload_id=wl.id,
+        name="reviewed",
+        items=[{
+            "prompt_body": "classify this source",
+            "expected_response_body": '{"accepted": false}',
+            "metadata": {"reviewer": "operator"},
+        }],
+    )
+
+    assert dataset.name == "reviewed"
+    assert len(items) == 1
+    assert items[0].source_call_id is None
+    assert items[0].metadata["source"] == "dataset_import"
+    assert items[0].metadata["created_by"] == "test suite"
+    assert repeated[0].id == dataset.id
+    assert repeated[1][0].id == items[0].id
+    assert len(repo.dataset_items(dataset.id)) == 1
+
+
+def test_import_dataset_items_rejects_empty_or_unreviewable_rows(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl = repo.register_workload("extract", "datasets")
+
+    with pytest.raises(ValueError, match="at least one"):
+        repo.import_dataset_items(
+            project="datasets", workload_id=wl.id, name="empty", items=[],
+        )
+    with pytest.raises(ValueError, match="expected_response_body"):
+        repo.import_dataset_items(
+            project="datasets",
+            workload_id=wl.id,
+            name="bad",
+            items=[{"prompt_body": "prompt"}],
+        )
+
+
 def test_record_and_filter_eval_receipts(tmp_path):
     repo = Repository(tmp_path / "calls.sqlite")
     wl = repo.register_workload("extract", "datasets")

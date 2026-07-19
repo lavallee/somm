@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 from somm_core.graders import GradeScores, grade_response_pair
 from somm_core.models import DatasetItem, Outcome, SommResult
@@ -66,6 +66,18 @@ GenerateDatasetItem = Callable[[DatasetItem], SommResult]
 
 
 @dataclass(frozen=True, slots=True)
+class JudgeGrade:
+    """One binary-rubric panel result and its first-class Somm calls."""
+
+    score: float
+    reason: dict
+    call_ids: tuple[str, ...] = ()
+
+
+JudgeDatasetItem = Callable[[DatasetItem, SommResult], JudgeGrade]
+
+
+@dataclass(frozen=True, slots=True)
 class PairwiseEvalResult:
     dataset_item_id: str
     candidate_a_call_id: str
@@ -84,6 +96,8 @@ def run_dataset_eval(
     workload: str,
     dataset: str,
     generate: GenerateDatasetItem,
+    judge: JudgeDatasetItem | None = None,
+    implementation: str | None = None,
     threshold: float = 0.8,
     record_timeout_s: float = 5.0,
 ) -> EvalRunResult:
@@ -124,6 +138,7 @@ def run_dataset_eval(
                     error=f"outcome={generated.outcome.value}",
                     run_id=run_id,
                     threshold=threshold,
+                    implementation=implementation,
                 )
                 results.append(
                     EvalItemResult(
@@ -141,6 +156,11 @@ def run_dataset_eval(
                 )
                 continue
             scores = grade_response_pair(generated.text, item.expected_response_body)
+            judge_grade = judge(item, generated) if judge is not None else None
+            if judge_grade is not None:
+                if judge_grade.score < 0 or judge_grade.score > 1:
+                    raise ValueError("judge score must be between 0 and 1")
+                scores = replace(scores, judge_score=float(judge_grade.score))
             score = _combined_score(scores)
             passed = score >= threshold
             eval_result_id = _record_dataset_eval(
@@ -153,6 +173,8 @@ def run_dataset_eval(
                 error=None,
                 run_id=run_id,
                 threshold=threshold,
+                judge_grade=judge_grade,
+                implementation=implementation,
             )
             results.append(
                 EvalItemResult(
@@ -292,6 +314,8 @@ def _record_dataset_eval(
     error: str | None,
     run_id: str,
     threshold: float,
+    judge_grade: JudgeGrade | None = None,
+    implementation: str | None = None,
 ) -> int:
     reason = [
         {
@@ -302,8 +326,12 @@ def _record_dataset_eval(
             "score": score,
             "passed": passed,
             "error": error,
+            "implementation": implementation,
         }
     ]
+    reason_payload: list[dict] = list(reason)
+    if judge_grade is not None:
+        reason_payload.append({"binary_judge": judge_grade.reason})
     eval_result_id = repo.record_eval_result(
         call_id=generated.call_id,
         gold_model=f"dataset:{item.dataset_id}",
@@ -311,11 +339,24 @@ def _record_dataset_eval(
         structural_score=scores.structural_score if scores else None,
         embedding_score=scores.text_similarity_score if scores else None,
         judge_score=scores.judge_score if scores else None,
-        judge_reason=json.dumps(reason, sort_keys=True),
+        judge_reason=json.dumps(reason_payload, sort_keys=True),
     )
+    if judge_grade is not None:
+        for judge_call_id in judge_grade.call_ids:
+            repo.link_call_to_eval(
+                judge_call_id,
+                eval_result_id=eval_result_id,
+                source_call_id=generated.call_id,
+                observation_role="dataset_judge",
+            )
     repo.record_eval_receipt(
         receipt_type="dataset_run",
-        payload=reason[0],
+        payload={
+            **reason[0],
+            "judge": judge_grade.reason if judge_grade is not None else None,
+            "judge_call_ids": list(judge_grade.call_ids) if judge_grade is not None else [],
+            "implementation": implementation,
+        },
         eval_result_id=eval_result_id,
         run_id=run_id,
         call_id=generated.call_id,
@@ -345,6 +386,8 @@ __all__ = [
     "EvalRunResult",
     "PairwiseEvalResult",
     "GenerateDatasetItem",
+    "JudgeDatasetItem",
+    "JudgeGrade",
     "grade_pairwise_ab",
     "run_dataset_eval",
 ]

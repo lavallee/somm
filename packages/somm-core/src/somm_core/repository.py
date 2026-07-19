@@ -515,6 +515,21 @@ def _dataset_item_id(dataset_id: str, source_call_id: str) -> str:
     )
 
 
+def _imported_dataset_item_id(
+    dataset_id: str,
+    prompt_body: str,
+    expected_response_body: str,
+) -> str:
+    return stable_hash(
+        {
+            "kind": "imported_dataset_item",
+            "dataset_id": dataset_id,
+            "prompt_body": prompt_body,
+            "expected_response_body": expected_response_body,
+        }
+    )
+
+
 class Repository:
     """SQLite-backed repository. Thread-safe via per-thread connection reuse.
 
@@ -1228,6 +1243,130 @@ class Repository:
                 conn.execute("ROLLBACK")
                 raise
         return self._dataset_row(dataset_row), self._dataset_item_row(item_row)
+
+    def import_dataset_items(
+        self,
+        *,
+        project: str,
+        workload_id: str,
+        name: str,
+        items: list[dict],
+        description: str = "",
+        created_by: str | None = None,
+    ) -> tuple[Dataset, list[DatasetItem]]:
+        """Import reviewed prompt/expected-response pairs into a dataset.
+
+        Items are content-addressed and idempotent. This deliberately does not
+        manufacture source calls: imported fixtures have ``source_call_id``
+        null and carry their review provenance in metadata instead.
+        """
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("dataset name is required")
+        if not items:
+            raise ValueError("dataset import needs at least one item")
+        normalized: list[tuple[str, str, dict]] = []
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"dataset item {index} must be an object")
+            prompt_body = item.get("prompt_body")
+            expected = item.get("expected_response_body")
+            if not isinstance(prompt_body, str) or not prompt_body.strip():
+                raise ValueError(f"dataset item {index} needs non-empty prompt_body")
+            if not isinstance(expected, str) or not expected.strip():
+                raise ValueError(
+                    f"dataset item {index} needs non-empty expected_response_body"
+                )
+            metadata = item.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                raise ValueError(f"dataset item {index} metadata must be an object")
+            metadata = {
+                **metadata,
+                "source": "dataset_import",
+                "created_by": created_by,
+            }
+            normalized.append((prompt_body, expected, metadata))
+
+        with self._open() as conn:
+            workload = conn.execute(
+                "SELECT project FROM workloads WHERE id = ?",
+                (workload_id,),
+            ).fetchone()
+            if workload is None:
+                raise ValueError(f"workload {workload_id!r} not found")
+            if workload[0] != project:
+                raise ValueError(
+                    f"workload {workload_id!r} belongs to project {workload[0]!r}, "
+                    f"not {project!r}"
+                )
+            dataset_id = _dataset_id(project, workload_id, clean_name)
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO datasets "
+                    "(id, project, workload_id, name, description) VALUES (?, ?, ?, ?, ?)",
+                    (dataset_id, project, workload_id, clean_name, description),
+                )
+                if description:
+                    conn.execute(
+                        "UPDATE datasets SET description = ?, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ?",
+                        (description, dataset_id),
+                    )
+                item_ids: list[str] = []
+                for prompt_body, expected, metadata in normalized:
+                    item_id = _imported_dataset_item_id(dataset_id, prompt_body, expected)
+                    item_ids.append(item_id)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO dataset_items "
+                        "(id, dataset_id, source_call_id, prompt_body, "
+                        "expected_response_body, metadata_json) "
+                        "VALUES (?, ?, NULL, ?, ?, ?)",
+                        (
+                            item_id,
+                            dataset_id,
+                            prompt_body,
+                            expected,
+                            json.dumps(metadata, sort_keys=True),
+                        ),
+                    )
+                dataset_row = conn.execute(
+                    "SELECT id, project, workload_id, name, description, "
+                    "created_at, updated_at FROM datasets WHERE id = ?",
+                    (dataset_id,),
+                ).fetchone()
+                placeholders = ",".join("?" for _ in item_ids)
+                item_rows = conn.execute(
+                    "SELECT id, dataset_id, source_call_id, prompt_body, "
+                    "expected_response_body, metadata_json, created_at "
+                    f"FROM dataset_items WHERE id IN ({placeholders}) ORDER BY created_at, id",
+                    item_ids,
+                ).fetchall()
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return self._dataset_row(dataset_row), [
+            self._dataset_item_row(row) for row in item_rows
+        ]
+
+    def link_call_to_eval(
+        self,
+        call_id: str,
+        *,
+        eval_result_id: int,
+        source_call_id: str,
+        observation_role: str,
+    ) -> None:
+        """Attach an already-recorded auxiliary call to its eval result."""
+        with self._open() as conn:
+            cursor = conn.execute(
+                "UPDATE calls SET eval_result_id = ?, source_call_id = ?, "
+                "observation_role = ? WHERE id = ?",
+                (eval_result_id, source_call_id, observation_role, call_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"call {call_id!r} not found")
 
     def record_eval_result(
         self,

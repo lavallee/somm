@@ -272,17 +272,28 @@ concrete recommendations:
 Budget-capped per workload. Skipped entirely on private workloads.
 
 Production samples can also become durable CI fixtures. Promote a captured
-call into a dataset, run it synchronously as a gate, ask somm to propose a
-new prompt from failing graded calls, then run an experiment campaign that
-logs keep/revert decisions without mutating production:
+call or import reviewed JSONL prompt/reference pairs into a dataset, run it
+synchronously as a gate, ask somm to propose a new prompt from failing graded
+calls, then run an experiment campaign that logs keep/revert decisions without
+mutating production:
 
 ```bash
 somm eval promote-call <call_id> --dataset golden
+somm eval import --workload claim_extract --dataset golden --file reviewed.jsonl
 somm eval run --workload claim_extract --dataset golden --threshold 0.85
 somm optimize --workload claim_extract --from production --label proposed
 somm campaign run --workload claim_extract --dataset golden --max-rounds 5 \
   --token-budget 50000 --plateau-window 2 --log campaign.jsonl
 ```
+
+Each imported JSONL row contains `prompt_body`, `expected_response_body`, and
+optional `metadata`. Add `--judge-config rubric.json` to `somm eval run` for a
+binary-rubric model panel. The config declares `criteria`, an explicit
+`panel` of `{provider, model, max_tokens}` objects, and `min_judges`. Candidate
+and judge providers are pinned with no fallback; judge calls become first-class
+linked call rows and the aggregate rubric result is stored in the eval receipt.
+Pass `--implementation "$(git rev-parse HEAD)"` when a downstream evidence
+system needs to bind the run to the exact code under evaluation.
 
 ### LangChain / agent frameworks
 
@@ -385,7 +396,7 @@ somm backfill-costs [--since N] [--dry-run]        # recompute $0 calls that now
 somm drain-spool                                   # replay spooled telemetry into the DB
 somm workload add/list/show/set-constraints        # register and inspect workloads
 somm prompt list/show/register/fork/diff/label     # immutable prompt versions + mutable labels
-somm eval promote-call/run                         # durable datasets + synchronous eval gates
+somm eval promote-call/import/run                  # durable datasets + synchronous eval gates
 somm optimize --workload NAME                      # propose a prompt fork from failing graded calls
 somm campaign run --workload NAME --dataset NAME   # repeated eval campaign with keep/revert log
 somm doctor                                        # config, ollama, db, intel, workers, cooldowns

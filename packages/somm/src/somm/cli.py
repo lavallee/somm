@@ -657,6 +657,207 @@ def _cmd_eval_promote_call(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval_import(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    workload = repo.workload_by_name(args.workload, cfg.project)
+    if workload is None:
+        print(
+            f"No workload {args.workload!r} registered for project {cfg.project!r}.",
+            file=sys.stderr,
+        )
+        return 2
+    rows: list[dict] = []
+    try:
+        with Path(args.file).open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"line {line_number}: invalid JSON: {exc.msg}") from exc
+                if not isinstance(row, dict):
+                    raise ValueError(f"line {line_number}: expected a JSON object")
+                rows.append(row)
+        dataset, items = repo.import_dataset_items(
+            project=cfg.project,
+            workload_id=workload.id,
+            name=args.dataset,
+            items=rows,
+            description=args.description or "",
+            created_by="somm eval import",
+        )
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    payload = {
+        "project": dataset.project,
+        "workload": args.workload,
+        "workload_id": dataset.workload_id,
+        "dataset": dataset.name,
+        "dataset_id": dataset.id,
+        "imported_items": len(items),
+        "total_items": len(repo.dataset_items(dataset.id)),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(
+            f"imported {payload['imported_items']} reviewed item(s) into "
+            f"{dataset.project}/{args.workload}/{dataset.name}"
+        )
+        print(f"dataset_id: {dataset.id}")
+        print(f"total_items: {payload['total_items']}")
+    return 0
+
+
+def _load_eval_judge_config(path: str | None) -> dict | None:
+    if not path:
+        return None
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid judge config {path!r}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("judge config must be a JSON object")
+    panel = raw.get("panel")
+    if panel is None and raw.get("provider") and raw.get("model"):
+        panel = [{"provider": raw["provider"], "model": raw["model"]}]
+    if not isinstance(panel, list) or not panel:
+        raise ValueError("judge config needs a non-empty panel")
+    for index, spec in enumerate(panel):
+        if not isinstance(spec, dict) or not spec.get("provider") or not spec.get("model"):
+            raise ValueError(f"judge panel[{index}] needs provider and model")
+    raw["panel"] = panel
+    min_judges = int(raw.get("min_judges", len(panel)))
+    if min_judges < 1 or min_judges > len(panel):
+        raise ValueError("judge min_judges must be between 1 and the panel size")
+    raw["min_judges"] = min_judges
+    return raw
+
+
+def _aggregate_eval_judges(criteria, receipts: list[dict]) -> dict:
+    rows = []
+    for criterion in criteria:
+        votes = []
+        reasons = []
+        for receipt in receipts:
+            by_name = {
+                row.get("name"): row
+                for row in receipt["result"].get("criteria", [])
+                if isinstance(row, dict)
+            }
+            result = by_name.get(criterion.name)
+            if not isinstance(result, dict):
+                continue
+            passed = bool(result.get("pass"))
+            votes.append(passed)
+            reasons.append({
+                "provider": receipt["provider"],
+                "model": receipt["model"],
+                "pass": passed,
+                "reason": result.get("reason") or "",
+            })
+        votes_for = sum(1 for vote in votes if vote)
+        rows.append({
+            "name": criterion.name,
+            "pass": bool(votes) and votes_for > len(votes) / 2,
+            "votes_for": votes_for,
+            "votes_total": len(votes),
+            "reasons": reasons,
+        })
+    return {
+        "criteria": rows,
+        "score": sum(1 for row in rows if row["pass"]) / len(rows),
+    }
+
+
+def _dataset_judge(llm, *, workload: str, config: dict):
+    from somm_core.graders import (
+        build_binary_judge_prompt,
+        normalize_binary_criteria,
+        parse_binary_judge_response,
+    )
+
+    from somm.evals import JudgeGrade
+
+    criteria = normalize_binary_criteria(config.get("criteria"))
+
+    def judge(item, generated):
+        prompt = build_binary_judge_prompt(
+            original_prompt=item.prompt_body,
+            production_text=generated.text,
+            gold_text=item.expected_response_body,
+            criteria=criteria,
+        )
+        receipts = []
+        failures = []
+        all_call_ids = []
+        for spec in config["panel"]:
+            result = llm.generate(
+                prompt=prompt,
+                workload=workload,
+                max_tokens=int(spec.get("max_tokens") or config.get("max_tokens") or 800),
+                temperature=0.0,
+                provider=str(spec["provider"]),
+                model=str(spec["model"]),
+                no_fallback=True,
+            )
+            writer = getattr(llm, "_writer", None)
+            if writer is not None:
+                writer.flush(timeout=5.0)
+            all_call_ids.append(result.call_id)
+            if result.outcome != Outcome.OK:
+                failures.append({
+                    "call_id": result.call_id,
+                    "provider": spec["provider"],
+                    "model": spec["model"],
+                    "outcome": result.outcome.value,
+                    "error": result.error_detail,
+                })
+                continue
+            receipts.append({
+                "call_id": result.call_id,
+                "provider": spec["provider"],
+                "model": spec["model"],
+                "result": parse_binary_judge_response(result.text, criteria),
+            })
+        quorum = len(receipts) >= int(config["min_judges"])
+        aggregate = (
+            _aggregate_eval_judges(criteria, receipts)
+            if quorum
+            else {
+                "criteria": [
+                    {
+                        "name": criterion.name,
+                        "pass": False,
+                        "votes_for": 0,
+                        "votes_total": len(receipts),
+                        "reasons": [],
+                    }
+                    for criterion in criteria
+                ],
+                "score": 0.0,
+            }
+        )
+        aggregate.update({
+            "mode": "panel" if len(receipts) > 1 else "single",
+            "quorum": quorum,
+            "min_judges": int(config["min_judges"]),
+            "judges": receipts,
+            "failures": failures,
+        })
+        return JudgeGrade(
+            score=float(aggregate["score"]),
+            reason=aggregate,
+            call_ids=tuple(all_call_ids),
+        )
+
+    return judge
+
+
 def _cmd_eval_run(args: argparse.Namespace) -> int:
     from somm import SommLLM
     from somm.evals import run_dataset_eval
@@ -665,6 +866,11 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
     repo = Repository(cfg.db_path)
     llm = SommLLM(config=cfg)
     try:
+        try:
+            judge_config = _load_eval_judge_config(args.judge_config)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
         def generate(item):
             result = llm.generate(
@@ -688,6 +894,12 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
                 workload=args.workload,
                 dataset=args.dataset,
                 generate=generate,
+                judge=(
+                    _dataset_judge(llm, workload=args.workload, config=judge_config)
+                    if judge_config is not None
+                    else None
+                ),
+                implementation=args.implementation,
                 threshold=args.threshold,
             )
         except ValueError as exc:
@@ -2570,6 +2782,18 @@ def build_parser() -> argparse.ArgumentParser:
     peval_promote.add_argument("--description", default="")
     peval_promote.set_defaults(func=_cmd_eval_promote_call)
 
+    peval_import = peval_sub.add_parser(
+        "import",
+        help="import reviewed JSONL prompt/expected-response pairs",
+    )
+    peval_import.add_argument("--workload", required=True)
+    peval_import.add_argument("--dataset", required=True)
+    peval_import.add_argument("--file", required=True)
+    peval_import.add_argument("--project", default=None)
+    peval_import.add_argument("--description", default="")
+    peval_import.add_argument("--json", action="store_true")
+    peval_import.set_defaults(func=_cmd_eval_import)
+
     peval_run = peval_sub.add_parser(
         "run",
         help="run a workload against a durable eval dataset",
@@ -2582,6 +2806,16 @@ def build_parser() -> argparse.ArgumentParser:
     peval_run.add_argument("--temperature", type=float, default=0.0)
     peval_run.add_argument("--provider", default=None)
     peval_run.add_argument("--model", default=None)
+    peval_run.add_argument(
+        "--implementation",
+        default=None,
+        help="explicit implementation coordinate, normally a Git commit SHA",
+    )
+    peval_run.add_argument(
+        "--judge-config",
+        default=None,
+        help="JSON binary-rubric criteria and explicit judge panel",
+    )
     peval_run.add_argument("--json", action="store_true")
     peval_run.set_defaults(func=_cmd_eval_run)
 
