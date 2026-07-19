@@ -39,6 +39,7 @@ class HarnessCapabilities:
     resume: bool = False
     max_turns: bool = False
     agent_selection: bool = False
+    reasoning_effort: bool = False
     streaming_events: bool = True
 
 
@@ -50,12 +51,15 @@ class HarnessRequest:
     cwd: str | Path
     capture_dir: str | Path
     model: str | None = None
+    reasoning_effort: str | None = None
     max_turns: int | None = None
     session_id: str | None = None
     agent: str | None = None
     extra: Sequence[str] = field(default_factory=tuple)
     allow_unsafe: bool = False
     correlation_id: str | None = None
+    executable: str | Path | None = None
+    prompt_via_stdin: bool = False
 
     def resolved_cwd(self) -> str:
         path = Path(self.cwd).expanduser()
@@ -65,6 +69,11 @@ class HarnessRequest:
         path = Path(self.capture_dir).expanduser()
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def resolved_executable(self, default: str) -> str:
+        """Return a caller-selected CLI path or the adapter's standard command."""
+
+        return str(Path(self.executable).expanduser()) if self.executable else default
 
 
 @dataclass(slots=True)
@@ -125,7 +134,11 @@ class AgentHarness(Protocol):
 
 
 def launch_process(
-    argv: list[str], request: HarnessRequest, *, env: dict[str, str] | None = None
+    argv: list[str],
+    request: HarnessRequest,
+    *,
+    env: dict[str, str] | None = None,
+    stdin_data: str | bytes | None = None,
 ) -> HarnessHandle:
     """Launch an adapter command with durable stdout/stderr captures."""
 
@@ -141,9 +154,13 @@ def launch_process(
             cwd=request.resolved_cwd(),
             stdout=stdout_fh,
             stderr=stderr_fh,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             env=env,
         )
+        if stdin_data is not None and proc.stdin is not None:
+            payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
+            proc.stdin.write(payload)
+            proc.stdin.close()
     except Exception:
         stdout_fh.close()
         stderr_fh.close()

@@ -19,18 +19,22 @@ from .base import (
 
 class ClaudeCLIHarness:
     name = "claude-cli"
-    capabilities = HarnessCapabilities(resume=True, max_turns=True)
+    capabilities = HarnessCapabilities(
+        resume=True, max_turns=True, reasoning_effort=True
+    )
 
     def is_available(self) -> bool:
         return shutil.which("claude") is not None
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
         argv = [
-            "claude", "-p", request.prompt,
+            request.resolved_executable("claude"), "-p", request.prompt,
             "--verbose", "--output-format", "stream-json",
         ]
         if request.model:
             argv.extend(["--model", request.model])
+        if request.reasoning_effort:
+            argv.extend(["--effort", request.reasoning_effort])
         if request.max_turns is not None:
             argv.extend(["--max-turns", str(int(request.max_turns))])
         if request.allow_unsafe:
