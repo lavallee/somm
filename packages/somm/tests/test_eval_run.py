@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from somm.evals import grade_pairwise_ab, run_dataset_eval
+from somm.evals import JudgeGrade, grade_pairwise_ab, run_dataset_eval
 from somm_core.models import Call, Outcome, SommResult
 from somm_core.repository import Repository
 
@@ -140,6 +140,46 @@ def test_run_dataset_eval_reports_generation_errors(tmp_path):
     assert result.passed is False
     assert result.n_errors == 1
     assert "provider down" in result.items[0].error
+
+
+def test_run_dataset_eval_uses_binary_judge_and_links_judge_calls(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl, _dataset, _item = _seed_dataset(repo)
+    judge_result = _generated(repo, "eval-test", wl.id, '{"criteria": []}')
+
+    result = run_dataset_eval(
+        repo,
+        project="eval-test",
+        workload="qa",
+        dataset="golden",
+        threshold=0.8,
+        generate=lambda _item: _generated(
+            repo, "eval-test", wl.id, "wording unlike the reference"
+        ),
+        judge=lambda _item, _generated_result: JudgeGrade(
+            score=1.0,
+            reason={"criteria": [{"name": "correctness", "pass": True}]},
+            call_ids=(judge_result.call_id,),
+        ),
+        implementation="abc123",
+    )
+
+    assert result.passed is True
+    assert result.items[0].judge_score == 1.0
+    with repo._open() as conn:
+        linked = conn.execute(
+            "SELECT observation_role, source_call_id, eval_result_id "
+            "FROM calls WHERE id = ?",
+            (judge_result.call_id,),
+        ).fetchone()
+        reason = conn.execute("SELECT judge_reason FROM eval_results").fetchone()[0]
+    assert linked[0] == "dataset_judge"
+    assert linked[1] == result.items[0].generated_call_id
+    assert linked[2] == result.items[0].eval_result_id
+    assert "binary_judge" in reason
+    receipt = repo.eval_receipts(run_id=result.run_id)[0]
+    assert receipt.payload["judge_call_ids"] == [judge_result.call_id]
+    assert receipt.payload["implementation"] == "abc123"
 
 
 def test_grade_pairwise_ab_records_receipt(tmp_path):
