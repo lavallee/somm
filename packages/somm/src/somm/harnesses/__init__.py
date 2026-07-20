@@ -11,11 +11,13 @@ import subprocess
 from .base import (
     AgentHarness,
     HarnessCapabilities,
+    HarnessCapabilityError,
     HarnessHandle,
     HarnessOutcome,
     HarnessRequest,
     HarnessResult,
     decode_json_events,
+    infer_model_family,
 )
 from .claude_cli import ClaudeCLIHarness
 from .codex import CodexHarness
@@ -51,9 +53,29 @@ def available() -> list[str]:
     ]
 
 
+def validate_model(name: str, model: str | None) -> None:
+    """Reject known cross-provider model requests before starting a process."""
+
+    adapter = get(name)
+    family = infer_model_family(model)
+    supported = adapter.capabilities.model_families
+    if family is not None and supported and family not in supported:
+        raise HarnessCapabilityError(
+            f"harness {name!r} supports model families {sorted(supported)!r}, "
+            f"but model {model!r} belongs to {family!r}"
+        )
+
+
+def validate_request(name: str, request: HarnessRequest) -> None:
+    """Validate portable request capabilities before process launch."""
+
+    validate_model(name, request.model)
+
+
 def start(name: str, request: HarnessRequest) -> HarnessHandle:
     """Start one attempt and return immediately with its process handle."""
 
+    validate_request(name, request)
     return get(name).start(request)
 
 
@@ -149,6 +171,7 @@ def run(
 ) -> HarnessResult:
     """Run one attempt synchronously; never retries or selects a fallback."""
 
+    validate_request(name, request)
     adapter = get(name)
     handle = adapter.start(request)
     try:
@@ -176,6 +199,7 @@ __all__ = [
     "AgentHarness",
     "ClaudeCLIHarness",
     "CodexHarness",
+    "HarnessCapabilityError",
     "HarnessCapabilities",
     "HarnessHandle",
     "HarnessOutcome",
@@ -186,6 +210,7 @@ __all__ = [
     "extract_final_text",
     "extract_last_assistant_text",
     "get",
+    "infer_model_family",
     "inspect",
     "is_event_stream",
     "result_text",
@@ -193,4 +218,6 @@ __all__ = [
     "session_id",
     "start",
     "terminal_event",
+    "validate_model",
+    "validate_request",
 ]
