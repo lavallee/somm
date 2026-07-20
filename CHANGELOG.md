@@ -29,6 +29,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Fixed
 
+- Reject known cross-provider model and harness combinations before launching
+  a coding-agent process, while leaving unknown future model names compatible.
 - Load the new outcome-custody exports lazily so importing `somm` remains
   within its startup budget, and require MCP 1.28.1 or newer to exclude known
   vulnerabilities in older releases.

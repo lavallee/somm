@@ -20,7 +20,11 @@ from .base import (
 
 class CodexHarness:
     name = "codex"
-    capabilities = HarnessCapabilities(resume=True, reasoning_effort=True)
+    capabilities = HarnessCapabilities(
+        resume=True,
+        reasoning_effort=True,
+        model_families=frozenset({"openai"}),
+    )
 
     def is_available(self) -> bool:
         return shutil.which("codex") is not None

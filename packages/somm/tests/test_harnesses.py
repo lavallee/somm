@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from somm import harnesses
-from somm.harnesses import HarnessOutcome, HarnessRequest
+from somm.harnesses import HarnessCapabilityError, HarnessOutcome, HarnessRequest
 from somm.harnesses import codex as codex_module
 
 
@@ -39,6 +39,83 @@ def test_registry_and_unknown_harness() -> None:
     assert harnesses.get("opencode").capabilities.agent_selection is True
     with pytest.raises(ValueError, match="unknown harness"):
         harnesses.get("missing")
+
+
+@pytest.mark.parametrize(
+    ("harness", "model"),
+    [
+        ("claude-cli", None),
+        ("claude-cli", "sonnet"),
+        ("claude-cli", "claude-sonnet-4-5"),
+        ("claude-cli", "anthropic/claude-opus-4-1"),
+        ("codex", None),
+        ("codex", "gpt-5.6"),
+        ("codex", "openai/gpt-5.6"),
+        ("codex", "o3"),
+        ("codex", "future-model"),
+        ("opencode", "anthropic/claude-sonnet-4-5"),
+        ("opencode", "gpt-5.6"),
+    ],
+)
+def test_model_family_validation_accepts_compatible_or_unknown_models(
+    harness: str, model: str | None
+) -> None:
+    harnesses.validate_model(harness, model)
+
+
+@pytest.mark.parametrize(
+    ("harness", "model", "family"),
+    [
+        ("codex", "sonnet", "anthropic"),
+        ("codex", "claude-sonnet-4-5", "anthropic"),
+        ("claude-cli", "gpt-5.6", "openai"),
+        ("claude-cli", "o3", "openai"),
+    ],
+)
+def test_model_family_validation_rejects_cross_provider_models(
+    harness: str, model: str, family: str
+) -> None:
+    with pytest.raises(HarnessCapabilityError, match=family):
+        harnesses.validate_model(harness, model)
+
+
+@pytest.mark.parametrize(
+    ("model", "family"),
+    [
+        (None, None),
+        ("", None),
+        ("sonnet-4-5", "anthropic"),
+        ("claude-opus-4-1", "anthropic"),
+        ("anthropic/claude-haiku-4-5", "anthropic"),
+        ("gpt-5.6", "openai"),
+        ("chatgpt-5.6", "openai"),
+        ("codex-mini", "openai"),
+        ("openai/gpt-5.6", "openai"),
+        ("o3-mini", "openai"),
+        ("future-model", None),
+    ],
+)
+def test_infer_model_family(model: str | None, family: str | None) -> None:
+    assert harnesses.infer_model_family(model) == family
+
+
+def test_start_rejects_incompatible_model_before_adapter_launch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    adapter = harnesses.get("codex")
+    launched = False
+
+    def fake_start(request):
+        nonlocal launched
+        launched = True
+        return object()
+
+    monkeypatch.setattr(adapter, "start", fake_start)
+
+    with pytest.raises(HarnessCapabilityError, match="anthropic"):
+        harnesses.start("codex", _request(tmp_path, model="sonnet"))
+
+    assert launched is False
 
 
 def test_safe_mode_does_not_bypass_permissions(tmp_path: Path) -> None:

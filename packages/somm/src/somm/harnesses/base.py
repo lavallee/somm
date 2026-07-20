@@ -32,6 +32,10 @@ class HarnessOutcome(StrEnum):
     UNKNOWN = "unknown"
 
 
+class HarnessCapabilityError(ValueError):
+    """A request asks a harness to launch a known-incompatible capability."""
+
+
 @dataclass(frozen=True, slots=True)
 class HarnessCapabilities:
     """Features a harness adapter can honor natively."""
@@ -41,6 +45,7 @@ class HarnessCapabilities:
     agent_selection: bool = False
     reasoning_effort: bool = False
     streaming_events: bool = True
+    model_families: frozenset[str] = frozenset()
 
 
 @dataclass(slots=True)
@@ -131,6 +136,27 @@ class AgentHarness(Protocol):
         exit_code: int | None = None,
         correlation_id: str | None = None,
     ) -> HarnessResult: ...
+
+
+def infer_model_family(model: str | None) -> str | None:
+    """Return a known provider family while leaving future model names open."""
+
+    if not model:
+        return None
+    value = model.strip().lower()
+    if not value:
+        return None
+    if (
+        value.startswith(("anthropic/", "claude-"))
+        or re.fullmatch(r"(?:sonnet|opus|haiku)(?:[-._].*)?", value)
+    ):
+        return "anthropic"
+    if (
+        value.startswith(("openai/", "gpt-", "chatgpt-", "codex-"))
+        or re.fullmatch(r"o\d+(?:[-._].*)?", value)
+    ):
+        return "openai"
+    return None
 
 
 def launch_process(

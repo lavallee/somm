@@ -20,7 +20,10 @@ from .base import (
 class ClaudeCLIHarness:
     name = "claude-cli"
     capabilities = HarnessCapabilities(
-        resume=True, max_turns=True, reasoning_effort=True
+        resume=True,
+        max_turns=True,
+        reasoning_effort=True,
+        model_families=frozenset({"anthropic"}),
     )
 
     def is_available(self) -> bool:
