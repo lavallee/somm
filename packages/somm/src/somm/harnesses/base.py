@@ -234,6 +234,7 @@ _SIGNALS: tuple[tuple[HarnessOutcome, tuple[str, ...]], ...] = (
         r"prompt too long", r"context (?:length|window)(?: exceeded)?",
     )),
     (HarnessOutcome.REFUSED, (
+        r"content was flagged for possible cybersecurity risk",
         r"content (?:filter|policy)", r"refused", r"policy violat",
     )),
     (HarnessOutcome.RATE_LIMIT, (
