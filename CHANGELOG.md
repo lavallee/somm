@@ -29,6 +29,9 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Fixed
 
+- Classify Codex's exact cybersecurity-filter termination as a refused harness
+  attempt so supervisors can escalate it once instead of retrying an unchanged
+  prompt as a generic failure.
 - Reject known cross-provider model and harness combinations before launching
   a coding-agent process, while leaving unknown future model names compatible.
 - Load the new outcome-custody exports lazily so importing `somm` remains

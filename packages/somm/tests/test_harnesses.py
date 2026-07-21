@@ -246,6 +246,32 @@ def test_codex_failed_event_normalizes_auth(tmp_path: Path) -> None:
     assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.AUTH_ERROR
 
 
+def test_codex_failed_event_normalizes_exact_cyber_safety_notice(tmp_path: Path) -> None:
+    adapter = harnesses.get("codex")
+    message = (
+        "This content was flagged for possible cybersecurity risk. "
+        "If this seems wrong, try rephrasing your request."
+    )
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "turn.failed", "error": {"message": message}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+    assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.REFUSED
+
+
+def test_codex_completed_event_may_quote_cyber_safety_notice(tmp_path: Path) -> None:
+    adapter = harnesses.get("codex")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "item.completed", "item": {
+            "type": "agent_message",
+            "text": "The log said content was flagged for possible cybersecurity risk.",
+        }},
+        {"type": "turn.completed", "usage": {"input_tokens": 12}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+    assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.COMPLETED
+
+
 def test_opencode_argv_and_result(tmp_path: Path) -> None:
     adapter = harnesses.get("opencode")
     request = _request(
