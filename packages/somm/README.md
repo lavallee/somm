@@ -19,6 +19,11 @@ result = llm.generate(prompt="Reply with exactly: pong", workload="ping")
 print(result.text, result.provider, result.cost_usd)
 ```
 
+Async code can call `await llm.agenerate(...)`,
+`await llm.agenerate_structured(...)`, or iterate `llm.astream(...)`. These
+methods use the same routing, fallback, governance, and telemetry path as the
+synchronous API.
+
 ```python
 from somm import harnesses
 from somm.harnesses import HarnessRequest

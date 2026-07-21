@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -92,6 +92,14 @@ _registered_project_keys: set[tuple[str, str]] = set()
 _registered_project_keys_lock = threading.Lock()
 _WAIT_UNSET: Any = object()
 _STRUCTURED_TEMPERATURE_JITTER = 0.05
+
+
+def _next_stream_item(iterator: Iterator[str]) -> tuple[bool, str | None]:
+    """Advance a sync stream without leaking StopIteration through a Future."""
+    try:
+        return False, next(iterator)
+    except StopIteration:
+        return True, None
 
 
 def _pydantic_base_model():
@@ -1582,6 +1590,60 @@ class SommLLM:
 
         return result
 
+    async def agenerate(
+        self,
+        prompt: str | list[dict] | Prompt,
+        system: str = "",
+        workload: str = "default",
+        max_tokens: int = 256,
+        temperature: float = 0.2,
+        model: str | None = None,
+        provider: str | None = None,
+        capabilities_required: list[str] | None = None,
+        allow_empty: bool = False,
+        no_fallback: bool = False,
+        raise_on_empty: bool = False,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        response_format: dict | None = None,
+        wait: float | None = _WAIT_UNSET,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> SommResult:
+        """Await :meth:`generate` without blocking the caller's event loop.
+
+        The synchronous method remains the single implementation of workload
+        resolution, routing, fallback, plan governance, hooks, and telemetry.
+        Provider I/O runs in a worker thread because the provider protocol is
+        synchronous; context variables are propagated by ``asyncio.to_thread``.
+        """
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.generate,
+            prompt,
+            system=system,
+            workload=workload,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=model,
+            provider=provider,
+            capabilities_required=capabilities_required,
+            allow_empty=allow_empty,
+            no_fallback=no_fallback,
+            raise_on_empty=raise_on_empty,
+            tools=tools,
+            messages=messages,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            wait=wait,
+            session_id=session_id,
+            parent_call_id=parent_call_id,
+            correlation_id=correlation_id,
+        )
+
     # ------------------------------------------------------------------
     # Embeddings
 
@@ -2096,6 +2158,50 @@ class SommLLM:
                 )
             )
 
+    async def astream(
+        self,
+        prompt: str | list[dict] | Prompt,
+        system: str = "",
+        workload: str = "default",
+        max_tokens: int = 256,
+        temperature: float = 0.2,
+        model: str | None = None,
+        provider: str | None = None,
+        wait: float | None = _WAIT_UNSET,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Asynchronously iterate over :meth:`stream` without blocking the loop.
+
+        The existing synchronous generator still owns provider selection,
+        stream filtering, and final telemetry. Each iterator step runs off the
+        event loop, and closing this async iterator closes the sync generator so
+        its telemetry ``finally`` block runs for partially consumed streams.
+        """
+        import asyncio
+
+        iterator = self.stream(
+            prompt,
+            system=system,
+            workload=workload,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=model,
+            provider=provider,
+            wait=wait,
+            session_id=session_id,
+            parent_call_id=parent_call_id,
+        )
+        try:
+            while True:
+                done, piece = await asyncio.to_thread(_next_stream_item, iterator)
+                if done:
+                    break
+                assert piece is not None
+                yield piece
+        finally:
+            await asyncio.to_thread(iterator.close)
+
     def _pick_stream_provider(self, name: str | None):
         if name:
             return self._pick_provider(name)
@@ -2186,6 +2292,41 @@ class SommLLM:
             last_result.mark(Outcome.BAD_JSON)
         raise SommStructuredError(_format_structured_failure(last_raw, last_error))
 
+    async def agenerate_structured(
+        self,
+        prompt,
+        *,
+        schema,
+        workload: str = "default",
+        system: str = "",
+        max_tokens: int = 512,
+        temperature: float = 0.1,
+        model: str | None = None,
+        provider: str | None = None,
+        retries: int = 2,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+        wait: float | None = _WAIT_UNSET,
+    ) -> tuple[Any, SommResult]:
+        """Await :meth:`generate_structured` using the same strict pipeline."""
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.generate_structured,
+            prompt,
+            schema=schema,
+            workload=workload,
+            system=system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=model,
+            provider=provider,
+            retries=retries,
+            session_id=session_id,
+            parent_call_id=parent_call_id,
+            wait=wait,
+        )
+
     def extract_structured(
         self,
         prompt: str | Prompt,
@@ -2235,6 +2376,36 @@ class SommLLM:
                 return parsed
             result.mark(Outcome.BAD_JSON)
         return {"raw": last_text, "_somm_parse_err": True}
+
+    async def aextract_structured(
+        self,
+        prompt: str | Prompt,
+        system: str = "",
+        workload: str = "default",
+        max_tokens: int = 512,
+        temperature: float = 0.1,
+        model: str | None = None,
+        provider: str | None = None,
+        retries: int = 2,
+        temperature_jitter: float = 0.05,
+        wait: float | None = _WAIT_UNSET,
+    ) -> dict | list:
+        """Await :meth:`extract_structured` using the same retry pipeline."""
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.extract_structured,
+            prompt,
+            system=system,
+            workload=workload,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=model,
+            provider=provider,
+            retries=retries,
+            temperature_jitter=temperature_jitter,
+            wait=wait,
+        )
 
     # ------------------------------------------------------------------
     # Prompt versioning

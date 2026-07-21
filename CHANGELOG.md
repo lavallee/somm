@@ -9,6 +9,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+- **Native async client API**: `SommLLM.agenerate()`, `astream()`,
+  `agenerate_structured()`, and `aextract_structured()` let async applications
+  use Somm without caller-side thread wrappers while preserving the existing
+  synchronous routing, fallback, plan-governor, hooks, and telemetry path.
 - **Honest local-cost provenance**: native Ollama calls now record
   `unknown/included/unknown` with source `local-included-unpriced` rather than
   presenting the backward-compatible numeric `$0` sentinel as computed
