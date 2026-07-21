@@ -219,6 +219,32 @@ vec = llm.embed("the quick brown fox", workload="search_index")
 print(vec.dim, vec.cost_usd)             # telemetry row lands like any call
 ```
 
+### Async callers
+
+Async applications use the same router, fallback chain, plan governor, hooks,
+budgets, and telemetry ledger without blocking their event loop:
+
+```python
+result = await llm.agenerate(
+    "Reply with exactly: pong",
+    workload="ping",
+    provider="ollama",       # optional pin; fallback semantics match generate()
+    no_fallback=False,
+)
+
+obj, result = await llm.agenerate_structured(
+    "Extract the vintage",
+    schema={"type": "object", "required": ["vintage"]},
+    workload="wine_extract",
+)
+
+async for chunk in llm.astream("Tell me a story", workload="narrate"):
+    print(chunk, end="", flush=True)
+```
+
+`aextract_structured()` is also available for the permissive structured-output
+contract. The synchronous API remains the documented default.
+
 ### Multimodal prompts, capability-aware routing
 
 ```python
