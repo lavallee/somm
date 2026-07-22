@@ -1875,6 +1875,46 @@ class SommLLM:
 
         return result
 
+    async def aembed(
+        self,
+        text: str,
+        *,
+        workload: str = "default",
+        model: str | None = None,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+    ) -> EmbedResult:
+        """Await :meth:`embed` without blocking the caller's event loop.
+
+        The synchronous method remains the single implementation of provider
+        I/O, hooks, costing, and telemetry. Because that implementation is
+        intentionally Ollama-only, fail loudly when the configured provider
+        order pins something else first instead of silently overriding it.
+        """
+        configured_provider = (
+            self.config.provider_order[0]
+            if self.config.provider_order
+            else self.providers[0].name if self.providers else None
+        )
+        if configured_provider not in (None, "ollama"):
+            raise ValueError(
+                f"aembed() cannot honor configured provider {configured_provider!r}; "
+                "the shared embed() implementation currently supports only 'ollama'. "
+                "Put 'ollama' first in $SOMM_PROVIDER_ORDER or use the configured "
+                "provider's native embedding API."
+            )
+
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.embed,
+            text,
+            workload=workload,
+            model=model,
+            session_id=session_id,
+            parent_call_id=parent_call_id,
+        )
+
     # ------------------------------------------------------------------
 
     def _pick_provider(self, name: str | None) -> SommProvider:
