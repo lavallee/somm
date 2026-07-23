@@ -1796,14 +1796,14 @@ def _fetch_since(
 def _cmd_compare(args: argparse.Namespace) -> int:
     """Run a prompt through N models side-by-side. Non-routed, explicit picks.
 
-    Use: somm compare "Summarize X" --models ollama/gemma4:e4b,openai/gpt-4o-mini
+    Use: somm compare "Summarize X" --models minimax/MiniMax-M3,openai/gpt-4o-mini
     """
     from somm import SommLLM
 
     specs = _parse_model_specs(args.models)
     if not specs:
         print("no --models supplied. example:", file=sys.stderr)
-        print("  somm compare 'hi' --models ollama/gemma4:e4b,openai/gpt-4o-mini", file=sys.stderr)
+        print("  somm compare 'hi' --models minimax/MiniMax-M3,openai/gpt-4o-mini", file=sys.stderr)
         return 2
 
     llm = SommLLM(project=args.project or "compare")

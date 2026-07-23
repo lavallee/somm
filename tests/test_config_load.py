@@ -52,6 +52,8 @@ def test_load_defaults_no_env(tmp_path: Path, monkeypatch) -> None:
     assert cfg.project == "default"
     assert cfg.budget_fail_closed is False
     assert cfg.provider_order is None
+    assert cfg.minimax_model == "MiniMax-M3"
+    assert cfg.ollama_model == "qwen3:8b"
 
 
 def test_load_budget_fail_closed_env(tmp_path: Path, monkeypatch) -> None:

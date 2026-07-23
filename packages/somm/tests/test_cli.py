@@ -68,7 +68,7 @@ def test_age_until_future():
 
 def test_parse_model_specs_variants():
     # slash form, colon form, comma-separated, repeated
-    assert _parse_model_specs(["ollama/gemma4:e4b"]) == [("ollama", "gemma4:e4b")]
+    assert _parse_model_specs(["ollama/qwen3:8b"]) == [("ollama", "qwen3:8b")]
     assert _parse_model_specs(["openai:gpt-4o-mini"]) == [("openai", "gpt-4o-mini")]
     out = _parse_model_specs(["ollama/a,openrouter/b"])
     assert out == [("ollama", "a"), ("openrouter", "b")]
@@ -166,7 +166,7 @@ def test_status_with_rows(tmp_path, capsys, monkeypatch):
             workload_id=wl.id,
             prompt_id=None,
             provider="ollama",
-            model="gemma4:e4b",
+            model="qwen3:8b",
             tokens_in=10,
             tokens_out=5,
             latency_ms=50,
@@ -203,7 +203,7 @@ def test_status_json_with_rows(tmp_path, capsys, monkeypatch):
             workload_id=wl.id,
             prompt_id=None,
             provider="ollama",
-            model="gemma4:e4b",
+            model="qwen3:8b",
             tokens_in=10,
             tokens_out=5,
             latency_ms=50,
@@ -415,7 +415,7 @@ def test_fetch_since_returns_rows(tmp_path):
             workload_id=wl.id,
             prompt_id=None,
             provider="ollama",
-            model="gemma4:e4b",
+            model="qwen3:8b",
             tokens_in=1,
             tokens_out=1,
             latency_ms=1,

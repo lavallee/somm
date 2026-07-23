@@ -445,7 +445,7 @@ async def test_compare_no_providers_errors(tmp_path):
         server,
         "somm_compare",
         prompt="hi",
-        models=["ollama/gemma4:e4b"],
+        models=["ollama/qwen3:8b"],
     )
     assert "error" in res
 

@@ -31,7 +31,7 @@ is more useful than burning through the whole chain.
 
 2. If it's a missing model, pull it or fix the model name:
    ```bash
-   ollama pull gemma4:e4b            # local
+   ollama pull qwen3:8b              # explicit local fallback
    export SOMM_OPENAI_MODEL=gpt-4o-mini   # cloud, fix typo/availability
    ```
 

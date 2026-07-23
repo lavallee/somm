@@ -191,9 +191,9 @@ print(r.text, r.provider, r.cost_usd)
       <h3 class="sub">Compare models on a real prompt</h3>
 
 <pre class="code"><span class="prompt">$</span> somm compare <span class="str">"Summarize this article in one sentence"</span> \
-    --models ollama/gemma4:e4b,openrouter/llama-3.3-70b:free,openai/gpt-4o-mini
+    --models minimax/MiniMax-M3,openrouter/llama-3.3-70b:free,openai/gpt-4o-mini
 <span class="c">provider    model                      lat_ms  tok_i  tok_o  cost     response
-ollama      gemma4:e4b                  2140     124      18  $0.0000  A research team ...
+minimax     MiniMax-M3                  2140     124      18  token plan  A research team ...
 openrouter  meta-llama/llama-3.3-70b:free 3820     124      22  $0.0000  Scientists at ...
 openai      gpt-4o-mini                  920     124      20  $0.0000  Researchers find ...</span></pre>
     </div>

@@ -8,7 +8,7 @@ rather than discover it via a late 400.
 **Why.** Common triggers:
 
 - A vision prompt hit a project configured with only text-capable
-  providers (e.g. `ollama/gemma4:e4b`).
+  providers (e.g. `minimax/MiniMax-M3`).
 - `SOMM_PROVIDER_ORDER` limited the chain to providers without a
   vision-capable default model.
 - The workload declared `capabilities_required=["long_context"]` but

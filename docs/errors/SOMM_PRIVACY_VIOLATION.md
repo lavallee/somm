@@ -52,7 +52,7 @@ Replay / compare using `provider="ollama"` explicitly:
 
 ```python
 # MCP:
-somm_replay(call_id="...", with_provider="ollama", with_model="gemma4:e4b")
+somm_replay(call_id="...", with_provider="minimax", with_model="MiniMax-M3")
 
 # Python:
 llm.generate(prompt, workload="secret_workload", provider="ollama")

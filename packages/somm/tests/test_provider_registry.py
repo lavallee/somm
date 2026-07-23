@@ -72,18 +72,18 @@ def test_default_config_is_ollama_only(no_cli):
     assert _names(build_default_providers(Config())) == ["ollama"]
 
 
-def test_configured_default_chain_preserves_existing_order(monkeypatch):
+def test_configured_default_chain_prefers_minimax_and_keeps_ollama_last(monkeypatch):
     monkeypatch.setattr("somm.providers.registry.shutil.which", lambda _name: "/usr/bin/tool")
 
     assert _names(build_default_providers(_configured())) == [
-        "ollama",
+        "minimax",
         "openrouter",
         "deepseek",
-        "minimax",
         "anthropic",
         "gemini",
         "openai",
         "perplexity",
+        "ollama",
     ]
 
 

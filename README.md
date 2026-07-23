@@ -300,7 +300,7 @@ hosted platforms call "online evaluation," running locally at zero
 platform cost. The resulting data feeds the agent worker, which emits
 concrete recommendations:
 
-> **`switch_model`** — claim_extract currently on ollama/gemma4:e4b
+> **`switch_model`** — claim_extract currently on minimax/MiniMax-M3
 > (score 0.4, 500ms). Shadow evals show ollama/gemma3:27b scoring 0.85
 > at 100ms — +45% quality, -80% latency, same cost. Try it?
 
@@ -651,7 +651,7 @@ provider is opt-in via its own env var.
 | `SOMM_MODE` | `observe` | `observe` (auto-registers workloads) or `strict` |
 | `SOMM_PROVIDER_ORDER` | sovereign-first | comma-sep chain override (e.g. `openrouter,minimax,ollama`) |
 | `SOMM_OLLAMA_URL` | `http://localhost:11434` | local ollama endpoint |
-| `SOMM_OLLAMA_MODEL` | `gemma4:e4b` | default ollama model |
+| `SOMM_OLLAMA_MODEL` | `qwen3:8b` | explicit/local-fallback ollama model |
 | `SOMM_OLLAMA_THINK` | `0` | `1` sets `"think": true` on ollama requests (reasoning models) |
 | `SOMM_OLLAMA_KEEP_ALIVE` | `30m` | pinned residency window; `0` opts out |
 | `OPENROUTER_API_KEY` | — | enables OpenRouter |
@@ -659,7 +659,7 @@ provider is opt-in via its own env var.
 | `DEEPSEEK_API_KEY` | — | enables DeepSeek |
 | `SOMM_DEEPSEEK_MODEL` | `deepseek-chat` | |
 | `MINIMAX_API_KEY` | — | enables Minimax |
-| `SOMM_MINIMAX_MODEL` | `MiniMax-M2.7` | |
+| `SOMM_MINIMAX_MODEL` | `MiniMax-M3` | first configured default route |
 | `ANTHROPIC_API_KEY` | — | enables Anthropic |
 | `SOMM_ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | |
 | `GEMINI_API_KEY` | — | enables Gemini (via OpenAI-compat endpoint) |

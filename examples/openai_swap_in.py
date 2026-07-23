@@ -5,7 +5,7 @@ function call; everything else stays the same.
 
 The shim routes through somm's full provider chain, so you can prefix
 the model with a provider to pin, or leave unprefixed to route through
-the default chain (ollama first for sovereignty).
+the default chain (hosted MiniMax first when configured, with local Ollama last).
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def ask_unrouted(question: str) -> str:
 def ask_local_first(question: str) -> str:
     """Pin to ollama for sovereignty / privacy."""
     resp = create(
-        model="ollama/gemma4:e4b",
+        model="minimax/MiniMax-M3",
         messages=[{"role": "user", "content": question}],
         project="my_project",
         workload="qa_local",

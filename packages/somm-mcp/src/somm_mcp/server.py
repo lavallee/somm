@@ -560,7 +560,7 @@ def build_server(
 
         Args:
             prompt: the prompt text.
-            models: list like ["ollama/gemma4:e4b", "openai/gpt-4o-mini"].
+            models: list like ["minimax/MiniMax-M3", "openai/gpt-4o-mini"].
             workload: workload name to tag telemetry (default "compare").
             max_tokens, temperature: per-call params.
             allow_expensive: opt in to the elevated compare caps. The
@@ -573,7 +573,7 @@ def build_server(
             return {"error": "no providers configured; compare needs a provider chain"}
         specs = _parse_models(models)
         if not specs:
-            return {"error": "no models supplied; example: ['ollama/gemma4:e4b']"}
+            return {"error": "no models supplied; example: ['minimax/MiniMax-M3']"}
         max_models = (
             cfg.mcp_compare_allow_expensive_max_models
             if allow_expensive
