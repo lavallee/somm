@@ -11,7 +11,7 @@ import httpx
 import pytest
 from somm.client import SommLLM
 from somm.errors import SommTransientError
-from somm.providers.base import ProviderHealth, SommChunk, SommResponse
+from somm.providers.base import ProviderHealth, SommChunk, SommEmbedResponse, SommResponse
 from somm_core import Outcome
 from somm_core.config import Config
 
@@ -62,6 +62,25 @@ class FakeProvider:
         return max(1, len(str(text)) // 4)
 
 
+class FakeOllamaProvider(FakeProvider):
+    name = "ollama"
+    default_embed_model = "default-embed-model"
+
+    def __init__(self) -> None:
+        super().__init__(name="ollama")
+        self.embed_thread_ids: list[int] = []
+
+    def embed(self, request):
+        self.embed_thread_ids.append(threading.get_ident())
+        return SommEmbedResponse(
+            embedding=[0.25, 0.5, 0.75],
+            model=request.model or self.default_embed_model,
+            tokens_in=4,
+            latency_ms=11,
+            raw={"provider": self.name},
+        )
+
+
 class StubGovernor:
     def __init__(self, decisions: dict[str, str]) -> None:
         self.decisions = decisions
@@ -86,6 +105,7 @@ def _tmp_config(tmp_path: Path, project: str = "async-client") -> Config:
         ("stream", "astream"),
         ("generate_structured", "agenerate_structured"),
         ("extract_structured", "aextract_structured"),
+        ("embed", "aembed"),
     ],
 )
 def test_async_signature_matches_sync(sync_name: str, async_name: str) -> None:
@@ -146,6 +166,68 @@ async def test_agenerate_matches_sync_telemetry_row_shape(tmp_path: Path) -> Non
     assert sync_result.outcome == async_result.outcome == Outcome.OK
     assert provider.generate_thread_ids[0] == main_thread_id
     assert provider.generate_thread_ids[1] != main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_aembed_matches_sync_telemetry_row_shape(tmp_path: Path) -> None:
+    provider = FakeOllamaProvider()
+    llm = SommLLM(config=_tmp_config(tmp_path), providers=[provider])
+    main_thread_id = threading.get_ident()
+    try:
+        sync_result = llm.embed(
+            "same embedding request",
+            workload="embed_row_parity",
+            model="pinned-embed-model",
+            session_id="session-1",
+            parent_call_id="parent-1",
+        )
+        async_result = await llm.aembed(
+            "same embedding request",
+            workload="embed_row_parity",
+            model="pinned-embed-model",
+            session_id="session-1",
+            parent_call_id="parent-1",
+        )
+    finally:
+        llm.close()
+
+    with llm.repo._open() as conn:
+        rows = conn.execute(
+            "SELECT workload_id, provider, model, tokens_in, tokens_out, latency_ms, "
+            "cost_usd, outcome, prompt_hash, response_hash, session_id, parent_call_id "
+            "FROM calls WHERE id IN (?, ?) ORDER BY id",
+            (sync_result.call_id, async_result.call_id),
+        ).fetchall()
+
+    assert len(rows) == 2
+    assert rows[0] == rows[1]
+    assert rows[0][1:8] == (
+        "ollama",
+        "pinned-embed-model",
+        4,
+        0,
+        11,
+        0.0,
+        "ok",
+    )
+    assert sync_result.embedding == async_result.embedding == [0.25, 0.5, 0.75]
+    assert provider.embed_thread_ids[0] == main_thread_id
+    assert provider.embed_thread_ids[1] != main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_aembed_rejects_silently_overriding_configured_provider(tmp_path: Path) -> None:
+    config = _tmp_config(tmp_path)
+    config.provider_order = ["remote-embeddings", "ollama"]
+    ollama = FakeOllamaProvider()
+    llm = SommLLM(config=config, providers=[ollama])
+    try:
+        with pytest.raises(ValueError, match="cannot honor configured provider 'remote-embeddings'"):
+            await llm.aembed("do not reroute", workload="pinned_provider")
+    finally:
+        llm.close()
+
+    assert ollama.embed_thread_ids == []
 
 
 @pytest.mark.asyncio

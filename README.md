@@ -240,10 +240,19 @@ obj, result = await llm.agenerate_structured(
 
 async for chunk in llm.astream("Tell me a story", workload="narrate"):
     print(chunk, end="", flush=True)
+
+vec = await llm.aembed(
+    "the quick brown fox",
+    workload="search_index",
+    model="nomic-embed-text",  # explicit model pins are preserved
+)
 ```
 
 `aextract_structured()` is also available for the permissive structured-output
-contract. The synchronous API remains the documented default.
+contract. `aembed()` shares the synchronous embedding and telemetry path. Since
+that path currently supports Ollama only, a non-Ollama-first configured provider
+raises clearly rather than being silently replaced. The synchronous API remains
+the documented default.
 
 ### Multimodal prompts, capability-aware routing
 

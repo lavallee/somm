@@ -9,6 +9,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+- **Async embeddings**: `SommLLM.aembed()` makes the existing instrumented
+  embedding path awaitable without caller-side thread wrappers, preserving
+  sync telemetry and explicit model pins. Non-Ollama-first provider
+  configuration now fails loudly on the async path instead of being silently
+  overridden by the currently Ollama-only implementation.
 - **Native async client API**: `SommLLM.agenerate()`, `astream()`,
   `agenerate_structured()`, and `aextract_structured()` let async applications
   use Somm without caller-side thread wrappers while preserving the existing

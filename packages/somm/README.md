@@ -19,10 +19,10 @@ result = llm.generate(prompt="Reply with exactly: pong", workload="ping")
 print(result.text, result.provider, result.cost_usd)
 ```
 
-Async code can call `await llm.agenerate(...)`,
+Async code can call `await llm.agenerate(...)`, `await llm.aembed(...)`,
 `await llm.agenerate_structured(...)`, or iterate `llm.astream(...)`. These
-methods use the same routing, fallback, governance, and telemetry path as the
-synchronous API.
+methods use the same synchronous routing, embedding, governance, and telemetry
+paths without blocking the caller's event loop.
 
 ```python
 from somm import harnesses
