@@ -17,7 +17,7 @@ a local ollama:
 
 ```bash
 export SOMM_OLLAMA_URL=http://localhost:11434
-export SOMM_OLLAMA_MODEL=gemma4:e4b
+export SOMM_OLLAMA_MODEL=qwen3:8b
 # Optional commercial providers (all opt-in, sovereign-by-default):
 export OPENROUTER_API_KEY=...
 export ANTHROPIC_API_KEY=...
@@ -90,7 +90,7 @@ Compare two models on a single prompt:
 
 ```bash
 somm compare "Summarize this article in one sentence" \
-  --models ollama/gemma4:e4b,openai/gpt-4o-mini \
+  --models minimax/MiniMax-M3,openai/gpt-4o-mini \
   --project my_project
 ```
 

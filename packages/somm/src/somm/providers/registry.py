@@ -146,11 +146,13 @@ def _perplexity(config: Config, tracker: Any) -> SommProvider | None:
 
 
 BUILTIN_PROVIDER_SPECS: list[ProviderSpec] = [
-    ProviderSpec("ollama", _ollama, 10),
+    # Hosted MiniMax is the first configured default. Ollama remains available
+    # as a final local fallback or explicit pin, but no longer leads the chain.
+    ProviderSpec("ollama", _ollama, 90),
     ProviderSpec("claude-cli", _claude_cli, None),
     ProviderSpec("codex-cli", _codex_cli, None),
     ProviderSpec("openrouter", _openrouter, 20),
-    ProviderSpec("minimax", _minimax, 40),
+    ProviderSpec("minimax", _minimax, 10),
     ProviderSpec("deepseek", _deepseek, 30),
     ProviderSpec("anthropic", _anthropic, 50),
     ProviderSpec("openai", _openai, 70),

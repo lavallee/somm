@@ -226,7 +226,7 @@ def test_openai_shim_returns_chat_completion_shape(tmp_path, monkeypatch):
 
     try:
         resp = openai_chat_completions(
-            model="ollama/gemma4:e4b",
+            model="ollama/qwen3:8b",
             messages=[
                 {"role": "system", "content": "be brief"},
                 {"role": "user", "content": "hi"},

@@ -70,8 +70,8 @@ def test_cost_for_call_returns_zero_when_missing(tmp_path):
 
 def test_cost_for_call_zero_for_local(tmp_path):
     repo = _tmp_repo(tmp_path)
-    write_intel(repo, "ollama", "gemma4:e4b", 0.0, 0.0, None, None, "ollama-local")
-    assert cost_for_call(repo, "ollama", "gemma4:e4b", 10000, 5000) == 0.0
+    write_intel(repo, "ollama", "qwen3:8b", 0.0, 0.0, None, None, "ollama-local")
+    assert cost_for_call(repo, "ollama", "qwen3:8b", 10000, 5000) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ def test_ollama_probe(tmp_path, monkeypatch):
             json={
                 "models": [
                     {
-                        "name": "gemma4:e4b",
+                        "name": "qwen3:8b",
                         "size": 9608350718,
                         "details": {"family": "gemma", "parameter_size": "e4b"},
                     },
@@ -188,7 +188,7 @@ def test_ollama_probe(tmp_path, monkeypatch):
 
     rows = list_intel(repo, provider="ollama")
     names = {r["model"] for r in rows}
-    assert "gemma4:e4b" in names
+    assert "qwen3:8b" in names
     assert "qwen2.5:7b" in names
     # local = free
     for r in rows:

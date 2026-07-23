@@ -190,11 +190,11 @@ def test_new_model_landed_skips_free_local_models(tmp_path):
     cfg, repo = _tmp_setup(tmp_path)
     wl = repo.register_workload(name="w_local", project=cfg.project)
 
-    write_intel(repo, "ollama", "gemma4:e4b", 0.0, 0.0, None, None, "ollama-local")
+    write_intel(repo, "ollama", "qwen3:8b", 0.0, 0.0, None, None, "ollama-local")
     write_intel(repo, "ollama", "qwen2.5:7b", 0.0, 0.0, None, None, "ollama-local")
 
     for _ in range(15):
-        _write_call(repo, wl.id, cfg.project, "ollama", "gemma4:e4b", latency_ms=300, cost_usd=0.0)
+        _write_call(repo, wl.id, cfg.project, "ollama", "qwen3:8b", latency_ms=300, cost_usd=0.0)
 
     worker = AgentWorker(repo, min_calls_for_consideration=10)
     summary = worker.run_once()

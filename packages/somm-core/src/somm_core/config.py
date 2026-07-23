@@ -35,7 +35,7 @@ class Config:
     db_dir: Path = field(default_factory=lambda: Path("./.somm"))
     spool_dir: Path = field(default_factory=lambda: Path("./.somm/spool"))
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "gemma4:e4b"
+    ollama_model: str = "qwen3:8b"
     ollama_think: bool = False  # Set "think": true on ollama requests (reasoning models)
     ollama_keep_alive: str = "30m"  # Model residency window; "0" to opt out
     openrouter_api_key: str | None = None
@@ -46,7 +46,7 @@ class Config:
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
     minimax_api_key: str | None = None
-    minimax_model: str = "MiniMax-M2.7"
+    minimax_model: str = "MiniMax-M3"
     deepseek_api_key: str | None = None
     deepseek_model: str = "deepseek-chat"
     gemini_api_key: str | None = None
@@ -54,7 +54,7 @@ class Config:
     perplexity_api_key: str | None = None
     perplexity_model: str = "sonar"  # search-grounded; only used when pinned
     http_timeout: float = 180.0  # seconds; used by openai-compat providers
-    provider_order: list[str] | None = None  # e.g. ["openrouter", "minimax", "ollama"]
+    provider_order: list[str] | None = None  # e.g. ["minimax", "openrouter", "ollama"]
     busy_timeout_ms: int = 5000
     # Local-only replication of calls/workloads into ~/.somm/global.sqlite so
     # cross-project features (sommelier, fleet rollups) have data. The raw

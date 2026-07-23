@@ -38,7 +38,7 @@ class OllamaProvider:
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        default_model: str = "gemma4:e4b",
+        default_model: str = "qwen3:8b",
         default_embed_model: str = DEFAULT_EMBED_MODEL,
         timeout: float = 120.0,
         enable_think: bool = False,

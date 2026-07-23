@@ -36,7 +36,7 @@ def _insert_call(
     prompt_body: str,
     response_body: str,
     provider: str = "ollama",
-    model: str = "gemma4:e4b",
+    model: str = "qwen3:8b",
 ) -> str:
     """Insert a call + its samples row so shadow has bodies to grade."""
     import hashlib
@@ -503,7 +503,7 @@ def test_missing_samples_not_considered(tmp_path):
         workload_id=wl.id,
         prompt_id=None,
         provider="ollama",
-        model="gemma4:e4b",
+        model="qwen3:8b",
         tokens_in=10,
         tokens_out=5,
         latency_ms=50,

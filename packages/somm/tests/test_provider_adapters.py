@@ -305,7 +305,7 @@ def test_minimax_default_model(monkeypatch):
     monkeypatch.setattr(httpx, "Client", _patch_client(handler))
     p = MinimaxProvider(api_key="mm-fake")
     p.generate(SommRequest(prompt="hi"))
-    assert captured["model"] == "MiniMax-M2.7"
+    assert captured["model"] == "MiniMax-M3"
 
 
 # ---------------------------------------------------------------------------
@@ -1291,7 +1291,7 @@ def test_default_provider_chain_includes_all_when_keys_set(tmp_path, monkeypatch
     llm = SommLLM(config=cfg)
     try:
         names = [p.name for p in llm.providers]
-        # sovereign-first order: ollama then commercial providers
-        assert names == ["ollama", "openrouter", "minimax", "anthropic", "openai"]
+        # MiniMax leads configured routes; local Ollama is the final fallback.
+        assert names == ["minimax", "openrouter", "anthropic", "openai", "ollama"]
     finally:
         llm.close()
