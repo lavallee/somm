@@ -9,6 +9,37 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+- **Workload handlers (`somm.workloads`)** — a workload is a unit of work, not
+  necessarily an LLM call. Every workload now has a **kind**; the default is
+  `llm` (the provider chain, unchanged), and a project may register other kinds
+  and bind workloads to them:
+
+  ```python
+  from somm import workloads
+  workloads.register(MyHandler())
+  workloads.bind("triage", "my-kind", some="config")
+  ```
+
+  A handler implements `kind` and `serve(WorkloadRequest) -> WorkloadResult |
+  None`. Returning `None` declines and the provider chain answers exactly as
+  before; a handler that raises is treated as one that declined, so binding a
+  handler to a live workload cannot make things worse than they already were.
+
+  Handlers may be published from other packages through the new
+  `somm.workload_handlers` entry-point group, loaded on demand. **somm depends
+  on no particular kind** — the first non-LLM kind, `chip`, is published by fab.
+
+  A handler-served call records the kind as its `provider` and source, so it sits
+  in the same `calls` table as model-served calls for the same workload id and
+  the two are separable by a `GROUP BY`. That is the point: "should this workload
+  still be an LLM call?" becomes a query rather than an argument, and a workload
+  can climb from a plain LLM call toward deterministic behavior on evidence.
+  See `docs/workload-handlers.md`.
+
+  Dispatch runs at `pre_call` priority 50 — after redaction, which must see the
+  outbound text first, and after the response cache, since a cached answer is
+  cheaper than any handler. That wiring is somm's own; a handler author never
+  touches hooks.
 - **Async embeddings**: `SommLLM.aembed()` makes the existing instrumented
   embedding path awaitable without caller-side thread wrappers, preserving
   sync telemetry and explicit model pins. Non-Ollama-first provider

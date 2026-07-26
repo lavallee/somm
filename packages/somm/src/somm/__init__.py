@@ -56,6 +56,8 @@ def __getattr__(name: str):
         return record_procedure_outcome
     if name == "hooks":
         return importlib.import_module("somm.hooks")
+    if name == "workloads":
+        return importlib.import_module("somm.workloads")
     if name == "harnesses":
         return importlib.import_module("somm.harnesses")
     if name == "provenance":
@@ -70,6 +72,7 @@ __all__ = [
     "SommLLM",
     "llm",
     "hooks",
+    "workloads",
     "harnesses",
     "provenance",
     "extract_json",
