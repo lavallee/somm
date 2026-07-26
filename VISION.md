@@ -34,6 +34,25 @@ isn't earning its keep.
   handling, and resume behavior change the result. Somm provides a portable
   one-attempt contract across supported harnesses and learns from the pair,
   while outer runners retain durable workflow policy.
+- **The workload is the unit; what serves it is pluggable.** A workload is a unit
+  of work, not necessarily an LLM call. The default kind is `llm` — the provider
+  chain — but a project may register other **workload handlers** and bind
+  workloads to them. Somm depends on no particular kind; handlers arrive by entry
+  point.
+
+  This is the strategic version of the same bet as cross-project memory. A
+  workload can start as the cheapest thing to write — a plain LLM call — and then
+  *climb*: telemetry and side-testing reveal which part of what the model is
+  doing is decidable by a rule, and each such part gets evicted from the model
+  into deterministic behavior, until only the irreducible judgment is still
+  served by one. Because every rung records against the same workload id, the
+  climb is evidence-driven rather than taste-driven, and reversible when a
+  stronger model reclaims ground.
+
+  Somm's job in that loop is what it has always been: be the meter and the
+  memory. It does not own the deterministic components — the first non-LLM kind,
+  `chip`, is published by fab — it owns the record that tells you where each
+  workload belongs.
 
 ## Non-goals
 

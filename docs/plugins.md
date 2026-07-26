@@ -18,6 +18,13 @@ One `SommLLM.generate()` call moves through these stages:
 `pre_call` can rewrite the outbound request or serve a synthetic response.
 `post_call` and `post_process` observe the completed call event only.
 
+> **Serving a workload is a separate concept.** If you want a workload to be
+> answered by something other than the provider chain, write a *workload
+> handler*, not a hook — see [workload-handlers.md](./workload-handlers.md). A
+> handler declares a workload **kind**, is bound per workload, and lands in
+> telemetry as the serving source so it can be compared against the model it
+> replaced. Hooks are for rewriting and observing; handlers are for serving.
+
 ## Phases
 
 ### `pre_call`
