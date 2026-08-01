@@ -116,6 +116,8 @@ class OpenAICompatProvider:
             payload["tool_choice"] = _translate_tool_choice_to_openai(request.tool_choice)
         if request.response_format is not None:
             payload["response_format"] = request.response_format
+        if request.reasoning_effort is not None:
+            payload["reasoning_effort"] = request.reasoning_effort
         return payload
 
     # ------------------------------------------------------------------
