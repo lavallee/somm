@@ -880,6 +880,7 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
                 temperature=args.temperature,
                 provider=args.provider,
                 model=args.model,
+                reasoning_effort=args.reasoning_effort,
                 no_fallback=bool(args.provider),
             )
             writer = getattr(llm, "_writer", None)
@@ -2806,6 +2807,15 @@ def build_parser() -> argparse.ArgumentParser:
     peval_run.add_argument("--temperature", type=float, default=0.0)
     peval_run.add_argument("--provider", default=None)
     peval_run.add_argument("--model", default=None)
+    peval_run.add_argument(
+        "--reasoning-effort",
+        default=None,
+        choices=("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+        help=(
+            "reasoning budget for models that dial it per request; sweeping this"
+            " across runs is how a model gets evaluated rather than assumed"
+        ),
+    )
     peval_run.add_argument(
         "--implementation",
         default=None,

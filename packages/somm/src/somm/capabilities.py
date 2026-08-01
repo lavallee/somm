@@ -67,6 +67,14 @@ _THINKING_NAME_HINTS: tuple[str, ...] = (
     "magistral",
 )
 
+# Models whose reasoning is a request-level dial rather than a property of the
+# name. deepseek-v4-flash accepts reasoning_effort none|minimal|low|medium|high|
+# xhigh|max and spends reasoning tokens accordingly, so classifying it by its
+# "-flash" suffix said the opposite of what the API does.
+_EFFORT_DIALLED_NAME_HINTS: tuple[str, ...] = (
+    "deepseek-v4",
+)
+
 _NON_THINKING_NAME_HINTS: tuple[str, ...] = (
     "-flash",
     "-mini",
@@ -185,6 +193,11 @@ def model_has_capability(
         # difference between a calibrated answer and an empty response (the
         # 8K-budget all-eaten-by-reasoning failure mode from 2026-05-06).
         lowered = model.lower()
+        # A family whose reasoning is a request dial can serve either need, so
+        # it is never filtered out by a name check: what decides is the
+        # reasoning_effort on the request, not the suffix on the model.
+        if any(h in lowered for h in _EFFORT_DIALLED_NAME_HINTS):
+            return True
         if any(h in lowered for h in _NON_THINKING_NAME_HINTS):
             return False
         if any(h in lowered for h in _THINKING_NAME_HINTS):
@@ -206,6 +219,8 @@ def model_has_capability(
         # from reasoning models, which would burn budget on a mechanical task.
         # E.g. a copyeditor pass on already-clean prose doesn't need v4-pro.
         lowered = model.lower()
+        if any(h in lowered for h in _EFFORT_DIALLED_NAME_HINTS):
+            return True
         if any(h in lowered for h in _NON_THINKING_NAME_HINTS):
             return True
         if any(h in lowered for h in _THINKING_NAME_HINTS):

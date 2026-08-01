@@ -1035,6 +1035,7 @@ class SommLLM:
         messages: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         response_format: dict | None = None,
+        reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
         session_id: str | None = None,
         parent_call_id: str | None = None,
@@ -1136,6 +1137,7 @@ class SommLLM:
             messages=messages,
             tool_choice=tool_choice,
             response_format=response_format,
+            reasoning_effort=reasoning_effort,
         )
 
         short_circuit: hooks.ShortCircuit | None = None
@@ -1607,6 +1609,7 @@ class SommLLM:
         messages: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         response_format: dict | None = None,
+        reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
         session_id: str | None = None,
         parent_call_id: str | None = None,
@@ -1638,6 +1641,7 @@ class SommLLM:
             messages=messages,
             tool_choice=tool_choice,
             response_format=response_format,
+            reasoning_effort=reasoning_effort,
             wait=wait,
             session_id=session_id,
             parent_call_id=parent_call_id,

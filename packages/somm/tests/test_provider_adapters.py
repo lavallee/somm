@@ -1295,3 +1295,39 @@ def test_default_provider_chain_includes_all_when_keys_set(tmp_path, monkeypatch
         assert names == ["minimax", "openrouter", "anthropic", "openai", "ollama"]
     finally:
         llm.close()
+
+
+def test_reasoning_effort_reaches_the_openai_compatible_payload():
+    from somm.providers._openai_compat import OpenAICompatProvider
+    from somm.providers.base import SommRequest
+
+    provider = OpenAICompatProvider(
+        api_key="k", base_url="https://example.com", default_model="deepseek-v4-flash"
+    )
+
+    # Absent by default: a provider that does not know the field must not be
+    # sent one.
+    plain = provider._build_payload(SommRequest(prompt="hi"), "deepseek-v4-flash")
+    assert "reasoning_effort" not in plain
+
+    # Present when the caller dials it. DeepSeek v4 accepts
+    # none|minimal|low|medium|high|xhigh|max on flash as well as pro, so the
+    # budget belongs on the request rather than being inferred from the name.
+    dialled = provider._build_payload(
+        SommRequest(prompt="hi", reasoning_effort="high"), "deepseek-v4-flash"
+    )
+    assert dialled["reasoning_effort"] == "high"
+
+
+def test_a_flash_model_that_dials_reasoning_is_not_filtered_out_of_thinking(tmp_path):
+    from somm.capabilities import model_has_capability
+    from somm_core.repository import Repository
+
+    repo = Repository(str(tmp_path / "somm.db"))
+
+    # "-flash" used to mean non-thinking by name, which said the opposite of
+    # what deepseek-v4-flash actually does.
+    assert model_has_capability(repo, "deepseek", "deepseek-v4-flash", "thinking") is True
+    assert model_has_capability(repo, "deepseek", "deepseek-v4-pro", "thinking") is True
+    # Families that really are non-thinking keep their classification.
+    assert model_has_capability(repo, "gemini", "gemini-2.5-flash", "thinking") is False

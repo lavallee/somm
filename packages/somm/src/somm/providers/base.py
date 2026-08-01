@@ -52,6 +52,11 @@ class SommRequest:
     #
     # `tool_choice`: None (default), "auto", "any", "none", or
     # {"type":"tool","name":"<tool_name>"} to force a specific tool.
+    # Reasoning budget for models that spend tokens thinking before they
+    # answer. Provider-neutral: adapters translate or drop it. DeepSeek v4
+    # accepts none|minimal|low|medium|high|xhigh|max on both flash and pro, so
+    # "thinking" is a dial on a request rather than a property of a model.
+    reasoning_effort: str | None = None
     tools: list[dict] = field(default_factory=list)
     messages: list[dict] | None = None
     tool_choice: str | dict | None = None
