@@ -21,6 +21,13 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   `record_outcome_update` now delegates to `record_call_update`. This is how
   downstream systems (fab's bridge, for one) link a job's terminal semantic
   outcome back to the calls that served it.
+- **`somm doctor --max-exhausted-rate FRACTION`** — trailing-24h
+  `SommProvidersExhausted` rate check, suitable for a cron/timer. `somm
+  doctor` always prints the rate; the flag makes doctor exit nonzero above
+  the threshold. Added after finding a month-long exhaustion storm (July
+  2026, one adopter project: 90%+ call failure for a week) had no automated alert — see
+  `docs/incidents/2026-07-provider-exhaustion.md`. A proposed (not
+  installed) systemd timer for it lives in `deploy/systemd/`.
 
 - **Workload handlers (`somm.workloads`)** — a workload is a unit of work, not
   necessarily an LLM call. Every workload now has a **kind**; the default is

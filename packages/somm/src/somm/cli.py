@@ -2060,7 +2060,47 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             slot = f"{provider}/{model}" if model else provider
             print(f"  {slot:<42} expires in {remaining}   (failures={failures})")
 
+    # Provider-exhaustion regression gate. Always computed and printed —
+    # the July 2026 incident (SommProvidersExhausted at 90%+ of calls for
+    # weeks, root-caused to a saturated minimax model default) had no cheap
+    # trailing-window check that a cron/timer could have alerted on before
+    # it was noticed by eyeballing spend. See docs/incidents/2026-07-provider-exhaustion.md.
+    rate, exhausted, total = _exhausted_rate_24h(repo)
+    if total == 0:
+        print("exhausted_rate_24h: no calls in the last 24h")
+    else:
+        print(f"exhausted_rate_24h: {rate:.1%}  ({exhausted}/{total} calls)")
+        if args.max_exhausted_rate is not None and rate > args.max_exhausted_rate:
+            print(
+                f"  WARN — exceeds --max-exhausted-rate {args.max_exhausted_rate:.1%}"
+            )
+            ok_overall = False
+
     return 0 if ok_overall else 1
+
+
+def _exhausted_rate_24h(
+    repo: Repository, now: datetime | None = None
+) -> tuple[float, int, int]:
+    """Trailing-24h SommProvidersExhausted rate: (rate, exhausted_count, total_count).
+
+    Pure/testable: takes an explicit `now` so tests don't race real time.
+    rate is 0.0 (not NaN) when total is 0 — callers that care about the
+    no-data case should check `total` themselves (doctor prints a distinct
+    message rather than a misleading 0.0%).
+    """
+    now = now or datetime.now(UTC)
+    since = (now - timedelta(hours=24)).isoformat()
+    with repo._open() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM calls WHERE ts >= ?", (since,)
+        ).fetchone()[0]
+        exhausted = conn.execute(
+            "SELECT COUNT(*) FROM calls WHERE ts >= ? AND error_kind = 'SommProvidersExhausted'",
+            (since,),
+        ).fetchone()[0]
+    rate = (exhausted / total) if total else 0.0
+    return rate, exhausted, total
 
 
 def _age_since(iso: str) -> str:
@@ -2898,6 +2938,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     pd = sub.add_parser("doctor", help="check config + ollama + db + intel + workers + cooldowns")
     pd.add_argument("--project", default=None)
+    pd.add_argument(
+        "--max-exhausted-rate",
+        type=float,
+        default=None,
+        metavar="FRACTION",
+        help=(
+            "regression gate: exit nonzero when the trailing-24h "
+            "SommProvidersExhausted rate exceeds FRACTION (e.g. 0.30). "
+            "The rate is always printed; this flag only affects the exit "
+            "code — suitable for a cron/timer health check."
+        ),
+    )
     pd.set_defaults(func=_cmd_doctor)
 
     psr = sub.add_parser("serve", help="run the web admin + HTTP API (localhost:7878)")
