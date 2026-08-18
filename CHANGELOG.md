@@ -5,9 +5,29 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
-## [Unreleased]
+## [0.15.0] — 2026-08-18
 
 ### Added
+
+- **`reasoning_effort` on every generate path** — DeepSeek v4 accepts
+  `none|minimal|low|medium|high|xhigh|max` on flash as well as pro and spends
+  reasoning tokens accordingly, which somm could not express and whose
+  capability map said the opposite of what the API does, classifying anything
+  matching `-flash` as non-thinking by name. The budget now travels on
+  `SommRequest` and reaches the OpenAI-compatible payload only when set, so
+  providers that do not know the field never see it. Families whose reasoning is
+  a request dial rather than a property of the name are listed separately and
+  are never filtered out of a thinking workload: what decides is the effort on
+  the request, not the suffix on the model. `SommLLM.generate`, `agenerate`,
+  `generate_structured`, `agenerate_structured`, `extract_structured` and
+  `aextract_structured` all take it, and `somm eval run --reasoning-effort`
+  exposes it, which is the point — a model cannot be compared against itself at
+  different budgets if the runner has no way to say which budget it wants.
+- **`somm eval` (`promote-call`, `import`, `run`)** — a durable eval dataset
+  built from what already happened rather than from fixtures. `promote-call`
+  copies a sampled production call into a dataset, `import` takes reviewed
+  JSONL prompt/expected-response pairs, and `run` replays a workload against
+  the dataset and records the result as an eval run.
 
 - **Public `call_updates` recording API (`somm_core.Repository`)** — the
   `call_updates` table (late-arriving metadata about immutable `calls` rows)
@@ -86,6 +106,15 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   endpoint remains a dependency- and thread-free no-op, while plugin-owned
   providers are flushed and shut down without taking ownership of manually
   supplied tracer providers.
+
+### Changed
+
+- **MiniMax M3 is the default hosted model and the first provider tried.**
+  `gemma4:e4b` is no longer the default Ollama model in the client signature
+  and MiniMax moves from priority 40 to 10, so a configuration that named no
+  provider now reaches a hosted model first rather than a local one. The
+  MiniMax default model moves M2.7 → M3. Projects relying on the previous
+  order should set `provider_order` explicitly.
 
 ### Fixed
 

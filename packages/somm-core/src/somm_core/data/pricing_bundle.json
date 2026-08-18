@@ -1,5 +1,5 @@
 {
- "generated_on": "2026-07-14",
+ "generated_on": "2026-08-17",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "license": "MIT (LiteLLM); see source",
  "models": [
@@ -86,6 +86,28 @@
    "price_in_per_1m": 1.0,
    "price_out_per_1m": 5.0,
    "context_window": 200000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-mythos-5",
+   "price_in_per_1m": 10.0,
+   "price_out_per_1m": 50.0,
+   "context_window": 1000000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-mythos-preview",
+   "price_in_per_1m": 10.0,
+   "price_out_per_1m": 50.0,
+   "context_window": 1000000,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -193,6 +215,17 @@
   {
    "provider": "anthropic",
    "model": "claude-opus-4-8",
+   "price_in_per_1m": 5.0,
+   "price_out_per_1m": 25.0,
+   "context_window": 1000000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-opus-5",
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 1000000,
@@ -652,6 +685,39 @@
   },
   {
    "provider": "gemini",
+   "model": "gemini-3.5-flash-lite",
+   "price_in_per_1m": 0.3,
+   "price_out_per_1m": 2.5,
+   "context_window": 1048576,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "price_in_per_1m": 1.5,
+   "price_out_per_1m": 7.5,
+   "context_window": 1048576,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
+   "model": "gemini-3.7-flash",
+   "price_in_per_1m": 0.75,
+   "price_out_per_1m": 3.75,
+   "context_window": 1048576,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
    "model": "gemini-embedding-001",
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.0,
@@ -772,6 +838,16 @@
   },
   {
    "provider": "gemini",
+   "model": "gemini-omni-flash-preview",
+   "price_in_per_1m": 1.5,
+   "price_out_per_1m": 9.0,
+   "context_window": 1048576,
+   "capabilities": {
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
    "model": "gemini-pro-latest",
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
@@ -798,6 +874,39 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.5,
    "context_window": 1048576,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
+   "model": "gemini-robotics-er-1.6-preview",
+   "price_in_per_1m": 1.0,
+   "price_out_per_1m": 5.0,
+   "context_window": 131072,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
+   "model": "gemini-robotics-er-2-preview",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": 131072,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
+   "model": "gemini-robotics-er-2-streaming-preview",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": null,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1348,26 +1457,6 @@
   },
   {
    "provider": "openai",
-   "model": "gpt-4o-mini-realtime-preview",
-   "price_in_per_1m": 0.6,
-   "price_out_per_1m": 2.4,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-4o-mini-realtime-preview-2024-12-17",
-   "price_in_per_1m": 0.6,
-   "price_out_per_1m": 2.4,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
    "model": "gpt-4o-mini-search-preview",
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.6,
@@ -1386,36 +1475,6 @@
    "capabilities": {
     "tools": true,
     "vision": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-4o-realtime-preview",
-   "price_in_per_1m": 5.0,
-   "price_out_per_1m": 20.0,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-4o-realtime-preview-2024-12-17",
-   "price_in_per_1m": 5.0,
-   "price_out_per_1m": 20.0,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-4o-realtime-preview-2025-06-03",
-   "price_in_per_1m": 5.0,
-   "price_out_per_1m": 20.0,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
    }
   },
   {
@@ -1761,7 +1820,7 @@
    "model": "gpt-5.4-mini",
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 4.5,
-   "context_window": 1050000,
+   "context_window": 272000,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1772,7 +1831,7 @@
    "model": "gpt-5.4-mini-2026-03-17",
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 4.5,
-   "context_window": 1050000,
+   "context_window": 272000,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1783,7 +1842,7 @@
    "model": "gpt-5.4-nano",
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 1.25,
-   "context_window": 1050000,
+   "context_window": 272000,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1794,7 +1853,7 @@
    "model": "gpt-5.4-nano-2026-03-17",
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 1.25,
-   "context_window": 1050000,
+   "context_window": 272000,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1880,8 +1939,8 @@
   {
    "provider": "openai",
    "model": "gpt-5.6-luna",
-   "price_in_per_1m": 1.0,
-   "price_out_per_1m": 6.0,
+   "price_in_per_1m": 0.2,
+   "price_out_per_1m": 1.2,
    "context_window": 1050000,
    "capabilities": {
     "tools": true,
@@ -1902,8 +1961,8 @@
   {
    "provider": "openai",
    "model": "gpt-5.6-terra",
-   "price_in_per_1m": 2.5,
-   "price_out_per_1m": 15.0,
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 12.0,
    "context_window": 1050000,
    "capabilities": {
     "tools": true,
@@ -1963,96 +2022,6 @@
   {
    "provider": "openai",
    "model": "gpt-audio-mini-2025-12-15",
-   "price_in_per_1m": 0.6,
-   "price_out_per_1m": 2.4,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime",
-   "price_in_per_1m": 4.0,
-   "price_out_per_1m": 16.0,
-   "context_window": 32000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime-1.5",
-   "price_in_per_1m": 4.0,
-   "price_out_per_1m": 16.0,
-   "context_window": 32000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime-2",
-   "price_in_per_1m": 4.0,
-   "price_out_per_1m": 16.0,
-   "context_window": 32000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime-2.1",
-   "price_in_per_1m": 4.0,
-   "price_out_per_1m": 24.0,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime-2.1-mini",
-   "price_in_per_1m": 0.6,
-   "price_out_per_1m": 2.4,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime-2025-08-28",
-   "price_in_per_1m": 4.0,
-   "price_out_per_1m": 16.0,
-   "context_window": 32000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime-mini",
-   "price_in_per_1m": 0.6,
-   "price_out_per_1m": 2.4,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime-mini-2025-10-06",
-   "price_in_per_1m": 0.6,
-   "price_out_per_1m": 2.4,
-   "context_window": 128000,
-   "capabilities": {
-    "tools": true
-   }
-  },
-  {
-   "provider": "openai",
-   "model": "gpt-realtime-mini-2025-12-15",
    "price_in_per_1m": 0.6,
    "price_out_per_1m": 2.4,
    "context_window": 128000,
@@ -2703,6 +2672,16 @@
    "capabilities": {
     "tools": true,
     "vision": true
+   }
+  },
+  {
+   "provider": "openrouter",
+   "model": "nvidia/nemotron-3.5-lightning",
+   "price_in_per_1m": 0.05,
+   "price_out_per_1m": 0.2,
+   "context_window": 262144,
+   "capabilities": {
+    "tools": true
    }
   },
   {
