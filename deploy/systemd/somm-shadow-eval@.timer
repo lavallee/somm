@@ -1,0 +1,17 @@
+[Unit]
+Description=somm shadow-eval — periodic bounded grading for project %i
+# 15 min matches the in-process scheduler's default interval
+# (packages/somm-service/src/somm_service/workers/_runner.py:
+# ("shadow_eval", 15 * 60)) so a standalone-timer deployment behaves the
+# same as the in-process-worker deployment one adopter already runs
+# (SOMM_INPROCESS_WORKERS=1 inside its own long-lived server process).
+# Use THIS timer instead for any project that does NOT have a long-running
+# host process to embed the in-process scheduler in.
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

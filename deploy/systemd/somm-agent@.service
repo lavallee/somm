@@ -1,0 +1,17 @@
+[Unit]
+Description=somm agent worker — recommendation pass for project %i
+# Runs `somm-serve admin run-agent`, the one-shot admin command
+# (packages/somm-service/src/somm_service/cli.py: _cmd_run_agent). Reads
+# shadow-eval scores + call telemetry over a trailing window and writes
+# `recommendations` rows (e.g. switch_model suggestions) — it does not
+# spend money itself (no provider calls), so there is no per-run dollar
+# cost to project here; cost is bounded entirely by the shadow-eval unit
+# that feeds it data.
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env somm-serve admin run-agent --project %i --window-days 7
+# Environment=SOMM_DB_DIR=%h/Projects/%i/.somm
+StandardOutput=journal
+StandardError=journal

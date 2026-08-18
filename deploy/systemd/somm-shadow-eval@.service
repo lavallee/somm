@@ -1,0 +1,56 @@
+[Unit]
+Description=somm shadow-eval — one bounded grading pass for project %i
+# Runs `somm-serve admin run-shadow`, the one-shot admin command
+# (packages/somm-service/src/somm_service/cli.py: _cmd_run_shadow). This is
+# NOT a long-running daemon — it grades one batch and exits. Bounding comes
+# from three places, all already enforced inside somm_service.workers.shadow_eval
+# with no extra flags required:
+#   1. shadow_candidates LIMIT 500 (per-run candidate fetch ceiling)
+#   2. per-workload `max_grades_per_run` in workloads.shadow_config_json
+#      (production default: 20 — see the mission's 3 example workloads)
+#   3. per-workload `budget_usd_daily` in the same config, checked against
+#      today's summed cost_usd on observation_role IN
+#      ('shadow_gold','shadow_judge') calls — BUT see the cost note below.
+#
+# COST NOTE (verified 2026-08-18 against the affected project's live shadow_config,
+# gold_provider=claude-cli, gold_model=sonnet): claude-cli is a *metered/
+# notional* plan (~/.somm/plans.toml), so cost_for_call() records $0.00 for
+# every gold-model call — the dollar `budget_usd_daily` cap therefore never
+# actually trips for this provider. The real per-run ceiling is
+# `max_grades_per_run` × workloads-with-shadow-config — today's example
+# config bounds ONE run to at most 20×3 = 60 graded calls, each a
+# real `claude -p --model sonnet` subprocess (~2 prompt tokens / ~50
+# response tokens observed; ~2.6s latency observed). That draws down the
+# Claude Code *subscription seat*, shared with normal coding usage — not a
+# per-token API dollar cost. If a workload's gold_provider is ever pointed
+# at a PAYG API provider instead, re-derive this comment: budget_usd_daily
+# would then be a real, enforced dollar cap.
+#
+# PROJECTED DAILY COST at the OnUnitActiveSec cadence below (15 min, i.e.
+# 96 runs/day) and today's example shadow_config (sample_rate 3-5%,
+# max_grades_per_run=20/workload × 3 workloads):
+#   - Worst case (unlimited fresh candidates every cycle): 60 grades/cycle
+#     × 96 cycles/day = 5,760 claude-cli subprocess calls/day. This will
+#     NOT happen in practice — see next line.
+#   - Observed in production (this exact config, running in-process inside
+#     one adopter's own server since 2026-07-03): ~100-270 grades/day, because
+#     candidate supply is gated upstream by sample_rate (3-5%) applied
+#     ONCE at capture time against real call volume (~6-9k calls/day for
+#     that project in Aug 2026) — the per-run cap is rarely the binding
+#     constraint once the backlog is drained.
+#   - Dollar cost: $0.00 recorded (metered/notional). Real cost is seat-
+#     quota consumption; watch `claude` seat usage separately if this
+#     starts competing with interactive coding sessions.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# %i is the systemd instance name — the somm project to grade, e.g.
+# `systemctl --user start somm-shadow-eval@myproject.service`
+ExecStart=/usr/bin/env somm-serve admin run-shadow --project %i
+# Point SOMM_DB_DIR at the project's own telemetry DB if it is not
+# discoverable via ~/.somm/registry.json (see somm_core.config.load()).
+# Uncomment and set explicitly if needed:
+# Environment=SOMM_DB_DIR=%h/Projects/%i/.somm
+StandardOutput=journal
+StandardError=journal

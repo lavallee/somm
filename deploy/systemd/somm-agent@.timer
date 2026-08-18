@@ -1,0 +1,14 @@
+[Unit]
+Description=somm agent worker — daily recommendation pass for project %i
+# The in-process scheduler's default interval for "agent" is 24h
+# (packages/somm-service/src/somm_service/workers/_runner.py). No reason to
+# run more often — it re-derives recommendations from a 7-day window, so
+# hourly runs would mostly recompute the same answer.
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=24h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

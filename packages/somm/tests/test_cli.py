@@ -17,6 +17,7 @@ from somm.cli import (
     _age_since,
     _age_until,
     _dataset_judge,
+    _exhausted_rate_24h,
     _fetch_since,
     _fmt_delta,
     _load_eval_judge_config,
@@ -878,3 +879,133 @@ def test_doctor_reports_worker_heartbeats(tmp_path, capsys, monkeypatch):
     assert "shadow_eval" in out
     assert "last_run_at" in out
     assert "last_success_at" in out
+
+
+# ---------------------------------------------------------------------------
+# doctor: trailing-24h SommProvidersExhausted regression gate
+# (docs/incidents/2026-07-provider-exhaustion.md)
+
+
+def _write_call(repo, cfg, wl, *, ts, outcome, error_kind=None):
+    repo.write_call(
+        Call(
+            id=str(uuid.uuid4()),
+            ts=ts,
+            project=cfg.project,
+            workload_id=wl.id,
+            prompt_id=None,
+            provider="minimax",
+            model="MiniMax-M2.7",
+            tokens_in=10,
+            tokens_out=5,
+            latency_ms=50,
+            cost_usd=0.0,
+            outcome=outcome,
+            error_kind=error_kind,
+            prompt_hash="a",
+            response_hash="b",
+        )
+    )
+
+
+def test_exhausted_rate_24h_no_calls(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    rate, exhausted, total = _exhausted_rate_24h(repo)
+    assert (rate, exhausted, total) == (0.0, 0, 0)
+
+
+def test_exhausted_rate_24h_mixed(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="exhaust_test", project=cfg.project)
+    now = datetime.now(UTC)
+
+    # 3 of 4 recent calls exhausted -> 75%
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK)
+    # Outside the 24h window -> must not count
+    _write_call(
+        repo, cfg, wl,
+        ts=now - timedelta(hours=25),
+        outcome=Outcome.UPSTREAM_ERROR,
+        error_kind="SommProvidersExhausted",
+    )
+    # A different error kind -> counts toward total, not toward exhausted
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommTimeout")
+
+    rate, exhausted, total = _exhausted_rate_24h(repo, now=now)
+    assert total == 5
+    assert exhausted == 3
+    assert rate == 3 / 5
+
+
+def test_doctor_exhausted_rate_below_threshold_passes(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="exhaust_ok", project=cfg.project)
+    now = datetime.now(UTC)
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK)
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK)
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
+
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr(
+        "somm.cli.OllamaProvider.health",
+        lambda self: ProviderHealth(available=True, detail="ok"),
+    )
+
+    rc = main(["doctor", "--max-exhausted-rate", "0.5"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "exhausted_rate_24h: 33.3%  (1/3 calls)" in out
+    assert "WARN" not in out
+
+
+def test_doctor_exhausted_rate_above_threshold_fails(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="exhaust_bad", project=cfg.project)
+    now = datetime.now(UTC)
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK)
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
+
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr(
+        "somm.cli.OllamaProvider.health",
+        lambda self: ProviderHealth(available=True, detail="ok"),
+    )
+
+    rc = main(["doctor", "--max-exhausted-rate", "0.5"])
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "exhausted_rate_24h: 75.0%  (3/4 calls)" in out
+    assert "WARN" in out
+
+
+def test_doctor_exhausted_rate_printed_without_threshold(tmp_path, capsys, monkeypatch):
+    """No --max-exhausted-rate given: the rate is still surfaced, but it
+    never fails the exit code — that's opt-in via the flag."""
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="exhaust_noflag", project=cfg.project)
+    now = datetime.now(UTC)
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
+
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr(
+        "somm.cli.OllamaProvider.health",
+        lambda self: ProviderHealth(available=True, detail="ok"),
+    )
+
+    rc = main(["doctor"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "exhausted_rate_24h: 100.0%  (1/1 calls)" in out

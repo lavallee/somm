@@ -1,0 +1,15 @@
+[Unit]
+Description=somm provider-exhaustion regression alarm — hourly check for project %i
+# Hourly is deliberately tighter than the shadow-eval/agent cadences: this
+# is the tripwire that should have existed during the July incident. At
+# hourly granularity, a repeat of the W28 spike (91% exhausted for a full
+# week) would have alerted within an hour instead of going unnoticed for
+# the incident's full 5-week span.
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

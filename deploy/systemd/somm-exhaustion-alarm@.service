@@ -1,0 +1,26 @@
+[Unit]
+Description=somm provider-exhaustion regression alarm for project %i
+# Cheap health check (two COUNT(*) queries) — see
+# docs/incidents/2026-07-provider-exhaustion.md for why this exists: a
+# month-long SommProvidersExhausted storm (one adopter project, 2026-06-22..07-27,
+# peak 91% of calls failing in one week) ran with no automated alert.
+#
+# `somm doctor --max-exhausted-rate FRACTION` exits nonzero when the
+# trailing-24h SommProvidersExhausted rate exceeds FRACTION. 0.30 below is
+# a starting point: the affected project's post-fix steady state (Aug 2026) sits at
+# 12-21%, well under it; the incident's worst week was 91%. Tune per
+# project once you know its normal noise floor — `somm doctor` with no
+# flag always prints the rate so you can baseline it first.
+#
+# No dollar cost — this reads local telemetry only, no provider calls.
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env somm doctor --project %i --max-exhausted-rate 0.30
+# Environment=SOMM_DB_DIR=%h/Projects/%i/.somm
+StandardOutput=journal
+StandardError=journal
+# A nonzero exit here is the signal — wire OnFailure= to a notifier unit
+# (e.g. systemd-run a ntfy/webhook call) once you have one; left unset in
+# this proposal since no notification channel was specified.
