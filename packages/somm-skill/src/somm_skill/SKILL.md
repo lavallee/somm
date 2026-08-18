@@ -164,6 +164,20 @@ with cross-project decision memory.
 - `llm.extract_structured(prompt, workload=...)` returns `dict | list`,
   handling markdown fences, brace extraction, and provider quirks.
   Do **not** implement your own JSON repair loop.
+- **Async** — `agenerate`, `astream`, `aembed`, `agenerate_structured` and
+  `aextract_structured` are native. Do not wrap the sync calls in
+  `asyncio.to_thread` yourself; the async path keeps the same routing,
+  fallback, budget gate, hooks and telemetry.
+- **Reasoning budget** — pass `reasoning_effort=` (`none`, `minimal`, `low`,
+  `medium`, `high`, `xhigh`, `max`) on any generate call to dial how much a
+  model thinks before answering. It reaches only providers that accept it.
+  Measure before assuming more is better: it is workload-dependent, and a
+  budget spent reasoning is a budget not spent answering — a model can burn
+  its whole `max_tokens` thinking and return an empty body.
+
+  ```python
+  result = llm.generate(prompt=..., workload="triage", reasoning_effort="low")
+  ```
 
 ### 8. Turn the intelligence loop on
 
