@@ -9,6 +9,18 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+- **Public `call_updates` recording API (`somm_core.Repository`)** — the
+  `call_updates` table (late-arriving metadata about immutable `calls` rows)
+  gains its first general write surface: `record_call_update(call_id, field=,
+  value=)` appends one typed update row, and
+  `record_call_updates_for_correlation(correlation_id, field=, value=,
+  include_children=True)` stamps an update onto every call attributed to an
+  external unit of work via `correlation_id` (hierarchical
+  `<id>:...`-namespaced descendants included by default, e.g. fab's
+  `<job_id>:attempt:<idx>`), returning the linked call ids. The existing
+  `record_outcome_update` now delegates to `record_call_update`. This is how
+  downstream systems (fab's bridge, for one) link a job's terminal semantic
+  outcome back to the calls that served it.
 - **`somm doctor --max-exhausted-rate FRACTION`** — trailing-24h
   `SommProvidersExhausted` rate check, suitable for a cron/timer. `somm
   doctor` always prints the rate; the flag makes doctor exit nonzero above
@@ -16,6 +28,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   2026, one adopter project: 90%+ call failure for a week) had no automated alert — see
   `docs/incidents/2026-07-provider-exhaustion.md`. A proposed (not
   installed) systemd timer for it lives in `deploy/systemd/`.
+
 - **Workload handlers (`somm.workloads`)** — a workload is a unit of work, not
   necessarily an LLM call. Every workload now has a **kind**; the default is
   `llm` (the provider chain, unchanged), and a project may register other kinds
