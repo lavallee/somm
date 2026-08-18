@@ -237,3 +237,121 @@ def test_stats_by_workload_serving_profile_rolls_up(tmp_path):
     global_row = repo.stats_global_by_workload(since_days=1)[0]
     assert global_row["project"] == "repo-test"
     assert global_row["p95_latency_ms"] == 400
+
+
+# ---- call_updates recording API ---------------------------------------------
+
+
+def _correlated_call(call_id: str, correlation_id: str | None) -> Call:
+    call = _call(call_id, "callupdate-test")
+    call.correlation_id = correlation_id
+    return call
+
+
+def test_record_call_update_appends_generic_field(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    repo.write_call(_call("c-1", "callupdate-test"))
+
+    repo.record_call_update("c-1", field="fab_job_outcome", value='{"status":"done"}')
+
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT field, value FROM call_updates WHERE call_id = ?", ("c-1",)
+        ).fetchall()
+    assert rows == [("fab_job_outcome", '{"status":"done"}')]
+    repo.close()
+
+
+def test_record_call_update_rejects_bad_field_and_value(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    with pytest.raises(ValueError):
+        repo.record_call_update("c-1", field="", value="x")
+    with pytest.raises(ValueError):
+        repo.record_call_update("c-1", field="outcome", value=None)  # type: ignore[arg-type]
+    repo.close()
+
+
+def test_record_outcome_update_still_persists_outcome_row(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    repo.write_call(_call("c-oc", "callupdate-test"))
+
+    repo.record_outcome_update("c-oc", Outcome.BAD_JSON)
+
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT field, value FROM call_updates WHERE call_id = ?", ("c-oc",)
+        ).fetchall()
+    assert rows == [("outcome", Outcome.BAD_JSON.value)]
+    repo.close()
+
+
+def test_record_call_updates_for_correlation_links_exact_and_children(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    repo.write_call(_correlated_call("c-exact", "job-42"))
+    repo.write_call(_correlated_call("c-child", "job-42:attempt:1"))
+    repo.write_call(_correlated_call("c-other", "job-43"))
+    repo.write_call(_correlated_call("c-none", None))
+
+    linked = repo.record_call_updates_for_correlation(
+        "job-42", field="fab_job_outcome", value='{"status":"needs_review"}'
+    )
+
+    assert sorted(linked) == ["c-child", "c-exact"]
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT call_id, field, value FROM call_updates ORDER BY call_id"
+        ).fetchall()
+    assert rows == [
+        ("c-child", "fab_job_outcome", '{"status":"needs_review"}'),
+        ("c-exact", "fab_job_outcome", '{"status":"needs_review"}'),
+    ]
+    repo.close()
+
+
+def test_record_call_updates_for_correlation_exact_only(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    repo.write_call(_correlated_call("c-exact", "job-42"))
+    repo.write_call(_correlated_call("c-child", "job-42:attempt:1"))
+
+    linked = repo.record_call_updates_for_correlation(
+        "job-42", field="grade", value="A", include_children=False
+    )
+
+    assert linked == ["c-exact"]
+    repo.close()
+
+
+def test_record_call_updates_for_correlation_escapes_like_wildcards(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    repo.write_call(_correlated_call("c-underscore", "job_1"))
+    repo.write_call(_correlated_call("c-child", "job_1:attempt:1"))
+    # Without ESCAPE, the `_` in the prefix would wildcard-match this one.
+    repo.write_call(_correlated_call("c-lookalike", "jobX1:attempt:1"))
+
+    linked = repo.record_call_updates_for_correlation(
+        "job_1", field="grade", value="A"
+    )
+
+    assert sorted(linked) == ["c-child", "c-underscore"]
+    repo.close()
+
+
+def test_record_call_updates_for_correlation_no_matches_is_empty(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+
+    linked = repo.record_call_updates_for_correlation(
+        "job-nothing", field="grade", value="A"
+    )
+
+    assert linked == []
+    with repo._open() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM call_updates").fetchone()[0]
+    assert count == 0
+    repo.close()
+
+
+def test_record_call_updates_for_correlation_rejects_empty_correlation(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    with pytest.raises(ValueError):
+        repo.record_call_updates_for_correlation("", field="grade", value="A")
+    repo.close()

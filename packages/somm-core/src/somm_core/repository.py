@@ -67,6 +67,13 @@ def _is_number(value: object) -> bool:
     )
 
 
+def _like_prefix(value: str) -> str:
+    """Escape SQL LIKE wildcards in a literal prefix (pair with ESCAPE '\\')."""
+    return (
+        value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+
+
 _SERVING_STATS_KEYS = (
     "workload",
     "provider",
@@ -1944,11 +1951,72 @@ class Repository:
 
     def record_outcome_update(self, call_id: str, outcome: Outcome) -> None:
         """Late-arriving outcome mark. Goes into call_updates, not calls."""
+        self.record_call_update(call_id, field="outcome", value=outcome.value)
+
+    def record_call_update(self, call_id: str, *, field: str, value: str) -> None:
+        """Append one late-arriving metadata row for a call.
+
+        ``calls`` rows are immutable after insert; anything learned about a
+        call after the fact (a downstream job outcome, a delayed grade, a
+        human verdict) is appended here instead. ``field`` names what kind
+        of update this is; ``value`` is its serialized payload (callers
+        typically use a short token or a compact JSON object).
+        """
+        if not field or not isinstance(field, str):
+            raise ValueError("call update field must be a non-empty string")
+        if not isinstance(value, str):
+            raise ValueError("call update value must be a string")
         with self._open() as conn:
             conn.execute(
-                "INSERT INTO call_updates (call_id, field, value) VALUES (?, 'outcome', ?)",
-                (call_id, outcome.value),
+                "INSERT INTO call_updates (call_id, field, value) VALUES (?, ?, ?)",
+                (call_id, field, value),
             )
+
+    def record_call_updates_for_correlation(
+        self,
+        correlation_id: str,
+        *,
+        field: str,
+        value: str,
+        include_children: bool = True,
+    ) -> list[str]:
+        """Append one call update per call attributed to ``correlation_id``.
+
+        Correlation ids tie calls to an external system's own unit of work
+        (a fab job, a pipeline run). External coordinates are commonly
+        hierarchical with ``:`` separators — fab, for example, stamps
+        ``<job_id>:attempt:<idx>`` per attempt — so with
+        ``include_children`` (the default) calls whose correlation id is a
+        ``:``-namespaced descendant of ``correlation_id`` are included too.
+
+        Returns the ids of the calls that received the update (empty when
+        no calls carry the correlation id — late data about work that made
+        no recorded calls is not an error).
+        """
+        if not correlation_id or not isinstance(correlation_id, str):
+            raise ValueError("correlation_id must be a non-empty string")
+        if not field or not isinstance(field, str):
+            raise ValueError("call update field must be a non-empty string")
+        if not isinstance(value, str):
+            raise ValueError("call update value must be a string")
+        with self._open() as conn:
+            if include_children:
+                rows = conn.execute(
+                    "SELECT id FROM calls WHERE correlation_id = ? "
+                    "OR correlation_id LIKE ? ESCAPE '\\'",
+                    (correlation_id, _like_prefix(correlation_id) + ":%"),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id FROM calls WHERE correlation_id = ?",
+                    (correlation_id,),
+                ).fetchall()
+            call_ids = [row[0] for row in rows]
+            conn.executemany(
+                "INSERT INTO call_updates (call_id, field, value) VALUES (?, ?, ?)",
+                [(call_id, field, value) for call_id in call_ids],
+            )
+        return call_ids
 
     # Rollups -----------------------------------------------------------------
 
