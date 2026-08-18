@@ -1319,6 +1319,28 @@ def test_reasoning_effort_reaches_the_openai_compatible_payload():
     assert dialled["reasoning_effort"] == "high"
 
 
+def test_every_generate_wrapper_can_dial_reasoning():
+    import inspect
+
+    from somm.client import SommLLM
+
+    # The parameter reached the payload and SommLLM.generate, and stopped
+    # there. The wrappers most callers actually use — a structured extraction
+    # is not written against generate() — silently did not accept it, so a
+    # caller passing it got a TypeError from a signature it never sees. Every
+    # entry point that ends in a generate call takes the same dial.
+    for name in (
+        "generate",
+        "agenerate",
+        "generate_structured",
+        "agenerate_structured",
+        "extract_structured",
+        "aextract_structured",
+    ):
+        parameters = inspect.signature(getattr(SommLLM, name)).parameters
+        assert "reasoning_effort" in parameters, f"{name} cannot dial reasoning"
+
+
 def test_a_flash_model_that_dials_reasoning_is_not_filtered_out_of_thinking(tmp_path):
     from somm.capabilities import model_has_capability
     from somm_core.repository import Repository
