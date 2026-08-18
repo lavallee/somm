@@ -42,8 +42,10 @@ independent.
    ```bash
    uv run pytest -q
    ```
-   Two skips are expected (`no local ollama`). Any other skip or
-   failure blocks release.
+   One skip is expected (`opentelemetry` not installed). Any other
+   skip or failure blocks release. This line said "two skips (no local
+   ollama)" through 0.15.0 and had been wrong for some time — a stale
+   expectation in a checklist trains people to wave past the real thing.
 
 2. **Bump every version string in lockstep.**
    ```bash
@@ -174,3 +176,17 @@ release doesn't re-discover them.
 - **Mirror of older DBs.** Schema migrations run on first open. A
   release with a new schema must NOT be mixed with older libraries
   pointing at the same global `.sqlite` — bump + migrate first.
+- **The publish action ages out from under the build.** 0.15.0's first
+  publish failed on every package with `InvalidDistribution: '2.5' is
+  not a valid metadata version`. Nothing was wrong with the release:
+  `uv build` had moved on to `Metadata-Version: 2.5` and the SHA-pinned
+  `gh-action-pypi-publish` (Feb 2026) shipped a twine that could not
+  read it. Pinning by SHA is right for supply-chain reasons and means
+  the pin silently rots — when a publish fails at the upload step while
+  the build step passes, suspect the pin before the artifacts.
+- **`main` is protected: PR + 3 status checks.** A release cannot be
+  pushed straight to `main`, and merge commits are refused (linear
+  history) — use `gh pr merge --rebase` so the tag can point at the
+  release commit. Do NOT push the tag before the PR merges: it will
+  point at a local commit that the rebase then rewrites, leaving the
+  tag dangling.
