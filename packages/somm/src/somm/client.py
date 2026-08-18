@@ -2271,6 +2271,7 @@ class SommLLM:
         model: str | None = None,
         provider: str | None = None,
         retries: int = 2,
+        reasoning_effort: str | None = None,
         session_id: str | None = None,
         parent_call_id: str | None = None,
         wait: float | None = _WAIT_UNSET,
@@ -2305,6 +2306,7 @@ class SommLLM:
                 model=model,
                 provider=provider,
                 response_format=response_format,
+                reasoning_effort=reasoning_effort,
                 wait=wait,
                 session_id=session_id,
                 parent_call_id=parent_call_id,
@@ -2348,6 +2350,7 @@ class SommLLM:
         model: str | None = None,
         provider: str | None = None,
         retries: int = 2,
+        reasoning_effort: str | None = None,
         session_id: str | None = None,
         parent_call_id: str | None = None,
         wait: float | None = _WAIT_UNSET,
@@ -2366,6 +2369,7 @@ class SommLLM:
             model=model,
             provider=provider,
             retries=retries,
+            reasoning_effort=reasoning_effort,
             session_id=session_id,
             parent_call_id=parent_call_id,
             wait=wait,
@@ -2382,6 +2386,7 @@ class SommLLM:
         provider: str | None = None,
         retries: int = 2,
         temperature_jitter: float = 0.05,
+        reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
     ) -> dict | list:
         """Call the LLM and extract JSON from the response.
@@ -2412,6 +2417,7 @@ class SommLLM:
                 temperature=temp,
                 model=model,
                 provider=provider,
+                reasoning_effort=reasoning_effort,
                 wait=wait,
             )
             last_text = result.text
@@ -2432,6 +2438,7 @@ class SommLLM:
         provider: str | None = None,
         retries: int = 2,
         temperature_jitter: float = 0.05,
+        reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
     ) -> dict | list:
         """Await :meth:`extract_structured` using the same retry pipeline."""
@@ -2448,6 +2455,7 @@ class SommLLM:
             provider=provider,
             retries=retries,
             temperature_jitter=temperature_jitter,
+            reasoning_effort=reasoning_effort,
             wait=wait,
         )
 
