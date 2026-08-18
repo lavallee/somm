@@ -57,7 +57,12 @@ jobs:
         # step finds the artifacts.
         run: uv build --package ${{ matrix.package }} --out-dir dist-${{ matrix.package }}
       - name: Publish ${{ matrix.package }} to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        # Pinned at v1.14.2. The previous pin (Feb 2026) shipped a twine that
+        # rejects Metadata-Version 2.5, which uv build now emits — 0.15.0's
+        # first publish failed on every package with
+        # "InvalidDistribution: '2.5' is not a valid metadata version".
+        # The build was fine; the publisher could not read it.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist-${{ matrix.package }}/
           # Idempotent re-runs: a version already on PyPI is skipped, not an
