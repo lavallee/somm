@@ -5,6 +5,48 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.16.0] — 2026-08-19
+
+### Changed — BREAKING: a pinned `provider`/`model` no longer falls back silently
+
+Naming a `provider` and/or `model` on a call now means **serve it with that or
+fail**. Previously a pin was "try this first": when the pinned target errored,
+somm rescued the call through the router chain, dropped the pinned model name,
+and answered from whatever provider was healthy. The result carried the
+substitute's attribution, so a caller who chose a model could get — and be
+billed for, and record telemetry against — a different one, with nothing in the
+return value saying the choice had been overridden.
+
+That default was the wrong trade. Silent substitution is unexplainable in
+production ("why does this workload sometimes cost 40× more?"), and it quietly
+invalidates every measurement somm exists to produce: `somm bench`, `somm eval`,
+the `somm_compare` and `somm_replay` MCP tools, and any panel judge grading on
+named models. Pins are now sticky everywhere by default.
+
+On a failed pin, the call returns `outcome=UPSTREAM_ERROR` with the **pinned**
+`(provider, model)` preserved on both the `SommResult` and the telemetry row,
+and `error_detail` names the escape hatch.
+
+Opting back in, for callers who would rather have an answer from *some* model
+than none (batch workers that must not lose a run when one provider drops):
+
+- `generate(..., allow_fallback=True)` — also on `agenerate`,
+  `generate_structured`, `agenerate_structured`, `extract_structured`,
+  `aextract_structured`, and as `somm bench --allow-fallback`.
+- `SOMM_PINNED_FALLBACK=1` / `Config.pinned_fallback` — process-wide, restoring
+  the pre-0.16 default without touching call sites.
+- `SommChatModel(somm_allow_fallback=True)` for the LangChain adapter.
+
+Unaffected: calls with no `provider` pin route exactly as before, and an
+explicit `model=` without a provider still rides unchanged across every
+provider the chain tries — the chain has never substituted the model there.
+Workload policy `fallback` chains are explicit configuration and keep working.
+
+`no_fallback=True` is now the default and is kept as a deprecated alias. It can
+only ever *force* stickiness: `no_fallback=False` does not re-enable rescue,
+because the `no_fallback=bool(args.provider)` idiom in existing call sites meant
+"don't rescue", never "please substitute". Use `allow_fallback=` for that.
+
 ## [0.15.0] — 2026-08-18
 
 ### Added
