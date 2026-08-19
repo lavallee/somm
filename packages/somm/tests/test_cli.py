@@ -134,7 +134,9 @@ def test_dataset_judge_pins_every_panel_member_without_fallback():
     assert grade.score == 1.0
     assert grade.reason["quorum"] is True
     assert len(grade.call_ids) == 2
-    assert all(request["no_fallback"] is True for request in llm.requests)
+    # The panel must grade on the models it names. Stickiness is the default
+    # now, so the assertion is that no panel call opts back into rescue.
+    assert all(not request.get("allow_fallback") for request in llm.requests)
     assert [(r["provider"], r["model"]) for r in llm.requests] == [
         ("minimax", "MiniMax-M2.7-highspeed"),
         ("openrouter", "nvidia/model:free"),

@@ -98,6 +98,14 @@ reasons are tokenisation-light and calibrated.
   and frontier quality, but pinned-only by design: right answer for
   gold-grading and low-volume quality-critical workloads, wrong answer
   for hot loops.
+- **A recommendation applied as a pin is honored.** Since 0.16.0 a
+  `provider=`/`model=` pin is served or the call fails; somm does not
+  quietly answer from a substitute. So say what a pin costs when the
+  chosen model is unavailable — a single-provider pick trades
+  availability for predictability. Where availability matters more,
+  recommend a workload `policy` fallback chain (explicit, ordered,
+  recorded) rather than `allow_fallback=True`, which lets any healthy
+  provider answer.
 - If `prior_decisions` came back, cite them alongside the live
   candidates: "Candidate X matches what we picked in project Y." Note
   that the sommelier also *weighs* matching priors into the score — you'll see `prior(<project> <date>): chose — ×1.10` or

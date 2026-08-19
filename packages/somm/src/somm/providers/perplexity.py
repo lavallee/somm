@@ -13,9 +13,10 @@ Models:
 - ``sonar-deep-research`` — slow (30-120s+), 20-50+ citations with a full
   report. It rejects system messages and `temperature`, so we strip those.
 
-Because the answer is only useful *with* its citations, callers should pin
-this provider with ``no_fallback=True`` — a silent fallback to a non-grounded
-model would return prose with no sources for the pipeline to extract.
+Because the answer is only useful *with* its citations, callers pin this
+provider — and pins are sticky, so a failed grounded call fails rather than
+returning prose with no sources for the pipeline to extract. Do not pass
+``allow_fallback=True`` here: the whole point of the pin is the grounding.
 """
 
 from __future__ import annotations

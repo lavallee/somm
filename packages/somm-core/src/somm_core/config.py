@@ -7,6 +7,12 @@ for calls whose routed provider set is entirely cooling down. Per-call
 ``wait`` arguments on ``generate()``, ``stream()``, and
 ``extract_structured()`` take precedence; ``wait=None`` and ``wait=0`` mean
 fail fast.
+
+SOMM_PINNED_FALLBACK=1 restores the pre-0.16 default in which a pinned
+``provider=``/``model=`` call that failed was silently rescued by the router
+chain — possibly on a different model. The default is off: a pin is honored
+or the call fails with the pinned attribution intact. Per-call
+``allow_fallback=`` takes precedence.
 """
 
 from __future__ import annotations
@@ -67,6 +73,11 @@ class Config:
     budget_default_cap_usd_daily: float | None = None  # daily cap for workloads with no explicit budget_cap_usd_daily (when fail_closed)
     inprocess_workers: bool = False  # run the somm-service scheduler inside the library process (SOMM_INPROCESS_WORKERS=1)
     wait_on_exhausted: float | None = None  # default generate/stream wait deadline when all routed providers are cooling
+    # Pinned calls are sticky by default (since v0.16): naming a provider
+    # and/or model means "serve it with this or fail", never "try this first
+    # and silently substitute something else". Set SOMM_PINNED_FALLBACK=1 to
+    # restore the pre-0.16 rescue-through-the-router-chain behavior process-wide.
+    pinned_fallback: bool = False
     service_public_read: bool = False  # allow unauthenticated dashboard/read API only when explicitly opted in
     service_proxy_max_body_bytes: int = 1_048_576
     service_otlp_max_body_bytes: int = 1_048_576
@@ -164,6 +175,9 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     if "SOMM_BUDGET_DEFAULT_CAP_USD_DAILY" in os.environ:
         with contextlib.suppress(ValueError):
             cfg.budget_default_cap_usd_daily = float(os.environ["SOMM_BUDGET_DEFAULT_CAP_USD_DAILY"])
+    if "SOMM_PINNED_FALLBACK" in os.environ:
+        val = os.environ["SOMM_PINNED_FALLBACK"].strip().lower()
+        cfg.pinned_fallback = val in ("1", "true", "yes", "on")
     if "SOMM_WAIT_ON_EXHAUSTED" in os.environ:
         with contextlib.suppress(ValueError):
             cfg.wait_on_exhausted = float(os.environ["SOMM_WAIT_ON_EXHAUSTED"])

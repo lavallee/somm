@@ -182,6 +182,30 @@ llm = somm.llm(
 llm = somm.llm(project="my_app", on_error=lambda _: None)
 ```
 
+### A pin is a pin
+
+Name a `provider` and/or a `model` and somm serves the call with that, or
+fails. It never quietly answers from something else — an answer attributed
+to a model you did not choose is worse than no answer, and it silently
+invalidates every evaluation, benchmark, comparison, and replay you run.
+
+```python
+r = llm.generate("summarize", workload="brief", model="qwen3:14b", provider="ollama")
+# ollama down → r.outcome == UPSTREAM_ERROR, r.model == "qwen3:14b"
+# the failure is recorded against the model you asked for, not a stand-in
+```
+
+Callers who would rather have an answer from *some* model than none — batch
+workers that must not lose a whole run when one provider drops — opt in:
+
+```python
+r = llm.generate(..., allow_fallback=True)   # per call
+```
+
+or `SOMM_PINNED_FALLBACK=1` to make that the default process-wide. When no
+provider is pinned, routing works as it always has, and an explicit `model=`
+rides unchanged across every provider the chain tries.
+
 ### Tool calling — one neutral shape, every provider
 
 ```python
@@ -228,8 +252,7 @@ budgets, and telemetry ledger without blocking their event loop:
 result = await llm.agenerate(
     "Reply with exactly: pong",
     workload="ping",
-    provider="ollama",       # optional pin; fallback semantics match generate()
-    no_fallback=False,
+    provider="ollama",       # optional pin; sticky, exactly as in generate()
 )
 
 obj, result = await llm.agenerate_structured(
@@ -650,6 +673,7 @@ provider is opt-in via its own env var.
 | `SOMM_PROJECT` | `default` | project name tagged on every call |
 | `SOMM_MODE` | `observe` | `observe` (auto-registers workloads) or `strict` |
 | `SOMM_PROVIDER_ORDER` | sovereign-first | comma-sep chain override (e.g. `openrouter,minimax,ollama`) |
+| `SOMM_PINNED_FALLBACK` | `0` | `1` lets a failed `provider=`/`model=` pin be rescued by the router chain |
 | `SOMM_OLLAMA_URL` | `http://localhost:11434` | local ollama endpoint |
 | `SOMM_OLLAMA_MODEL` | `qwen3:8b` | explicit/local-fallback ollama model |
 | `SOMM_OLLAMA_THINK` | `0` | `1` sets `"think": true` on ollama requests (reasoning models) |

@@ -168,6 +168,13 @@ with cross-project decision memory.
   `aextract_structured` are native. Do not wrap the sync calls in
   `asyncio.to_thread` yourself; the async path keeps the same routing,
   fallback, budget gate, hooks and telemetry.
+- **Pins are sticky** — `provider=` and/or `model=` means "serve this call
+  with that". If the pinned target fails, the call comes back
+  `outcome=UPSTREAM_ERROR` with the pinned attribution intact; somm never
+  answers from a model the caller did not name. Pass `allow_fallback=True`
+  (or set `SOMM_PINNED_FALLBACK=1`) when an answer from some healthy model
+  beats no answer — e.g. batch workers that must not lose a run when one
+  provider drops.
 - **Reasoning budget** — pass `reasoning_effort=` (`none`, `minimal`, `low`,
   `medium`, `high`, `xhigh`, `max`) on any generate call to dial how much a
   model thinks before answering. It reaches only providers that accept it.

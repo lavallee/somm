@@ -20,7 +20,7 @@ The router filters incapable models before network access, applies quota pacing,
 ## Design decisions
 
 - Observe mode auto-registers workloads; strict mode makes missing registration an error, favoring initial adoption without removing enforceable governance (`packages/somm/src/somm/client.py:658`).
-- Provider pins are “try first” by default; `no_fallback=True` supplies pinned-or-bust semantics for experiments where rerouting would invalidate results (`packages/somm/src/somm/client.py:1133`).
+- Provider/model pins are sticky by default: the pin is served or the call fails with the pinned attribution intact. `allow_fallback=True` (or `SOMM_PINNED_FALLBACK=1`) opts back into rescue through the router chain.
 - Hooks, mirroring, learned overrides, and most telemetry side effects fail open so auxiliary intelligence cannot break live inference; hard budgets deliberately fail closed before dispatch (`packages/somm/src/somm/hooks.py:246`, `packages/somm/src/somm/client.py:571`).
 - Shadow body capture is opt-in, deterministically sampled, size-capped, and forbidden for private workloads (`packages/somm/src/somm/client.py:850`).
 - Optimization only creates a proposal label; it never promotes directly to staging or production (`packages/somm/src/somm/optimize.py:49`).

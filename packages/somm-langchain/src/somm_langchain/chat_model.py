@@ -55,8 +55,14 @@ class SommChatModel(BaseChatModel):
     somm_llm: SommLLM
     workload: str = "agent"
     # Pin a specific (model, provider) when set; otherwise somm's router picks.
+    # A pin is sticky: an agent told to run on one model does not quietly
+    # finish its turn on another.
     somm_model: str | None = None
     somm_provider: str | None = None
+    # Opt a pinned agent back into router rescue when the pin fails — an
+    # answer from some model beats a dead turn. None defers to
+    # SOMM_PINNED_FALLBACK.
+    somm_allow_fallback: bool | None = None
     temperature: float = 0.2
     max_tokens: int = 4096
 
@@ -102,6 +108,7 @@ class SommChatModel(BaseChatModel):
             workload=self.workload,
             model=kwargs.get("model") or self.somm_model,
             provider=self.somm_provider,
+            allow_fallback=self.somm_allow_fallback,
             temperature=kwargs.get("temperature", self.temperature),
             max_tokens=kwargs.get("max_tokens", self.max_tokens),
             tools=somm_tools if somm_tools else None,

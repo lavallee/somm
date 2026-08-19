@@ -153,8 +153,9 @@ def test_on_error_exception_is_swallowed(tmp_path):
 
 
 def test_on_fallback_fires_when_chain_saves_pinned_call(tmp_path):
-    """Pinned provider fails, chain recovers — on_fallback fires with both
-    pinned and actual identities. on_error MUST NOT fire (call succeeded)."""
+    """Pinned provider fails and the caller opted into rescue — on_fallback
+    fires with both pinned and actual identities. on_error MUST NOT fire
+    (call succeeded). Without allow_fallback= there is no rescue to report."""
     failing = _FailingProvider("ollama", RuntimeError("model not found"))
     backup = FakeProvider(text="rescued")
     backup.name = "minimax"
@@ -175,6 +176,7 @@ def test_on_fallback_fires_when_chain_saves_pinned_call(tmp_path):
             workload="fallbackhook",
             provider="ollama",
             model="qwen3:14b",
+            allow_fallback=True,
         )
         assert result.outcome == Outcome.OK
         assert result.text == "rescued"
@@ -191,10 +193,10 @@ def test_on_fallback_fires_when_chain_saves_pinned_call(tmp_path):
 
 
 def test_on_fallback_suppresses_same_model_retries(tmp_path):
-    """Pinned (openrouter, elephant-alpha) fails once, chain re-tries, the
-    same provider+model succeeds on retry. That's a retry, not a structural
-    fallback — hook must NOT fire. Otherwise free-tier providers that
-    intermittently 429 spam the alert stream."""
+    """Pinned (openrouter, elephant-alpha) fails once, the opted-in chain
+    re-tries, and the same provider+model succeeds on retry. That's a retry,
+    not a structural fallback — hook must NOT fire. Otherwise free-tier
+    providers that intermittently 429 spam the alert stream."""
 
     class _FlakyProvider:
         """Fails on first call, succeeds on second. Same identity both times."""
@@ -242,6 +244,7 @@ def test_on_fallback_suppresses_same_model_retries(tmp_path):
             workload="retry-only",
             provider="openrouter",
             model="openrouter/elephant-alpha",
+            allow_fallback=True,
         )
         assert result.outcome == Outcome.OK
         assert result.text == "recovered"
@@ -336,7 +339,9 @@ def test_on_fallback_exception_is_swallowed(tmp_path):
     )
     try:
         # Must not raise.
-        result = llm.generate(prompt="hi", workload="brokenhook", provider="ollama")
+        result = llm.generate(
+            prompt="hi", workload="brokenhook", provider="ollama", allow_fallback=True
+        )
         assert result.text == "rescued"
     finally:
         llm.close()
@@ -479,10 +484,11 @@ def test_flush_waits_for_active_writer_batch(tmp_path):
 
 
 def test_pinned_provider_failure_clears_model_on_fallback(tmp_path):
-    """When the pinned (provider, model) fails, the fallback chain must NOT
-    propagate the pinned model to other providers — they serve different
-    inventories. Regression: pinning ollama/qwen3:14b and having ollama down
-    would previously ask Minimax for qwen3:14b and also fail.
+    """When a caller opts into rescue and the pinned (provider, model)
+    fails, the fallback chain must NOT propagate the pinned model to other
+    providers — they serve different inventories. Regression: pinning
+    ollama/qwen3:14b and having ollama down would previously ask Minimax for
+    qwen3:14b and also fail.
     """
     failing = _FailingProvider("ollama", RuntimeError("model 'qwen3:14b' not found"))
     backup = FakeProvider(text="fallback-output", model="minimax-default")
@@ -496,6 +502,7 @@ def test_pinned_provider_failure_clears_model_on_fallback(tmp_path):
             workload="pinfall",
             provider="ollama",
             model="qwen3:14b",
+            allow_fallback=True,
         )
         # Pinned provider first gets asked for the pinned model. When that
         # raises, somm falls through to the router chain which iterates all
