@@ -17,7 +17,7 @@
   <div class="wrap">
     <a class="logo" href="./">
       <span class="mark">somm</span>
-      <span class="mark-sub">/ v0.15.0 beta</span>
+      <span class="mark-sub">/ v0.16.0 beta</span>
     </a>
     <nav>
       <a href="#why">why</a>
@@ -79,6 +79,16 @@ print(r.text, r.provider, r.cost_usd)
             <code>SOMM_PROVIDER_ORDER</code>, per-model cooldowns
             persisted to SQLite, circuit breaker. Free-tier rate limits
             stop being a problem.
+          </p>
+          <p>
+            And a pin is a pin: name a <code>provider</code> or
+            <code>model</code> and somm serves that or fails, with the
+            failure recorded against the model you asked for. It never
+            quietly answers from a substitute &mdash; that is
+            unexplainable in production and silently invalidates every
+            benchmark, eval, comparison, and replay. Pass
+            <code>allow_fallback=True</code> when an answer from some
+            healthy model beats none.
           </p>
         </div>
         <div class="row">
@@ -298,14 +308,14 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
     <div class="wrap">
       <h2>Status</h2>
       <p class="section-lede">
-        v0.15.0 beta / pre-1.0 — see the
+        v0.16.0 beta / pre-1.0 — see the
         <a href="https://github.com/lavallee/somm/blob/main/CHANGELOG.md">CHANGELOG</a>
         for the release log; the test suite runs in CI on every push. somm is
         published for real-world dogfooding, but its public API, MCP tools,
         service contracts, and migration semantics are not yet declared stable.
         Recent releases added multimodal routing (0.1.1), the sommelier
         (0.2.0), Gemini + error visibility (0.2.1), sommelier quality
-        (0.2.2), tool calling + the LangChain adapter, eval gates, the recommendation loop, OTLP ingest, authenticated service APIs, serving-performance rollups, benchmark/cache-advice CLIs, Anthropic/OpenAI-compatible proxy routes, reusable Claude/Codex/OpenCode harness execution, a native async client API, workload handlers, and per-request reasoning budgets (0.15.0).
+        (0.2.2), tool calling + the LangChain adapter, eval gates, the recommendation loop, OTLP ingest, authenticated service APIs, serving-performance rollups, benchmark/cache-advice CLIs, Anthropic/OpenAI-compatible proxy routes, reusable Claude/Codex/OpenCode harness execution, a native async client API, workload handlers, per-request reasoning budgets (0.15.0), and sticky provider/model pins (0.16.0).
         MIT licensed. Upcoming work is tracked in
         <a href="https://github.com/lavallee/somm/blob/main/ROADMAP.md">ROADMAP.md</a>;
         if you want to build your own take, the

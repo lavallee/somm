@@ -1,5 +1,5 @@
 {
- "generated_on": "2026-08-17",
+ "generated_on": "2026-08-19",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "license": "MIT (LiteLLM); see source",
  "models": [
@@ -697,8 +697,8 @@
   {
    "provider": "gemini",
    "model": "gemini-3.6-flash",
-   "price_in_per_1m": 1.5,
-   "price_out_per_1m": 7.5,
+   "price_in_per_1m": 0.75,
+   "price_out_per_1m": 3.75,
    "context_window": 1048576,
    "capabilities": {
     "tools": true,
