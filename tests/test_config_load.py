@@ -38,6 +38,7 @@ _SOMM_ENV_VARS = [
     "SOMM_HTTP_TIMEOUT",
     "SOMM_REGISTRY_PATH",
     "SOMM_REGISTRY_ALLOW_TMP",
+    "SOMM_PINNED_FALLBACK",
 ]
 
 
@@ -51,6 +52,7 @@ def test_load_defaults_no_env(tmp_path: Path, monkeypatch) -> None:
     cfg = load(cwd=tmp_path)
     assert cfg.project == "default"
     assert cfg.budget_fail_closed is False
+    assert cfg.pinned_fallback is False  # pins are sticky unless opted out
     assert cfg.provider_order is None
     assert cfg.minimax_model == "MiniMax-M3"
     assert cfg.ollama_model == "qwen3:8b"
@@ -61,6 +63,15 @@ def test_load_budget_fail_closed_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SOMM_BUDGET_FAIL_CLOSED", "1")
     cfg = load(cwd=tmp_path)
     assert cfg.budget_fail_closed is True
+
+
+def test_load_pinned_fallback_env(tmp_path: Path, monkeypatch) -> None:
+    """The opt-out for fleets that relied on pre-0.16 pinned-call rescue."""
+    _clear_somm_env(monkeypatch)
+    monkeypatch.setenv("SOMM_PINNED_FALLBACK", "1")
+    assert load(cwd=tmp_path).pinned_fallback is True
+    monkeypatch.setenv("SOMM_PINNED_FALLBACK", "0")
+    assert load(cwd=tmp_path).pinned_fallback is False
 
 
 def test_load_provider_order_env(tmp_path: Path, monkeypatch) -> None:

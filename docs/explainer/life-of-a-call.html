@@ -65,7 +65,7 @@
 
 <h2>Routing: filter incapable models, pace quotas, cool transient failures</h2>
 
-<p>With policy satisfied, the call dispatches either to a pinned provider or to the preference-ordered router (<code>packages/somm/src/somm/client.py:910</code>). Pins are "try first" by default — if the pinned route fails, the router can still fall back — while <code>no_fallback=True</code> supplies pinned-or-bust semantics for experiments where rerouting would invalidate results (<code>packages/somm/src/somm/client.py:1133</code>).</p>
+<p>With policy satisfied, the call dispatches either to a pinned provider or to the preference-ordered router. Pins are <em>sticky</em>: a call that names a provider and/or model is served by that or fails, with the pinned attribution preserved on the result and the telemetry row. somm never answers from a model the caller did not ask for — silent substitution is unexplainable in production and invalidates any benchmark, evaluation, comparison, or replay built on the pin. Callers who would rather have an answer from some model than none pass <code>allow_fallback=True</code> (or set <code>SOMM_PINNED_FALLBACK=1</code>) to route past a failed pin through the chain.</p>
 
 <div class="diagram">
 <pre class="mermaid">
@@ -76,7 +76,7 @@ flowchart TD
     D --> E{"Daily budget?"}
     E -- "exceeded" --> F["SOMM_BUDGET_EXCEEDED<br/>fatal, no dispatch"]
     E -- "ok" --> G{"Provider pin?"}
-    G -- "pinned" --> H["Try pin first"]
+    G -- "pinned" --> H["Serve the pin<br/>(or fail with it)"]
     G -- "unpinned" --> I["Preference-ordered router"]
     I --> J["Filter explicitly incapable<br/>provider/model pairs"]
     J --> K["Apply plan governor:<br/>defer over-paced, drop blocked"]

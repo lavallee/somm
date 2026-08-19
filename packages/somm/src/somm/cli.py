@@ -803,7 +803,6 @@ def _dataset_judge(llm, *, workload: str, config: dict):
                 temperature=0.0,
                 provider=str(spec["provider"]),
                 model=str(spec["model"]),
-                no_fallback=True,
             )
             writer = getattr(llm, "_writer", None)
             if writer is not None:
@@ -881,7 +880,6 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
                 provider=args.provider,
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
-                no_fallback=bool(args.provider),
             )
             writer = getattr(llm, "_writer", None)
             if writer is not None:
@@ -961,7 +959,6 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
                 temperature=args.temperature,
                 provider=args.provider,
                 model=args.model,
-                no_fallback=bool(args.provider),
             )
             writer = getattr(llm, "_writer", None)
             if writer is not None:
@@ -1030,7 +1027,6 @@ def _cmd_campaign_run(args: argparse.Namespace) -> int:
                 temperature=args.temperature,
                 provider=args.provider,
                 model=args.model,
-                no_fallback=bool(args.provider),
             )
             writer = getattr(llm, "_writer", None)
             if writer is not None:
@@ -1645,7 +1641,7 @@ def _cmd_bench(args: argparse.Namespace) -> int:
                 model=args.model,
                 max_tokens=args.max_tokens,
                 temperature=args.temperature,
-                no_fallback=args.no_fallback,
+                allow_fallback=args.allow_fallback and not args.no_fallback,
             )
             if idx < args.warmup:
                 continue
@@ -2656,7 +2652,15 @@ def build_parser() -> argparse.ArgumentParser:
         pbench.add_argument("--warmup", type=int, default=0)
         pbench.add_argument("--max-tokens", type=int, default=256)
         pbench.add_argument("--temperature", type=float, default=0.0)
-        pbench.add_argument("--no-fallback", action="store_true")
+        pbench.add_argument(
+            "--allow-fallback",
+            action="store_true",
+            help="let a failed --provider/--model pin be rescued by the router chain "
+            "(off by default: a benchmark that silently changes model measures nothing)",
+        )
+        # Deprecated: stickiness is the default now. Kept so existing bench
+        # scripts keep running instead of dying on an unknown flag.
+        pbench.add_argument("--no-fallback", action="store_true", help=argparse.SUPPRESS)
         pbench.add_argument("--json", action="store_true", help="emit a machine-readable result")
         pbench.set_defaults(func=_cmd_bench)
 

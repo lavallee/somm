@@ -131,14 +131,12 @@ async def test_agenerate_matches_sync_telemetry_row_shape(tmp_path: Path) -> Non
             workload="row_parity",
             provider="fake",
             model="fixed-model",
-            no_fallback=True,
         )
         async_result = await llm.agenerate(
             "same request",
             workload="row_parity",
             provider="fake",
             model="fixed-model",
-            no_fallback=True,
         )
     finally:
         llm.close()
@@ -231,7 +229,9 @@ async def test_aembed_rejects_silently_overriding_configured_provider(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_agenerate_routing_fallback_and_no_fallback_match_sync(tmp_path: Path) -> None:
+async def test_agenerate_pin_stickiness_matches_sync(tmp_path: Path) -> None:
+    """Both pin modes — sticky (default) and opt-in rescue — behave
+    identically through agenerate()."""
     broken = FakeProvider("broken", fail=True)
     rescue = FakeProvider("rescue", text="rescued")
     llm = SommLLM(config=_tmp_config(tmp_path), providers=[broken, rescue])
@@ -241,26 +241,26 @@ async def test_agenerate_routing_fallback_and_no_fallback_match_sync(tmp_path: P
             workload="fallback",
             provider="broken",
             model="pinned-model",
+            allow_fallback=True,
         )
         async_fallback = await llm.agenerate(
             "route",
             workload="fallback",
             provider="broken",
             model="pinned-model",
+            allow_fallback=True,
         )
         sync_pinned = llm.generate(
             "route",
             workload="no_fallback",
             provider="broken",
             model="pinned-model",
-            no_fallback=True,
         )
         async_pinned = await llm.agenerate(
             "route",
             workload="no_fallback",
             provider="broken",
             model="pinned-model",
-            no_fallback=True,
         )
     finally:
         llm.close()
@@ -403,7 +403,6 @@ async def test_agenerate_against_live_ollama(tmp_path: Path) -> None:
             temperature=0.0,
             model=model,
             provider="ollama",
-            no_fallback=True,
         )
     finally:
         llm.close()

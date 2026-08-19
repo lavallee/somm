@@ -631,6 +631,10 @@ def build_server(
                         temperature=temperature,
                         model=model,
                         provider=provider_name,
+                        # A side-by-side that answers from a substituted
+                        # model is not a comparison. Explicit for the reader,
+                        # though it is also the library default.
+                        allow_fallback=False,
                     )
                     out.append(
                         {
@@ -717,6 +721,9 @@ def build_server(
                 provider=with_provider,
                 max_tokens=max_tokens,
                 temperature=0.0,
+                # Replaying against a model the caller did not name would
+                # answer a different question than the one they asked.
+                allow_fallback=False,
             )
             return {
                 "call_id": call_id,

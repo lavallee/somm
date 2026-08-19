@@ -633,6 +633,18 @@ def _format_error_detail(exc: Exception, provider: str, model: str | None) -> st
     return _scrub_secrets(" | ".join(parts))[:512]
 
 
+def _pinned_error_detail(exc: Exception, provider: str, model: str | None) -> str:
+    """`_format_error_detail` plus the one-line escape hatch.
+
+    A sticky pin that fails is a dead end by design, so the recorded detail
+    has to say how to opt into the chain — otherwise `somm tail` shows an
+    error with no next step.
+    """
+    hint = " | pinned call: no fallback (allow_fallback=True to route past it)"
+    detail = _format_error_detail(exc, provider, model)
+    return detail[: 512 - len(hint)] + hint
+
+
 def _scrub_secrets(text: str) -> str:
     """Redact common credentials from persisted operator-facing error text."""
     return scrub_text(text)
@@ -1018,6 +1030,30 @@ class SommLLM:
             return None
         return wait_s if wait_s > 0 else None
 
+    def _resolve_allow_fallback(
+        self,
+        allow_fallback: bool | None,
+        no_fallback: bool,
+    ) -> bool:
+        """Decide whether a failed *pinned* call may be rescued by the chain.
+
+        A pin is sticky by default: `provider=`/`model=` means "serve this",
+        not "try this first". Silent substitution made results unexplainable
+        for callers who had already chosen the model. Precedence:
+
+          1. `no_fallback=True` (deprecated) — always sticky. It can only ever
+             force stickiness; passing False never re-enables rescue, because
+             the pre-0.16 call sites that pass `no_fallback=bool(...)` meant
+             "don't rescue", never "please substitute".
+          2. explicit `allow_fallback=` on the call.
+          3. `SOMM_PINNED_FALLBACK` / `Config.pinned_fallback` (default False).
+        """
+        if no_fallback:
+            return False
+        if allow_fallback is not None:
+            return bool(allow_fallback)
+        return bool(getattr(self.config, "pinned_fallback", False))
+
     def generate(
         self,
         prompt: str | list[dict] | Prompt,
@@ -1029,6 +1065,7 @@ class SommLLM:
         provider: str | None = None,
         capabilities_required: list[str] | None = None,
         allow_empty: bool = False,
+        allow_fallback: bool | None = None,
         no_fallback: bool = False,
         raise_on_empty: bool = False,
         tools: list[dict] | None = None,
@@ -1049,12 +1086,22 @@ class SommLLM:
         ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
         that prompt version on the telemetry row.
 
-        ``no_fallback``: when a ``provider`` is pinned, suppress the normal
-        rescue path through the router chain. The pinned (provider, model)
-        either succeeds or the call returns with ``outcome=UPSTREAM_ERROR``
-        — useful for evaluation runs where silent fallback to a different
-        model invalidates the experiment. Has no effect when ``provider``
-        is None (router-driven calls have no pinned target to honor).
+        **Pins are sticky.** Naming a ``provider`` and/or ``model`` means
+        "serve this call with that", not "try it first". If the pinned
+        target fails, the call returns ``outcome=UPSTREAM_ERROR`` with the
+        pinned (provider, model) preserved on both the result and the
+        telemetry row — somm never quietly answers with a model the caller
+        did not ask for. ``allow_fallback=True`` opts back into rescue
+        through the router chain for callers that would rather have an
+        answer from *some* model than none (set ``SOMM_PINNED_FALLBACK=1``
+        to make that the process-wide default). Both are inert when no
+        ``provider`` is pinned: router-driven calls have no pinned target
+        to honor, and an explicit ``model`` is carried unchanged across
+        every provider the chain tries.
+
+        ``no_fallback=True`` is the deprecated spelling of
+        ``allow_fallback=False`` and is now the default; it is still
+        accepted and still forces stickiness.
 
         Tool-calling (``tools``, ``messages``, ``tool_choice``): see
         docs/tool-calling.md. Tools is a list of somm-neutral JSON-Schema-
@@ -1115,6 +1162,7 @@ class SommLLM:
                 pass  # never let a learned-override lookup break a live call
 
         wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
+        allow_fallback_resolved = self._resolve_allow_fallback(allow_fallback, no_fallback)
 
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
         call_prompt_id = None if messages is not None else self._resolve_prompt_id(wl.id, prompt)
@@ -1258,37 +1306,42 @@ class SommLLM:
                         latency_ms=latency_ms,
                     )
             except Exception as exc:
-                # Preferred provider failed — fall through to the full
-                # router chain instead of giving up. "provider=X" means
-                # "try X first", not "only X". This is critical for
-                # parallel workers: if one provider goes down mid-batch,
-                # those workers recover via fallthrough instead of
-                # producing empty results.
-                from somm.errors import SommFatalError
-
-                if isinstance(exc, SommFatalError):
-                    # Auth errors etc. — don't retry, but still try router
-                    pass
-                # Remember what the caller asked for before clearing the pin
-                # — on_fallback needs to show pinned vs. actual.
+                # The pinned target failed. Remember what the caller asked
+                # for either way — on_fallback needs pinned vs. actual, and
+                # the sticky path reports the pin as the attribution.
                 fallback_info = {
                     "pinned_provider": provider,
                     "pinned_model": model,
                     "error_kind": type(exc).__name__,
                     "error_detail": _format_error_detail(exc, chosen.name, model),
                 }
-                if no_fallback:
-                    # Caller wants pinned-or-bust semantics — surface the
-                    # original error and stop. Used by evaluation harnesses
-                    # where a silent re-route to a different model would
-                    # invalidate the experiment.
+                if not allow_fallback_resolved:
+                    # Default since v0.16: a pin is honored or the call fails.
+                    # Rescuing a pinned call through the chain answers with a
+                    # model the caller never asked for, which made results
+                    # unexplainable — and silently invalidated evaluation,
+                    # comparison, and replay runs. Surface the original error
+                    # with the pinned attribution intact.
                     fallback_info = None
                     outcome = Outcome.UPSTREAM_ERROR
                     error_kind = type(exc).__name__
-                    error_detail = _format_error_detail(exc, chosen.name, model)
+                    error_detail = _pinned_error_detail(exc, chosen.name, model)
                     actual_provider = chosen.name
-                    actual_model = model or ""
+                    # Attribute the failure to a real model even when only
+                    # the provider was pinned: the caller still chose one
+                    # implicitly, and a blank model column hides the row from
+                    # every per-model query.
+                    actual_model = (
+                        model
+                        or getattr(exc, "model", "")
+                        or getattr(chosen, "default_model", "")
+                        or ""
+                    )
                 else:
+                    # Opt-in rescue (allow_fallback=True /
+                    # SOMM_PINNED_FALLBACK=1): an answer from some healthy
+                    # provider beats no answer — e.g. parallel batch workers
+                    # that would otherwise all fail when one provider drops.
                     # Clear the pinned model before chain fallback: the pin is
                     # only meaningful to the pinned provider. Other providers
                     # serve different model inventories, so re-using the pinned
@@ -1603,6 +1656,7 @@ class SommLLM:
         provider: str | None = None,
         capabilities_required: list[str] | None = None,
         allow_empty: bool = False,
+        allow_fallback: bool | None = None,
         no_fallback: bool = False,
         raise_on_empty: bool = False,
         tools: list[dict] | None = None,
@@ -1635,6 +1689,7 @@ class SommLLM:
             provider=provider,
             capabilities_required=capabilities_required,
             allow_empty=allow_empty,
+            allow_fallback=allow_fallback,
             no_fallback=no_fallback,
             raise_on_empty=raise_on_empty,
             tools=tools,
@@ -2271,6 +2326,7 @@ class SommLLM:
         model: str | None = None,
         provider: str | None = None,
         retries: int = 2,
+        allow_fallback: bool | None = None,
         reasoning_effort: str | None = None,
         session_id: str | None = None,
         parent_call_id: str | None = None,
@@ -2281,6 +2337,11 @@ class SommLLM:
         Unlike extract_structured(), this is strict: it retries with corrective
         feedback and raises SommStructuredError instead of returning a sentinel
         dict when the model never produces a valid object.
+
+        A pinned ``provider``/``model`` is sticky, exactly as in generate():
+        every retry goes back to the same target rather than wandering onto
+        another model mid-schedule. Pass ``allow_fallback=True`` to let a
+        failed pin be rescued by the router chain.
         """
         schema_kind, schema_doc = _classify_structured_schema(schema)
         base_system = _structured_system(system, schema_doc)
@@ -2305,6 +2366,7 @@ class SommLLM:
                 temperature=temperature + (attempt * _STRUCTURED_TEMPERATURE_JITTER),
                 model=model,
                 provider=provider,
+                allow_fallback=allow_fallback,
                 response_format=response_format,
                 reasoning_effort=reasoning_effort,
                 wait=wait,
@@ -2350,6 +2412,7 @@ class SommLLM:
         model: str | None = None,
         provider: str | None = None,
         retries: int = 2,
+        allow_fallback: bool | None = None,
         reasoning_effort: str | None = None,
         session_id: str | None = None,
         parent_call_id: str | None = None,
@@ -2369,6 +2432,7 @@ class SommLLM:
             model=model,
             provider=provider,
             retries=retries,
+            allow_fallback=allow_fallback,
             reasoning_effort=reasoning_effort,
             session_id=session_id,
             parent_call_id=parent_call_id,
@@ -2386,6 +2450,7 @@ class SommLLM:
         provider: str | None = None,
         retries: int = 2,
         temperature_jitter: float = 0.05,
+        allow_fallback: bool | None = None,
         reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
     ) -> dict | list:
@@ -2405,6 +2470,8 @@ class SommLLM:
         said nothing parseable" and "LLM said something parseable".
         Omit ``wait`` to use ``SOMM_WAIT_ON_EXHAUSTED`` when set; pass
         ``None`` or ``0`` to fail fast on provider exhaustion.
+        A pinned ``provider``/``model`` is sticky across every retry; pass
+        ``allow_fallback=True`` to let a failed pin fall through the chain.
         """
         last_text = ""
         for attempt in range(retries + 1):
@@ -2417,6 +2484,7 @@ class SommLLM:
                 temperature=temp,
                 model=model,
                 provider=provider,
+                allow_fallback=allow_fallback,
                 reasoning_effort=reasoning_effort,
                 wait=wait,
             )
@@ -2438,6 +2506,7 @@ class SommLLM:
         provider: str | None = None,
         retries: int = 2,
         temperature_jitter: float = 0.05,
+        allow_fallback: bool | None = None,
         reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
     ) -> dict | list:
@@ -2455,6 +2524,7 @@ class SommLLM:
             provider=provider,
             retries=retries,
             temperature_jitter=temperature_jitter,
+            allow_fallback=allow_fallback,
             reasoning_effort=reasoning_effort,
             wait=wait,
         )
