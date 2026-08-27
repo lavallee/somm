@@ -9,6 +9,7 @@ import pytest
 from somm import harnesses
 from somm.harnesses import HarnessCapabilityError, HarnessOutcome, HarnessRequest
 from somm.harnesses import codex as codex_module
+from somm.harnesses import pi as pi_module
 
 
 def _request(tmp_path: Path, **overrides) -> HarnessRequest:
@@ -37,6 +38,7 @@ def test_registry_and_unknown_harness() -> None:
     assert harnesses.get("claude-cli").capabilities.max_turns is True
     assert harnesses.get("codex").capabilities.reasoning_effort is True
     assert harnesses.get("opencode").capabilities.agent_selection is True
+    assert harnesses.get("pi").capabilities.reasoning_effort is True
     with pytest.raises(ValueError, match="unknown harness"):
         harnesses.get("missing")
 
@@ -55,6 +57,8 @@ def test_registry_and_unknown_harness() -> None:
         ("codex", "future-model"),
         ("opencode", "anthropic/claude-sonnet-4-5"),
         ("opencode", "gpt-5.6"),
+        ("pi", "anthropic/claude-sonnet-4-5"),
+        ("pi", "gpt-5.6"),
     ],
 )
 def test_model_family_validation_accepts_compatible_or_unknown_models(
@@ -127,6 +131,10 @@ def test_safe_mode_does_not_bypass_permissions(tmp_path: Path) -> None:
     assert "--dangerously-skip-permissions" not in (
         harnesses.get("opencode").build_argv(request)
     )
+    pi_argv = harnesses.get("pi").build_argv(request)
+    assert "--no-tools" in pi_argv
+    assert "--no-context-files" in pi_argv
+    assert "--no-approve" in pi_argv
 
 
 def test_claude_argv_and_result(tmp_path: Path) -> None:
@@ -312,4 +320,112 @@ def test_opencode_length_and_context_failure(tmp_path: Path) -> None:
 
     stdout.write_text("")
     stderr.write_text("request rejected: context window exceeded")
+    assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.CONTEXT_LIMIT
+
+
+def test_pi_safe_argv_uses_stdin_and_blocks_ambient_resources(tmp_path: Path) -> None:
+    adapter = harnesses.get("pi")
+    request = _request(
+        tmp_path,
+        allow_unsafe=False,
+        prompt_via_stdin=True,
+        model="anthropic/claude-sonnet-4-5",
+        reasoning_effort="high",
+        executable="/opt/pi",
+    )
+
+    argv = adapter.build_argv(request)
+
+    assert argv[:3] == ["/opt/pi", "--mode", "json"]
+    for flag in (
+        "--no-tools",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+        "--no-approve",
+        "--no-session",
+    ):
+        assert flag in argv
+    assert argv[argv.index("--model") + 1] == "anthropic/claude-sonnet-4-5"
+    assert argv[argv.index("--thinking") + 1] == "high"
+    assert "do it" not in argv
+
+
+def test_pi_safe_mode_rejects_extra_cli_arguments(tmp_path: Path) -> None:
+    request = _request(tmp_path, allow_unsafe=False, extra=("--tools", "bash"))
+
+    with pytest.raises(HarnessCapabilityError, match="does not accept extra"):
+        harnesses.get("pi").build_argv(request)
+
+
+def test_pi_start_transports_prompt_over_stdin(tmp_path: Path, monkeypatch) -> None:
+    adapter = harnesses.get("pi")
+    request = _request(
+        tmp_path,
+        allow_unsafe=False,
+        prompt="private workload prompt",
+        prompt_via_stdin=True,
+    )
+    seen = {}
+
+    def fake_launch(argv, req, *, stdin_data=None):
+        seen.update(argv=argv, request=req, stdin_data=stdin_data)
+        return object()
+
+    monkeypatch.setattr(pi_module, "launch_process", fake_launch)
+
+    adapter.start(request)
+
+    assert seen["request"] is request
+    assert seen["stdin_data"] == "private workload prompt"
+    assert "private workload prompt" not in seen["argv"]
+
+
+def test_pi_result_uses_authoritative_assistant_message(tmp_path: Path) -> None:
+    adapter = harnesses.get("pi")
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Probe passed."}],
+        "stopReason": "stop",
+        "usage": {"input": 11, "output": 3, "cost": {"total": 0.01}},
+    }
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "session", "version": 3, "id": "pi-session-1"},
+        {"type": "message_end", "message": message},
+        {"type": "agent_end", "messages": [message]},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+
+    result = adapter.inspect(stdout, stderr, exit_code=0, correlation_id="attempt-1")
+
+    assert result.outcome is HarnessOutcome.COMPLETED
+    assert result.final_text == "Probe passed."
+    assert result.session_id == "pi-session-1"
+    assert result.usage == {"input": 11, "output": 3}
+    assert result.correlation_id == "attempt-1"
+
+
+def test_pi_error_and_length_are_not_false_successes(tmp_path: Path) -> None:
+    adapter = harnesses.get("pi")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "session", "id": "pi-session-2"},
+        {"type": "agent_end", "messages": [{
+            "role": "assistant",
+            "content": [],
+            "stopReason": "error",
+            "errorMessage": "authentication failed http_status=401",
+        }]},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+    assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.AUTH_ERROR
+
+    stdout.write_text(_stream(
+        {"type": "agent_end", "messages": [{
+            "role": "assistant",
+            "content": [{"type": "text", "text": "truncated"}],
+            "stopReason": "length",
+        }]},
+    ))
     assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.CONTEXT_LIMIT
