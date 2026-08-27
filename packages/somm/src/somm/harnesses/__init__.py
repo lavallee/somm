@@ -22,6 +22,7 @@ from .base import (
 from .claude_cli import ClaudeCLIHarness
 from .codex import CodexHarness
 from .opencode import OpenCodeHarness
+from .pi import PiHarness
 
 _CODEX = CodexHarness()
 
@@ -30,6 +31,7 @@ _HARNESSES: dict[str, AgentHarness] = {
     "codex": _CODEX,
     "codex-cli": _CODEX,
     "opencode": OpenCodeHarness(),
+    "pi": PiHarness(),
 }
 
 
@@ -48,7 +50,7 @@ def available() -> list[str]:
     """List canonical harness names whose executables are on PATH."""
 
     return [
-        name for name in ("claude-cli", "codex", "opencode")
+        name for name in ("claude-cli", "codex", "opencode", "pi")
         if _HARNESSES[name].is_available()
     ]
 
@@ -115,6 +117,7 @@ def extract_final_text(capture: str) -> str | None:
     claude_result: str | None = None
     codex_result: str | None = None
     opencode_chunks: list[str] = []
+    pi_text: str | None = None
     for event in decode_json_events(capture):
         if event.get("type") == "result" and isinstance(event.get("result"), str):
             claude_result = event["result"]
@@ -127,12 +130,25 @@ def extract_final_text(capture: str) -> str | None:
             value = part.get("text") or event.get("text")
             if isinstance(value, str):
                 opencode_chunks.append(value)
+        if event.get("type") == "message_end":
+            message = event.get("message") if isinstance(event.get("message"), dict) else {}
+            if message.get("role") == "assistant":
+                content = message.get("content") if isinstance(message.get("content"), list) else []
+                pi_text = "".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                )
     if claude_result is not None:
         return claude_result
     if codex_result is not None:
         return codex_result
     if opencode_chunks:
         return "".join(opencode_chunks)
+    if pi_text is not None:
+        return pi_text
     return None
 
 
@@ -155,6 +171,19 @@ def extract_last_assistant_text(capture: str) -> str | None:
             item = event.get("item") if isinstance(event.get("item"), dict) else {}
             if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
                 last = item["text"]
+        if event.get("type") == "message_end":
+            message = event.get("message") if isinstance(event.get("message"), dict) else {}
+            content = message.get("content") if isinstance(message.get("content"), list) else []
+            if message.get("role") == "assistant":
+                text = "".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                )
+                if text:
+                    last = text
     return last
 
 
@@ -206,6 +235,7 @@ __all__ = [
     "HarnessRequest",
     "HarnessResult",
     "OpenCodeHarness",
+    "PiHarness",
     "available",
     "extract_final_text",
     "extract_last_assistant_text",
