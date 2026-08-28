@@ -277,6 +277,12 @@ class Call:
     billing_id: str | None = None
     origin: str = "native"
     budget_eligible: bool = True
+    # 0023: which code asked for this call — the innermost frame outside somm,
+    # as `path:line`. A workload name says what kind of work a call is; this
+    # says where it came from, which is what lets telemetry join to source.
+    # None on rows written before capture existed and on calls whose site could
+    # not be determined; never an empty string, which would read as an answer.
+    call_site: str | None = None
 
 
 @dataclass(slots=True)
