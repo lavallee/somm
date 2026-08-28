@@ -2073,6 +2073,35 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             )
             ok_overall = False
 
+    # Call-site capture coverage. A call with no recorded site cannot be joined
+    # back to the code that made it, which is what a static audit needs.
+    sited, total_sited = _call_site_coverage_24h(repo)
+    if total_sited == 0:
+        print("call_site coverage: no calls in the last 24h")
+    else:
+        print(
+            f"call_site coverage: {sited / total_sited:.1%}  "
+            f"({sited}/{total_sited} calls in the last 24h)"
+        )
+
+    # Undeclared output contracts. Not a health failure — a workload runs fine
+    # without a declared output schema. It is an evaluation gap: without one,
+    # nothing downstream can decide whether a fixture could falsify the
+    # workload's result, so held-out grading and placement assessment stay
+    # guesses. Warn on the workloads with enough traffic to be worth declaring.
+    undeclared = _workloads_without_output_schema(repo)
+    if not undeclared:
+        print("output schemas: every workload above the traffic floor declares one")
+    else:
+        print(
+            f"output schemas: {len(undeclared)} workload(s) with "
+            f">={_OUTPUT_SCHEMA_MIN_CALLS} calls declare none"
+        )
+        for project, name, calls in undeclared[:10]:
+            print(f"  {f'{project}.{name}'[:46]:<48} {calls:>8} calls")
+        if len(undeclared) > 10:
+            print(f"  ... and {len(undeclared) - 10} more")
+
     return 0 if ok_overall else 1
 
 
@@ -2098,6 +2127,47 @@ def _exhausted_rate_24h(
         ).fetchone()[0]
     rate = (exhausted / total) if total else 0.0
     return rate, exhausted, total
+
+
+
+# Traffic floor for the output-schema check. Below this a workload has not yet
+# earned the upkeep of a declared contract; above it, the absence is a gap.
+_OUTPUT_SCHEMA_MIN_CALLS = 100
+
+
+def _call_site_coverage_24h(
+    repo: Repository, now: datetime | None = None
+) -> tuple[int, int]:
+    """Trailing-24h call-site capture: (calls_with_a_site, total_calls).
+
+    Rows predating schema 23 have no site and are honestly counted as missing,
+    so coverage climbs as old rows age out of the window rather than jumping.
+    """
+    now = now or datetime.now(UTC)
+    since = (now - timedelta(hours=24)).isoformat()
+    with repo._open() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM calls WHERE ts >= ?", (since,)).fetchone()[0]
+        sited = conn.execute(
+            "SELECT COUNT(*) FROM calls WHERE ts >= ? AND call_site IS NOT NULL",
+            (since,),
+        ).fetchone()[0]
+    return sited, total
+
+
+def _workloads_without_output_schema(
+    repo: Repository, *, min_calls: int = _OUTPUT_SCHEMA_MIN_CALLS
+) -> list[tuple[str, str, int]]:
+    """Workloads with real traffic and no declared output schema, busiest first."""
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT w.project, w.name, COUNT(c.id) AS n "
+            "FROM workloads w JOIN calls c ON c.workload_id = w.id "
+            "WHERE w.output_schema_json IS NULL "
+            "OR TRIM(w.output_schema_json) IN ('', 'null', '{}') "
+            "GROUP BY w.project, w.name HAVING n >= ? ORDER BY n DESC",
+            (min_calls,),
+        ).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 def _age_since(iso: str) -> str:

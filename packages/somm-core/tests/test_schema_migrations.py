@@ -21,8 +21,8 @@ def test_v10_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         tables = {
             row[0]
             for row in conn.execute(
@@ -59,8 +59,8 @@ def test_v11_database_upgrades_to_current_schema(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         call_columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()}
         assert {
             "ttft_ms",
@@ -98,8 +98,8 @@ def test_v12_database_upgrades_to_v13_workload_revisions(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
 
         tables = {
             row[0]
@@ -145,8 +145,8 @@ def test_v13_database_upgrades_to_v14_prompt_label_weights(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         label_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(prompt_labels)").fetchall()
         }
@@ -167,8 +167,8 @@ def test_v14_database_upgrades_to_v15_workload_policy(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         workload_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
@@ -189,8 +189,8 @@ def test_v15_database_upgrades_to_v16_datasets(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         tables = {
             row[0]
             for row in conn.execute(
@@ -246,8 +246,8 @@ def test_v16_database_upgrades_to_v17_eval_receipts(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         tables = {
             row[0]
             for row in conn.execute(
@@ -298,8 +298,8 @@ def test_v17_database_upgrades_to_v18_campaigns(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         tables = {
             row[0]
             for row in conn.execute(
@@ -363,8 +363,8 @@ def test_v18_database_upgrades_to_v19_model_aliases(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         tables = {
             row[0]
             for row in conn.execute(
@@ -406,8 +406,8 @@ def test_v19_database_upgrades_to_v20_workload_serving_slos(tmp_path):
 
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
-        assert current_schema_version(conn) == 22
+        assert upgraded == SCHEMA_VERSION == 23
+        assert current_schema_version(conn) == 23
         workload_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(workloads)").fetchall()
         }
@@ -427,7 +427,7 @@ def test_v21_database_upgrades_to_v22_call_custody(tmp_path):
         assert current_schema_version(conn) == 21
         upgraded = ensure_schema(conn)
 
-        assert upgraded == SCHEMA_VERSION == 22
+        assert upgraded == SCHEMA_VERSION == 23
         columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
         assert {
             "observation_role",
@@ -444,6 +444,40 @@ def test_v21_database_upgrades_to_v22_call_custody(tmp_path):
         }
         assert "idx_calls_source_call" in indexes
         assert "idx_calls_provider_request" in indexes
+
+
+
+def test_v22_database_upgrades_to_v23_call_site(tmp_path):
+    db_path = tmp_path / "v22.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        for version, path in _list_migrations():
+            if version > 22:
+                continue
+            conn.executescript(path.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+        assert current_schema_version(conn) == 22
+        conn.execute(
+            "INSERT INTO calls (id, ts, project, workload_id, provider, model, "
+            "tokens_in, tokens_out, latency_ms, cost_usd, outcome, prompt_hash, "
+            "response_hash) VALUES ('pre', '2026-08-01T00:00:00', 'p', NULL, "
+            "'ollama', 'm', 1, 1, 1, 0.0, 'ok', 'h', 'h')"
+        )
+        conn.commit()
+
+        upgraded = ensure_schema(conn)
+
+        assert upgraded == SCHEMA_VERSION == 23
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
+        assert "call_site" in columns
+        indexes = {
+            row[1]
+            for row in conn.execute("SELECT type, name FROM sqlite_master WHERE type = 'index'")
+        }
+        assert "idx_calls_call_site" in indexes
+        # Rows written before capture existed read as unknown, not as "".
+        assert conn.execute("SELECT call_site FROM calls WHERE id = 'pre'").fetchone()[0] is None
 
 
 def test_repository_model_alias_roundtrip(tmp_path):

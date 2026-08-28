@@ -32,6 +32,7 @@ Existing integrations can keep using:
 
     import somm.hooks
     somm.hooks.set_correlation_provider(my_request_id_getter)
+    somm.hooks.set_call_site_provider(my_call_site_getter)
     somm.hooks.add_call_observer(my_audit_logger)
 
 Registration is also available through entry points. Both ``somm.hooks`` and
@@ -56,6 +57,8 @@ import atexit
 import contextlib
 import inspect
 import logging
+import os
+import sys
 import threading
 from collections.abc import Callable, MutableSequence
 from concurrent.futures import ThreadPoolExecutor
@@ -69,6 +72,7 @@ HOOK_PHASES = (PRE_CALL, POST_CALL, POST_PROCESS)
 HOOK_EVENT_SCHEMA_VERSION = 1
 
 CorrelationProvider = Callable[[], "str | None"]
+CallSiteProvider = Callable[[], "str | None"]
 CallObserver = Callable[[dict[str, Any]], None]
 
 _logger = logging.getLogger("somm.hooks")
@@ -121,6 +125,7 @@ class _HookRegistration:
 
 
 _correlation_provider: CorrelationProvider | None = None
+_call_site_provider: CallSiteProvider | None = None
 _hooks_by_phase: dict[str, list[_HookRegistration]] = {
     phase: [] for phase in HOOK_PHASES
 }
@@ -222,6 +227,123 @@ def set_correlation_provider(fn: CorrelationProvider | None) -> None:
     global _correlation_provider
     _correlation_provider = fn
 
+
+
+# -- call site --------------------------------------------------------------
+#
+# A workload name says what kind of work a call is. It does not say which code
+# asked for it, and without that, telemetry cannot be joined to source. The
+# default provider answers it by walking out of somm's own frames; a caller
+# that knows better — a dispatcher, a job runner, anything that invokes somm on
+# behalf of code elsewhere — replaces it with set_call_site_provider().
+
+_SOMM_PACKAGE_PREFIXES = ("somm.", "somm_core.")
+_SOMM_PACKAGE_NAMES = ("somm", "somm_core")
+
+# Markers that identify the repository a call site belongs to. `.git` wins
+# outright: in a monorepo the nearest pyproject.toml is a *package* root, and
+# stopping there yields `somm/src/somm/client.py` where the joinable answer is
+# `somm/packages/somm/src/somm/client.py`. So take the outermost marker, and
+# prefer a repo marker over a package one.
+_REPO_MARKERS = (".git",)
+_PACKAGE_MARKERS = ("pyproject.toml", "setup.py")
+
+# Absolute paths leak the developer's filesystem layout into a telemetry store
+# that gets shared and audited, so sites are recorded repo-relative. Resolution
+# stats the filesystem, so results are cached per file; the cache is bounded
+# because generated or exec'd code can produce unbounded distinct filenames.
+_MAX_SITE_CACHE = 4096
+_site_path_cache: dict[str, str] = {}
+
+
+def _relative_site_path(filename: str) -> str:
+    cached = _site_path_cache.get(filename)
+    if cached is not None:
+        return cached
+    resolved = _resolve_site_path(filename)
+    if len(_site_path_cache) < _MAX_SITE_CACHE:
+        _site_path_cache[filename] = resolved
+    return resolved
+
+
+def _resolve_site_path(filename: str) -> str:
+    try:
+        path = os.path.abspath(filename)
+        repo_root: str | None = None
+        package_root: str | None = None
+        directory = os.path.dirname(path)
+        while True:
+            if any(os.path.exists(os.path.join(directory, m)) for m in _REPO_MARKERS):
+                repo_root = directory
+            elif package_root is None and any(
+                os.path.exists(os.path.join(directory, m)) for m in _PACKAGE_MARKERS
+            ):
+                package_root = directory
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                break
+            directory = parent
+        root = repo_root if repo_root is not None else package_root
+        if root:
+            # Keep the repository directory itself in the path: a site is only
+            # joinable to a static scan if it says which repo it is in.
+            parent = os.path.dirname(root)
+            return os.path.relpath(path, parent) if parent else path
+        # No marker anywhere — a stdlib or site-packages file. Its absolute
+        # path says more about this machine than about the call, so keep only
+        # enough to identify it.
+        return os.path.join(os.path.basename(os.path.dirname(path)), os.path.basename(path))
+    except Exception:
+        return os.path.basename(filename) or filename
+
+
+def _is_somm_frame(module: str) -> bool:
+    return module in _SOMM_PACKAGE_NAMES or module.startswith(_SOMM_PACKAGE_PREFIXES)
+
+
+def default_call_site() -> str | None:
+    """The innermost stack frame outside somm, as ``path:line``.
+
+    Walks out by module name rather than by a fixed depth, so it stays correct
+    as somm's internal call path changes. Returns ``None`` rather than an empty
+    string when every frame is somm's own — an unknown site should read as
+    unknown, not as an answer.
+
+    Note what this can and cannot see: it records the innermost *caller*, which
+    for code that reaches somm through an adapter is the adapter, not the logic
+    that chose the workload. That is still a repo and a module, which is enough
+    to join telemetry to source; callers wanting the true site should install
+    their own provider.
+    """
+    frame = sys._getframe(1)
+    while frame is not None:
+        module = frame.f_globals.get("__name__", "")
+        if not _is_somm_frame(module):
+            filename = frame.f_code.co_filename
+            if filename.startswith("<"):  # exec'd or interactive code
+                return f"{module}:{frame.f_lineno}" if module else None
+            return f"{_relative_site_path(filename)}:{frame.f_lineno}"
+        frame = frame.f_back
+    return None
+
+
+def set_call_site_provider(fn: CallSiteProvider | None) -> None:
+    """Set (or clear, with None) the process-wide call-site provider.
+
+    Clearing restores the default stack walk. Pass a provider that returns
+    ``None`` to disable capture entirely.
+    """
+    global _call_site_provider
+    _call_site_provider = fn
+
+
+def current_call_site() -> str | None:
+    """Read the ambient call site. Never raises."""
+    provider = _call_site_provider
+    try:
+        return provider() if provider is not None else default_call_site()
+    except Exception:
+        return None
 
 def add_call_observer(fn: CallObserver) -> None:
     """Register an observer invoked after every completed call."""

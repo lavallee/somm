@@ -336,6 +336,7 @@ def drain_spool(repo: Repository, spool_dir: Path) -> int:
                             billing_id=row.get("billing_id"),
                             origin=row.get("origin", "native"),
                             budget_eligible=bool(row.get("budget_eligible", True)),
+                            call_site=row.get("call_site"),
                         )
                     )
             repo.write_calls_batch(calls)

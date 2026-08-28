@@ -5,6 +5,43 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [Unreleased]
+
+### Added — call-site capture (schema 23)
+
+A workload name says what kind of work a call is; it never said which code
+asked for it. Without that, telemetry and static analysis describe the same
+fleet in two vocabularies that cannot be joined — an audit has the file and
+line, somm has the workload and the outcome, and nothing links them.
+
+`calls.call_site` now records the innermost stack frame outside somm as
+`path:line`, repo-relative and repo-qualified (`acme-service/ingest/tools.py:88`)
+so it joins to a static scan. The default provider walks out by module name
+rather than a fixed depth; `somm.hooks.set_call_site_provider()` replaces it,
+mirroring `set_correlation_provider` — a dispatcher or job runner that invokes
+somm on behalf of code elsewhere knows the real site better than the stack
+does. A provider returning `None` disables capture.
+
+Measured at 0.62 µs per call. The column is nullable with no default: rows
+written before capture existed are honestly unknown, and an empty string would
+read as an answer.
+
+One limit worth knowing: the default records the innermost *caller*, which for
+code reaching somm through an adapter is the adapter, not the logic that chose
+the workload. That is still a repo and a module — enough to join — but callers
+wanting the true site should install their own provider.
+
+### Added — two `somm doctor` checks
+
+- `call_site coverage` over the trailing 24h, so it is visible whether capture
+  is actually working.
+- Workloads with at least 100 calls and no declared `output_schema_json`.
+  Not a health failure — a workload runs fine without one. It is an evaluation
+  gap: with no declared output contract, nothing downstream can decide whether
+  a fixture could falsify the workload's result, so held-out grading stays a
+  guess. On the author's own fleet this check flags 35 workloads, including
+  every one of the ten busiest.
+
 ## [0.16.0] — 2026-08-19
 
 ### Changed — BREAKING: a pinned `provider`/`model` no longer falls back silently

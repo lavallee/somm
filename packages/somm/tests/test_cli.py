@@ -16,6 +16,7 @@ from somm.cli import (
     WORKLOAD_EXAMPLES,
     _age_since,
     _age_until,
+    _call_site_coverage_24h,
     _dataset_judge,
     _exhausted_rate_24h,
     _fetch_since,
@@ -23,6 +24,7 @@ from somm.cli import (
     _load_eval_judge_config,
     _parse_model_specs,
     _print_comparison,
+    _workloads_without_output_schema,
     build_parser,
     main,
 )
@@ -888,7 +890,7 @@ def test_doctor_reports_worker_heartbeats(tmp_path, capsys, monkeypatch):
 # (docs/incidents/2026-07-provider-exhaustion.md)
 
 
-def _write_call(repo, cfg, wl, *, ts, outcome, error_kind=None):
+def _write_call(repo, cfg, wl, *, ts, outcome, error_kind=None, call_site=None):
     repo.write_call(
         Call(
             id=str(uuid.uuid4()),
@@ -906,8 +908,77 @@ def _write_call(repo, cfg, wl, *, ts, outcome, error_kind=None):
             error_kind=error_kind,
             prompt_hash="a",
             response_hash="b",
+            call_site=call_site,
         )
     )
+
+
+
+def test_call_site_coverage_24h_no_calls(tmp_path):
+    repo = Repository(_tmp_config(tmp_path).db_path)
+    assert _call_site_coverage_24h(repo) == (0, 0)
+
+
+def test_call_site_coverage_24h_counts_only_recent_sited_calls(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="sites", project=cfg.project)
+    now = datetime.now(UTC)
+
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK, call_site="a/b.py:1")
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK, call_site="a/c.py:9")
+    # Rows predating capture read as unknown, so coverage climbs as they age out.
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK, call_site=None)
+    # Outside the window entirely.
+    _write_call(repo, cfg, wl, ts=now - timedelta(hours=25), outcome=Outcome.OK, call_site="old.py:1")
+
+    sited, total = _call_site_coverage_24h(repo, now=now)
+    assert (sited, total) == (2, 3)
+
+
+def test_workloads_without_output_schema_reports_only_real_traffic(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    now = datetime.now(UTC)
+
+    busy = repo.register_workload(name="busy", project=cfg.project)
+    quiet = repo.register_workload(name="quiet", project=cfg.project)
+    for _ in range(4):
+        _write_call(repo, cfg, busy, ts=now, outcome=Outcome.OK)
+    _write_call(repo, cfg, quiet, ts=now, outcome=Outcome.OK)
+
+    flagged = _workloads_without_output_schema(repo, min_calls=2)
+    assert flagged == [(cfg.project, "busy", 4)]
+
+
+def test_workloads_with_a_declared_output_schema_are_not_flagged(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    now = datetime.now(UTC)
+    wl = repo.register_workload(name="declared", project=cfg.project)
+    _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK)
+
+    with repo._open() as conn:
+        conn.execute(
+            "UPDATE workloads SET output_schema_json = ? WHERE id = ?",
+            ('{"type": "object"}', wl.id),
+        )
+    assert _workloads_without_output_schema(repo, min_calls=1) == []
+
+
+def test_an_empty_output_schema_counts_as_undeclared(tmp_path):
+    """A column set to "", "null", or "{}" is not a contract."""
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    now = datetime.now(UTC)
+    for i, blank in enumerate(("", "null", "{}")):
+        wl = repo.register_workload(name=f"blank{i}", project=cfg.project)
+        _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK)
+        with repo._open() as conn:
+            conn.execute(
+                "UPDATE workloads SET output_schema_json = ? WHERE id = ?", (blank, wl.id)
+            )
+    assert len(_workloads_without_output_schema(repo, min_calls=1)) == 3
 
 
 def test_exhausted_rate_24h_no_calls(tmp_path):
