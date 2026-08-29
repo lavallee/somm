@@ -97,6 +97,65 @@ small; native detail stays in an opaque payload or raw artifact.
 - **Rejection:** no Somm-owned workflow graph, approval queue, verifier, or
   operator dashboard grows out of this envelope.
 
+## Make workloads joinable and gradeable
+
+Schema 23 landed the first half: `calls.call_site` records which code asked for
+each call, so telemetry joins to a static audit instead of describing the same
+fleet in an incompatible vocabulary. `somm doctor` now reports capture coverage
+and the workloads running without a declared output contract. What follows is
+the adoption work that turns those from columns into answers.
+
+### Output-contract adoption
+
+`workloads.output_schema_json` has existed for several schema versions and, at
+the time of writing, **0 of 166 workloads fill it** — 35 of them with more than
+100 calls, including all ten of the busiest. The column is not the gap;
+adoption is.
+
+This is not cosmetic. Without a declared output contract nothing downstream can
+decide whether a fixture could falsify a workload's result, so held-out
+grading, eval promotion, and any placement assessment stay guesses. The doctor
+warning is the nudge; the work is declaring contracts for the workloads that
+carry real traffic, starting from the top of that list.
+
+- **Graduation:** every workload above the traffic floor declares an output
+  schema, and a downstream grader can be built from the declaration rather than
+  from a sample of outputs.
+- **Boundary:** somm reports the gap and never fabricates a schema by inferring
+  one from observed responses — an inferred contract that looks declared is
+  worse than an honest absence.
+
+### Call-site attribution through adapters
+
+The default capture records the innermost frame outside somm, which for code
+reaching somm through an adapter is the adapter, not the logic that chose the
+workload. That is enough to identify a repo and a module, and it is not enough
+to identify the decision. `set_call_site_provider()` is the escape hatch; the
+work is installing it where the indirection is real, and knowing where that is.
+
+- **Graduation:** trailing-24h `call_site` coverage is high enough that a
+  missing site is a finding rather than the norm, and the projects that route
+  through adapters report the site they mean.
+- **Boundary:** capture stays cheap (0.62 µs measured) and never raises into
+  the call path. If attribution needs interprocedural analysis, it belongs in
+  the auditing tool, not in the meter.
+
+### A workload's shape as a first-class question
+
+Placement assessment (`chip.placement`) reads somm telemetry to decide whether
+a workload is a standing observation relationship or a batch job, routine
+judgment or one-shot extraction, an envelope problem or a judgment problem. The
+measures it needs — daily activity, peak concentration, distinct inputs per
+call, dominant failure motif — are all derivable today, and a full-fleet daily
+rollup over 1.1M rows takes 2.3 s on the existing indexes, so no materialized
+view is warranted yet.
+
+The open question is whether somm should expose those measures as a supported
+read surface, or leave every consumer to write the same aggregation. Deferred
+until a second consumer exists — one caller is not an interface.
+
+- **Promotion trigger:** a second tool needs the same rollup.
+
 ## Recommendation quality
 
 ### Cross-provider model-id canonicalization

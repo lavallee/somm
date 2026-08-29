@@ -54,6 +54,16 @@ isn't earning its keep.
   `chip`, is published by fab — it owns the record that tells you where each
   workload belongs.
 
+  Owning that record has a standard to meet, and measuring it in August 2026
+  showed the gap. A workload name says what kind of work a call is; until
+  schema 23 nothing said *which code asked for it*, so telemetry and static
+  analysis described the same fleet in two vocabularies that could not be
+  joined — 26 of 29 workloads failed to match a known call site, including
+  every one of the busiest. And no workload in the fleet declares an output
+  contract, which means nothing downstream can decide whether a fixture could
+  falsify a workload's result. A record that cannot say where a workload runs
+  or what it promises can meter the climb but cannot adjudicate it.
+
 ## Non-goals
 
 - A composite "quality score" collapsing LMArena + LiveBench + HF into one
