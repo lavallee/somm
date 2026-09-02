@@ -39,10 +39,18 @@ class ClaudeCLIProvider:
         binary: str = "claude",
         default_model: str | None = None,   # None → the CLI's own default model
         timeout: float = 600.0,
+        extra_args: list[str] | None = None,
     ) -> None:
         self.binary = binary
         self.default_model = default_model
         self.timeout = timeout
+        # Extra CLI flags appended to every invocation. A generator-only caller can pass
+        # ["--tools", "", "--strict-mcp-config", "--disable-slash-commands",
+        #  "--setting-sources", "project", "--no-session-persistence"] to drop the
+        # ~28k-token tool/plugin/skill preamble the CLI otherwise loads per process
+        # (measured 37k -> 9k prompt tokens on a one-word prompt, 2026-09-02).
+        # Default [] keeps the historical behaviour for existing callers.
+        self.extra_args = list(extra_args or [])
 
     def _prompt_text(self, request: SommRequest) -> str:
         if request.tools or request.messages is not None or request.tool_choice is not None:
@@ -60,6 +68,7 @@ class ClaudeCLIProvider:
         cmd = [self.binary, "-p", "--output-format", "json"]
         if model:
             cmd += ["--model", model]
+        cmd += self.extra_args
         # This provider exists to spend the SUBSCRIPTION seat. An ambient
         # ANTHROPIC_API_KEY (set for the API provider) silently takes auth
         # precedence inside the CLI and bills — or fails on — the API
