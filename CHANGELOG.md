@@ -7,6 +7,42 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added — pinned-only CLI executors, and honest seat telemetry
+
+Pinning a CLI seat now reaches it. `claude-cli` and `codex-cli` are built as
+*pinned-only* providers: still absent from the default routing order — a seat
+is pinned precisely to leave the metered chain — but constructed and reachable
+by name, so `generate(provider="claude-cli")` no longer raises "not
+configured" for a caller whose chain does not list it. A provider already in
+the chain always wins over a pinned-only copy, so one name is one instance.
+`SommLLM.all_providers()` reports both sets.
+
+Three things a seat call now records honestly:
+
+- **Reported cost beats computed cost.** `SommResponse.cost_usd` carries what
+  a provider says it charged; the claude CLI reports `total_cost_usd` per run.
+  Recording a token-derived estimate next to a real invoice figure was a
+  downgrade. Such calls store `cost_basis = "reported"` and
+  `cost_source = "provider:<name>"`. Absent, the client computes as before —
+  never $0.
+- **The whole prompt is counted.** Anthropic splits the prompt across
+  `input_tokens` (uncached only), `cache_read_input_tokens`, and
+  `cache_creation_input_tokens`. Reading the first alone reported 3 prompt
+  tokens for a call billed 6,429, which made seat telemetry useless for any
+  comparison against a metered provider. `somm_core.parse.anthropic_prompt_tokens`
+  sums all three; malformed usage contributes zero rather than raising.
+- **`generate()` records its call site.** The embed and stream paths already
+  did; the busiest path — and the one a cost question actually lands on — did
+  not.
+
+### Added — seat model and flags are configuration
+
+`claude_cli_model` and `claude_cli_extra_args` in `[tool.somm]`, or
+`SOMM_CLAUDE_CLI_MODEL` / `SOMM_CLAUDE_CLI_ARGS`. Env args are shell-split so
+`--tools ''` survives as a flag with an empty value; a plain split would drop
+it and silently restore the ~28k-token per-process preamble those flags exist
+to remove.
+
 ### Added — call-site capture (schema 23)
 
 A workload name says what kind of work a call is; it never said which code

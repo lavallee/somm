@@ -144,6 +144,29 @@ def extract_cache_tokens(raw: dict | None) -> tuple[int | None, int | None]:
         return None, None
 
 
+def anthropic_prompt_tokens(usage: dict | None) -> int:
+    """Return the WHOLE prompt an Anthropic-shaped usage block was billed for.
+
+    Anthropic reports the prompt in three disjoint parts: ``input_tokens`` is
+    only the uncached slice, with cache reads and cache writes counted
+    separately. Reading ``input_tokens`` alone undercounts a cached call
+    enormously — a run that billed 6,429 prompt tokens reports 3 — which makes
+    seat telemetry and any cost comparison against a metered provider
+    meaningless.
+
+    Malformed or missing values contribute zero rather than raising; usage
+    blocks come from a subprocess and must never break a completed call.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    total = 0
+    for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        value = _int_or_none(usage.get(key))
+        if value is not None and value > 0:
+            total += value
+    return total
+
+
 def extract_citations(raw: dict | None) -> list | None:
     """Return grounded-search citations from provider raw payloads.
 

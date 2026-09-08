@@ -67,7 +67,11 @@ def _ollama(config: Config, tracker: Any) -> SommProvider | None:
 def _claude_cli(config: Config, tracker: Any) -> SommProvider | None:
     if not shutil.which("claude"):
         return None
-    return ClaudeCLIProvider(timeout=max(config.http_timeout, 600.0))
+    return ClaudeCLIProvider(
+        default_model=config.claude_cli_model,
+        timeout=max(config.http_timeout, 600.0),
+        extra_args=config.claude_cli_extra_args,
+    )
 
 
 def _codex_cli(config: Config, tracker: Any) -> SommProvider | None:
@@ -223,3 +227,42 @@ def load_entrypoint_provider_specs() -> list[ProviderSpec]:
         seen_plugin_names.add(spec.name)
         specs.append(spec)
     return specs
+
+
+# Executors that never join the routing chain (``default_order_rank is None``)
+# but must still be reachable by name. The seat providers are the case that
+# motivated this: a caller pins ``provider="claude-cli"`` precisely to move a
+# workload OFF the metered chain, so putting them IN the chain would defeat
+# the point — yet leaving them unbuilt made the pin raise "not configured".
+PINNED_ONLY_PROVIDER_NAMES: frozenset[str] = frozenset({"claude-cli", "codex-cli"})
+
+
+def build_pinned_only_providers(
+    config: Config,
+    tracker: Any = None,
+    *,
+    exclude: set[str] | frozenset[str] | None = None,
+) -> dict[str, SommProvider]:
+    """Build the out-of-chain executors that are available on this machine.
+
+    ``exclude`` drops names the caller already has in its chain, so a chain
+    member always wins over a pinned-only copy — one provider instance per
+    name, and the configured one is the one that answers.
+
+    A factory returning ``None`` (binary not on PATH) is simply absent from
+    the result: an unavailable executor should read as "not configured" at
+    the pin, not fail at build time for every caller.
+    """
+    skip = set(exclude or ())
+    built: dict[str, SommProvider] = {}
+    for spec in BUILTIN_PROVIDER_SPECS:
+        if spec.name not in PINNED_ONLY_PROVIDER_NAMES or spec.name in skip:
+            continue
+        try:
+            provider = spec.factory(config, tracker)
+        except Exception as exc:  # noqa: BLE001 - one bad executor must not break the rest
+            LOGGER.warning("skipping pinned-only provider %r: %s", spec.name, exc)
+            continue
+        if provider is not None:
+            built[spec.name] = provider
+    return built

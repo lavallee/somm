@@ -713,7 +713,23 @@ exactly the single-key behavior above.
 
 The `claude` / `codex` CLI executors are auto-detected when the binary
 is on PATH, but never join the default routing order — reach them via
-`SOMM_PROVIDER_ORDER` or `generate(provider="claude-cli")`.
+`SOMM_PROVIDER_ORDER` or `generate(provider="claude-cli")`. Pinning one
+works even when it is not in your chain, which is the point: you pin a
+seat precisely to move a workload off the metered path.
+
+Pin the seat's model and flags per project:
+
+```toml
+[tool.somm]
+claude_cli_model = "claude-opus-4-7"
+claude_cli_extra_args = ["--tools", "", "--no-session-persistence"]
+```
+
+or `SOMM_CLAUDE_CLI_MODEL` / `SOMM_CLAUDE_CLI_ARGS` (shell-split, so
+`--tools ''` survives as an empty argument). A seat call records the cost
+the CLI reported rather than a computed estimate, and counts the whole
+prompt it was billed for — cache reads and cache writes included, which
+Anthropic reports separately from `input_tokens`.
 
 </details>
 

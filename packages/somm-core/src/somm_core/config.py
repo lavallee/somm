@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import shlex
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -48,6 +49,13 @@ class Config:
     openrouter_roster: list[str] | None = None
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-haiku-4-5-20251001"
+    # CLI-seat executors. `claude_cli_model` pins the model the seat runs;
+    # None leaves the CLI's own default. `claude_cli_extra_args` are appended
+    # to every invocation — the generator-only flag set that strips the
+    # per-process tool/plugin preamble belongs here rather than in code, so a
+    # project can tune it without a release.
+    claude_cli_model: str | None = None
+    claude_cli_extra_args: list[str] | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
@@ -115,7 +123,10 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         with pyproject.open("rb") as f:
             data = tomllib.load(f)
         somm_cfg = data.get("tool", {}).get("somm", {})
-        for key in ("project", "mode", "ollama_url", "ollama_model", "key_profile"):
+        for key in (
+            "project", "mode", "ollama_url", "ollama_model", "key_profile",
+            "claude_cli_model", "claude_cli_extra_args",
+        ):
             if key in somm_cfg:
                 setattr(cfg, key, somm_cfg[key])
         if "db_dir" in somm_cfg:
@@ -156,6 +167,13 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
         cfg.openrouter_roster = [
             m.strip() for m in os.environ["SOMM_OPENROUTER_ROSTER"].split(",") if m.strip()
         ]
+    if "SOMM_CLAUDE_CLI_MODEL" in os.environ:
+        cfg.claude_cli_model = os.environ["SOMM_CLAUDE_CLI_MODEL"].strip() or None
+    if "SOMM_CLAUDE_CLI_ARGS" in os.environ:
+        # Shell-split so an empty flag value survives: `--tools ''` must reach
+        # the CLI as two argv entries, the second an empty string. A plain
+        # .split() would drop it and silently re-enable the preamble.
+        cfg.claude_cli_extra_args = shlex.split(os.environ["SOMM_CLAUDE_CLI_ARGS"])
     if "SOMM_OLLAMA_THINK" in os.environ:
         val = os.environ["SOMM_OLLAMA_THINK"].strip().lower()
         cfg.ollama_think = val in ("1", "true", "yes", "on")

@@ -90,6 +90,11 @@ class SommResponse:
     # Chain-of-thought from thinking models (DeepSeek v4). Must be echoed back
     # on the assistant turn in multi-turn calls or DeepSeek 400s on turn 2.
     reasoning_content: str = ""
+    # Cost the PROVIDER reported for this call, when it reports one. A CLI
+    # seat knows what it charged; computing a price from a token count would
+    # invent a number for a call that already has a real one. None means the
+    # provider said nothing and the client should compute as usual.
+    cost_usd: float | None = None
 
 
 @dataclass(slots=True)
