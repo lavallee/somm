@@ -305,3 +305,89 @@ def test_the_cache_split_is_still_recorded_separately():
         "output_tokens": 5,
     }}
     assert extract_cache_tokens(raw) == (2303, 4123)
+
+
+# -- gaps the original spec did not cover --------------------------------------
+#
+# Found auditing the reconstruction rather than from a failing test. Recorded
+# here so they cannot come back silently.
+
+
+def test_reported_cost_is_captured_when_a_seat_is_reached_through_the_chain(tmp_path):
+    """The README documents SOMM_PROVIDER_ORDER as a way to reach the seats.
+
+    The original spec only pinned `provider="seat"`, so the chain path could
+    have dropped a provider-reported cost and no test would have noticed.
+    """
+    llm = SommLLM(providers=[ReportingProvider()], config=_tmp_config(tmp_path))
+    result = llm.generate("hi", workload="w")  # no pin — routed through the chain
+    llm.close()
+
+    assert result.cost_usd == pytest.approx(0.0421)
+    row = llm.repo.get_call(result.call_id)
+    assert row is not None
+    assert row.cost_basis == "reported"
+    assert row.cost_source == "provider:seat"
+
+
+def test_a_failed_pin_does_not_record_a_cost_it_never_incurred(tmp_path, cli_on_path):
+    """cost_usd_out must stay unset when generate() raises."""
+
+    class ExplodingProvider(FakeProvider):
+        name = "boom"
+
+        def generate(self, request):
+            raise RuntimeError("upstream is down")
+
+    llm = SommLLM(providers=[ExplodingProvider()], config=_tmp_config(tmp_path))
+    result = None
+    try:
+        result = llm.generate("hi", workload="w", provider="boom")
+    except Exception:
+        pass
+    llm.close()
+
+    assert result is not None, "a failed pinned call is still recorded"
+    row = llm.repo.get_call(result.call_id)
+    assert row is not None
+    assert row.cost_basis != "reported"
+    assert row.cost_source != "provider:boom"
+
+
+def test_pinned_only_providers_get_the_real_health_tracker(tmp_path, cli_on_path):
+    """A pinned-only build must receive the same tracker the chain uses.
+
+    The reconstruction passed `getattr(self, "tracker", None)` — an attribute
+    that does not exist — so every pinned-only factory silently got None.
+    Harmless for the CLI seats, which ignore it, and exactly the kind of thing
+    that bites the first provider that does not.
+    """
+    seen: list[object] = []
+
+    def spy(config, tracker):
+        seen.append(tracker)
+        return FakeProvider()
+
+    import somm.providers.registry as reg
+
+    original = reg.BUILTIN_PROVIDER_SPECS
+    monkey = [reg.ProviderSpec("claude-cli", spy, None)]
+    reg.BUILTIN_PROVIDER_SPECS = monkey
+    try:
+        llm = SommLLM(providers=[FakeProvider()], config=_tmp_config(tmp_path))
+        llm._pinned_only_providers()
+        llm.close()
+    finally:
+        reg.BUILTIN_PROVIDER_SPECS = original
+
+    assert seen, "the pinned-only factory should have been called"
+    assert seen[0] is not None, "pinned-only providers were built with no tracker"
+
+
+def test_pinned_only_construction_happens_once(tmp_path, cli_on_path):
+    """_pick_provider runs on every call; building executors shells out."""
+    llm = SommLLM(providers=[FakeProvider()], config=_tmp_config(tmp_path))
+    first = llm._pinned_only_providers()
+    second = llm._pinned_only_providers()
+    llm.close()
+    assert first is second

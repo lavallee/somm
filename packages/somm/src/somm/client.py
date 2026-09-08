@@ -813,6 +813,9 @@ class SommLLM:
         self._prompt_ids_cache: dict[str, tuple[float, set[str]]] = {}
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
+        # Out-of-chain executors, built on first pin. See
+        # _pinned_only_providers for why they are not in the chain.
+        self._pinned_only_cache: dict[str, SommProvider] | None = None
         self._plan_governor = _build_plan_governor(self.config)
         self.router = Router(self.providers, self._tracker, plan_governor=self._plan_governor)
         # Alerting hook — fires on every non-OK outcome with a small context
@@ -1359,6 +1362,9 @@ class SommLLM:
                         router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                         resp = router_result.response
                         text = resp.text
+                        if resp.cost_usd is not None:
+                            cost_usd_out = resp.cost_usd
+                            reported_cost_source = f"provider:{router_result.provider}"
                         actual_provider = router_result.provider
                         actual_model = resp.model
                         tokens_in = resp.tokens_in
@@ -1414,6 +1420,12 @@ class SommLLM:
                     router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                 resp = router_result.response
                 text = resp.text
+                if resp.cost_usd is not None:
+                    # Same rule as the pinned path: a seat reached through
+                    # the routing chain (SOMM_PROVIDER_ORDER lists them) must
+                    # record what it charged, not a computed estimate.
+                    cost_usd_out = resp.cost_usd
+                    reported_cost_source = f"provider:{router_result.provider}"
                 actual_provider = router_result.provider
                 actual_model = resp.model
                 tokens_in = resp.tokens_in
@@ -1999,17 +2011,15 @@ class SommLLM:
         the instance that answers its own name, so a pin never reaches a
         second copy with different settings.
         """
-        cached = getattr(self, "_pinned_only_cache", None)
-        if cached is None:
+        if self._pinned_only_cache is None:
             from somm.providers.registry import build_pinned_only_providers
 
-            cached = build_pinned_only_providers(
+            self._pinned_only_cache = build_pinned_only_providers(
                 self.config,
-                getattr(self, "tracker", None),
+                self._tracker,
                 exclude={p.name for p in self.providers},
             )
-            self._pinned_only_cache = cached
-        return cached
+        return self._pinned_only_cache
 
     def all_providers(self) -> list[SommProvider]:
         """The routing chain, then the pin-only executors behind it."""
