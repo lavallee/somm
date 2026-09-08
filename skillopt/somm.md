@@ -10,7 +10,7 @@ while proposing.
 
 ## Why a re-run
 
-The 2026-06-12 run's applied commit sat unpushed on dash-main while upstream
+The 2026-06-12 run's applied commit sat unpushed on the build host while upstream
 main advanced 62 commits (the outage of 2026-07-06/07). Its baseline SKILL.md
 no longer exists; a textual merge would have shipped guidance never scored
 against the gate. Per the runbook, the tune is re-derived: fresh baseline on

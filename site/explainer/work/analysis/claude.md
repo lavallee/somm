@@ -4,15 +4,15 @@ This local Claude configuration grants a narrow set of permissions for work invo
 
 ## How it works
 
-The file defines a `permissions.allow` list containing three exact capability rules (`.claude/settings.local.json:2`). Two rules authorize specific Bash commands: creating `~/.gstack/projects/somm/ceo-plans` and copying a particular tool-result file to a dated Markdown plan (`.claude/settings.local.json:4`, `.claude/settings.local.json:5`). The third permits reads beneath the Somm directory in `~/.gstack/projects` (`.claude/settings.local.json:6`).
+The file defines a `permissions.allow` list containing three exact capability rules (`.claude/settings.local.json:2`). Two rules authorize specific Bash commands: creating `<agent-tooling-home>/projects/somm/ceo-plans` and copying a particular tool-result file to a dated Markdown plan (`.claude/settings.local.json:4`, `.claude/settings.local.json:5`). The third permits reads beneath the Somm directory in `<agent-tooling-home>/projects` (`.claude/settings.local.json:6`).
 
 No lifecycle or runtime behavior is defined here. How the surrounding Claude tooling loads or merges this local configuration is not established by this file alone.
 
 ## Key surfaces
 
-- `mkdir -p ~/.gstack/projects/somm/ceo-plans` — creates the plan destination directory (`.claude/settings.local.json:4`).
+- `mkdir -p <agent-tooling-home>/projects/somm/ceo-plans` — creates the plan destination directory (`.claude/settings.local.json:4`).
 - `cp …/bx4ga4jfj.txt …/2026-04-17-codex-ceo-voice.md` — installs one generated result as a named CEO-plan document (`.claude/settings.local.json:5`).
-- `Read(//home/marc/.gstack/projects/somm/**)` — permits reading the resulting project-local gstack tree (`.claude/settings.local.json:6`).
+- `Read(//<agent-tooling-home>/projects/somm/**)` — permits reading the resulting project-local gstack tree (`.claude/settings.local.json:6`).
 
 ## Design decisions
 

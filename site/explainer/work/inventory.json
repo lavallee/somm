@@ -1,5 +1,5 @@
 {
- "repo": "/media/ubuntussd/home/lavallee/Projects/somm",
+ "repo": ".",
  "name": "somm",
  "git": {
   "head": "cc8ebd4",
