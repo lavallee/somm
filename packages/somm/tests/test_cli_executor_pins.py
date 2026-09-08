@@ -234,3 +234,74 @@ def test_claude_cli_config_from_env_is_shell_split(tmp_path, monkeypatch):
     cfg = load(cwd=tmp_path)
     assert cfg.claude_cli_model == "claude-sonnet-4-6"
     assert cfg.claude_cli_extra_args == ["--tools", "", "--setting-sources", "project"]
+
+
+# -- cross-provider consistency -------------------------------------------------
+#
+# The reason the API provider gets the same treatment as the CLI seat: somm
+# exists to compare providers, and it cannot if the same prompt reports a
+# different size depending on who served it.
+
+
+def test_anthropic_api_reports_the_whole_prompt_like_the_openai_family(monkeypatch):
+    """Anthropic splits the prompt three ways; OpenAI reports one inclusive number.
+
+    `prompt_tokens` on an OpenAI-compatible response already includes the
+    cached portion (`prompt_tokens_details.cached_tokens` is a subset of it).
+    Reading Anthropic's `input_tokens` alone reported only the uncached slice,
+    so a cached call looked ~2000x smaller on one provider than the other.
+    """
+    from somm.providers.anthropic import AnthropicProvider
+
+    anthropic_usage = {
+        "input_tokens": 3,
+        "cache_read_input_tokens": 2303,
+        "cache_creation_input_tokens": 4123,
+        "output_tokens": 5,
+    }
+    # What an OpenAI-compatible provider would report for the same prompt.
+    openai_prompt_tokens = 3 + 2303 + 4123
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "content": [{"type": "text", "text": "ok"}],
+                "model": "claude-x",
+                "usage": anthropic_usage,
+            }
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        text = ""
+
+    monkeypatch.setattr(
+        "somm.providers.anthropic.httpx.Client.post",
+        lambda *a, **kw: FakeResponse(),
+    )
+    provider = AnthropicProvider(api_key="k", default_model="claude-x")
+    resp = provider.generate(SommRequest(prompt="hi"))
+
+    assert resp.tokens_in == openai_prompt_tokens
+    assert resp.tokens_out == 5
+
+
+def test_the_cache_split_is_still_recorded_separately():
+    """Folding cache tokens into tokens_in must not lose the breakdown.
+
+    cost accuracy work needs the split; extract_cache_tokens is where it
+    lives, and it reads the raw payload, not tokens_in.
+    """
+    from somm_core.parse import extract_cache_tokens
+
+    raw = {"usage": {
+        "input_tokens": 3,
+        "cache_read_input_tokens": 2303,
+        "cache_creation_input_tokens": 4123,
+        "output_tokens": 5,
+    }}
+    assert extract_cache_tokens(raw) == (2303, 4123)
