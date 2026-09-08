@@ -1,9 +1,8 @@
 """LLM proxy gateways for provider-compatible HTTP clients.
 
-V1 scope (DECIDED in george, owner archie): the HYBRID — somm owns the
-endpoint + budget gate + telemetry; LiteLLM's Python SDK is used as a
-LIBRARY (no LiteLLM proxy server) to do the provider call + cross-provider
-format translation.
+V1 scope: the HYBRID — somm owns the endpoint + budget gate + telemetry;
+LiteLLM's Python SDK is used as a LIBRARY (no LiteLLM proxy server) to do
+the provider call + cross-provider format translation.
 
 Why it exists: lets harness CLIs (claude-cli) route their LLM traffic
 through somm by pointing provider base URLs at this service, so every call
