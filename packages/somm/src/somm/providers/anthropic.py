@@ -14,7 +14,7 @@ import time
 from collections.abc import Iterator
 
 import httpx
-from somm_core.parse import strip_think_block
+from somm_core.parse import anthropic_prompt_tokens, strip_think_block
 
 from somm.errors import (
     SommAuthError,
@@ -140,7 +140,14 @@ class AnthropicProvider:
         text = strip_think_block("".join(text_parts))
 
         usage = data.get("usage") or {}
-        tokens_in = int(usage.get("input_tokens", 0) or 0)
+        # The WHOLE prompt, not just the uncached slice. Anthropic splits it
+        # across input_tokens / cache_read_input_tokens / cache_creation_input_tokens;
+        # the OpenAI-compatible providers report one `prompt_tokens` that
+        # already includes their cached portion. Reading input_tokens alone
+        # made the same prompt report different sizes depending on which
+        # provider served it, which breaks the cross-provider comparison somm
+        # exists to do. cache_tokens_in/out still record the split separately.
+        tokens_in = anthropic_prompt_tokens(usage)
         tokens_out = int(usage.get("output_tokens", 0) or 0)
 
         return SommResponse(

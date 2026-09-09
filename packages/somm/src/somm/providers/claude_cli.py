@@ -21,6 +21,8 @@ import tempfile
 import time
 from collections.abc import Iterator
 
+from somm_core.parse import anthropic_prompt_tokens
+
 from somm.errors import SommBadRequest, SommTimeout, SommUpstream5xx
 from somm.providers.base import (
     ProviderHealth,
@@ -105,14 +107,25 @@ class ClaudeCLIProvider:
         actual_model = max(
             model_usage, key=lambda k: (model_usage[k] or {}).get("outputTokens", 0), default=None
         ) or model or "claude-cli"
+        # The seat reports what it actually charged; prefer it over a computed
+        # price. Absent (older CLI, or an error envelope) leaves cost_usd None
+        # so the client falls back to its own pricing rather than recording $0.
+        reported_cost = data.get("total_cost_usd")
+        try:
+            reported_cost = float(reported_cost) if reported_cost is not None else None
+        except (TypeError, ValueError):
+            reported_cost = None
         return SommResponse(
             text=data.get("result", "") or "",
             model=actual_model,
-            tokens_in=int(usage.get("input_tokens", 0)),
+            # Anthropic splits the prompt across uncached/cache-read/cache-write;
+            # input_tokens alone reports 3 for a 6,429-token prompt.
+            tokens_in=anthropic_prompt_tokens(usage),
             tokens_out=int(usage.get("output_tokens", 0)),
             latency_ms=int(data.get("duration_ms", latency_ms)),
             raw=data,
             stop_reason=data.get("stop_reason", "") or "",
+            cost_usd=reported_cost,
         )
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:

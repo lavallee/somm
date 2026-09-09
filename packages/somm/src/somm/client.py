@@ -813,6 +813,9 @@ class SommLLM:
         self._prompt_ids_cache: dict[str, tuple[float, set[str]]] = {}
         self._tracker = ProviderHealthTracker(self.repo)
         self.providers: list[SommProvider] = providers or self._default_providers()
+        # Out-of-chain executors, built on first pin. See
+        # _pinned_only_providers for why they are not in the chain.
+        self._pinned_only_cache: dict[str, SommProvider] | None = None
         self._plan_governor = _build_plan_governor(self.config)
         self.router = Router(self.providers, self._tracker, plan_governor=self._plan_governor)
         # Alerting hook — fires on every non-OK outcome with a small context
@@ -1266,6 +1269,7 @@ class SommLLM:
         reasoning_content_out: str = ""
         raw_out: dict | None = None
         cost_usd_out: float | None = None
+        reported_cost_source: str | None = None
 
         # Track whether we took the fallback path so we can fire on_fallback
         # only on the narrow "pinned failed + chain saved us" window.
@@ -1287,6 +1291,13 @@ class SommLLM:
             try:
                 resp = chosen.generate(req)
                 text = resp.text
+                if resp.cost_usd is not None:
+                    # The provider told us what this call cost. Recording a
+                    # computed estimate beside a real number would be a
+                    # downgrade, so the reported figure wins and the basis
+                    # says where it came from.
+                    cost_usd_out = resp.cost_usd
+                    reported_cost_source = f"provider:{chosen.name}"
                 actual_provider = chosen.name
                 actual_model = resp.model
                 tokens_in = resp.tokens_in
@@ -1351,6 +1362,9 @@ class SommLLM:
                         router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                         resp = router_result.response
                         text = resp.text
+                        if resp.cost_usd is not None:
+                            cost_usd_out = resp.cost_usd
+                            reported_cost_source = f"provider:{router_result.provider}"
                         actual_provider = router_result.provider
                         actual_model = resp.model
                         tokens_in = resp.tokens_in
@@ -1406,6 +1420,12 @@ class SommLLM:
                     router_result = self.router.dispatch(req, wait=wait_on_exhausted)
                 resp = router_result.response
                 text = resp.text
+                if resp.cost_usd is not None:
+                    # Same rule as the pinned path: a seat reached through
+                    # the routing chain (SOMM_PROVIDER_ORDER lists them) must
+                    # record what it charged, not a computed estimate.
+                    cost_usd_out = resp.cost_usd
+                    reported_cost_source = f"provider:{router_result.provider}"
                 actual_provider = router_result.provider
                 actual_model = resp.model
                 tokens_in = resp.tokens_in
@@ -1472,7 +1492,7 @@ class SommLLM:
             actual_provider,
             actual_model,
             reported=cost_usd_out is not None,
-            source=short_circuited,
+            source=reported_cost_source or short_circuited,
         )
         call = Call(
             id=call_id,
@@ -1513,6 +1533,10 @@ class SommLLM:
             pricing_version=pricing_version,
             provider_request_id=provider_request_id,
             billing_id=billing_id,
+            # Which code asked for this call. The embed and stream paths
+            # already recorded it; generate() — the busiest path, and the one
+            # a cost question actually lands on — did not.
+            call_site=hooks.current_call_site(),
         )
         self._writer.submit(call)
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
@@ -1977,11 +2001,41 @@ class SommLLM:
 
     # ------------------------------------------------------------------
 
+    def _pinned_only_providers(self) -> dict[str, SommProvider]:
+        """Executors reachable by pin but deliberately outside the chain.
+
+        Built once and cached: constructing a CLI executor shells out to
+        ``shutil.which``, and ``_pick_provider`` runs on every call.
+
+        Chain members win — a provider configured into the routing order is
+        the instance that answers its own name, so a pin never reaches a
+        second copy with different settings.
+        """
+        if self._pinned_only_cache is None:
+            from somm.providers.registry import build_pinned_only_providers
+
+            self._pinned_only_cache = build_pinned_only_providers(
+                self.config,
+                self._tracker,
+                exclude={p.name for p in self.providers},
+            )
+        return self._pinned_only_cache
+
+    def all_providers(self) -> list[SommProvider]:
+        """The routing chain, then the pin-only executors behind it."""
+        return [*self.providers, *self._pinned_only_providers().values()]
+
     def _pick_provider(self, name: str | None) -> SommProvider:
         if name:
             for p in self.providers:
                 if p.name == name:
                     return p
+            # A seat executor is pinned precisely to leave the metered chain,
+            # so it is not IN the chain to be found above. Reaching it here
+            # keeps the pin honest without changing routing for anyone else.
+            pinned_only = self._pinned_only_providers().get(name)
+            if pinned_only is not None:
+                return pinned_only
             raise ValueError(f"provider {name!r} not configured")
         return self.providers[0]
 
