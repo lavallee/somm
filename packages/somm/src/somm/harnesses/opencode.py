@@ -113,6 +113,12 @@ class OpenCodeHarness:
                     if reason == "content-filter"
                     else HarnessOutcome.FAILED
                 )
+            elif reason:
+                detail = f"OpenCode ended on a non-terminal step reason: {reason!r}."
+                stderr_detail = read_capture(stderr_path, tail=4000).strip()
+                if stderr_detail:
+                    detail = f"{detail}\n{stderr_detail}"
+                outcome = HarnessOutcome.FAILED
             usage = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
         else:
             detail = read_capture(stdout_path, tail=4000) + "\n" + read_capture(
