@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import shutil
 from pathlib import Path
 
@@ -49,6 +50,25 @@ class OpenCodeHarness:
             if event.get("type") == "step_finish":
                 terminal = event
         return terminal
+
+    @staticmethod
+    def parse_cost_usd(path: Path) -> float | None:
+        """Sum valid reported step costs, or None when none were reported."""
+
+        total: float | None = None
+        for event in iter_json_events(path):
+            if event.get("type") != "step_finish":
+                continue
+            part = event.get("part")
+            if not isinstance(part, dict):
+                continue
+            value = part.get("cost")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if not math.isfinite(value) or value < 0:
+                continue
+            total = float(value) if total is None else total + float(value)
+        return total
 
     @staticmethod
     def parse_session_id(path: Path) -> str | None:
@@ -107,6 +127,7 @@ class OpenCodeHarness:
             exit_code=exit_code,
             detail=detail.strip(),
             usage=usage,
+            cost_usd=self.parse_cost_usd(stdout_path),
             terminal_event=terminal,
             correlation_id=correlation_id,
         )
