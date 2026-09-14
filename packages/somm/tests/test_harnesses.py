@@ -351,6 +351,42 @@ def test_opencode_length_and_context_failure(tmp_path: Path) -> None:
     assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.CONTEXT_LIMIT
 
 
+def test_opencode_interrupted_tool_call_reason_is_failure(tmp_path: Path) -> None:
+    adapter = harnesses.get("opencode")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "text", "sessionID": "ses-1", "part": {"text": "partial"}},
+        {"type": "step_finish", "sessionID": "ses-1", "part": {
+            "reason": "tool-calls", "tokens": {"input": 5, "output": 1},
+        }},
+    ))
+    stderr = _write(
+        tmp_path,
+        "stderr",
+        "permission request auto-rejected for external directory\n",
+    )
+
+    result = adapter.inspect(stdout, stderr, exit_code=0)
+
+    assert result.outcome is HarnessOutcome.FAILED
+    assert "tool-calls" in result.detail
+
+
+def test_opencode_tool_calls_then_stop_completes(tmp_path: Path) -> None:
+    adapter = harnesses.get("opencode")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "step_finish", "part": {"reason": "tool-calls"}},
+        {"type": "step_finish", "part": {"reason": "tool-calls"}},
+        {"type": "text", "sessionID": "ses-1", "part": {"text": "Final answer."}},
+        {"type": "step_finish", "sessionID": "ses-1", "part": {"reason": "stop"}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+
+    result = adapter.inspect(stdout, stderr, exit_code=0)
+
+    assert result.outcome is HarnessOutcome.COMPLETED
+    assert result.final_text == "Final answer."
+
+
 def test_opencode_sums_step_costs_but_keeps_terminal_usage(tmp_path: Path) -> None:
     adapter = harnesses.get("opencode")
     stdout = _write(tmp_path, "stdout", _stream(
