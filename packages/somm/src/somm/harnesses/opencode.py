@@ -71,6 +71,54 @@ class OpenCodeHarness:
         return total
 
     @staticmethod
+    def parse_billing_usage(path: Path) -> dict:
+        """Sum token categories across billable OpenCode steps.
+
+        ``usage`` remains the terminal context snapshot used by callers.  This
+        separate rollup is suitable for approximate rate-card comparisons.
+        """
+
+        totals = {
+            "steps": 0,
+            "total": 0,
+            "input": 0,
+            "output": 0,
+            "reasoning": 0,
+            "cache": {"read": 0, "write": 0},
+        }
+        found = False
+        for event in iter_json_events(path):
+            if event.get("type") != "step_finish":
+                continue
+            part = event.get("part")
+            if not isinstance(part, dict) or not isinstance(part.get("tokens"), dict):
+                continue
+            tokens = part["tokens"]
+            found = True
+            totals["steps"] += 1
+            for key in ("total", "input", "output", "reasoning"):
+                value = tokens.get(key)
+                if (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    and value >= 0
+                ):
+                    totals[key] += value
+            cache = tokens.get("cache")
+            if isinstance(cache, dict):
+                for key in ("read", "write"):
+                    value = cache.get(key)
+                    if (
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and math.isfinite(value)
+                        and value >= 0
+                    ):
+                        totals["cache"][key] += value
+        return totals if found else {}
+
+    @staticmethod
     def parse_session_id(path: Path) -> str | None:
         for event in iter_json_events(path):
             value = event.get("sessionID") or event.get("session_id")
@@ -133,6 +181,7 @@ class OpenCodeHarness:
             exit_code=exit_code,
             detail=detail.strip(),
             usage=usage,
+            billing_usage=self.parse_billing_usage(stdout_path),
             cost_usd=self.parse_cost_usd(stdout_path),
             terminal_event=terminal,
             correlation_id=correlation_id,
