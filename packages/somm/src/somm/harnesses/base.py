@@ -108,6 +108,7 @@ class HarnessResult:
     exit_code: int | None = None
     detail: str = ""
     usage: dict[str, int | float] = field(default_factory=dict)
+    billing_usage: dict[str, Any] = field(default_factory=dict)
     cost_usd: float | None = None
     terminal_event: dict[str, Any] | None = None
     correlation_id: str | None = None

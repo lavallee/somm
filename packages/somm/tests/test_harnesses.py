@@ -391,13 +391,22 @@ def test_opencode_sums_step_costs_but_keeps_terminal_usage(tmp_path: Path) -> No
     adapter = harnesses.get("opencode")
     stdout = _write(tmp_path, "stdout", _stream(
         {"type": "step_finish", "part": {
-            "reason": "tool", "tokens": {"input": 3, "output": 1}, "cost": 0.01,
+            "reason": "tool", "tokens": {
+                "total": 9, "input": 3, "output": 1, "reasoning": 1,
+                "cache": {"read": 4, "write": 0},
+            }, "cost": 0.01,
         }},
         {"type": "step_finish", "part": {
-            "reason": "tool", "tokens": {"input": 4, "output": 2}, "cost": 0.02,
+            "reason": "tool", "tokens": {
+                "total": 13, "input": 4, "output": 2, "reasoning": 1,
+                "cache": {"read": 6, "write": 0},
+            }, "cost": 0.02,
         }},
         {"type": "step_finish", "sessionID": "ses-1", "part": {
-            "reason": "stop", "tokens": {"input": 6, "output": 15}, "cost": 0.03,
+            "reason": "stop", "tokens": {
+                "total": 30, "input": 6, "output": 15, "reasoning": 2,
+                "cache": {"read": 7, "write": 0},
+            }, "cost": 0.03,
         }},
     ))
     stderr = _write(tmp_path, "stderr", "")
@@ -406,7 +415,46 @@ def test_opencode_sums_step_costs_but_keeps_terminal_usage(tmp_path: Path) -> No
 
     assert result.outcome is HarnessOutcome.COMPLETED
     assert result.cost_usd == pytest.approx(0.06)
-    assert result.usage == {"input": 6, "output": 15}
+    assert result.usage == {
+        "total": 30,
+        "input": 6,
+        "output": 15,
+        "reasoning": 2,
+        "cache": {"read": 7, "write": 0},
+    }
+    assert result.billing_usage == {
+        "steps": 3,
+        "total": 52,
+        "input": 13,
+        "output": 18,
+        "reasoning": 4,
+        "cache": {"read": 17, "write": 0},
+    }
+
+
+def test_opencode_billing_usage_ignores_invalid_values(tmp_path: Path) -> None:
+    adapter = harnesses.get("opencode")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "step_finish", "part": {"reason": "tool", "tokens": {
+            "input": -1, "output": True, "reasoning": "2",
+            "cache": {"read": float("inf"), "write": 3},
+        }}},
+        {"type": "step_finish", "part": {"reason": "stop", "tokens": {
+            "input": 5, "output": 2, "cache": {"read": 7},
+        }}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+
+    result = adapter.inspect(stdout, stderr, exit_code=0)
+
+    assert result.billing_usage == {
+        "steps": 2,
+        "total": 0,
+        "input": 5,
+        "output": 2,
+        "reasoning": 0,
+        "cache": {"read": 7, "write": 3},
+    }
 
 
 def test_opencode_ignores_invalid_step_costs(tmp_path: Path) -> None:
