@@ -351,6 +351,76 @@ def test_opencode_length_and_context_failure(tmp_path: Path) -> None:
     assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.CONTEXT_LIMIT
 
 
+def test_opencode_sums_step_costs_but_keeps_terminal_usage(tmp_path: Path) -> None:
+    adapter = harnesses.get("opencode")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "step_finish", "part": {
+            "reason": "tool", "tokens": {"input": 3, "output": 1}, "cost": 0.01,
+        }},
+        {"type": "step_finish", "part": {
+            "reason": "tool", "tokens": {"input": 4, "output": 2}, "cost": 0.02,
+        }},
+        {"type": "step_finish", "sessionID": "ses-1", "part": {
+            "reason": "stop", "tokens": {"input": 6, "output": 15}, "cost": 0.03,
+        }},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+
+    result = adapter.inspect(stdout, stderr, exit_code=0)
+
+    assert result.outcome is HarnessOutcome.COMPLETED
+    assert result.cost_usd == pytest.approx(0.06)
+    assert result.usage == {"input": 6, "output": 15}
+
+
+def test_opencode_ignores_invalid_step_costs(tmp_path: Path) -> None:
+    adapter = harnesses.get("opencode")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "step_finish", "part": {"cost": 0.5}},
+        {"type": "step_finish", "part": {"cost": -1}},
+        {"type": "step_finish", "part": {"cost": True}},
+        {"type": "step_finish", "part": {"cost": "0.25"}},
+        {"type": "step_finish", "part": {"cost": None}},
+        {"type": "step_finish", "part": {"cost": float("nan")}},
+        {"type": "step_finish", "part": {"cost": float("inf")}},
+        {"type": "step_finish", "part": {"reason": "tool"}},
+        {"type": "step_finish"},
+        {"type": "text", "part": {"text": "ignored"}},
+        {"type": "step_finish", "part": {"reason": "stop", "cost": 0.5}},
+    ))
+    stdout.write_text(stdout.read_text() + "{not valid json\n")
+    stderr = _write(tmp_path, "stderr", "")
+
+    result = adapter.inspect(stdout, stderr, exit_code=0)
+
+    assert result.outcome is HarnessOutcome.COMPLETED
+    assert result.cost_usd == pytest.approx(1.0)
+
+
+def test_opencode_absent_cost_is_none(tmp_path: Path) -> None:
+    adapter = harnesses.get("opencode")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "step_finish", "part": {"reason": "stop", "tokens": {"input": 1}}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+
+    result = adapter.inspect(stdout, stderr, exit_code=0)
+
+    assert result.cost_usd is None
+
+
+def test_opencode_reported_zero_cost_is_not_absent(tmp_path: Path) -> None:
+    adapter = harnesses.get("opencode")
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "step_finish", "part": {"reason": "stop", "cost": 0}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+
+    result = adapter.inspect(stdout, stderr, exit_code=0)
+
+    assert result.cost_usd == 0.0
+
+
 def test_pi_safe_argv_uses_stdin_and_blocks_ambient_resources(tmp_path: Path) -> None:
     adapter = harnesses.get("pi")
     request = _request(
