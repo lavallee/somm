@@ -187,6 +187,34 @@ def test_claude_max_turns_and_real_rate_limit(tmp_path: Path) -> None:
     assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.RATE_LIMIT
 
 
+def test_opencode_insufficient_credits_is_budget_exhausted(tmp_path: Path) -> None:
+    adapter = harnesses.get("opencode")
+    stdout = _write(
+        tmp_path,
+        "stdout",
+        _stream(
+            {
+                "type": "error",
+                "sessionID": "ses_credit",
+                "error": {
+                    "name": "APIError",
+                    "data": {
+                        "message": "Insufficient credits.",
+                        "statusCode": 402,
+                        "isRetryable": False,
+                    },
+                },
+            }
+        ),
+    )
+    stderr = _write(tmp_path, "stderr", "")
+
+    result = adapter.inspect(stdout, stderr, exit_code=1)
+
+    assert result.outcome is HarnessOutcome.BUDGET_EXHAUSTED
+    assert result.session_id == "ses_credit"
+
+
 def test_codex_argv_resume_and_result(tmp_path: Path) -> None:
     adapter = harnesses.get("codex")
     request = _request(

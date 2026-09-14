@@ -28,6 +28,7 @@ class HarnessOutcome(StrEnum):
     NETWORK_ERROR = "network_error"
     PROVIDER_ERROR = "provider_error"
     AUTH_ERROR = "auth_error"
+    BUDGET_EXHAUSTED = "budget_exhausted"
     FAILED = "failed"
     UNKNOWN = "unknown"
 
@@ -226,6 +227,11 @@ def iter_json_events(path: Path) -> Iterator[dict[str, Any]]:
 
 
 _SIGNALS: tuple[tuple[HarnessOutcome, tuple[str, ...]], ...] = (
+    (HarnessOutcome.BUDGET_EXHAUSTED, (
+        r"\bstatuscode[\"'\s:=]+402\b", r"\bhttp_status=402\b",
+        r"\b402\b[^\n]{0,80}\bpayment required\b",
+        r"\binsufficient (?:credits?|balance)\b",
+    )),
     (HarnessOutcome.AUTH_ERROR, (
         r"\bhttp_status=40[13]\b", r"unauthorized", r"forbidden",
         r"invalid api key", r"authentication failed", r"bad credentials",
