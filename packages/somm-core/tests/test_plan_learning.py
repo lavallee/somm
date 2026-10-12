@@ -36,7 +36,9 @@ def _call(call_id: str, ts: datetime, *, tokens: int, outcome: Outcome) -> Call:
 
 def test_observed_ceilings_do_not_count_calls_after_quota_event(tmp_path):
     repo = Repository(tmp_path / "calls.sqlite")
-    event_at = datetime(2026, 7, 9, 12, 0, tzinfo=UTC)
+    # Relative to now: learning has a 90-day lookback, and a fixed calendar
+    # date silently expires out of it.
+    event_at = datetime.now(UTC) - timedelta(days=1)
     repo.write_call(
         _call("before", event_at - timedelta(minutes=10), tokens=100, outcome=Outcome.OK)
     )
@@ -80,7 +82,9 @@ def test_plan_usage_excludes_foreign_imports(tmp_path):
 
 def test_learn_observed_limits_writes_parseable_plans_toml(tmp_path):
     repo = Repository(tmp_path / "calls.sqlite")
-    event_at = datetime(2026, 7, 9, 12, 0, tzinfo=UTC)
+    # Relative to now: learning has a 90-day lookback, and a fixed calendar
+    # date silently expires out of it.
+    event_at = datetime.now(UTC) - timedelta(days=1)
     repo.write_call(
         _call("before", event_at - timedelta(minutes=10), tokens=100, outcome=Outcome.OK)
     )

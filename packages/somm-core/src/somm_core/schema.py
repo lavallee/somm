@@ -13,26 +13,6 @@ from pathlib import Path
 from somm_core.version import SCHEMA_VERSION
 
 
-class SchemaStale(RuntimeError):
-    """Raised when the DB is on an older schema than this library expects."""
-
-    def __init__(self, db_version: int, expected: int, path: str) -> None:
-        self.db_version = db_version
-        self.expected = expected
-        self.path = path
-        super().__init__(
-            f"SOMM_SCHEMA_STALE\n\n"
-            f"Problem: {path} is schema v{db_version}, but this somm version requires v{expected}.\n"
-            f"Cause: an older somm process is still using the database, or this install is missing migrations.\n"
-            f"Fix:\n"
-            f"  1. Upgrade all somm packages used by this project.\n"
-            f"  2. Stop any long-running processes or daemons that still import the old version.\n"
-            f"  3. Re-run any somm command, for example: somm doctor --project <project>\n"
-            f"  4. Restart your own daemons after that command succeeds.\n"
-            f"Docs: docs/errors/SOMM_SCHEMA_STALE.md"
-        )
-
-
 def _migrations_root() -> Path:
     # Works for installed wheels and editable installs.
     return Path(str(resources.files("somm_core"))) / "migrations"

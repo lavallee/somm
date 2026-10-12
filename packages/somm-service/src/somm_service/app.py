@@ -17,8 +17,7 @@ HTTP surface:
   POST /v1/messages            Anthropic Messages-compatible LLM proxy
   POST /v1/chat/completions    OpenAI Chat Completions-compatible LLM proxy
 
-Design tokens + a11y spec applied inline (v0.1 ships
-tokens in-HTML; `packages/somm-service/web/tokens.css` lands when we extract).
+Design tokens and the a11y spec are applied inline in the HTML shell.
 
 `somm serve` also starts a Scheduler background thread that runs the
 model_intel / shadow_eval / agent workers on their cadences.
@@ -793,10 +792,14 @@ def _render_sessions(groups: list[dict]) -> str:
     return "".join(items)
 
 
-def _list_recommendations(repo: Repository) -> list[dict]:
-    """Open (undismissed, unapplied) recommendations, newest first."""
+def _list_recommendations(repo: Repository, project: str) -> list[dict]:
+    """Open (undismissed, unapplied) recommendations for one project, newest first.
+
+    A shared or mirrored database holds every project's inbox; the dashboard
+    and read API serve one project, so the query is scoped the same way.
+    """
     out = []
-    for rec in list_recommendations(repo, open_only=True)[:10]:
+    for rec in list_recommendations(repo, project=project, open_only=True)[:10]:
         row = rec.as_dict()
         row["confidence"] = row["confidence"] or 0
         out.append(row)
@@ -937,7 +940,7 @@ async def _home(request: Request) -> HTMLResponse:
     except Exception:
         schema_ver = 0
 
-    recs = _list_recommendations(repo)
+    recs = _list_recommendations(repo, cfg.project)
     html = _HTML_SHELL.format(
         project=_esc(cfg.project),
         version=_esc(VERSION),
@@ -1037,7 +1040,8 @@ async def _api_sessions(request: Request) -> JSONResponse:
 
 async def _api_recommendations(request: Request) -> JSONResponse:
     repo: Repository = request.app.state.repo
-    return JSONResponse({"recommendations": _list_recommendations(repo)})
+    cfg = request.app.state.config
+    return JSONResponse({"recommendations": _list_recommendations(repo, cfg.project)})
 
 
 async def _api_rec_dismiss(request: Request) -> JSONResponse:
@@ -1188,19 +1192,6 @@ def _as_float(value: object, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-
-def _as_bool(value: object, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return default
 
 
 def _span_time(value: object) -> datetime:
@@ -1446,7 +1437,7 @@ async def _api_version(request: Request) -> JSONResponse:
 
 
 async def _api_spend_today(request: Request) -> JSONResponse:
-    from somm.cli import spend_today
+    from somm_core.read import spend_today
 
     cfg: Config = request.app.state.config
     rows = spend_today(

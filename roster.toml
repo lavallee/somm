@@ -34,4 +34,4 @@ outputs = [
 ]
 tags = ["model-selection", "routing", "advisor"]
 status = "live"
-notes = "10-tool MCP server via `somm-mcp`; web admin + HTTP API via `somm-serve` (:7878)."
+notes = "14-tool MCP server via `somm-mcp`; web admin + HTTP API via `somm-serve` (:7878)."

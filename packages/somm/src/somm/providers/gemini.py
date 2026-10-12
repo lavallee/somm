@@ -52,8 +52,8 @@ class GeminiProvider(OpenAICompatProvider):
     default_model = "gemini-2.5-pro"
 
     # Default reasoning_effort for the OAI-compat endpoint. "low" keeps
-    # thinking cheap for straightforward prompts; callers can override
-    # per-request via request.metadata["reasoning_effort"].
+    # thinking cheap for straightforward prompts; callers override per
+    # request with ``reasoning_effort=``.
     default_reasoning_effort: str = "low"
 
     # Multiply caller's max_tokens to leave room for thinking. Gemini
@@ -67,7 +67,15 @@ class GeminiProvider(OpenAICompatProvider):
         payload["max_tokens"] = max(
             request.max_tokens * self.max_tokens_multiplier, self.max_tokens_floor
         )
-        effort = request.metadata.get("reasoning_effort") or self.default_reasoning_effort
+        # The first-class request field wins; the metadata key is the older
+        # spelling the LangChain adapter still sets; the provider default is
+        # the floor. The base payload already carried the first-class value,
+        # so this must not overwrite it with the default.
+        effort = (
+            request.reasoning_effort
+            or request.metadata.get("reasoning_effort")
+            or self.default_reasoning_effort
+        )
         if effort:
             payload["reasoning_effort"] = effort
         return payload

@@ -69,7 +69,6 @@ class Config:
     perplexity_model: str = "sonar"  # search-grounded; only used when pinned
     http_timeout: float = 180.0  # seconds; used by openai-compat providers
     provider_order: list[str] | None = None  # e.g. ["minimax", "openrouter", "ollama"]
-    busy_timeout_ms: int = 5000
     # Local-only replication of calls/workloads into ~/.somm/global.sqlite so
     # cross-project features (sommelier, fleet rollups) have data. The raw
     # dataclass default is False (programmatic Config() stays inert, e.g. in

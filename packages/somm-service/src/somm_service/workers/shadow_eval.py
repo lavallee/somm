@@ -21,8 +21,7 @@ Shadow config shape (stored as JSON on workloads.shadow_config_json):
         "gold_model":    "google/gemma-3-27b-it:free",
         "sample_rate":   0.02,
         "budget_usd_daily": 2.0,
-        "max_grades_per_run": 20,
-        "min_days_between_regrades": 14
+        "max_grades_per_run": 20
     }
 """
 
@@ -60,7 +59,6 @@ class ShadowConfig:
     sample_rate: float = 0.02
     budget_usd_daily: float = 1.0
     max_grades_per_run: int = 20
-    min_days_between_regrades: int = 14
     judge: dict | None = None  # {"provider": ..., "model": ...} — v0.3b+1
 
     @classmethod
@@ -71,7 +69,6 @@ class ShadowConfig:
             sample_rate=float(data.get("sample_rate", 0.02)),
             budget_usd_daily=float(data.get("budget_usd_daily", 1.0)),
             max_grades_per_run=int(data.get("max_grades_per_run", 20)),
-            min_days_between_regrades=int(data.get("min_days_between_regrades", 14)),
             judge=data.get("judge"),
         )
 
