@@ -1082,3 +1082,87 @@ def test_doctor_exhausted_rate_printed_without_threshold(tmp_path, capsys, monke
 
     assert rc == 0
     assert "exhausted_rate_24h: 100.0%  (1/1 calls)" in out
+
+
+# ---------------------------------------------------------------------------
+# doctor --global, prune, alias
+
+
+def test_doctor_global_reads_the_shared_ledger_and_reports_fleet(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    cfg.cross_project_path = tmp_path / "global.sqlite"
+    repo = Repository(cfg.global_db_path)
+    wl = repo.register_workload(name="graded", project="other")
+    repo.set_shadow_config(wl.id, {"gold_provider": "ollama", "gold_model": "m"})
+    repo.write_call(
+        Call(
+            id=str(uuid.uuid4()), ts=datetime.now(UTC), project="other", workload_id=wl.id,
+            prompt_id=None, provider="openrouter", model="*all_cooled", tokens_in=0,
+            tokens_out=0, latency_ms=0, cost_usd=0.0, outcome=Outcome.EXHAUSTED,
+            error_kind="SommTransientError", prompt_hash="p", response_hash="r",
+            client_version=None,
+        )
+    )
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr(
+        "somm.cli.OllamaProvider.health",
+        lambda self: ProviderHealth(available=True, detail="ok"),
+    )
+
+    rc = main(["doctor", "--global"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "scope: global" in out
+    assert str(cfg.global_db_path) in out
+    assert "(pre-0.17)" in out and "other" in out
+    assert "intelligence loop: DORMANT" in out
+    assert "sentinel rows" in out
+
+
+def test_prune_dry_run_then_delete(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="w", project=cfg.project)
+    _write_call(repo, cfg, wl, ts=datetime.now(UTC) - timedelta(days=200), outcome=Outcome.OK)
+    _write_call(repo, cfg, wl, ts=datetime.now(UTC), outcome=Outcome.OK)
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+
+    assert main(["prune", "--older-than", "90", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "would delete" in out
+    with repo._open() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 2
+
+    assert main(["prune", "--older-than", "90", "--vacuum"]) == 0
+    out = capsys.readouterr().out
+    assert "deleted rows" in out and "vacuum:" in out
+    with repo._open() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 1
+
+
+def test_alias_seed_and_list(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="w", project=cfg.project)
+    repo.write_call(
+        Call(
+            id=str(uuid.uuid4()), ts=datetime.now(UTC), project=cfg.project, workload_id=wl.id,
+            prompt_id=None, provider="claude-cli", model="claude-opus-5[1m]", tokens_in=1,
+            tokens_out=1, latency_ms=1, cost_usd=0.0, outcome=Outcome.OK, error_kind=None,
+            prompt_hash="p", response_hash="r",
+        )
+    )
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+
+    assert main(["alias", "seed"]) == 0
+    assert "wrote 1" in capsys.readouterr().out
+    assert main(["alias", "list", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows == [{
+        "provider": "claude-cli", "model": "claude-opus-5[1m]",
+        "canonical_id": "anthropic/claude-opus-5", "source": "rule",
+    }]
+    assert main(["alias", "set", "codex-cli", "gpt-5.6-sol", "openai/gpt-5.6"]) == 0
+    assert main(["alias"]) == 0
+    assert "openai/gpt-5.6" in capsys.readouterr().out

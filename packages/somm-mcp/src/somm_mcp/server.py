@@ -41,6 +41,7 @@ from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.models import PrivacyClass
 from somm_core.parse import stable_hash
+from somm_core.read import search_calls
 from somm_core.repository import Repository
 
 if TYPE_CHECKING:
@@ -792,49 +793,17 @@ def _search_calls(
     since_days: int,
     limit: int,
 ) -> list[dict]:
-    q = [
-        "SELECT c.id, c.ts, COALESCE(w.name, '(unregistered)'), c.provider, c.model, "
-        "       c.tokens_in, c.tokens_out, c.latency_ms, c.cost_usd, c.outcome, "
-        "       c.error_kind, c.prompt_hash, c.response_hash "
-        "FROM calls c LEFT JOIN workloads w ON w.id = c.workload_id "
-        "WHERE c.project = ? AND c.ts >= datetime('now', ?) "
-    ]
-    params: list = [project, f"-{since_days} days"]
-    if workload:
-        q.append("AND w.name = ? ")
-        params.append(workload)
-    if provider:
-        q.append("AND c.provider = ? ")
-        params.append(provider)
-    if model:
-        q.append("AND c.model = ? ")
-        params.append(model)
-    if outcome:
-        q.append("AND c.outcome = ? ")
-        params.append(outcome)
-    q.append("ORDER BY c.ts DESC LIMIT ?")
-    params.append(limit)
-
     with repo._open() as conn:
-        rows = conn.execute("".join(q), params).fetchall()
-    return [
-        {
-            "id": r[0],
-            "ts": r[1],
-            "workload": r[2],
-            "provider": r[3],
-            "model": r[4],
-            "tokens_in": r[5],
-            "tokens_out": r[6],
-            "latency_ms": r[7],
-            "cost_usd": r[8] or 0.0,
-            "outcome": r[9],
-            "error_kind": r[10],
-            "prompt_hash": r[11],
-            "response_hash": r[12],
-        }
-        for r in rows
-    ]
+        return search_calls(
+            conn,
+            project,
+            since_days=since_days,
+            workload=workload,
+            provider=provider,
+            model=model,
+            outcome=outcome,
+            limit=limit,
+        )
 
 
 def _open_recommendations(repo: Repository, workload_id: str) -> list[dict]:
