@@ -146,9 +146,12 @@ def unit_names(project: str) -> tuple[str, str]:
     return f"somm-loop@{project}.service", f"somm-loop@{project}.timer"
 
 
-def render_units(*, somm_bin: str, every: str = "15min", db_dir: Path | None = None) -> dict[str, str]:
-    """The service/timer template pair for ``somm loop run --project %i``."""
-    env = f"Environment=SOMM_DB_DIR={db_dir}\n" if db_dir else ""
+def render_units(*, somm_bin: str, every: str = "15min") -> dict[str, str]:
+    """The service/timer template pair for ``somm loop run --project %i``.
+
+    The templates are shared by every project; anything per project (the
+    ledger location) goes in a drop-in, see :func:`render_dropin`.
+    """
     service = f"""[Unit]
 Description=somm intelligence loop — one pass for project %i
 # One-shot: refreshes model intel when stale, grades sampled calls, and
@@ -157,7 +160,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-{env}ExecStart={somm_bin} loop run --project %i
+ExecStart={somm_bin} loop run --project %i
 StandardOutput=journal
 StandardError=journal
 """
@@ -175,6 +178,15 @@ WantedBy=timers.target
     return {"somm-loop@.service": service, "somm-loop@.timer": timer}
 
 
+def render_dropin(db_dir: Path) -> str:
+    """Per-project drop-in: where this project's ledger lives."""
+    return f"""# Written by `somm loop install`. The template unit is shared; this
+# names the ledger for this one project.
+[Service]
+Environment=SOMM_DB_DIR={db_dir}
+"""
+
+
 def install(
     cfg: Config,
     *,
@@ -183,7 +195,7 @@ def install(
     enable: bool = True,
     systemctl=None,
 ) -> list[Path]:
-    """Write the template units and enable the timer for ``cfg.project``.
+    """Write the template units and a per-project drop-in, and enable the timer.
 
     Returns the files written. ``systemctl`` is injectable; when it is
     ``None`` and no ``systemctl`` is on PATH, the units are written and the
@@ -193,12 +205,17 @@ def install(
     target.mkdir(parents=True, exist_ok=True)
     somm_bin = shutil.which("somm") or "/usr/bin/env somm"
     written = []
-    for name, body in render_units(somm_bin=somm_bin, every=every, db_dir=cfg.db_dir.resolve()).items():
+    for name, body in render_units(somm_bin=somm_bin, every=every).items():
         path = target / name
         path.write_text(body)
         written.append(path)
+    service, timer = unit_names(cfg.project)
+    dropin_dir = target / f"{service}.d"
+    dropin_dir.mkdir(parents=True, exist_ok=True)
+    dropin = dropin_dir / "10-somm.conf"
+    dropin.write_text(render_dropin(cfg.db_dir.resolve()))
+    written.append(dropin)
     if enable:
-        _, timer = unit_names(cfg.project)
         run = systemctl or _systemctl
         run(["daemon-reload"])
         run(["enable", "--now", timer])
@@ -246,6 +263,7 @@ __all__ = [
     "LoopReport",
     "install",
     "last_success",
+    "render_dropin",
     "render_units",
     "run_fleet",
     "run_once",

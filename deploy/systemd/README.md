@@ -14,7 +14,9 @@ somm loop uninstall --project myproject
 ```
 
 `install` writes `~/.config/systemd/user/somm-loop@.service` and
-`somm-loop@.timer` and enables `somm-loop@myproject.timer`. Each firing runs
+`somm-loop@.timer` (shared templates), a per-project drop-in
+`somm-loop@myproject.service.d/10-somm.conf` naming that project's ledger
+(`SOMM_DB_DIR`), and enables `somm-loop@myproject.timer`. Each firing runs
 `somm loop run --project myproject`: one pass that refreshes model intel when
 it is more than a day old, grades sampled production calls against their gold
 model, and emits recommendations when the last pass is more than a week old,

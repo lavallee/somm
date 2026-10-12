@@ -171,7 +171,7 @@ def _execute(conn_or_path, sql: str, params) -> list:
 SENTINEL_MODEL_PREFIX = "*"
 
 
-def loop_state(db_path: Path) -> dict:
+def loop_state(db_path: Path, project: str | None = None) -> dict:
     """Whether the intelligence loop has produced anything in one ledger.
 
     Samples, eval results, and recommendations live only in a project's own
@@ -193,6 +193,7 @@ def loop_state(db_path: Path) -> dict:
                 return None
 
         return {
+            "project": project,
             "db_path": str(db_path),
             "samples": count("SELECT COUNT(*) FROM samples"),
             "eval_results": count("SELECT COUNT(*) FROM eval_results"),
@@ -219,8 +220,8 @@ def fleet_summary(
       operator can see which projects write with an old library;
     - ``loop``: the intelligence loop's state in *this* ledger (see
       :func:`loop_state`);
-    - ``ledgers``: the same per registered project ledger (``ledgers``
-      defaults to every path in ``~/.somm/registry.json``), because a mirror
+    - ``ledgers``: the same per registered project ledger, labelled with the
+      project (``ledgers`` defaults to ``~/.somm/registry.json``), because a mirror
       never carries samples, evals, or recommendations and would otherwise
       report a loop as dormant that is alive in a project;
     - ``sentinel_rows``: rows whose model is a routing sentinel or blank,
@@ -263,17 +264,24 @@ def fleet_summary(
             by_norm.setdefault(p.replace("_", "-"), set()).add(p)
     spellings = {k: sorted(v) for k, v in by_norm.items() if len(v) > 1}
     loop = loop_state(Path(db_path))
+    labelled: list[tuple[str | None, Path]]
     if ledgers is None:
         try:
-            from somm_core.registry import fleet_db_paths
+            from somm_core.registry import registered_ledgers
 
-            ledgers = [p for p in fleet_db_paths() if Path(p).resolve() != Path(db_path).resolve()]
+            labelled = [
+                (project, path)
+                for project, path in registered_ledgers()
+                if Path(path).resolve() != Path(db_path).resolve()
+            ]
         except Exception:  # noqa: BLE001 - the registry is optional
-            ledgers = []
+            labelled = []
+    else:
+        labelled = [(None, Path(p)) for p in ledgers]
     per_ledger = []
-    for path in ledgers:
+    for project, path in labelled:
         try:
-            per_ledger.append(loop_state(Path(path)))
+            per_ledger.append(loop_state(Path(path), project))
         except sqlite3.Error:
             continue
     return {
