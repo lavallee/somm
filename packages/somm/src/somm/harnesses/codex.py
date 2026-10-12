@@ -1,36 +1,41 @@
-"""OpenAI Codex CLI adapter for autonomous workspace tasks."""
+"""OpenAI Codex CLI adapter for autonomous workspace tasks.
+
+``codex exec --json`` emits ``thread.started`` (thread id), ``item.*`` events,
+and ``turn.completed`` / ``turn.failed``. ``turn.completed.usage`` carries
+``input_tokens``, ``cached_input_tokens``, ``output_tokens`` and
+``reasoning_output_tokens``. Codex does not report the served model or a
+cost; both stay ``None`` rather than being guessed from the request.
+"""
 
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 from .base import (
+    BaseHarness,
     HarnessCapabilities,
     HarnessOutcome,
     HarnessRequest,
-    HarnessResult,
     classify_error_text,
     iter_json_events,
-    launch_process,
     read_capture,
 )
 
 
-class CodexHarness:
+class CodexHarness(BaseHarness):
     name = "codex"
+    executable = "codex"
     capabilities = HarnessCapabilities(
         resume=True,
         reasoning_effort=True,
+        prompt_via_stdin=True,
         model_families=frozenset({"openai"}),
     )
-
-    def is_available(self) -> bool:
-        return shutil.which("codex") is not None
+    scrub_env = ("OPENAI_API_KEY",)
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
-        argv = [request.resolved_executable("codex"), "exec"]
+        argv = [request.resolved_executable(self.executable), "exec"]
         if request.session_id:
             argv.append("resume")
         argv.append("--json")
@@ -49,13 +54,6 @@ class CodexHarness:
             argv.append(request.session_id)
         argv.append("-" if request.prompt_via_stdin else request.prompt)
         return argv
-
-    def start(self, request: HarnessRequest):
-        return launch_process(
-            self.build_argv(request),
-            request,
-            stdin_data=request.prompt if request.prompt_via_stdin else None,
-        )
 
     @staticmethod
     def parse_terminal(path: Path) -> dict | None:
@@ -85,34 +83,18 @@ class CodexHarness:
                 final = item["text"]
         return final.strip()
 
-    def inspect(
-        self, stdout_path: Path, stderr_path: Path, *, exit_code=None, correlation_id=None
-    ) -> HarnessResult:
-        terminal = self.parse_terminal(stdout_path)
-        outcome = HarnessOutcome.UNKNOWN
-        detail = ""
-        if terminal is not None:
-            if terminal.get("type") == "turn.completed":
-                outcome = HarnessOutcome.COMPLETED
-            else:
-                detail = json.dumps(terminal, sort_keys=True) + "\n" + read_capture(
-                    stderr_path, tail=4000
-                )
-                outcome = classify_error_text(detail) or HarnessOutcome.FAILED
-        else:
-            detail = read_capture(stdout_path, tail=4000) + "\n" + read_capture(
-                stderr_path, tail=4000
-            )
-            outcome = classify_error_text(detail) or HarnessOutcome.UNKNOWN
-        usage = terminal.get("usage") if isinstance(terminal, dict) else {}
-        return HarnessResult(
-            harness=self.name,
-            outcome=outcome,
-            final_text=self.extract_final_text(stdout_path),
-            session_id=self.parse_session_id(stdout_path),
-            exit_code=exit_code,
-            detail=detail.strip(),
-            usage=usage if isinstance(usage, dict) else {},
-            terminal_event=terminal,
-            correlation_id=correlation_id,
-        )
+    def parse_usage(self, path: Path, terminal: dict | None) -> dict:
+        usage = super().parse_usage(path, terminal)
+        # Normalized aliases beside the native keys, so a consumer can read
+        # the same name across harnesses.
+        if isinstance(usage.get("reasoning_output_tokens"), int):
+            usage.setdefault("reasoning_tokens", usage["reasoning_output_tokens"])
+        if isinstance(usage.get("cached_input_tokens"), int):
+            usage.setdefault("cache_read_input_tokens", usage["cached_input_tokens"])
+        return usage
+
+    def classify(self, terminal: dict, stdout_path: Path, stderr_path: Path):
+        if terminal.get("type") == "turn.completed":
+            return HarnessOutcome.COMPLETED, ""
+        detail = json.dumps(terminal, sort_keys=True) + "\n" + read_capture(stderr_path, tail=4000)
+        return classify_error_text(detail) or HarnessOutcome.FAILED, detail

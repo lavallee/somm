@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
 from .base import (
+    BaseHarness,
     HarnessCapabilities,
     HarnessCapabilityError,
     HarnessOutcome,
     HarnessRequest,
-    HarnessResult,
     classify_error_text,
     iter_json_events,
-    launch_process,
     read_capture,
 )
 
@@ -55,7 +53,7 @@ def _message_text(message: dict[str, Any]) -> str:
     )
 
 
-class PiHarness:
+class PiHarness(BaseHarness):
     """Translate Pi's JSON event stream into Somm's one-attempt contract.
 
     ``allow_unsafe=False`` is intentionally narrow: Pi receives no tools,
@@ -65,10 +63,10 @@ class PiHarness:
     """
 
     name = "pi"
-    capabilities = HarnessCapabilities(resume=True, reasoning_effort=True)
-
-    def is_available(self) -> bool:
-        return shutil.which("pi") is not None
+    executable = "pi"
+    capabilities = HarnessCapabilities(
+        resume=True, reasoning_effort=True, prompt_via_stdin=True, reports_model=True
+    )
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
         if not request.allow_unsafe and request.extra:
@@ -77,7 +75,7 @@ class PiHarness:
                 "reviewed runner profile for tool or extension access"
             )
 
-        argv = [request.resolved_executable("pi"), "--mode", "json"]
+        argv = [request.resolved_executable(self.executable), "--mode", "json"]
         if request.allow_unsafe:
             # Project-local packages and instruction files remain outside the
             # implicit trust boundary even for an externally sandboxed runner.
@@ -96,12 +94,6 @@ class PiHarness:
         if not request.prompt_via_stdin:
             argv.extend(["--", request.prompt])
         return argv
-
-    def start(self, request: HarnessRequest):
-        stdin_data = request.prompt if request.prompt_via_stdin else None
-        return launch_process(
-            self.build_argv(request), request, stdin_data=stdin_data
-        )
 
     @staticmethod
     def parse_terminal(path: Path) -> dict | None:
@@ -134,56 +126,65 @@ class PiHarness:
                 last = message
         return last
 
-    def inspect(
-        self, stdout_path: Path, stderr_path: Path, *, exit_code=None, correlation_id=None
-    ) -> HarnessResult:
-        terminal = self.parse_terminal(stdout_path)
-        message = self._last_assistant(stdout_path)
-        detail = ""
-        usage: dict[str, int | float] = {}
-        outcome = HarnessOutcome.UNKNOWN
+    def parse_usage(self, path: Path, terminal: dict | None) -> dict:
+        message = self._last_assistant(path)
+        raw_usage = message.get("usage") if message else None
+        if not isinstance(raw_usage, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in raw_usage.items()
+            if isinstance(value, int | float) and not isinstance(value, bool)
+        }
 
+    def parse_model(self, path: Path, terminal: dict | None) -> str | None:
+        message = self._last_assistant(path)
+        if not message:
+            return None
+        model = message.get("model")
+        provider = message.get("provider")
+        if isinstance(model, str) and model:
+            return f"{provider}/{model}" if isinstance(provider, str) and provider else model
+        return None
+
+    def parse_cost_usd(self, path: Path, terminal: dict | None) -> float | None:
+        message = self._last_assistant(path)
+        raw_usage = message.get("usage") if message else None
+        cost = raw_usage.get("cost") if isinstance(raw_usage, dict) else None
+        total = cost.get("total") if isinstance(cost, dict) else None
+        if isinstance(total, bool) or not isinstance(total, (int, float)) or total < 0:
+            return None
+        return float(total)
+
+    def classify_without_terminal(self, stdout_path, stderr_path, exit_code):
+        # Pi's authoritative signal is the last assistant message, which can
+        # exist without an agent_end (the process was cut off after it).
+        message = self._last_assistant(stdout_path)
         if message is not None:
             reason = str(message.get("stopReason") or "").lower()
-            raw_usage = message.get("usage")
-            if isinstance(raw_usage, dict):
-                usage = {
-                    str(key): value
-                    for key, value in raw_usage.items()
-                    if isinstance(value, int | float) and not isinstance(value, bool)
-                }
             error_message = message.get("errorMessage")
-            if isinstance(error_message, str):
-                detail = error_message
-            if terminal is not None and reason == "stop":
-                outcome = HarnessOutcome.COMPLETED
-            elif reason == "length":
-                # Pi has no native turn cap. "length" is the provider output
-                # limit, so Fab must not apply its resume-and-add-turns policy.
-                outcome = HarnessOutcome.CONTEXT_LIMIT
-            elif reason in {"error", "aborted"}:
+            detail = error_message if isinstance(error_message, str) else ""
+            if reason == "length":
+                return HarnessOutcome.CONTEXT_LIMIT, detail
+            if reason in {"error", "aborted"}:
                 evidence = detail + "\n" + read_capture(stderr_path, tail=4000)
-                outcome = classify_error_text(evidence) or HarnessOutcome.FAILED
+                return classify_error_text(evidence) or HarnessOutcome.FAILED, detail
+        return super().classify_without_terminal(stdout_path, stderr_path, exit_code)
 
-        if terminal is None:
-            evidence = read_capture(stdout_path, tail=4000) + "\n" + read_capture(
-                stderr_path, tail=4000
-            )
-            detail = detail or evidence.strip()
-            outcome = classify_error_text(evidence) or (
-                HarnessOutcome.FAILED
-                if exit_code not in {None, 0}
-                else HarnessOutcome.UNKNOWN
-            )
-
-        return HarnessResult(
-            harness=self.name,
-            outcome=outcome,
-            final_text=self.extract_final_text(stdout_path),
-            session_id=self.parse_session_id(stdout_path),
-            exit_code=exit_code,
-            detail=detail.strip(),
-            usage=usage,
-            terminal_event=terminal,
-            correlation_id=correlation_id,
-        )
+    def classify(self, terminal: dict, stdout_path: Path, stderr_path: Path):
+        message = self._last_assistant(stdout_path)
+        if message is None:
+            return HarnessOutcome.UNKNOWN, ""
+        reason = str(message.get("stopReason") or "").lower()
+        error_message = message.get("errorMessage")
+        detail = error_message if isinstance(error_message, str) else ""
+        if reason == "stop":
+            return HarnessOutcome.COMPLETED, ""
+        if reason == "length":
+            # Pi has no native turn cap. "length" is the provider output
+            # limit, so a runner must not apply a resume-and-add-turns policy.
+            return HarnessOutcome.CONTEXT_LIMIT, detail
+        if reason in {"error", "aborted"}:
+            evidence = detail + "\n" + read_capture(stderr_path, tail=4000)
+            return classify_error_text(evidence) or HarnessOutcome.FAILED, detail
+        return HarnessOutcome.UNKNOWN, detail

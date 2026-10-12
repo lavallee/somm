@@ -34,6 +34,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, uuid5
 
+from somm_core.cost import computed_cost_kind as _cost_kind
+from somm_core.cost import pricing_version as _pricing_version
 from somm_core.graders import (
     build_binary_judge_prompt,
     grade_response_pair,
@@ -43,11 +45,10 @@ from somm_core.graders import (
 from somm_core.models import Call, Outcome
 from somm_core.parse import stable_hash
 from somm_core.pricing import cost_for_call
+from somm_core.repository import Repository
 
 if TYPE_CHECKING:
     from somm.providers.base import SommProvider
-    from somm_core.repository import Repository
-
 
 _log = logging.getLogger("somm.workers.shadow_eval")
 
@@ -804,23 +805,3 @@ def _reported_cost(raw: dict | None) -> float | None:
     return None
 
 
-def _pricing_version(repo: Repository, provider: str, model: str) -> str | None:
-    with repo._open() as conn:
-        row = conn.execute(
-            "SELECT source, last_seen FROM model_intel WHERE provider = ? AND model = ?",
-            (provider, model),
-        ).fetchone()
-    if not row:
-        return None
-    return f"{row[0]}@{row[1]}"
-
-
-def _cost_kind(provider: str) -> str:
-    """Classify computed value using the same plan semantics as pacing."""
-    try:
-        from somm_core.plans import load_plans, plan_for
-
-        mode = plan_for(provider, load_plans()).mode
-    except Exception:
-        mode = "payg"
-    return "notional" if mode == "metered" else "marginal"

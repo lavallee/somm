@@ -2,14 +2,21 @@
 
 The public API runs one attempt. Queueing, retry policy, inactivity watchdogs,
 backend failover, verification, and release remain the caller's responsibility.
+
+The result envelope is versioned (``ENVELOPE_VERSION``); see ``base.py``.
+``record_attempt`` writes a finished attempt into the somm ledger so seat
+spend and agent outcomes sit beside every other call.
 """
 
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime
 
 from .base import (
+    ENVELOPE_VERSION,
     AgentHarness,
+    BaseHarness,
     HarnessCapabilities,
     HarnessCapabilityError,
     HarnessHandle,
@@ -17,10 +24,15 @@ from .base import (
     HarnessRequest,
     HarnessResult,
     decode_json_events,
+    elapsed_ms,
     infer_model_family,
+    launch_process,
+    retry_after_from_text,
+    scrubbed_env,
 )
 from .claude_cli import ClaudeCLIHarness
 from .codex import CodexHarness
+from .ledger import DEFAULT_WORKLOAD, record_attempt
 from .opencode import OpenCodeHarness
 from .pi import PiHarness
 
@@ -33,6 +45,8 @@ _HARNESSES: dict[str, AgentHarness] = {
     "opencode": OpenCodeHarness(),
     "pi": PiHarness(),
 }
+
+CANONICAL_NAMES = ("claude-cli", "codex", "opencode", "pi")
 
 
 def get(name: str) -> AgentHarness:
@@ -49,10 +63,21 @@ def get(name: str) -> AgentHarness:
 def available() -> list[str]:
     """List canonical harness names whose executables are on PATH."""
 
-    return [
-        name for name in ("claude-cli", "codex", "opencode", "pi")
-        if _HARNESSES[name].is_available()
-    ]
+    return [name for name in CANONICAL_NAMES if _HARNESSES[name].is_available()]
+
+
+def capability_profile(name: str) -> dict:
+    """A versioned record of what a harness can honor, for admission decisions
+    that must not branch on the harness name."""
+
+    adapter = get(name)
+    return {
+        "envelope_version": ENVELOPE_VERSION,
+        "harness": adapter.name,
+        "harness_version": getattr(adapter, "version", lambda: None)(),
+        "available": adapter.is_available(),
+        **adapter.capabilities.as_dict(),
+    }
 
 
 def validate_model(name: str, model: str | None) -> None:
@@ -69,9 +94,33 @@ def validate_model(name: str, model: str | None) -> None:
 
 
 def validate_request(name: str, request: HarnessRequest) -> None:
-    """Validate portable request capabilities before process launch."""
+    """Validate a request against the harness's capabilities before launch.
+
+    Fails closed: a field the adapter cannot translate is an error here, not
+    something dropped on the floor. A runner that asks for ``max_turns`` on a
+    harness without a turn cap would otherwise believe the cap was honored.
+    """
 
     validate_model(name, request.model)
+    caps = get(name).capabilities
+    unsupported: list[str] = []
+    if request.max_turns is not None and not caps.max_turns:
+        unsupported.append("max_turns")
+    if request.agent and not caps.agent_selection:
+        unsupported.append("agent")
+    if request.reasoning_effort and not caps.reasoning_effort:
+        unsupported.append("reasoning_effort")
+    if request.session_id and not caps.resume:
+        unsupported.append("session_id")
+    if request.prompt_via_stdin and not caps.prompt_via_stdin:
+        unsupported.append("prompt_via_stdin")
+    if request.allow_unsafe and not caps.permission_bypass:
+        unsupported.append("allow_unsafe")
+    if unsupported:
+        raise HarnessCapabilityError(
+            f"harness {name!r} cannot honor {', '.join(unsupported)}; "
+            f"check capability_profile({name!r}) before launch"
+        )
 
 
 def start(name: str, request: HarnessRequest) -> HarnessHandle:
@@ -88,15 +137,33 @@ def inspect(
     *,
     exit_code: int | None = None,
     correlation_id: str | None = None,
+    duration_ms: int | None = None,
+    started_at: datetime | None = None,
+    record: bool = False,
+    request: HarnessRequest | None = None,
+    project: str | None = None,
+    workload: str = DEFAULT_WORKLOAD,
 ) -> HarnessResult:
-    """Normalize a completed adapter capture without applying retry policy."""
+    """Normalize a completed adapter capture without applying retry policy.
 
-    return get(name).inspect(
+    ``started_at`` (from the handle) supplies ``duration_ms`` when the harness
+    did not report one. ``record=True`` also writes the attempt to the ledger.
+    """
+
+    if duration_ms is None and started_at is not None:
+        duration_ms = elapsed_ms(started_at)
+    result = get(name).inspect(
         stdout_path,
         stderr_path,
         exit_code=exit_code,
         correlation_id=correlation_id,
+        duration_ms=duration_ms,
     )
+    if record:
+        record_attempt(
+            result, request=request, project=project, workload=workload, started_at=started_at
+        )
+    return result
 
 
 def terminal_event(name: str, stdout_path):
@@ -196,13 +263,23 @@ def is_event_stream(capture: str) -> bool:
 
 
 def run(
-    name: str, request: HarnessRequest, *, timeout: float | None = None
+    name: str,
+    request: HarnessRequest,
+    *,
+    timeout: float | None = None,
+    record: bool = False,
+    project: str | None = None,
+    workload: str = DEFAULT_WORKLOAD,
 ) -> HarnessResult:
-    """Run one attempt synchronously; never retries or selects a fallback."""
+    """Run one attempt synchronously; never retries or selects a fallback.
+
+    ``record=True`` writes the finished attempt to the somm ledger.
+    """
 
     validate_request(name, request)
     adapter = get(name)
     handle = adapter.start(request)
+    started_at = getattr(handle, "started_at", None) or datetime.now(UTC)
     try:
         try:
             exit_code = handle.proc.wait(timeout=timeout)
@@ -216,16 +293,26 @@ def run(
             raise
     finally:
         handle.close_captures()
-    return adapter.inspect(
+    return inspect(
+        name,
         handle.stdout_path,
         handle.stderr_path,
         exit_code=exit_code,
         correlation_id=request.correlation_id,
+        started_at=started_at,
+        record=record,
+        request=request,
+        project=project,
+        workload=workload,
     )
 
 
 __all__ = [
+    "CANONICAL_NAMES",
+    "DEFAULT_WORKLOAD",
+    "ENVELOPE_VERSION",
     "AgentHarness",
+    "BaseHarness",
     "ClaudeCLIHarness",
     "CodexHarness",
     "HarnessCapabilityError",
@@ -237,14 +324,20 @@ __all__ = [
     "OpenCodeHarness",
     "PiHarness",
     "available",
+    "capability_profile",
+    "decode_json_events",
     "extract_final_text",
     "extract_last_assistant_text",
     "get",
     "infer_model_family",
     "inspect",
     "is_event_stream",
+    "launch_process",
+    "record_attempt",
     "result_text",
+    "retry_after_from_text",
     "run",
+    "scrubbed_env",
     "session_id",
     "start",
     "terminal_event",

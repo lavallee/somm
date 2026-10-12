@@ -8,8 +8,7 @@ from pathlib import Path
 import pytest
 from somm import harnesses
 from somm.harnesses import HarnessCapabilityError, HarnessOutcome, HarnessRequest
-from somm.harnesses import codex as codex_module
-from somm.harnesses import pi as pi_module
+from somm.harnesses import base as base_module
 
 
 def _request(tmp_path: Path, **overrides) -> HarnessRequest:
@@ -260,11 +259,11 @@ def test_codex_start_passes_prompt_as_stdin(tmp_path: Path, monkeypatch) -> None
     request = _request(tmp_path, prompt="large packet", prompt_via_stdin=True)
     seen = {}
 
-    def fake_launch(argv, req, *, stdin_data=None):
-        seen.update(argv=argv, request=req, stdin_data=stdin_data)
+    def fake_launch(argv, req, *, stdin_data=None, **kwargs):
+        seen.update(argv=argv, request=req, stdin_data=stdin_data, **kwargs)
         return object()
 
-    monkeypatch.setattr(codex_module, "launch_process", fake_launch)
+    monkeypatch.setattr(base_module, "launch_process", fake_launch)
 
     adapter.start(request)
 
@@ -552,11 +551,11 @@ def test_pi_start_transports_prompt_over_stdin(tmp_path: Path, monkeypatch) -> N
     )
     seen = {}
 
-    def fake_launch(argv, req, *, stdin_data=None):
-        seen.update(argv=argv, request=req, stdin_data=stdin_data)
+    def fake_launch(argv, req, *, stdin_data=None, **kwargs):
+        seen.update(argv=argv, request=req, stdin_data=stdin_data, **kwargs)
         return object()
 
-    monkeypatch.setattr(pi_module, "launch_process", fake_launch)
+    monkeypatch.setattr(base_module, "launch_process", fake_launch)
 
     adapter.start(request)
 
@@ -611,3 +610,205 @@ def test_pi_error_and_length_are_not_false_successes(tmp_path: Path) -> None:
         }]},
     ))
     assert adapter.inspect(stdout, stderr).outcome is HarnessOutcome.CONTEXT_LIMIT
+
+
+# ---------------------------------------------------------------------------
+# Envelope 2: the harness says what served the attempt, what it cost, and how
+# long it took — and the attempt can land in the ledger.
+
+
+def _claude_capture(tmp_path: Path, **result_overrides) -> tuple[Path, Path]:
+    result = {
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": "sess-9", "result": "Done.", "num_turns": 15,
+        "duration_ms": 100328, "total_cost_usd": 0.3447,
+        "usage": {
+            "input_tokens": 30, "cache_creation_input_tokens": 21069,
+            "cache_read_input_tokens": 232599, "output_tokens": 6479,
+            "output_tokens_details": {"thinking_tokens": 845},
+        },
+        "modelUsage": {"claude-opus-5-5": {"outputTokens": 6479, "costUSD": 0.3447}},
+    }
+    result.update(result_overrides)
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "system", "subtype": "init", "session_id": "sess-9",
+         "model": "claude-opus-5-5", "claude_code_version": "2.1.286"},
+        result,
+    ))
+    return stdout, _write(tmp_path, "stderr", "")
+
+
+def test_claude_envelope_reports_model_version_cost_duration(tmp_path: Path) -> None:
+    stdout, stderr = _claude_capture(tmp_path)
+    result = harnesses.get("claude-cli").inspect(stdout, stderr, exit_code=0)
+    assert result.envelope_version == harnesses.ENVELOPE_VERSION == 2
+    assert result.model == "claude-opus-5-5"
+    assert result.harness_version == "2.1.286"
+    assert result.cost_usd == pytest.approx(0.3447)
+    assert result.duration_ms == 100328
+    assert result.turns == 15
+    # The whole prompt, not the uncached slice; thinking tokens broken out.
+    assert result.usage["prompt_tokens_total"] == 30 + 21069 + 232599
+    assert result.usage["reasoning_tokens"] == 845
+    assert result.as_dict()["outcome"] == "completed"
+
+
+def test_claude_seat_limit_with_reset_is_rate_limit_with_retry_after(tmp_path: Path) -> None:
+    stdout, stderr = _claude_capture(
+        tmp_path,
+        subtype="error_during_execution",
+        is_error=True,
+        terminal_reason="api_error",
+        result="You've hit your usage limit · resets 3pm (America/New_York)",
+    )
+    result = harnesses.get("claude-cli").inspect(stdout, stderr, exit_code=1)
+    assert result.outcome is HarnessOutcome.RATE_LIMIT
+    assert result.retry_after_s is not None and result.retry_after_s > 60
+
+
+def test_claude_seat_limit_without_reset_is_budget_exhausted(tmp_path: Path) -> None:
+    stdout, stderr = _claude_capture(
+        tmp_path,
+        subtype="error_during_execution",
+        is_error=True,
+        terminal_reason="api_error",
+        result="Monthly spend limit reached for this organization.",
+    )
+    result = harnesses.get("claude-cli").inspect(stdout, stderr, exit_code=1)
+    assert result.outcome is HarnessOutcome.BUDGET_EXHAUSTED
+
+
+def test_agent_stuck_tag_is_agent_blocked(tmp_path: Path) -> None:
+    stdout, stderr = _claude_capture(
+        tmp_path, result="<stuck>the repo has no tests to run</stuck>"
+    )
+    result = harnesses.get("claude-cli").inspect(stdout, stderr, exit_code=0)
+    assert result.outcome is HarnessOutcome.AGENT_BLOCKED
+    assert "no tests" in result.detail
+
+
+def test_no_terminal_event_and_signal_exit_is_interrupted(tmp_path: Path) -> None:
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "assistant", "message": {"role": "assistant",
+                                          "content": [{"type": "text", "text": "working"}]}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+    adapter = harnesses.get("claude-cli")
+    assert adapter.inspect(stdout, stderr, exit_code=-9).outcome is HarnessOutcome.INTERRUPTED
+    # A clean exit with nothing said stays unknown: the supervisor may know more.
+    assert adapter.inspect(stdout, stderr, exit_code=0).outcome is HarnessOutcome.UNKNOWN
+
+
+def test_input_error_is_distinct_from_provider_error(tmp_path: Path) -> None:
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "turn.failed", "error": {"message": "invalid request http_status=400"}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+    assert harnesses.get("codex").inspect(stdout, stderr).outcome is HarnessOutcome.INPUT_ERROR
+
+
+def test_codex_usage_gets_portable_aliases(tmp_path: Path) -> None:
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "thread.started", "thread_id": "t"},
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 3808034, "cached_input_tokens": 3652992,
+            "output_tokens": 40357, "reasoning_output_tokens": 9396,
+        }},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+    result = harnesses.get("codex").inspect(stdout, stderr, exit_code=0)
+    assert result.usage["reasoning_tokens"] == 9396
+    assert result.usage["cache_read_input_tokens"] == 3652992
+    assert result.model is None  # codex does not say; nothing is guessed
+
+
+def test_opencode_reports_served_model(tmp_path: Path) -> None:
+    stdout = _write(tmp_path, "stdout", _stream(
+        {"type": "text", "sessionID": "s", "part": {
+            "text": "hi", "metadata": {"model": {"modelID": "MiniMax-M2.7",
+                                                 "providerID": "minimax-coding-plan"}},
+        }},
+        {"type": "step_finish", "sessionID": "s", "part": {"reason": "stop", "cost": 0}},
+    ))
+    stderr = _write(tmp_path, "stderr", "")
+    result = harnesses.get("opencode").inspect(stdout, stderr, exit_code=0)
+    assert result.model == "minimax-coding-plan/MiniMax-M2.7"
+    assert result.turns == 1
+
+
+@pytest.mark.parametrize(
+    ("harness", "field", "value"),
+    [
+        ("codex", "max_turns", 5),
+        ("codex", "agent", "build"),
+        ("opencode", "reasoning_effort", "high"),
+        ("claude-cli", "agent", "build"),
+        ("claude-cli", "prompt_via_stdin", True),
+    ],
+)
+def test_validate_request_fails_closed_on_unsupported_fields(
+    tmp_path: Path, harness: str, field: str, value
+) -> None:
+    request = _request(tmp_path, **{field: value})
+    with pytest.raises(HarnessCapabilityError, match=field):
+        harnesses.validate_request(harness, request)
+
+
+def test_capability_profile_is_a_versioned_record() -> None:
+    profile = harnesses.capability_profile("claude-cli")
+    assert profile["envelope_version"] == 2
+    assert profile["harness"] == "claude-cli"
+    assert profile["max_turns"] is True and profile["reports_cost"] is True
+    assert "available" in profile
+
+
+def test_start_scrubs_the_seat_api_key_and_layers_request_env(tmp_path: Path, monkeypatch) -> None:
+    seen = {}
+
+    def fake_launch(argv, req, *, env=None, stdin_data=None, start_new_session=False):
+        seen.update(env=env, start_new_session=start_new_session)
+        return object()
+
+    monkeypatch.setattr(base_module, "launch_process", fake_launch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-pass-through")
+    monkeypatch.setenv("HOME_MARKER", "kept")
+    harnesses.get("claude-cli").start(
+        _request(tmp_path, env={"FAB_ATTEMPT_DIR": "/x"}, start_new_session=True)
+    )
+    assert "ANTHROPIC_API_KEY" not in seen["env"]
+    assert seen["env"]["HOME_MARKER"] == "kept"
+    assert seen["env"]["FAB_ATTEMPT_DIR"] == "/x"
+    assert seen["start_new_session"] is True
+
+
+def test_record_attempt_lands_in_the_ledger(tmp_path: Path, monkeypatch) -> None:
+    import sqlite3
+
+    from somm_core.config import Config
+
+    cfg = Config()
+    cfg.project = "harness-test"
+    cfg.db_dir = tmp_path / ".somm"
+    cfg.spool_dir = cfg.db_dir / "spool"
+    stdout, stderr = _claude_capture(tmp_path)
+    request = _request(tmp_path, correlation_id="job-42")
+    result = harnesses.get("claude-cli").inspect(
+        stdout, stderr, exit_code=0, correlation_id="job-42"
+    )
+
+    call = harnesses.record_attempt(result, request=request, config=cfg)
+
+    with sqlite3.connect(cfg.db_path) as conn:
+        row = conn.execute(
+            "SELECT provider, model, origin, cost_usd, cost_basis, tokens_in, tokens_out, "
+            "reasoning_tokens, cache_tokens_in, session_id, correlation_id, outcome, "
+            "latency_ms, client_version FROM calls WHERE id = ?",
+            (call.id,),
+        ).fetchone()
+    assert row[0] == "claude-cli" and row[1] == "claude-opus-5-5" and row[2] == "harness"
+    assert row[3] == pytest.approx(0.3447) and row[4] == "reported"
+    assert row[5] == 30 + 21069 + 232599 and row[6] == 6479 and row[7] == 845
+    assert row[8] == 232599
+    assert row[9] == "sess-9" and row[10] == "job-42" and row[11] == "ok"
+    assert row[12] == 100328 and row[13]

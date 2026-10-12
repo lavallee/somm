@@ -27,6 +27,7 @@ from typing import Any
 from somm_core import EmbedResult, Outcome, SommResult, cost_for_call
 from somm_core.config import Config
 from somm_core.config import load as load_config
+from somm_core.cost import cost_provenance as _cost_provenance
 from somm_core.models import Call, Prompt
 from somm_core.models import ToolCall as CoreToolCall
 from somm_core.parse import (
@@ -464,50 +465,6 @@ def _provider_custody(raw: dict | None) -> tuple[str | None, str | None]:
         None,
     )
     return request_id, billing_id
-
-
-def _computed_cost_kind(provider: str) -> str:
-    """Classify token-times-price value without confusing it for an invoice."""
-    try:
-        from somm_core.plans import load_plans, plan_for
-
-        mode = plan_for(provider, load_plans()).mode
-    except Exception:
-        mode = "payg"
-    return "notional" if mode == "metered" else "marginal"
-
-
-def _cost_provenance(
-    repo: Repository,
-    provider: str,
-    model: str,
-    *,
-    reported: bool,
-    source: str | None,
-) -> tuple[str, str, str, str | None, str | None]:
-    """Describe price provenance without treating an unpriced local call as free."""
-    if reported:
-        return "reported", "unknown", "unknown", source, None
-    if provider == "ollama":
-        # ``cost_usd`` remains the backward-compatible numeric API field, but
-        # zero here means no metered provider price, not zero economic cost.
-        return "unknown", "included", "unknown", "local-included-unpriced", None
-    return (
-        "computed",
-        _computed_cost_kind(provider),
-        "estimated",
-        source or "somm:model_intel",
-        _pricing_version(repo, provider, model),
-    )
-
-
-def _pricing_version(repo: Repository, provider: str, model: str) -> str | None:
-    with repo._open() as conn:
-        row = conn.execute(
-            "SELECT source, last_seen FROM model_intel WHERE provider = ? AND model = ?",
-            (provider, model),
-        ).fetchone()
-    return f"{row[0]}@{row[1]}" if row else None
 
 
 def _fire_call_hooks(event: dict) -> None:
