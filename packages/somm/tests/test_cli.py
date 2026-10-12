@@ -1116,7 +1116,9 @@ def test_doctor_global_reads_the_shared_ledger_and_reports_fleet(tmp_path, capsy
     assert "scope: global" in out
     assert str(cfg.global_db_path) in out
     assert "(pre-0.17)" in out and "other" in out
-    assert "intelligence loop: DORMANT" in out
+    # A mirror never carries samples/evals/recommendations, so it is not
+    # called dormant; the doctor says where to look instead.
+    assert "intelligence loop: not visible here" in out
     assert "sentinel rows" in out
 
 

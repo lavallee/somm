@@ -131,3 +131,26 @@ def test_prune_calls_is_coarse_and_keeps_memory(tmp_path):
     assert repo.get_call(old.id) is None and repo.get_call(new.id) is not None
     assert repo.workload_by_name("w", "p") is not None
     repo.vacuum()
+
+
+def test_fleet_summary_reports_loop_state_per_ledger(tmp_path):
+    mirror = Repository(tmp_path / "global.sqlite")
+    mirror.write_call(_call("a", "ollama", "m"))
+    project = Repository(tmp_path / "a" / ".somm" / "calls.sqlite")
+    wl = project.register_workload(name="graded", project="a")
+    project.set_shadow_config(wl.id, {"gold_provider": "ollama", "gold_model": "m"})
+    with project._open() as conn:
+        conn.execute(
+            "INSERT INTO worker_heartbeat (worker_name, last_run_at, last_success_at, "
+            "consecutive_failures) VALUES ('shadow_eval', '2026-09-19 10:00:00', "
+            "'2026-09-19 10:00:00', 0)"
+        )
+
+    fleet = fleet_summary(mirror.db_path, since_days=7, ledgers=[project.db_path])
+
+    assert fleet["loop"]["eval_results"] == 0  # the mirror never has these
+    assert len(fleet["ledgers"]) == 1
+    state = fleet["ledgers"][0]
+    assert state["shadow_configured_workloads"] == 1
+    assert state["last_worker_success"] == "2026-09-19 10:00:00"
+    assert state["recommendations_open"] == 0

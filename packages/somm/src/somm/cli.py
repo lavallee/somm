@@ -2094,6 +2094,39 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if ok_overall else 1
 
 
+def _print_loop_state(loop: dict, ledgers: list[dict], *, is_mirror: bool) -> None:
+    """One line for this ledger, one per other registered ledger.
+
+    A mirror never carries samples, evals, or recommendations, so an empty
+    loop there is not dormancy — the project ledgers are where to look."""
+
+    def line(state: dict) -> str:
+        if state["shadow_configured_workloads"] and not state["eval_results"]:
+            return (
+                f"DORMANT — {state['shadow_configured_workloads']} workload(s) opted into "
+                "online eval, nothing graded, no worker has run; `somm loop run`"
+            )
+        if not state["eval_results"] and not state["recommendations"]:
+            return f"idle — no evals or recommendations ({state['decisions']} decisions)"
+        last = state.get("last_worker_success") or "never"
+        return (
+            f"{state['eval_results']} evals, {state['recommendations']} recommendations "
+            f"({state['recommendations_open']} open), last worker success {last}"
+        )
+
+    if is_mirror:
+        print(
+            "intelligence loop: not visible here — the mirror carries calls and workloads, "
+            "not samples, evals, or recommendations; per project ledger:"
+        )
+    else:
+        print(f"intelligence loop: {line(loop)}")
+    for state in ledgers:
+        print(f"  {Path(state['db_path']).parent.parent.name[:30]:<32} {line(state)}")
+    if is_mirror and not ledgers:
+        print("  (no project ledgers registered in ~/.somm/registry.json)")
+
+
 def _print_fleet_section(db_path: Path, *, since_days: int = 7) -> None:
     """What only a cross-project view can say: who writes with which client,
     whether the intelligence loop has ever run, and what pollutes the rollups.
@@ -2102,6 +2135,7 @@ def _print_fleet_section(db_path: Path, *, since_days: int = 7) -> None:
     client, and the loop can be idle there as well."""
     try:
         fleet = fleet_summary(db_path, since_days=since_days)
+        fleet["is_mirror"] = Path(db_path).resolve() == load_config().global_db_path.resolve()
     except Exception as exc:  # noqa: BLE001 - a doctor must not crash on a report
         print(f"fleet: unavailable ({exc})")
         return
@@ -2114,25 +2148,7 @@ def _print_fleet_section(db_path: Path, *, since_days: int = 7) -> None:
             f"  {row['project'][:20]:<22} {row['client_version']:<14} "
             f"{row['calls']:>8} calls{stale}"
         )
-    loop = fleet["loop"]
-    if loop["shadow_configured_workloads"] and not loop["eval_results"]:
-        print(
-            f"intelligence loop: DORMANT — {loop['shadow_configured_workloads']} workload(s) "
-            "opted into online eval, nothing has ever been graded, and no worker has run. "
-            "Run `somm loop run` (or `somm loop install`) to start it."
-        )
-    elif not loop["recommendations"] and not loop["eval_results"]:
-        print(
-            "intelligence loop: idle — no evals or recommendations yet "
-            f"({loop['decisions']} sommelier decisions recorded). "
-            "Opt a workload in with `somm workload set-shadow` and run `somm loop run`."
-        )
-    else:
-        print(
-            f"intelligence loop: {loop['eval_results']} evals, {loop['recommendations']} "
-            f"recommendations, {loop['decisions']} decisions, "
-            f"{loop['worker_heartbeats']} worker heartbeat(s)"
-        )
+    _print_loop_state(fleet["loop"], fleet["ledgers"], is_mirror=fleet.get("is_mirror", False))
     if fleet["sentinel_rows"]:
         print(
             f"sentinel rows ({since_days}d): {fleet['sentinel_rows']} calls with a blank or "

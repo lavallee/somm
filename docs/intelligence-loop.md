@@ -12,9 +12,13 @@ the next call can use:
 
 Through 0.16 the brain needed a host: the web service, or a long-lived process
 with `SOMM_INPROCESS_WORKERS=1`. A project that is a batch job or a CLI has
-neither, and the October 2026 census of this machine's fleet found the
-consequence: 1.7 million calls recorded, three workloads opted into online
-eval, and not one graded. The loop was configured and never ran.
+neither. The October 2026 census of this machine's fleet found the shape of
+the problem: the one project with a resident process had graded 7,281 samples
+and accumulated 21 recommendations nobody saw, then stopped grading when that
+process stopped; every other project had nothing; and the shared ledger —
+which never carries samples, evals, or recommendations — showed zero across
+the board. The loop needs to be runnable without a host and visible without
+opening each ledger.
 
 ## Running it
 
@@ -65,13 +69,15 @@ grading is visible in `somm status` like any other spend.
 
 ## Knowing whether it is alive
 
-`somm doctor` (and `somm doctor --global` for the shared ledger) prints one of:
+`somm doctor` prints the loop's state for its own ledger and for every
+project ledger in `~/.somm/registry.json`; `somm doctor --global` says that
+the mirror cannot see the loop and lists the project ledgers:
 
 ```
-intelligence loop: DORMANT — 3 workload(s) opted into online eval, nothing has
-  ever been graded, and no worker has run. Run `somm loop run` ...
-intelligence loop: idle — no evals or recommendations yet (87 sommelier decisions recorded).
-intelligence loop: 412 evals, 9 recommendations, 87 decisions, 3 worker heartbeat(s)
+intelligence loop: not visible here — the mirror carries calls and workloads,
+  not samples, evals, or recommendations; per project ledger:
+  research-app   7281 evals, 21 recommendations (21 open), last worker success 2026-09-19 10:24:26
+  cluster-app    idle — no evals or recommendations (0 decisions)
 ```
 
 The library also warns once per process at startup when a workload is opted

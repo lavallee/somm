@@ -9,14 +9,19 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [0.17.0] — 2026-10-12
 
-A census of this machine's fleet in October 2026 set the agenda: 1.7 million
-calls recorded since June, zero recommendations, zero evaluations, zero
-samples, no worker ever run; 99.9% of the last week's rows written by clients
-two minor versions behind; seven sibling tools querying `calls.sqlite` with
-their own SQL; coding-agent attempts — the most expensive calls a project makes
-— never in the ledger at all. The sensor worked. The brain was never switched
-on, and the estate had routed around the gaps. This release is about making
-what exists dependable and giving the fleet the surfaces it kept rebuilding.
+A census of this machine's fleet in October 2026 set the agenda. The shared
+ledger held 1.7 million calls since June and showed zero recommendations, zero
+evaluations, zero samples — and could not have shown otherwise, because the
+mirror never carries those tables. One project's own ledger told the rest: its
+loop had run inside its web process, graded 7,281 samples, emitted 21
+recommendations that nobody actioned, and stopped on 2026-09-19 when that
+process did. 99.9% of the week's rows were written by clients two minor
+versions behind; seven sibling tools queried `calls.sqlite` with their own SQL;
+coding-agent attempts — the most expensive calls a project makes — were never
+in the ledger. The sensor worked. The brain ran where a process happened to
+host it, and the fleet view could not tell. This release is about making what
+exists dependable and visible, and giving the fleet the surfaces it kept
+rebuilding.
 
 ### Changed — BREAKING
 
@@ -50,8 +55,11 @@ what exists dependable and giving the fleet the surfaces it kept rebuilding.
   weekly), heartbeats recorded, no service required.
 - `somm loop install [--every 15min]` writes and enables a systemd user timer
   for that command; `somm loop status|uninstall`.
-- `somm doctor` prints `intelligence loop: DORMANT|idle|<counts>`; the
-  startup warning for an opted-in-but-ungraded workload points at these.
+- `somm doctor` prints the loop's state for its ledger and for every
+  registered project ledger (`DORMANT`, `idle`, or evals / recommendations /
+  last worker success); on the mirror it says so instead of calling an absent
+  table dormant. The startup warning for an opted-in-but-ungraded workload
+  points at `somm loop`.
 - The proposal units under `deploy/systemd/` for shadow-eval and agent are
   removed in favor of the command; the exhaustion alarm stays.
 

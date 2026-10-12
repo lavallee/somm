@@ -29,8 +29,9 @@ No code change in somm fixes that; the work is in the consumers.
 - Move every registered project to `somm>=0.17` so `client_version`,
   `call_site`, cost provenance, and `reasoning_tokens` stop being `NULL` on
   the busiest rows.
-- `somm loop install` on the projects with shadow configs (the three
-  opted-in workloads first) and watch `somm doctor --global` leave `DORMANT`.
+- `somm loop install` on the project whose in-process loop stopped on
+  2026-09-19 (three opted-in workloads, 21 recommendations never actioned),
+  then on the rest; watch the per-ledger lines in `somm doctor --global`.
 - fab: consume `HarnessResult.model` / `retry_after_s` / the new outcomes,
   pass `record=True`, and drop its own process launch now that `start()`
   honors `env` and `start_new_session`.
@@ -39,7 +40,8 @@ No code change in somm fixes that; the work is in the consumers.
   `SommResult`); fleet dashboards and downstream ledgers read through
   `somm_core.read`.
 - **Graduation:** the fleet section of `somm doctor --global` shows one
-  client version, no sentinel rows, and a live loop.
+  client version, no sentinel rows, and a recent worker success on every
+  ledger with shadow configs.
 
 ### Output-contract adoption
 

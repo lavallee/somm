@@ -171,13 +171,58 @@ def _execute(conn_or_path, sql: str, params) -> list:
 SENTINEL_MODEL_PREFIX = "*"
 
 
-def fleet_summary(db_path: Path, *, since_days: int = 7) -> dict:
+def loop_state(db_path: Path) -> dict:
+    """Whether the intelligence loop has produced anything in one ledger.
+
+    Samples, eval results, and recommendations live only in a project's own
+    ledger — the shared mirror carries calls and workloads, by design — so a
+    fleet view must ask each ledger.
+    """
+    with _connect_ro(db_path) as conn:
+
+        def count(sql: str) -> int:
+            try:
+                return conn.execute(sql).fetchone()[0]
+            except sqlite3.Error:
+                return 0
+
+        def scalar(sql: str):
+            try:
+                return conn.execute(sql).fetchone()[0]
+            except sqlite3.Error:
+                return None
+
+        return {
+            "db_path": str(db_path),
+            "samples": count("SELECT COUNT(*) FROM samples"),
+            "eval_results": count("SELECT COUNT(*) FROM eval_results"),
+            "recommendations": count("SELECT COUNT(*) FROM recommendations"),
+            "recommendations_open": count(
+                "SELECT COUNT(*) FROM recommendations "
+                "WHERE applied_at IS NULL AND dismissed_at IS NULL"
+            ),
+            "decisions": count("SELECT COUNT(*) FROM decisions"),
+            "worker_heartbeats": count("SELECT COUNT(*) FROM worker_heartbeat"),
+            "last_worker_success": scalar("SELECT MAX(last_success_at) FROM worker_heartbeat"),
+            "shadow_configured_workloads": count(
+                "SELECT COUNT(*) FROM workloads WHERE shadow_config_json IS NOT NULL"
+            ),
+        }
+
+
+def fleet_summary(
+    db_path: Path, *, since_days: int = 7, ledgers: list[Path] | None = None
+) -> dict:
     """Facts about a ledger that only make sense across projects.
 
     - ``clients``: rows per (project, client_version) in the window, so an
       operator can see which projects write with an old library;
-    - ``loop``: whether the intelligence loop has ever produced anything —
-      samples, eval results, recommendations, worker heartbeats;
+    - ``loop``: the intelligence loop's state in *this* ledger (see
+      :func:`loop_state`);
+    - ``ledgers``: the same per registered project ledger (``ledgers``
+      defaults to every path in ``~/.somm/registry.json``), because a mirror
+      never carries samples, evals, or recommendations and would otherwise
+      report a loop as dormant that is alive in a project;
     - ``sentinel_rows``: rows whose model is a routing sentinel or blank,
       which older clients wrote for exhaustion and which pollute rollups;
     - ``provider_spellings``: providers that differ only by ``-`` vs ``_``;
@@ -193,22 +238,6 @@ def fleet_summary(db_path: Path, *, since_days: int = 7) -> dict:
             (window,),
         ).fetchall()
 
-        def count(table: str) -> int:
-            try:
-                return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            except sqlite3.Error:
-                return 0
-
-        loop = {
-            "samples": count("samples"),
-            "eval_results": count("eval_results"),
-            "recommendations": count("recommendations"),
-            "decisions": count("decisions"),
-            "worker_heartbeats": count("worker_heartbeat"),
-            "shadow_configured_workloads": conn.execute(
-                "SELECT COUNT(*) FROM workloads WHERE shadow_config_json IS NOT NULL"
-            ).fetchone()[0],
-        }
         sentinel_rows = conn.execute(
             "SELECT COUNT(*) FROM calls WHERE ts >= datetime('now', ?) "
             "AND (model = '' OR model LIKE ? ESCAPE '\\')",
@@ -233,12 +262,27 @@ def fleet_summary(db_path: Path, *, since_days: int = 7) -> dict:
         if p:
             by_norm.setdefault(p.replace("_", "-"), set()).add(p)
     spellings = {k: sorted(v) for k, v in by_norm.items() if len(v) > 1}
+    loop = loop_state(Path(db_path))
+    if ledgers is None:
+        try:
+            from somm_core.registry import fleet_db_paths
+
+            ledgers = [p for p in fleet_db_paths() if Path(p).resolve() != Path(db_path).resolve()]
+        except Exception:  # noqa: BLE001 - the registry is optional
+            ledgers = []
+    per_ledger = []
+    for path in ledgers:
+        try:
+            per_ledger.append(loop_state(Path(path)))
+        except sqlite3.Error:
+            continue
     return {
         "window_days": since_days,
         "clients": [
             {"project": r[0], "client_version": r[1], "calls": r[2]} for r in clients
         ],
         "loop": loop,
+        "ledgers": per_ledger,
         "sentinel_rows": sentinel_rows,
         "provider_spellings": spellings,
         "unaliased": [(r[0], r[1]) for r in pairs],
