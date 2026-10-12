@@ -1155,6 +1155,8 @@ class SommLLM:
         session_id: str | None = None,
         parent_call_id: str | None = None,
         correlation_id: str | None = None,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -1199,6 +1201,13 @@ class SommLLM:
         ``correlation_id`` ties telemetry directly to an external task, job,
         or request. It takes precedence over the process-wide correlation hook,
         which remains useful for framework integrations.
+
+        ``observation_role`` says what kind of observation this call is:
+        ``"production"`` (default), or ``"shadow_gold"`` / ``"shadow_judge"`` /
+        ``"shadow"`` for a call made to grade or shadow another one, with
+        ``source_call_id`` naming that call. Non-production rows are kept out
+        of serving rollups, budgets, and recommendations, exactly as the
+        shadow-eval worker's own rows are.
         """
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
@@ -1552,6 +1561,8 @@ class SommLLM:
             call_site=hooks.current_call_site(),
             reasoning_tokens=reasoning_tokens,
             client_version=_CLIENT_VERSION,
+            observation_role=observation_role or "production",
+            source_call_id=source_call_id,
         )
         self._finish_call(
             call,
@@ -1664,6 +1675,8 @@ class SommLLM:
         session_id: str | None = None,
         parent_call_id: str | None = None,
         correlation_id: str | None = None,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
     ) -> SommResult:
         """Await :meth:`generate` without blocking the caller's event loop.
 
@@ -1697,6 +1710,8 @@ class SommLLM:
             session_id=session_id,
             parent_call_id=parent_call_id,
             correlation_id=correlation_id,
+            observation_role=observation_role,
+            source_call_id=source_call_id,
         )
 
     # ------------------------------------------------------------------
@@ -2303,6 +2318,8 @@ class SommLLM:
         session_id: str | None = None,
         parent_call_id: str | None = None,
         wait: float | None = _WAIT_UNSET,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
     ) -> tuple[Any, SommResult]:
         """Generate JSON, validate it, and return (validated_object, result).
 
@@ -2345,6 +2362,8 @@ class SommLLM:
                 wait=wait,
                 session_id=session_id,
                 parent_call_id=parent_call_id,
+                observation_role=observation_role,
+                source_call_id=source_call_id,
             )
             last_result = result
             last_raw = result.text
@@ -2412,6 +2431,8 @@ class SommLLM:
         session_id: str | None = None,
         parent_call_id: str | None = None,
         wait: float | None = _WAIT_UNSET,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
     ) -> tuple[Any, SommResult]:
         """Await :meth:`generate_structured` using the same strict pipeline."""
         import asyncio
@@ -2432,6 +2453,8 @@ class SommLLM:
             session_id=session_id,
             parent_call_id=parent_call_id,
             wait=wait,
+            observation_role=observation_role,
+            source_call_id=source_call_id,
         )
 
     def extract_structured(

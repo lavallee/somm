@@ -113,6 +113,10 @@ what exists dependable and giving the fleet the surfaces it kept rebuilding.
   `SommStructuredError` carries `last_raw`, `last_error`, `last_outcome`,
   `delivery_failure`. `extract_structured(with_result=True)` returns the
   `SommResult` so callers stop re-reading the ledger to learn who served it.
+- `generate()`, `agenerate()`, and the structured wrappers take
+  `observation_role` and `source_call_id`, so a caller's own shadow or judge
+  call is recorded as one — kept out of rollups, budgets, and
+  recommendations like the worker's — and linked to the call it grades.
 - models.dev (MIT) joins the model-intel sources for first-party providers,
   with cache/reasoning prices, modalities, reasoning dials, structured-output
   and tool flags, release dates. The static floor and the bundled LiteLLM

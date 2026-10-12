@@ -119,3 +119,22 @@ def test_observer_event_carries_token_split(tmp_path, _hook):
     finally:
         llm.close()
     assert {"cache_tokens_in", "cache_tokens_out", "reasoning_tokens", "ttft_ms"} <= set(events[-1])
+
+
+def test_observation_role_and_source_call_id_land_on_the_row(tmp_path):
+    llm = SommLLM(config=_cfg(tmp_path), providers=[Fake()])
+    try:
+        primary = llm.generate("hi", workload="w", provider="fake")
+        shadow = llm.generate(
+            "hi", workload="w", provider="fake",
+            observation_role="shadow", source_call_id=primary.call_id,
+        )
+    finally:
+        llm.close()
+    with llm.repo._open() as conn:
+        rows = dict(conn.execute("SELECT id, observation_role FROM calls").fetchall())
+        src = conn.execute(
+            "SELECT source_call_id FROM calls WHERE id = ?", (shadow.call_id,)
+        ).fetchone()[0]
+    assert rows[primary.call_id] == "production" and rows[shadow.call_id] == "shadow"
+    assert src == primary.call_id
