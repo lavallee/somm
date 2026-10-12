@@ -1,32 +1,47 @@
-"""OpenCode CLI adapter for autonomous workspace tasks."""
+"""OpenCode CLI adapter for autonomous workspace tasks.
+
+``opencode run --format json`` emits ``step_start`` / ``text`` / ``tool_use`` /
+``step_finish`` events. Each ``step_finish.part`` carries a ``reason``,
+``tokens`` (input/output/reasoning/cache) and a ``cost``. The served model
+appears as ``metadata.model.{providerID,modelID}`` on message parts.
+"""
 
 from __future__ import annotations
 
 import math
-import shutil
 from pathlib import Path
 
 from .base import (
+    BaseHarness,
     HarnessCapabilities,
     HarnessOutcome,
     HarnessRequest,
-    HarnessResult,
     classify_error_text,
     iter_json_events,
-    launch_process,
     read_capture,
 )
 
 
-class OpenCodeHarness:
-    name = "opencode"
-    capabilities = HarnessCapabilities(resume=True, agent_selection=True)
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
 
-    def is_available(self) -> bool:
-        return shutil.which("opencode") is not None
+
+class OpenCodeHarness(BaseHarness):
+    name = "opencode"
+    executable = "opencode"
+    capabilities = HarnessCapabilities(
+        resume=True,
+        agent_selection=True,
+        reports_cost=True,
+        reports_model=True,
+    )
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
-        argv = [request.resolved_executable("opencode"), "run", "--format", "json"]
+        argv = [request.resolved_executable(self.executable), "run", "--format", "json"]
         if request.allow_unsafe:
             argv.append("--dangerously-skip-permissions")
         if request.model:
@@ -40,9 +55,6 @@ class OpenCodeHarness:
         argv.append(request.prompt)
         return argv
 
-    def start(self, request: HarnessRequest):
-        return launch_process(self.build_argv(request), request)
-
     @staticmethod
     def parse_terminal(path: Path) -> dict | None:
         terminal = None
@@ -51,10 +63,8 @@ class OpenCodeHarness:
                 terminal = event
         return terminal
 
-    @staticmethod
-    def parse_cost_usd(path: Path) -> float | None:
+    def parse_cost_usd(self, path: Path, terminal: dict | None) -> float | None:
         """Sum valid reported step costs, or None when none were reported."""
-
         total: float | None = None
         for event in iter_json_events(path):
             if event.get("type") != "step_finish":
@@ -62,22 +72,18 @@ class OpenCodeHarness:
             part = event.get("part")
             if not isinstance(part, dict):
                 continue
-            value = part.get("cost")
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            value = _number(part.get("cost"))
+            if value is None:
                 continue
-            if not math.isfinite(value) or value < 0:
-                continue
-            total = float(value) if total is None else total + float(value)
+            total = value if total is None else total + value
         return total
 
-    @staticmethod
-    def parse_billing_usage(path: Path) -> dict:
+    def parse_billing_usage(self, path: Path, terminal: dict | None) -> dict:
         """Sum token categories across billable OpenCode steps.
 
-        ``usage`` remains the terminal context snapshot used by callers.  This
+        ``usage`` remains the terminal context snapshot used by callers. This
         separate rollup is suitable for approximate rate-card comparisons.
         """
-
         totals = {
             "steps": 0,
             "total": 0,
@@ -97,26 +103,34 @@ class OpenCodeHarness:
             found = True
             totals["steps"] += 1
             for key in ("total", "input", "output", "reasoning"):
-                value = tokens.get(key)
-                if (
-                    isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                    and math.isfinite(value)
-                    and value >= 0
-                ):
+                value = _number(tokens.get(key))
+                if value is not None:
                     totals[key] += value
             cache = tokens.get("cache")
             if isinstance(cache, dict):
                 for key in ("read", "write"):
-                    value = cache.get(key)
-                    if (
-                        isinstance(value, (int, float))
-                        and not isinstance(value, bool)
-                        and math.isfinite(value)
-                        and value >= 0
-                    ):
+                    value = _number(cache.get(key))
+                    if value is not None:
                         totals["cache"][key] += value
         return totals if found else {}
+
+    def parse_usage(self, path: Path, terminal: dict | None) -> dict:
+        part = terminal.get("part") if isinstance(terminal, dict) else None
+        tokens = part.get("tokens") if isinstance(part, dict) else None
+        return dict(tokens) if isinstance(tokens, dict) else {}
+
+    def parse_model(self, path: Path, terminal: dict | None) -> str | None:
+        last: str | None = None
+        for event in iter_json_events(path):
+            for holder in (event, event.get("part")):
+                if not isinstance(holder, dict):
+                    continue
+                meta = holder.get("metadata")
+                model = meta.get("model") if isinstance(meta, dict) else None
+                if isinstance(model, dict) and model.get("modelID"):
+                    provider = model.get("providerID")
+                    last = f"{provider}/{model['modelID']}" if provider else str(model["modelID"])
+        return last
 
     @staticmethod
     def parse_session_id(path: Path) -> str | None:
@@ -140,49 +154,25 @@ class OpenCodeHarness:
                 chunks.append(value)
         return "".join(chunks).strip()
 
-    def inspect(
-        self, stdout_path: Path, stderr_path: Path, *, exit_code=None, correlation_id=None
-    ) -> HarnessResult:
-        terminal = self.parse_terminal(stdout_path)
-        outcome = HarnessOutcome.UNKNOWN
-        detail = ""
-        usage: dict = {}
-        if terminal is not None:
-            part = terminal.get("part") if isinstance(terminal.get("part"), dict) else {}
-            reason = str(part.get("reason") or terminal.get("reason") or "").lower()
-            if reason == "stop":
-                outcome = HarnessOutcome.COMPLETED
-            elif reason == "length":
-                outcome = HarnessOutcome.TURN_LIMIT
-            elif reason in {"error", "content-filter"}:
-                detail = read_capture(stderr_path, tail=4000)
-                outcome = classify_error_text(detail) or (
-                    HarnessOutcome.REFUSED
-                    if reason == "content-filter"
-                    else HarnessOutcome.FAILED
-                )
-            elif reason:
-                detail = f"OpenCode ended on a non-terminal step reason: {reason!r}."
-                stderr_detail = read_capture(stderr_path, tail=4000).strip()
-                if stderr_detail:
-                    detail = f"{detail}\n{stderr_detail}"
-                outcome = HarnessOutcome.FAILED
-            usage = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
-        else:
-            detail = read_capture(stdout_path, tail=4000) + "\n" + read_capture(
-                stderr_path, tail=4000
-            )
-            outcome = classify_error_text(detail) or HarnessOutcome.UNKNOWN
-        return HarnessResult(
-            harness=self.name,
-            outcome=outcome,
-            final_text=self.extract_final_text(stdout_path),
-            session_id=self.parse_session_id(stdout_path),
-            exit_code=exit_code,
-            detail=detail.strip(),
-            usage=usage,
-            billing_usage=self.parse_billing_usage(stdout_path),
-            cost_usd=self.parse_cost_usd(stdout_path),
-            terminal_event=terminal,
-            correlation_id=correlation_id,
-        )
+    def parse_turns(self, path: Path, terminal: dict | None) -> int | None:
+        steps = sum(1 for e in iter_json_events(path) if e.get("type") == "step_finish")
+        return steps or None
+
+    def classify(self, terminal: dict, stdout_path: Path, stderr_path: Path):
+        part = terminal.get("part") if isinstance(terminal.get("part"), dict) else {}
+        reason = str(part.get("reason") or terminal.get("reason") or "").lower()
+        if reason == "stop":
+            return HarnessOutcome.COMPLETED, ""
+        if reason == "length":
+            return HarnessOutcome.TURN_LIMIT, ""
+        if reason in {"error", "content-filter"}:
+            detail = read_capture(stderr_path, tail=4000)
+            fallback = HarnessOutcome.REFUSED if reason == "content-filter" else HarnessOutcome.FAILED
+            return classify_error_text(detail) or fallback, detail
+        if reason:
+            detail = f"OpenCode ended on a non-terminal step reason: {reason!r}."
+            stderr_detail = read_capture(stderr_path, tail=4000).strip()
+            if stderr_detail:
+                detail = f"{detail}\n{stderr_detail}"
+            return HarnessOutcome.FAILED, detail
+        return HarnessOutcome.UNKNOWN, ""

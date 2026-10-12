@@ -1,37 +1,48 @@
-"""Claude Code CLI adapter for autonomous workspace tasks."""
+"""Claude Code CLI adapter for autonomous workspace tasks.
+
+``claude -p --output-format stream-json`` emits a ``system/init`` event (model,
+``claude_code_version``), per-turn events, and one ``result`` event carrying
+``total_cost_usd``, ``duration_ms``, ``num_turns``, inclusive ``usage``, and a
+per-model ``modelUsage`` breakdown. All of it is read here; nothing is
+guessed.
+"""
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
+from somm_core.parse import anthropic_prompt_tokens
+
 from .base import (
+    BaseHarness,
     HarnessCapabilities,
     HarnessOutcome,
     HarnessRequest,
-    HarnessResult,
     classify_error_text,
     iter_json_events,
-    launch_process,
     read_capture,
+    retry_after_from_text,
 )
 
 
-class ClaudeCLIHarness:
+class ClaudeCLIHarness(BaseHarness):
     name = "claude-cli"
+    executable = "claude"
     capabilities = HarnessCapabilities(
         resume=True,
         max_turns=True,
         reasoning_effort=True,
+        reports_cost=True,
+        reports_model=True,
         model_families=frozenset({"anthropic"}),
     )
-
-    def is_available(self) -> bool:
-        return shutil.which("claude") is not None
+    # The seat bills the subscription; a key in the environment would bill
+    # the API account and attribute the spend to the wrong plan.
+    scrub_env = ("ANTHROPIC_API_KEY",)
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
         argv = [
-            request.resolved_executable("claude"), "-p", request.prompt,
+            request.resolved_executable(self.executable), "-p", request.prompt,
             "--verbose", "--output-format", "stream-json",
         ]
         if request.model:
@@ -47,8 +58,7 @@ class ClaudeCLIHarness:
         argv.extend(str(arg) for arg in request.extra)
         return argv
 
-    def start(self, request: HarnessRequest):
-        return launch_process(self.build_argv(request), request)
+    # --- parsers -----------------------------------------------------
 
     @staticmethod
     def parse_terminal(path: Path) -> dict | None:
@@ -74,40 +84,98 @@ class ClaudeCLIHarness:
         value = terminal.get("result") or terminal.get("text") or ""
         return value.strip() if isinstance(value, str) else ""
 
-    def inspect(
-        self, stdout_path: Path, stderr_path: Path, *, exit_code=None, correlation_id=None
-    ) -> HarnessResult:
-        terminal = self.parse_terminal(stdout_path)
-        session_id = self.parse_session_id(stdout_path)
-        final_text = self.extract_final_text(stdout_path)
-        detail = ""
-        outcome = HarnessOutcome.UNKNOWN
-        if terminal is not None:
-            subtype = str(terminal.get("subtype") or "").lower()
-            if not terminal.get("is_error") and subtype == "success":
-                outcome = HarnessOutcome.COMPLETED
-            elif subtype == "error_max_turns":
-                outcome = HarnessOutcome.TURN_LIMIT
-            elif terminal.get("is_error"):
-                detail = read_capture(stderr_path, tail=4000)
-                outcome = classify_error_text(detail) or HarnessOutcome.FAILED
-        else:
-            detail = read_capture(stdout_path, tail=4000) + "\n" + read_capture(
-                stderr_path, tail=4000
-            )
-            outcome = classify_error_text(detail) or HarnessOutcome.UNKNOWN
-            lowered = detail.lower()
-            if "max turns" in lowered or "turn limit" in lowered:
-                outcome = HarnessOutcome.TURN_LIMIT
-        usage = terminal.get("usage") if isinstance(terminal, dict) else {}
-        return HarnessResult(
-            harness=self.name,
-            outcome=outcome,
-            final_text=final_text,
-            session_id=session_id,
-            exit_code=exit_code,
-            detail=detail.strip(),
-            usage=usage if isinstance(usage, dict) else {},
-            terminal_event=terminal,
-            correlation_id=correlation_id,
-        )
+    @staticmethod
+    def _init_event(path: Path) -> dict | None:
+        for event in iter_json_events(path):
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                return event
+        return None
+
+    def parse_model(self, path: Path, terminal: dict | None) -> str | None:
+        # modelUsage is keyed by the model that actually answered, which is
+        # the one to record; the init event names the one that was asked for.
+        usage = terminal.get("modelUsage") if isinstance(terminal, dict) else None
+        if isinstance(usage, dict) and usage:
+            served = [k for k, v in usage.items() if isinstance(v, dict)]
+            if len(served) == 1:
+                return served[0]
+            if served:
+                # Several models (a subagent, a fallback): record the one that
+                # did the most output; the breakdown stays in terminal_event.
+                return max(served, key=lambda k: (usage[k].get("outputTokens") or 0))
+        init = self._init_event(path)
+        model = init.get("model") if init else None
+        return str(model) if model else None
+
+    def parse_version(self, path: Path, terminal: dict | None) -> str | None:
+        init = self._init_event(path)
+        value = init.get("claude_code_version") if init else None
+        return str(value) if value else None
+
+    def parse_usage(self, path: Path, terminal: dict | None) -> dict:
+        usage = terminal.get("usage") if isinstance(terminal, dict) else None
+        if not isinstance(usage, dict):
+            return {}
+        out = {k: v for k, v in usage.items() if isinstance(v, (int, float))}
+        # The whole prompt, not just the uncached slice; see
+        # somm_core.parse.anthropic_prompt_tokens.
+        out["prompt_tokens_total"] = anthropic_prompt_tokens(usage)
+        details = usage.get("output_tokens_details")
+        if isinstance(details, dict) and isinstance(details.get("thinking_tokens"), int):
+            out["reasoning_tokens"] = details["thinking_tokens"]
+        return out
+
+    def parse_cost_usd(self, path: Path, terminal: dict | None) -> float | None:
+        value = terminal.get("total_cost_usd") if isinstance(terminal, dict) else None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            return None
+        return float(value)
+
+    def parse_duration_ms(self, path: Path, terminal: dict | None) -> int | None:
+        value = terminal.get("duration_ms") if isinstance(terminal, dict) else None
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    def parse_turns(self, path: Path, terminal: dict | None) -> int | None:
+        value = terminal.get("num_turns") if isinstance(terminal, dict) else None
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def parse_retry_after(self, terminal: dict) -> float | None:
+        if terminal.get("terminal_reason") == "api_error":
+            return retry_after_from_text(str(terminal.get("result", "")))
+        return None
+
+    # --- classification ----------------------------------------------
+
+    def classify(self, terminal: dict, stdout_path: Path, stderr_path: Path):
+        subtype = str(terminal.get("subtype") or "").lower()
+        if not terminal.get("is_error") and subtype == "success":
+            return HarnessOutcome.COMPLETED, ""
+        if subtype == "error_max_turns":
+            return HarnessOutcome.TURN_LIMIT, ""
+        if terminal.get("terminal_reason") == "api_error":
+            # Only a provider terminal error can establish a seat limit —
+            # never quoted tool output in the transcript.
+            message = str(terminal.get("result", ""))
+            if _looks_like_seat_limit(message):
+                if "reset" in message.lower():
+                    return HarnessOutcome.RATE_LIMIT, message
+                return HarnessOutcome.BUDGET_EXHAUSTED, (
+                    message + "\nprovider limit without a reset; no automatic increase"
+                )
+        detail = read_capture(stderr_path, tail=4000)
+        if not detail.strip():
+            detail = str(terminal.get("result") or terminal.get("api_error_status") or "")
+        return classify_error_text(detail) or HarnessOutcome.FAILED, detail
+
+    def classify_without_terminal(self, stdout_path, stderr_path, exit_code):
+        outcome, detail = super().classify_without_terminal(stdout_path, stderr_path, exit_code)
+        lowered = detail.lower()
+        if "max turns" in lowered or "turn limit" in lowered:
+            return HarnessOutcome.TURN_LIMIT, detail
+        return outcome, detail
+
+
+def _looks_like_seat_limit(message: str) -> bool:
+    import re
+
+    return bool(re.search(r"(?:spend|usage|rate|session|weekly) limit", message, re.IGNORECASE))
