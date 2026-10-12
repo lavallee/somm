@@ -1187,7 +1187,18 @@ def _call_from_otlp_span(
         trace_id = stable_hash({"span": span, "attrs": attrs})
     if not span_id:
         span_id = stable_hash({"span": span.get("name"), "attrs": attrs})
-    provider = str(_attr(attrs, "somm.provider", "gen_ai.system", "llm.provider", default="otel"))
+    # gen_ai.provider.name replaced gen_ai.system in semconv 1.37 (2025-08);
+    # OpenInference spells it llm.provider. All three are read.
+    provider = str(
+        _attr(
+            attrs,
+            "somm.provider",
+            "gen_ai.provider.name",
+            "gen_ai.system",
+            "llm.provider",
+            default="otel",
+        )
+    )
     model = str(
         _attr(
             attrs,
@@ -1255,15 +1266,38 @@ def _call_from_otlp_span(
         prompt_hash=prompt_hash,
         response_hash=response_hash,
         correlation_id=trace_id,
-        ttft_ms=_as_int(_attr(attrs, "somm.ttft_ms", "gen_ai.ttft_ms"), 0) or None,
-        session_id=str(_attr(attrs, "somm.session_id", "session.id", default=trace_id)),
-        parent_call_id=parent_call_id,
-        cache_tokens_in=_as_int(
-            _attr(attrs, "somm.cache_tokens_in", "gen_ai.usage.cache_read_input_tokens"),
+        ttft_ms=_as_int(
+            _attr(attrs, "somm.ttft_ms", "gen_ai.ttft_ms", "gen_ai.response.time_to_first_chunk"),
             0,
         )
         or None,
-        cache_tokens_out=_as_int(_attr(attrs, "somm.cache_tokens_out"), 0) or None,
+        session_id=str(_attr(attrs, "somm.session_id", "session.id", default=trace_id)),
+        parent_call_id=parent_call_id,
+        cache_tokens_in=_as_int(
+            _attr(
+                attrs,
+                "somm.cache_tokens_in",
+                "gen_ai.usage.cache_read.input_tokens",
+                "gen_ai.usage.cache_read_input_tokens",
+                "llm.token_count.prompt_details.cache_read",
+            ),
+            0,
+        )
+        or None,
+        cache_tokens_out=_as_int(
+            _attr(
+                attrs,
+                "somm.cache_tokens_out",
+                "gen_ai.usage.cache_write.input_tokens",
+                "gen_ai.usage.cache_creation_input_tokens",
+            ),
+            0,
+        )
+        or None,
+        reasoning_tokens=_as_int(
+            _attr(attrs, "somm.reasoning_tokens", "gen_ai.usage.reasoning.output_tokens"), 0
+        )
+        or None,
         cost_basis=str(_attr(attrs, "somm.cost_basis", default="reported")),
         cost_kind=str(_attr(attrs, "somm.cost_kind", default="unknown")),
         cost_accuracy=str(_attr(attrs, "somm.cost_accuracy", default="unknown")),

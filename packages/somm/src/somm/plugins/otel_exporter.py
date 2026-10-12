@@ -54,7 +54,11 @@ def _post_process(event: dict[str, Any]) -> None:
             provider = event.get("provider") or ""
             model = event.get("model") or ""
             attrs = {
+                # Current GenAI semconv name plus the pre-1.37 one, so both
+                # a fresh collector and an older dashboard find the provider.
+                "gen_ai.provider.name": provider,
                 "gen_ai.system": provider,
+                "gen_ai.operation.name": "chat",
                 "gen_ai.request.model": model,
                 "gen_ai.response.model": model,
                 "gen_ai.usage.input_tokens": int(event.get("tokens_in") or 0),
@@ -77,6 +81,14 @@ def _post_process(event: dict[str, Any]) -> None:
                 "somm.origin": event.get("origin") or "native",
                 "somm.budget_eligible": bool(event.get("budget_eligible", True)),
             }
+            for name, key in (
+                ("gen_ai.usage.cache_read.input_tokens", "cache_tokens_in"),
+                ("gen_ai.usage.cache_write.input_tokens", "cache_tokens_out"),
+                ("gen_ai.usage.reasoning.output_tokens", "reasoning_tokens"),
+            ):
+                value = event.get(key)
+                if isinstance(value, int) and value > 0:
+                    attrs[name] = value
             for key, value in attrs.items():
                 span.set_attribute(key, value)
             if str(event.get("outcome") or "").lower() != "ok":

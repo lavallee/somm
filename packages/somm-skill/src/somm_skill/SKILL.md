@@ -188,13 +188,19 @@ with cross-project decision memory.
 
 ### 8. Turn the intelligence loop on
 
-A project that only records calls gets half of somm. Set
-`SOMM_INPROCESS_WORKERS=1` in the project's environment (requires
-`somm-service` installed) so the scheduler runs model-intel refresh,
-online-eval grading, and the recommendation agent inside the app's own
-processes — no dedicated service needed. Alternatively run `somm serve`.
-somm warns at startup when grading is configured but no worker has ever
-run.
+A project that only records calls gets half of somm. The loop — model-intel
+refresh, online-eval grading, recommendations — is a library command:
+
+```bash
+somm loop run --project my-project       # one pass of whatever is due, then exit
+somm loop install --project my-project   # systemd user timer, every 15 minutes
+somm loop status --project my-project    # timer state + worker heartbeats
+```
+
+A long-lived process can instead set `SOMM_INPROCESS_WORKERS=1` and run the
+scheduler inside itself; `somm serve` does the same with a dashboard. somm
+warns at startup when grading is configured but no worker has ever run, and
+`somm doctor` says `intelligence loop: DORMANT` until it has.
 
 ### 9. Use `somm.harnesses` for autonomous coding-agent attempts
 

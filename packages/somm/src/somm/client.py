@@ -400,6 +400,10 @@ def _call_event(
     billing_id: str | None = None,
     origin: str = "native",
     budget_eligible: bool = True,
+    cache_tokens_in: int | None = None,
+    cache_tokens_out: int | None = None,
+    reasoning_tokens: int | None = None,
+    latency_ttft_ms: int | None = None,
 ) -> dict:
     """Assemble the observer event for one completed call.
 
@@ -434,6 +438,10 @@ def _call_event(
         "billing_id": billing_id,
         "origin": origin,
         "budget_eligible": budget_eligible,
+        "cache_tokens_in": cache_tokens_in,
+        "cache_tokens_out": cache_tokens_out,
+        "reasoning_tokens": reasoning_tokens,
+        "ttft_ms": latency_ttft_ms,
     }
 
 
@@ -573,6 +581,48 @@ def build_default_providers(config: Config, tracker=None, full: bool = False) ->
     default_order = builtin_order + plugin_order
     return [available[p] for p in default_order if p in available and p in spec_by_name]
 
+
+
+def _served(resp, provider_name: str) -> tuple:
+    """Read one provider response into the fields every call path records.
+
+    Returns ``(text, provider, model, tokens_in, tokens_out, latency_ms,
+    tool_calls, stop_reason, reasoning_content, raw, cost_usd, cost_source,
+    outcome, error_kind, error_detail)``. A reported ``cost_usd`` wins over a
+    computed estimate and names its source; blank text with no tool calls is
+    ``Outcome.EMPTY`` with an operator-friendly detail.
+    """
+    text = resp.text
+    tool_calls = _to_core_tool_calls(resp.tool_calls)
+    outcome = Outcome.OK
+    error_kind = error_detail = None
+    if not text.strip() and not tool_calls:
+        outcome = Outcome.EMPTY
+        error_kind = "EmptyResponse"
+        error_detail = _format_empty_detail(
+            provider=provider_name,
+            model=resp.model,
+            tokens_out=resp.tokens_out,
+            latency_ms=resp.latency_ms,
+        )
+    cost_source = f"provider:{provider_name}" if resp.cost_usd is not None else None
+    return (
+        text,
+        provider_name,
+        resp.model,
+        resp.tokens_in,
+        resp.tokens_out,
+        resp.latency_ms,
+        tool_calls,
+        resp.stop_reason,
+        resp.reasoning_content,
+        resp.raw,
+        resp.cost_usd,
+        cost_source,
+        outcome,
+        error_kind,
+        error_detail,
+    )
 
 def _format_error_detail(exc: Exception, provider: str, model: str | None) -> str:
     """Build a bounded, operator-friendly description of an LLM call failure.
@@ -1016,6 +1066,72 @@ class SommLLM:
             return bool(allow_fallback)
         return bool(getattr(self.config, "pinned_fallback", False))
 
+    def _finish_call(
+        self,
+        call: Call,
+        *,
+        workload: str,
+        short_circuited: str | None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
+        """Persist one call and tell everyone who listens.
+
+        Writes the row, fires the post_call/post_process hooks with the
+        observer event, and calls the ``on_error`` alerter when the outcome is
+        not OK. The three call paths used to carry their own copies of this
+        and drifted: stream had no alerter and embed named the wrong provider.
+        """
+        self._writer.submit(call)
+        _fire_call_hooks(
+            _call_event(
+                call_id=call.id,
+                correlation_id=call.correlation_id,
+                project=call.project,
+                workload=workload,
+                provider=call.provider,
+                model=call.model,
+                outcome=call.outcome.value,
+                tokens_in=call.tokens_in,
+                tokens_out=call.tokens_out,
+                latency_ms=call.latency_ms,
+                cost_usd=call.cost_usd,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                error_kind=call.error_kind,
+                short_circuited=short_circuited,
+                cost_basis=call.cost_basis,
+                cost_kind=call.cost_kind,
+                cost_accuracy=call.cost_accuracy,
+                cost_source=call.cost_source,
+                pricing_version=call.pricing_version,
+                observation_role=call.observation_role,
+                source_call_id=call.source_call_id,
+                eval_result_id=call.eval_result_id,
+                provider_request_id=call.provider_request_id,
+                billing_id=call.billing_id,
+                origin=call.origin,
+                budget_eligible=call.budget_eligible,
+                cache_tokens_in=call.cache_tokens_in,
+                cache_tokens_out=call.cache_tokens_out,
+                reasoning_tokens=call.reasoning_tokens,
+                latency_ttft_ms=call.ttft_ms,
+            )
+        )
+        if call.outcome != Outcome.OK and self._on_error is not None:
+            with contextlib.suppress(Exception):  # the alerter must not break the caller
+                self._on_error(
+                    {
+                        "call_id": call.id,
+                        "workload": workload,
+                        "provider": call.provider,
+                        "model": call.model,
+                        "outcome": call.outcome.value,
+                        "error_kind": call.error_kind,
+                        "error_detail": call.error_detail,
+                    }
+                )
+
     def generate(
         self,
         prompt: str | list[dict] | Prompt,
@@ -1202,6 +1318,7 @@ class SommLLM:
                 messages=messages,
                 tool_choice=tool_choice,
                 response_format=response_format,
+                reasoning_effort=reasoning_effort,
             )
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
@@ -1248,33 +1365,11 @@ class SommLLM:
         elif provider is not None:
             chosen = self._pick_provider(provider)
             try:
-                resp = chosen.generate(req)
-                text = resp.text
-                if resp.cost_usd is not None:
-                    # The provider told us what this call cost. Recording a
-                    # computed estimate beside a real number would be a
-                    # downgrade, so the reported figure wins and the basis
-                    # says where it came from.
-                    cost_usd_out = resp.cost_usd
-                    reported_cost_source = f"provider:{chosen.name}"
-                actual_provider = chosen.name
-                actual_model = resp.model
-                tokens_in = resp.tokens_in
-                tokens_out = resp.tokens_out
-                latency_ms = resp.latency_ms
-                tool_calls_out = _to_core_tool_calls(resp.tool_calls)
-                stop_reason_out = resp.stop_reason
-                reasoning_content_out = resp.reasoning_content
-                raw_out = resp.raw
-                if not text.strip() and not tool_calls_out:
-                    outcome = Outcome.EMPTY
-                    error_kind = "EmptyResponse"
-                    error_detail = _format_empty_detail(
-                        provider=actual_provider,
-                        model=actual_model,
-                        tokens_out=tokens_out,
-                        latency_ms=latency_ms,
-                    )
+                (
+                    text, actual_provider, actual_model, tokens_in, tokens_out, latency_ms,
+                    tool_calls_out, stop_reason_out, reasoning_content_out, raw_out,
+                    cost_usd_out, reported_cost_source, outcome, error_kind, error_detail,
+                ) = _served(chosen.generate(req), chosen.name)
             except Exception as exc:
                 # The pinned target failed. Remember what the caller asked
                 # for either way — on_fallback needs pinned vs. actual, and
@@ -1319,29 +1414,12 @@ class SommLLM:
                     req.model = None
                     try:
                         router_result = self.router.dispatch(req, wait=wait_on_exhausted)
-                        resp = router_result.response
-                        text = resp.text
-                        if resp.cost_usd is not None:
-                            cost_usd_out = resp.cost_usd
-                            reported_cost_source = f"provider:{router_result.provider}"
-                        actual_provider = router_result.provider
-                        actual_model = resp.model
-                        tokens_in = resp.tokens_in
-                        tokens_out = resp.tokens_out
-                        latency_ms = resp.latency_ms
-                        tool_calls_out = _to_core_tool_calls(resp.tool_calls)
-                        stop_reason_out = resp.stop_reason
-                        reasoning_content_out = resp.reasoning_content
-                        raw_out = resp.raw
-                        if not text.strip() and not tool_calls_out:
-                            outcome = Outcome.EMPTY
-                            error_kind = "EmptyResponse"
-                            error_detail = _format_empty_detail(
-                                provider=actual_provider,
-                                model=actual_model,
-                                tokens_out=tokens_out,
-                                latency_ms=latency_ms,
-                            )
+                        (
+                            text, actual_provider, actual_model, tokens_in, tokens_out,
+                            latency_ms, tool_calls_out, stop_reason_out, reasoning_content_out,
+                            raw_out, cost_usd_out, reported_cost_source, outcome, error_kind,
+                            error_detail,
+                        ) = _served(router_result.response, router_result.provider)
                     except Exception as chain_exc:
                         # Total failure — clear fallback_info so on_fallback
                         # doesn't fire; on_error handles final-failure signal.
@@ -1377,32 +1455,11 @@ class SommLLM:
                     )
                 else:
                     router_result = self.router.dispatch(req, wait=wait_on_exhausted)
-                resp = router_result.response
-                text = resp.text
-                if resp.cost_usd is not None:
-                    # Same rule as the pinned path: a seat reached through
-                    # the routing chain (SOMM_PROVIDER_ORDER lists them) must
-                    # record what it charged, not a computed estimate.
-                    cost_usd_out = resp.cost_usd
-                    reported_cost_source = f"provider:{router_result.provider}"
-                actual_provider = router_result.provider
-                actual_model = resp.model
-                tokens_in = resp.tokens_in
-                tokens_out = resp.tokens_out
-                latency_ms = resp.latency_ms
-                tool_calls_out = _to_core_tool_calls(resp.tool_calls)
-                stop_reason_out = resp.stop_reason
-                reasoning_content_out = resp.reasoning_content
-                raw_out = resp.raw
-                if not text.strip() and not tool_calls_out:
-                    outcome = Outcome.EMPTY
-                    error_kind = "EmptyResponse"
-                    error_detail = _format_empty_detail(
-                        provider=actual_provider,
-                        model=actual_model,
-                        tokens_out=tokens_out,
-                        latency_ms=latency_ms,
-                    )
+                (
+                    text, actual_provider, actual_model, tokens_in, tokens_out, latency_ms,
+                    tool_calls_out, stop_reason_out, reasoning_content_out, raw_out,
+                    cost_usd_out, reported_cost_source, outcome, error_kind, error_detail,
+                ) = _served(router_result.response, router_result.provider)
             except Exception as exc:
                 if hasattr(exc, "model") and exc.model:
                     actual_model = exc.model
@@ -1476,9 +1533,7 @@ class SommLLM:
             prompt_hash=stable_hash(messages if messages is not None else prompt_text),
             response_hash=stable_hash(text),
             correlation_id=(
-                effective_correlation_id := correlation_id
-                if correlation_id is not None
-                else hooks.current_correlation_id()
+                correlation_id if correlation_id is not None else hooks.current_correlation_id()
             ),
             temperature=temperature,
             max_tokens=max_tokens,
@@ -1498,57 +1553,14 @@ class SommLLM:
             reasoning_tokens=reasoning_tokens,
             client_version=_CLIENT_VERSION,
         )
-        self._writer.submit(call)
-        self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
-        _fire_call_hooks(
-            _call_event(
-                call_id=call_id,
-                correlation_id=effective_correlation_id,
-                project=self.config.project,
-                workload=workload,
-                provider=actual_provider,
-                model=actual_model,
-                outcome=outcome.value,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                latency_ms=latency_ms,
-                cost_usd=result.cost_usd,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                error_kind=error_kind,
-                short_circuited=short_circuited,
-                cost_basis=call.cost_basis,
-                cost_kind=call.cost_kind,
-                cost_accuracy=call.cost_accuracy,
-                cost_source=call.cost_source,
-                pricing_version=call.pricing_version,
-                observation_role=call.observation_role,
-                source_call_id=call.source_call_id,
-                eval_result_id=call.eval_result_id,
-                provider_request_id=call.provider_request_id,
-                billing_id=call.billing_id,
-                origin=call.origin,
-                budget_eligible=call.budget_eligible,
-            )
+        self._finish_call(
+            call,
+            workload=workload,
+            short_circuited=short_circuited,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
-
-        # Fire the on_error alerter whenever the call did not succeed.
-        if outcome != Outcome.OK and self._on_error is not None:
-            try:
-                self._on_error(
-                    {
-                        "call_id": call_id,
-                        "workload": workload,
-                        "provider": actual_provider,
-                        "model": actual_model,
-                        "outcome": outcome.value,
-                        "error_kind": error_kind,
-                        "error_detail": error_detail,
-                    }
-                )
-            except Exception:
-                # Alerter must not break the caller. Swallow and continue.
-                pass
+        self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
 
         # Fire on_fallback when a pinned call got rescued by the chain
         # AND ended up on a DIFFERENT (provider, model) than what was
@@ -1787,6 +1799,11 @@ class SommLLM:
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
 
+        # Same fail-closed budget gate as generate(): a capped workload may
+        # still be served from a short-circuit, never from a real call.
+        if short_circuit is None:
+            self._enforce_budget(wl)
+
         if short_circuit is not None:
             raw_embedding = (
                 short_circuit.raw.get("embedding", [])
@@ -1873,50 +1890,7 @@ class SommLLM:
             provider_request_id=provider_request_id,
             billing_id=billing_id,
         )
-        self._writer.submit(call)
-        _fire_call_hooks(
-            _call_event(
-                call_id=call_id,
-                correlation_id=correlation_id,
-                project=self.config.project,
-                workload=workload,
-                provider=result.provider,
-                model=actual_model,
-                outcome=outcome.value,
-                tokens_in=tokens_in,
-                tokens_out=0,
-                latency_ms=latency_ms,
-                cost_usd=result.cost_usd,
-                error_kind=error_kind,
-                short_circuited=short_circuited,
-                cost_basis=call.cost_basis,
-                cost_kind=call.cost_kind,
-                cost_accuracy=call.cost_accuracy,
-                cost_source=call.cost_source,
-                pricing_version=call.pricing_version,
-                observation_role=call.observation_role,
-                source_call_id=call.source_call_id,
-                eval_result_id=call.eval_result_id,
-                provider_request_id=call.provider_request_id,
-                billing_id=call.billing_id,
-                origin=call.origin,
-                budget_eligible=call.budget_eligible,
-            )
-        )
-
-        if outcome != Outcome.OK and self._on_error is not None:
-            with contextlib.suppress(Exception):
-                self._on_error(
-                    {
-                        "call_id": call_id,
-                        "workload": workload,
-                        "provider": "ollama",
-                        "model": actual_model,
-                        "outcome": outcome.value,
-                        "error_kind": error_kind,
-                        "error_detail": error_detail,
-                    }
-                )
+        self._finish_call(call, workload=workload, short_circuited=short_circuited)
 
         return result
 
@@ -2175,6 +2149,9 @@ class SommLLM:
         except Exception as exc:
             outcome = Outcome.UPSTREAM_ERROR
             error_kind = type(exc).__name__
+            error_detail = _format_error_detail(
+                exc, chosen.name if chosen is not None else actual_provider, actual_model
+            )
             text = "".join(collected)
             raise
         finally:
@@ -2243,38 +2220,14 @@ class SommLLM:
                 provider_request_id=provider_request_id,
                 billing_id=billing_id,
             )
-            self._writer.submit(call)
-            _fire_call_hooks(
-                _call_event(
-                    call_id=call_id,
-                    correlation_id=correlation_id,
-                    project=self.config.project,
-                    workload=workload,
-                    provider=provider_name,
-                    model=model_name,
-                    outcome=outcome.value,
-                    tokens_in=tokens_in,
-                    tokens_out=tokens_out,
-                    latency_ms=latency_ms,
-                    cost_usd=call.cost_usd,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    error_kind=error_kind,
-                    short_circuited=short_circuited,
-                    cost_basis=call.cost_basis,
-                    cost_kind=call.cost_kind,
-                    cost_accuracy=call.cost_accuracy,
-                    cost_source=call.cost_source,
-                    pricing_version=call.pricing_version,
-                    observation_role=call.observation_role,
-                    source_call_id=call.source_call_id,
-                    eval_result_id=call.eval_result_id,
-                    provider_request_id=call.provider_request_id,
-                    billing_id=call.billing_id,
-                    origin=call.origin,
-                    budget_eligible=call.budget_eligible,
-                )
+            self._finish_call(
+                call,
+                workload=workload,
+                short_circuited=short_circuited,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
+            self._maybe_capture_sample(wl, call_id, prompt_text, None, full_text, outcome)
 
     async def astream(
         self,
