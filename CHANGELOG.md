@@ -7,7 +7,142 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
-### Added — pinned-only CLI executors, and honest seat telemetry
+## [0.17.0] — 2026-10-12
+
+A census of this machine's fleet in October 2026 set the agenda: 1.7 million
+calls recorded since June, zero recommendations, zero evaluations, zero
+samples, no worker ever run; 99.9% of the last week's rows written by clients
+two minor versions behind; seven sibling tools querying `calls.sqlite` with
+their own SQL; coding-agent attempts — the most expensive calls a project makes
+— never in the ledger at all. The sensor worked. The brain was never switched
+on, and the estate had routed around the gaps. This release is about making
+what exists dependable and giving the fleet the surfaces it kept rebuilding.
+
+### Changed — BREAKING
+
+- **Default models move off retired or stale ids.** `claude-haiku-5-5` (was
+  `claude-haiku-4-5-20251001`), `gpt-6-luna` (was `gpt-4o-mini`),
+  `deepseek-flash` (was `deepseek-chat`, retired July 2026), `gemini-3.8-flash`
+  (was `gemini-2.5-pro`, now gated to prior accounts). Pin the old id in
+  `[tool.somm]` or the `SOMM_*_MODEL` variable if you depend on it.
+- **Anthropic requests omit `temperature` on Claude 4.7 and later**, which
+  reject sampling parameters, and send `cache_control` (automatic prompt
+  caching) on every request. `SOMM_ANTHROPIC_AUTO_CACHE=0` opts out.
+- **The intelligence-loop workers moved** from `somm_service.workers` to
+  `somm.workers`; `somm_service.workers` and `somm_service.inprocess` remain as
+  shims that resolve to the same modules.
+- **Harness result envelope is version 2.** Additive fields only; see below.
+  `validate_request` now fails closed on request fields a harness cannot honor
+  (`max_turns` on Codex, `agent` on Claude Code, `session_id` without resume,
+  `prompt_via_stdin` without stdin support), where it used to drop them.
+- **OpenRouter exhaustion no longer writes sentinel model names**
+  (`*all_cooled`, `*roster_exhausted`) into the ledger; those rows carry an
+  empty model and the reason in `error_kind`/`error_detail`. Older rows are
+  reported by `somm doctor` and excluded from per-model rollups.
+- **Removed knobs** that were parsed and never read: `busy_timeout_ms`,
+  `min_days_between_regrades`. `SOMM_SCHEMA_STALE` is gone — it was never
+  raised; older clients writing into a newer ledger is how the fleet works.
+
+### Added — the loop as a command
+
+- `somm loop run [--force] [--only W] [--all-projects] [--json]`: one pass of
+  the workers that are due (intel daily, grading always, recommendations
+  weekly), heartbeats recorded, no service required.
+- `somm loop install [--every 15min]` writes and enables a systemd user timer
+  for that command; `somm loop status|uninstall`.
+- `somm doctor` prints `intelligence loop: DORMANT|idle|<counts>`; the
+  startup warning for an opted-in-but-ungraded workload points at these.
+- The proposal units under `deploy/systemd/` for shadow-eval and agent are
+  removed in favor of the command; the exhaustion alarm stays.
+
+### Added — harness envelope 2 and the attempt in the ledger
+
+- `HarnessResult.model` (served model from Claude's `modelUsage`, OpenCode's
+  `metadata.model`, Pi's message), `harness_version`, `duration_ms`, `turns`,
+  `retry_after_s`, `envelope_version`, `as_dict()`.
+- Outcomes `input_error`, `agent_blocked` (the agent's `<stuck>` escape
+  hatch), `interrupted` (no terminal event, unclean exit). Claude seat limits
+  with a stated reset are `rate_limit` with `retry_after_s`; without one,
+  `budget_exhausted`; `--max-budget-usd` and `terminal_reason` are read.
+- `harnesses.record_attempt()` and `run(..., record=True)` /
+  `inspect(..., record=True)` write one `calls` row per attempt
+  (`origin="harness"`, provider = harness name, reported cost when the CLI
+  states one, session and correlation ids).
+- `BaseHarness` template; adapters shrink to their native parsers. `start()`
+  scrubs the seat's API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`), layers
+  `HarnessRequest.env`, honors `start_new_session`; handles carry
+  `started_at`. `capability_profile(name)` returns the versioned record.
+- Usage aliases: Codex `cached_input_tokens`/`reasoning_output_tokens` and
+  Claude's three-way prompt split appear under portable names.
+
+### Added — read API, fleet doctor, retention, aliases
+
+- `somm_core.read.search_calls` (one query behind `somm tail`, MCP
+  `somm_search_calls`, `/api/calls`), `spend_today`, `fleet_summary`, with a
+  published additive key set. `docs/read-api.md`.
+- `somm doctor --global` reads the shared ledger; both scopes print the fleet
+  section: rows per (project, client_version), loop state, sentinel rows,
+  provider spelling drift, unaliased routes.
+- `somm prune --older-than DAYS [--dry-run] [--vacuum]`: calls and their
+  samples, updates, and eval results past a retention window. Memory tables
+  are never touched.
+- `somm alias list|seed|set` and `somm_core.aliases`: rule-derived canonical
+  ids (`[1m]` suffixes, OpenRouter tiers, `claude-cli`/`claude_cli` onto
+  `anthropic/`), models.dev canonical ids, manual overrides; seeded on every
+  intel refresh; the sommelier stops ranking spellings as separate models.
+
+### Added — providers and intel
+
+- OpenRouter is `OpenAICompatProvider` plus roster cycling: `messages`,
+  `tools`, `tool_choice`, `response_format`, and `reasoning_effort` reach it
+  (they were silently dropped), and `usage.cost` is recorded as a reported cost.
+- One HTTP error ladder (`errors.classify_http_status`, `classify_body_error`,
+  `retry_after_seconds`) for every provider; Ollama's daemon-down and
+  model-not-pulled errors join the taxonomy; a 429 mid-stream keeps its
+  `Retry-After`.
+- `reasoning_tokens` on `SommResponse`, `SommResult`, and the ledger (schema
+  24), from OpenAI-compatible `completion_tokens_details` and Anthropic's
+  `output_tokens_details.thinking_tokens`; DeepSeek cache hits count as cache
+  reads. `calls.client_version` records which somm wrote each row.
+- Anthropic: `reasoning_effort` → `output_config.effort`; a `json_schema`
+  response format → `output_config.format` (structured outputs).
+- Structured output: DeepSeek declares JSON mode; every OpenAI-compatible
+  provider steps down the `response_format` ladder when an endpoint rejects it
+  and keeps the lesson (#36). `generate_structured` distinguishes a delivery
+  failure (empty, errored, exhausted) from a schema failure (#37);
+  `SommStructuredError` carries `last_raw`, `last_error`, `last_outcome`,
+  `delivery_failure`. `extract_structured(with_result=True)` returns the
+  `SommResult` so callers stop re-reading the ledger to learn who served it.
+- models.dev (MIT) joins the model-intel sources for first-party providers,
+  with cache/reasoning prices, modalities, reasoning dials, structured-output
+  and tool flags, release dates. The static floor and the bundled LiteLLM
+  snapshot are refreshed to the October 2026 lineup.
+- OTel: ingest reads current GenAI semconv names (`gen_ai.provider.name`,
+  `gen_ai.usage.cache_read/cache_write.input_tokens`,
+  `gen_ai.usage.reasoning.output_tokens`, `gen_ai.response.time_to_first_chunk`)
+  beside legacy and OpenInference spellings; the exporter emits both.
+
+### Fixed
+
+- The request rebuilt after a `pre_call` hook dropped `reasoning_effort`.
+- `stream()` fired no `on_error` and recorded no `error_detail`; `embed()`
+  skipped the fail-closed budget gate and named the wrong provider in alerts.
+  All three paths now share one unpacker and one recorder.
+- Gemini overwrote the first-class `reasoning_effort` with its default.
+- The dashboard and `/api/recommendations` listed every project's inbox from
+  a shared ledger.
+- A v9 database whose `commission_id` was already dropped by the pre-atomic
+  migration runner wedged on 0010 forever (#44).
+- Cost provenance re-read `plans.toml` and ran a `model_intel` query on every
+  computed call; both are cached (`somm_core.cost`).
+- Two tests depended on the environment (a `TMPDIR` inside a git checkout; a
+  fixed calendar date that aged out of a 90-day window).
+- Doc drift: 14 MCP tools (roster and package said 10); the referenced-but-
+  missing `SOMM_STRUCTURED_OUTPUT_FAILED` page; eleven undocumented env knobs;
+  `somm_service` importing `spend_today` from the CLI.
+
+
+### Added — carried from the unreleased 0.16.x line: pinned-only CLI executors, and honest seat telemetry
 
 Pinning a CLI seat now reaches it. `claude-cli` and `codex-cli` are built as
 *pinned-only* providers: still absent from the default routing order — a seat
