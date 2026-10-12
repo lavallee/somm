@@ -153,19 +153,24 @@ def reasoning_tokens_from_usage(usage: dict | None) -> int | None:
     """Tokens a model spent thinking, when the usage block says so.
 
     OpenAI-compatible endpoints (OpenAI, DeepSeek, OpenRouter, MiniMax) report
-    ``completion_tokens_details.reasoning_tokens``; some gateways flatten it to
-    ``reasoning_tokens``. Anthropic bills thinking inside ``output_tokens`` and
-    does not break it out, so it is honestly ``None`` there. Malformed input
-    never raises.
+    ``completion_tokens_details.reasoning_tokens``; Anthropic reports
+    ``output_tokens_details.thinking_tokens``; some gateways flatten it to
+    ``reasoning_tokens``. All are already counted inside the output total.
+    ``None`` when the provider does not break it out. Malformed input never
+    raises.
     """
     try:
         if not isinstance(usage, dict):
             return None
-        details = usage.get("completion_tokens_details")
-        if isinstance(details, dict):
-            value = _int_or_none(details.get("reasoning_tokens"))
-            if value is not None:
-                return value
+        for container, key in (
+            ("completion_tokens_details", "reasoning_tokens"),
+            ("output_tokens_details", "thinking_tokens"),
+        ):
+            details = usage.get(container)
+            if isinstance(details, dict):
+                value = _int_or_none(details.get(key))
+                if value is not None:
+                    return value
         return _int_or_none(usage.get("reasoning_tokens"))
     except Exception:
         return None

@@ -29,10 +29,56 @@ if TYPE_CHECKING:
 _log = logging.getLogger("somm.workers.model_intel")
 
 
-# Static pricing (per 1M tokens, USD) for commercial providers with no
-# public pricing API. Keep this short and refresh on each somm release.
-# Source: provider pricing pages as of Jan 2026.
+# Static pricing (per 1M tokens, USD): the offline floor beneath the bundled
+# LiteLLM snapshot and the live models.dev / OpenRouter sources. Keep this
+# short and refresh on each somm release. Source: provider pricing pages and
+# models.dev as of Oct 2026. Older rows stay so pinned snapshots cost-track.
 STATIC_PRICING: dict[tuple[str, str], dict] = {
+    ("anthropic", "claude-haiku-5-5"): {
+        "price_in_per_1m": 0.10,
+        "price_out_per_1m": 0.50,
+        "context_window": 1_000_000,
+    },
+    ("anthropic", "claude-sonnet-5-5"): {
+        "price_in_per_1m": 2.0,
+        "price_out_per_1m": 10.0,
+        "context_window": 1_000_000,
+    },
+    ("anthropic", "claude-opus-5-5"): {
+        "price_in_per_1m": 4.0,
+        "price_out_per_1m": 20.0,
+        "context_window": 1_000_000,
+    },
+    ("anthropic", "claude-fable-5-1"): {
+        "price_in_per_1m": 10.0,
+        "price_out_per_1m": 50.0,
+        "context_window": 1_000_000,
+    },
+    ("openai", "gpt-6-luna"): {
+        "price_in_per_1m": 0.10,
+        "price_out_per_1m": 0.50,
+        "context_window": 1_050_000,
+    },
+    ("openai", "gpt-6.1-sol"): {
+        "price_in_per_1m": 2.0,
+        "price_out_per_1m": 10.0,
+        "context_window": 1_050_000,
+    },
+    ("deepseek", "deepseek-flash"): {
+        "price_in_per_1m": 0.15,
+        "price_out_per_1m": 0.60,
+        "context_window": 1_000_000,
+    },
+    ("gemini", "gemini-3.8-flash"): {
+        "price_in_per_1m": 0.75,
+        "price_out_per_1m": 3.75,
+        "context_window": 1_048_576,
+    },
+    ("minimax", "MiniMax-M3"): {
+        "price_in_per_1m": 0.30,
+        "price_out_per_1m": 1.20,
+        "context_window": 1_000_000,
+    },
     ("anthropic", "claude-haiku-4-5-20251001"): {
         "price_in_per_1m": 1.0,
         "price_out_per_1m": 5.0,
@@ -66,8 +112,27 @@ STATIC_PRICING: dict[tuple[str, str], dict] = {
 }
 
 
+# models.dev provider id → somm provider name. OpenRouter rows come from
+# OpenRouter's own catalog (fresher, and the route ids match exactly), and
+# ollama-cloud ids do not match local tags, so neither is taken from here.
+MODELS_DEV_PROVIDERS: dict[str, str] = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "deepseek": "deepseek",
+    "minimax": "minimax",
+    "google": "gemini",
+    "perplexity": "perplexity",
+}
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 class ModelIntelWorker:
-    """Refreshes the `model_intel` table from OpenRouter + ollama + static."""
+    """Refreshes the `model_intel` table from models.dev + OpenRouter + ollama + static."""
 
     name = "model_intel"
 
@@ -77,9 +142,11 @@ class ModelIntelWorker:
         openrouter_url: str = "https://openrouter.ai/api/v1/models",
         ollama_url: str = "http://localhost:11434",
         timeout: float = 10.0,
+        models_dev_url: str = "https://models.dev/api.json",
     ) -> None:
         self.repo = repo
         self.openrouter_url = openrouter_url
+        self.models_dev_url = models_dev_url
         self.ollama_url = ollama_url.rstrip("/")
         self.timeout = timeout
 
@@ -89,10 +156,12 @@ class ModelIntelWorker:
             "openrouter": 0,
             "ollama": 0,
             "static": 0,
+            "models_dev": 0,
             "errors": [],
         }
         for fn, key in (
             (self._refresh_static, "static"),
+            (self._refresh_models_dev, "models_dev"),
             (self._refresh_openrouter, "openrouter"),
             (self._refresh_ollama, "ollama"),
         ):
@@ -129,6 +198,64 @@ class ModelIntelWorker:
                 source="static",
             )
             n += 1
+        return n
+
+    def _refresh_models_dev(self) -> int:
+        """models.dev — MIT-licensed catalog with cache/reasoning prices, modalities,
+        reasoning dials, structured-output and tool flags, release dates, and a
+        canonical id per route. It covers the first-party providers somm routes
+        to, which OpenRouter's catalog (its own marketplace) does not."""
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                r = client.get(self.models_dev_url)
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            raise RuntimeError(f"models.dev fetch failed: {e}") from e
+        if not isinstance(data, dict):
+            raise RuntimeError("models.dev: unexpected payload shape")
+
+        n = 0
+        for source_provider, somm_provider in MODELS_DEV_PROVIDERS.items():
+            entry = data.get(source_provider)
+            models = entry.get("models") if isinstance(entry, dict) else None
+            if not isinstance(models, dict):
+                continue
+            for model_id, m in models.items():
+                if not isinstance(m, dict) or not model_id:
+                    continue
+                cost = m.get("cost") if isinstance(m.get("cost"), dict) else {}
+                limit = m.get("limit") if isinstance(m.get("limit"), dict) else {}
+                caps = {
+                    "models_dev": {
+                        "canonical_model_id": m.get("canonical_model_id"),
+                        "family": m.get("family"),
+                        "cost": cost,
+                        "modalities": m.get("modalities"),
+                        "reasoning": m.get("reasoning"),
+                        "reasoning_options": m.get("reasoning_options"),
+                        "structured_output": m.get("structured_output"),
+                        "tool_call": m.get("tool_call"),
+                        "attachment": m.get("attachment"),
+                        "open_weights": m.get("open_weights"),
+                        "release_date": m.get("release_date"),
+                        "last_updated": m.get("last_updated"),
+                        "status": m.get("status"),
+                        "knowledge": m.get("knowledge"),
+                        "limit": limit,
+                    }
+                }
+                write_intel(
+                    self.repo,
+                    provider=somm_provider,
+                    model=str(model_id),
+                    price_in_per_1m=_number(cost.get("input")),
+                    price_out_per_1m=_number(cost.get("output")),
+                    context_window=int(limit["context"]) if isinstance(limit.get("context"), int) else None,
+                    capabilities=caps,
+                    source="models_dev",
+                )
+                n += 1
         return n
 
     def _refresh_openrouter(self) -> int:

@@ -47,14 +47,16 @@ def test_seed_populates_empty_table():
     rows = list_intel(repo)
     assert len(rows) == len(_KNOWN_PRICING)
 
-    # Check Sonnet entries — multiple snapshots are seeded (current + prior).
-    anthropic_sonnet = [
-        r for r in rows if r["provider"] == "anthropic" and "sonnet" in r["model"]
-    ]
-    assert len(anthropic_sonnet) >= 1
-    for row in anthropic_sonnet:
-        assert row["price_in_per_1m"] == 3.00
-        assert row["price_out_per_1m"] == 15.00
+    # Several Sonnet generations are seeded (current + prior) so older pins
+    # still cost-track; each carries its own list price.
+    anthropic_sonnet = {
+        r["model"]: r for r in rows if r["provider"] == "anthropic" and "sonnet" in r["model"]
+    }
+    assert len(anthropic_sonnet) >= 2
+    assert anthropic_sonnet["claude-sonnet-5-5"]["price_in_per_1m"] == 2.00
+    assert anthropic_sonnet["claude-sonnet-5-5"]["price_out_per_1m"] == 10.00
+    assert anthropic_sonnet["claude-sonnet-4-6"]["price_in_per_1m"] == 3.00
+    for row in anthropic_sonnet.values():
         assert row["source"] == "somm_seed"
 
 

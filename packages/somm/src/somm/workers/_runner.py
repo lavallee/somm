@@ -20,7 +20,7 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from somm_service.workers._heartbeat import beat
+from somm.workers._heartbeat import beat
 
 if TYPE_CHECKING:
     from somm_core.repository import Repository

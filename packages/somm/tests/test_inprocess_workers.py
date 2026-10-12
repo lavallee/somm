@@ -52,9 +52,9 @@ def test_inprocess_workers_start_once_per_db(tmp_path, monkeypatch):
         started.append(str(cfg.db_path))
         return StubScheduler()
 
-    import somm_service.inprocess as service_inprocess
+    import somm.workers.inprocess as workers_inprocess
 
-    monkeypatch.setattr(service_inprocess, "start_inprocess_scheduler", stub_start)
+    monkeypatch.setattr(workers_inprocess, "start_inprocess_scheduler", stub_start)
     monkeypatch.setattr(client_mod, "_inprocess_schedulers", {})
 
     cfg = _tmp_config(tmp_path, inprocess_workers=True)

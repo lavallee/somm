@@ -76,7 +76,10 @@ class OpenRouterProvider(OpenAICompatProvider):
 
     def _build_payload(self, request: SommRequest, model: str) -> dict:
         payload = super()._build_payload(request, model)
-        # Ask for the invoice figure; the base records it as reported cost.
+        # OpenRouter now returns usage (with `cost`) on every response; the
+        # flag is a no-op there but still turns it on for older gateways that
+        # speak the same wire format. The base records `usage.cost` as a
+        # reported cost.
         payload["usage"] = {"include": True}
         return payload
 

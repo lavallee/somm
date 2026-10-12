@@ -1,15 +1,42 @@
-"""Scheduled workers: model_intel (v0.3a), shadow_eval (v0.3b), agent (v0.3c).
+"""Compatibility shim — the intelligence-loop workers live in ``somm.workers``.
 
-All workers are callable classes with `.run_once()`. A lightweight scheduler
-in `_runner.py` polls the `jobs` table and invokes due workers atomically
-(lease-based, crash-safe).
+They moved in 0.17 so `somm loop run` and `SOMM_INPROCESS_WORKERS=1` work with
+the library alone; the web service only adds the dashboard, the HTTP API, and
+the long-running scheduler host. Existing imports of
+``somm_service.workers.<module>`` keep resolving to the same module objects.
 """
 
-from somm_service.workers._runner import DEFAULT_JOBS, Scheduler
-from somm_service.workers.agent import AgentWorker, Recommendation
-from somm_service.workers.hf_intel import HuggingFaceIntelWorker
-from somm_service.workers.model_intel import ModelIntelWorker
-from somm_service.workers.shadow_eval import ShadowConfig, ShadowEvalWorker
+from __future__ import annotations
+
+import sys
+
+from somm import workers as _workers
+from somm.workers import (
+    DEFAULT_JOBS,
+    AgentWorker,
+    HuggingFaceIntelWorker,
+    ModelIntelWorker,
+    Recommendation,
+    Scheduler,
+    ShadowConfig,
+    ShadowEvalWorker,
+    _heartbeat,
+    _runner,
+    agent,
+    hf_intel,
+    model_intel,
+    shadow_eval,
+)
+
+for _name, _module in (
+    ("_heartbeat", _heartbeat),
+    ("_runner", _runner),
+    ("agent", agent),
+    ("hf_intel", hf_intel),
+    ("model_intel", model_intel),
+    ("shadow_eval", shadow_eval),
+):
+    sys.modules[f"{__name__}.{_name}"] = _module
 
 __all__ = [
     "ModelIntelWorker",
@@ -20,4 +47,5 @@ __all__ = [
     "Recommendation",
     "Scheduler",
     "DEFAULT_JOBS",
+    "_workers",
 ]

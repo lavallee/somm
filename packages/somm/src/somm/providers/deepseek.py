@@ -1,13 +1,13 @@
 """DeepSeek provider — OpenAI-compatible endpoint at api.deepseek.com.
 
-DeepSeek hosts production models (deepseek-chat, deepseek-reasoner)
-at low-cost paid pricing. The `/v1/chat/completions` endpoint follows
-OpenAI's wire format. Notes:
+DeepSeek hosts production models at low-cost paid pricing. The
+`/v1/chat/completions` endpoint follows OpenAI's wire format. Notes:
 
-- ``deepseek-chat`` routes to DeepSeek's latest non-reasoning model
-  (currently V3.2-class / V4 Pro depending on release window).
-- ``deepseek-reasoner`` routes to a reasoning model that emits
-  ``<think>...</think>`` blocks; stripped by the OpenAI-compat base.
+- ``deepseek-flash`` (V4.1-Flash) is the default; ``deepseek-v4-pro`` is
+  the larger tier. The older ``deepseek-chat`` / ``deepseek-reasoner``
+  aliases were retired in July 2026.
+- Thinking is a per-request dial (``reasoning_effort``: none|low|high|max);
+  ``reasoning_content`` must be echoed back on multi-turn tool use.
 - Reasoning calls can take a while; the per-call ``timeout`` defaults
   to 180s for this provider so longer thinking responses succeed.
 - Rate limits are model-dependent; transient 429s cool down per the
@@ -23,7 +23,7 @@ from somm.providers.base import SommRequest
 class DeepSeekProvider(OpenAICompatProvider):
     name = "deepseek"
     base_url = "https://api.deepseek.com/v1"
-    default_model = "deepseek-chat"
+    default_model = "deepseek-flash"
     # DeepSeek accepts JSON mode but 400s on a json_schema response_format
     # ("This response_format type is unavailable now"). The schema rides in the
     # system prompt and generate_structured validates, so JSON mode is enough.

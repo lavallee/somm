@@ -14,6 +14,7 @@ Commands:
   somm backfill-costs  recompute cost_usd for calls missing pricing
   somm plans           metered-plan quota usage + pacing
   somm drain-spool     replay spooled telemetry into the DB
+  somm loop            run or schedule the intelligence loop
   somm prune           delete calls older than a retention window
   somm alias           canonical model identities (list, seed, set)
   somm workload        register, constrain, and inspect project workloads
@@ -1774,14 +1775,14 @@ def _fetch_since(
 def _cmd_compare(args: argparse.Namespace) -> int:
     """Run a prompt through N models side-by-side. Non-routed, explicit picks.
 
-    Use: somm compare "Summarize X" --models minimax/MiniMax-M3,openai/gpt-4o-mini
+    Use: somm compare "Summarize X" --models minimax/MiniMax-M3,openai/gpt-6-luna
     """
     from somm import SommLLM
 
     specs = _parse_model_specs(args.models)
     if not specs:
         print("no --models supplied. example:", file=sys.stderr)
-        print("  somm compare 'hi' --models minimax/MiniMax-M3,openai/gpt-4o-mini", file=sys.stderr)
+        print("  somm compare 'hi' --models minimax/MiniMax-M3,openai/gpt-6-luna", file=sys.stderr)
         return 2
 
     llm = SommLLM(project=args.project or "compare")
@@ -2617,6 +2618,65 @@ def _cmd_alias(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_loop(args: argparse.Namespace) -> int:
+    from somm import loop
+
+    cfg = load_config(project=args.project)
+    cmd = args.loop_cmd
+    if cmd == "run":
+        only = tuple(args.only) if args.only else None
+        if args.all_projects:
+            reports = loop.run_fleet(force=args.force, only=only)
+        else:
+            reports = [loop.run_once(cfg, force=args.force, only=only)]
+        if args.json:
+            print(json.dumps([r.as_dict() for r in reports], indent=2, default=str))
+        else:
+            for r in reports:
+                print(f"{r.project}  ({r.db_path})")
+                for name, summary in r.ran.items():
+                    brief = {k: v for k, v in summary.items() if k != "errors"}
+                    print(f"  ran      {name:<12} {json.dumps(brief, default=str)[:140]}")
+                    for e in summary.get("errors") or []:
+                        print(f"           error: {e}")
+                for name, why in r.skipped.items():
+                    print(f"  skipped  {name:<12} {why}")
+                for name, err in r.errors.items():
+                    print(f"  FAILED   {name:<12} {err}")
+        return 1 if any(r.errors for r in reports) else 0
+    if cmd == "install":
+        try:
+            written = loop.install(cfg, every=args.every, enable=not args.no_enable)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        for path in written:
+            print(f"wrote {path}")
+        _, timer = loop.unit_names(cfg.project)
+        if args.no_enable:
+            print(f"enable with: systemctl --user daemon-reload && systemctl --user enable --now {timer}")
+        else:
+            print(f"enabled {timer} (every {args.every})")
+        return 0
+    if cmd == "uninstall":
+        try:
+            loop.uninstall(cfg)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"disabled {loop.unit_names(cfg.project)[1]}")
+        return 0
+    info = loop.status(cfg)
+    if args.json:
+        print(json.dumps(info, indent=2))
+        return 0
+    print(f"project: {info['project']}")
+    print(f"timer:   {info['timer']}  state: {info['timer_state'] or 'not installed'}")
+    for name, when in info["heartbeats"].items():
+        print(f"  {name:<12} last success: {when or 'never'}")
+    return 0
+
+
 def _cmd_drain_spool(args: argparse.Namespace) -> int:
     from somm_core.repository import Repository
 
@@ -3098,6 +3158,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="check ~/.somm/global.sqlite (every mirroring project) instead of this project",
     )
     pd.set_defaults(func=_cmd_doctor)
+
+    plp = sub.add_parser(
+        "loop",
+        help="run or schedule the intelligence loop (intel refresh, shadow grading, recommendations)",
+    )
+    plp.add_argument("--project", default=None)
+    plp_sub = plp.add_subparsers(dest="loop_cmd")
+    plr = plp_sub.add_parser("run", help="one pass: run the workers that are due, then exit")
+    plr.add_argument("--force", action="store_true", help="run every worker regardless of staleness")
+    plr.add_argument(
+        "--only", action="append", choices=["model_intel", "shadow_eval", "agent"],
+        help="restrict to one worker (repeatable)",
+    )
+    plr.add_argument("--all-projects", action="store_true",
+                     help="every registered project ledger, not just this one")
+    plr.add_argument("--json", action="store_true")
+    pli = plp_sub.add_parser("install", help="write a systemd user timer that runs `somm loop run`")
+    pli.add_argument("--every", default="15min", help="timer cadence (systemd span, default 15min)")
+    pli.add_argument("--no-enable", action="store_true", help="write units without enabling")
+    plp_sub.add_parser("uninstall", help="disable the timer for this project")
+    pls = plp_sub.add_parser("status", help="timer state and worker heartbeats")
+    pls.add_argument("--json", action="store_true")
+    plp.set_defaults(func=_cmd_loop, loop_cmd="status", json=False)
 
     ppr = sub.add_parser(
         "prune",

@@ -116,6 +116,7 @@ def _anthropic(config: Config, tracker: Any) -> SommProvider | None:
     return AnthropicProvider(
         api_key=config.anthropic_api_key,
         default_model=config.anthropic_model,
+        auto_cache=config.anthropic_auto_cache,
     )
 
 

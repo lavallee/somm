@@ -14,4 +14,4 @@ from somm.providers._openai_compat import OpenAICompatProvider
 class OpenAIProvider(OpenAICompatProvider):
     name = "openai"
     base_url = "https://api.openai.com/v1"
-    default_model = "gpt-4o-mini"
+    default_model = "gpt-6-luna"

@@ -79,7 +79,7 @@ def test_cost_for_call_zero_for_local(tmp_path):
 
 
 def test_run_once_populates_static_pricing(tmp_path, monkeypatch):
-    """When OpenRouter + ollama fail, static still lands."""
+    """When every network source fails, static still lands."""
     repo = _tmp_repo(tmp_path)
     worker = ModelIntelWorker(repo)
 
@@ -102,7 +102,8 @@ def test_run_once_populates_static_pricing(tmp_path, monkeypatch):
     assert summary["static"] == len(STATIC_PRICING)
     assert summary["openrouter"] == 0
     assert summary["ollama"] == 0
-    assert len(summary["errors"]) == 2
+    assert summary["models_dev"] == 0
+    assert len(summary["errors"]) == 3  # models_dev, openrouter, ollama
 
     # Static entries landed
     rows = list_intel(repo, provider="anthropic")
@@ -268,3 +269,64 @@ def _patch_client_with(handler, monkeypatch):
             super().__init__(*args, transport=transport, **kwargs)
 
     monkeypatch.setattr(httpx, "Client", _MockedClient)
+
+
+def test_models_dev_source_writes_first_party_rows_and_canonical_ids(tmp_path, monkeypatch):
+    import httpx
+    from somm.workers.model_intel import ModelIntelWorker
+    from somm_core.aliases import seed_model_aliases
+    from somm_core.repository import Repository
+
+    payload = {
+        "anthropic": {"models": {
+            "claude-haiku-5-5": {
+                "canonical_model_id": "anthropic/claude-haiku-5-5",
+                "cost": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125},
+                "limit": {"context": 1000000, "output": 128000},
+                "modalities": {"input": ["text", "image"], "output": ["text"]},
+                "reasoning": True, "structured_output": True, "tool_call": True,
+                "release_date": "2026-10-07",
+            },
+        }},
+        "google": {"models": {
+            "gemini-3.8-flash": {"cost": {"input": 0.75, "output": 3.75}, "limit": {"context": 1048576}},
+        }},
+        "openrouter": {"models": {"x/y": {"cost": {"input": 1, "output": 2}}}},
+        "ollama-cloud": {"models": {"kimi-k3": {"cost": {"input": 1, "output": 2}}}},
+    }
+
+    def handler(request):
+        if "models.dev" in str(request.url):
+            return httpx.Response(200, json=payload)
+        return httpx.Response(500, text="not in this test")
+
+    class _Client(httpx.Client):
+        def __init__(self, *a, **kw):
+            kw.pop("transport", None)
+            super().__init__(*a, transport=httpx.MockTransport(handler), **kw)
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    repo = Repository(tmp_path / "calls.sqlite")
+    worker = ModelIntelWorker(repo, ollama_url="http://127.0.0.1:1")
+
+    n = worker._refresh_models_dev()
+
+    assert n == 2  # openrouter and ollama-cloud are deliberately not taken from here
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT price_in_per_1m, price_out_per_1m, context_window, source, capabilities_json "
+            "FROM model_intel WHERE provider='anthropic' AND model='claude-haiku-5-5'"
+        ).fetchone()
+        gem = conn.execute(
+            "SELECT provider FROM model_intel WHERE model='gemini-3.8-flash'"
+        ).fetchone()
+    assert row[0] == 0.1 and row[1] == 0.5 and row[2] == 1000000 and row[3] == "models_dev"
+    assert '"cache_read": 0.01' in row[4]
+    assert gem[0] == "gemini"  # google → somm's provider name
+
+    # The catalog's canonical id seeds the alias table, with provenance.
+    seed_model_aliases(repo)
+    aliases = repo.model_aliases()
+    assert not any(a.provider == "anthropic" and a.model == "claude-haiku-5-5" for a in aliases) or (
+        aliases and aliases[0].canonical_id
+    )

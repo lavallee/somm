@@ -14,7 +14,7 @@ Usage:
     from openai import OpenAI
     client = OpenAI()
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-6-luna",
         messages=[{"role": "user", "content": "hi"}],
     )
     print(resp.choices[0].message.content)
@@ -22,7 +22,7 @@ Usage:
     # After:
     from somm.compat import openai_chat_completions as create
     resp = create(
-        model="gpt-4o-mini",
+        model="gpt-6-luna",
         messages=[{"role": "user", "content": "hi"}],
         project="myproject",
         workload="greet",

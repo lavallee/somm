@@ -302,25 +302,18 @@ def _warn_if_plans_off_pace(governor) -> None:
 
 
 def _maybe_start_inprocess_workers(config: Config, repo: Repository):
-    """Start the somm-service scheduler inside this process, once per DB.
+    """Start the worker scheduler inside this process, once per DB.
 
-    Library-only deployments that set SOMM_INPROCESS_WORKERS=1 get the
-    full intelligence loop (model-intel refresh, online-eval grading,
-    recommendations) without running `somm serve`. Requires somm-service.
+    Long-lived processes that set SOMM_INPROCESS_WORKERS=1 get the full
+    intelligence loop (model-intel refresh, online-eval grading,
+    recommendations) without running `somm serve`. Short-lived processes
+    should use `somm loop install` instead.
     """
     key = str(config.db_path)
     if key in _inprocess_schedulers:
         return _inprocess_schedulers[key]
-    try:
-        from somm_service.inprocess import start_inprocess_scheduler
-    except ImportError:
-        print(
-            "[somm] SOMM_INPROCESS_WORKERS=1 but somm-service is not "
-            "installed — `pip install somm-service` to enable the "
-            "in-process intelligence loop.",
-            file=sys.stderr,
-        )
-        return None
+    from somm.workers.inprocess import start_inprocess_scheduler
+
     try:
         scheduler = start_inprocess_scheduler(config, repo)
     except Exception as exc:
@@ -362,16 +355,16 @@ def _warn_if_intelligence_loop_dormant(config: Config, repo: Repository) -> None
             print(
                 f"[somm] online eval is configured for {shadow_n} workload(s) "
                 f"but no worker has ever run — sampled calls are piling up "
-                f"ungraded. Run `somm serve`, `somm-serve admin run-shadow`, "
-                f"or set SOMM_INPROCESS_WORKERS=1.",
+                f"ungraded. Run `somm loop run`, or `somm loop install` for a "
+                f"timer; long-lived processes can set SOMM_INPROCESS_WORKERS=1.",
                 file=sys.stderr,
             )
         elif is_stale:
             print(
                 f"[somm] online eval is configured for {shadow_n} workload(s) "
                 f"but workers have not run since {newest_run_at} — sampled "
-                f"calls may be piling up ungraded. Run `somm serve`, "
-                f"`somm-serve admin run-shadow`, or set SOMM_INPROCESS_WORKERS=1.",
+                f"calls may be piling up ungraded. Run `somm loop run` or "
+                f"`somm loop install`.",
                 file=sys.stderr,
             )
     except Exception:
