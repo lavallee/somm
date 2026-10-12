@@ -9,17 +9,17 @@ the "why we didn't use X" notes are useful too.
 
 | Source | What it's good for | Live today? | Notes |
 |---|---|---|---|
-| OpenRouter `/api/v1/models` | Price, context, modality, vision flags | ✅ `model_intel` worker | Live source. Stable JSON. |
+| OpenRouter `/api/v1/models` | Price, context, modality, vision flags; now also cache/reasoning prices, `reasoning.supported_efforts`, `expiration_date`, Artificial Analysis indices | ✅ `model_intel` worker | Live source, fetched at runtime only: OpenRouter's terms (2026-08) bar copying or redistributing the catalog, so it is never vendored. |
 | **LiteLLM `model_prices_and_context_window.json`** | Price + context + tools/vision flags for every provider somm routes to | ✅ bundled snapshot (`somm_core/data/pricing_bundle.json`, synced on library init) | De facto community ground truth, MIT. Regenerate per release with `scripts/update_pricing_bundle.py`. |
-| [models.dev](https://models.dev) `api.json` | Capability-rich model catalog (modalities, reasoning, cache pricing, cutoffs), MIT data | ❌ | Strong secondary/cross-check source for the bundle; keyless static JSON. |
+| [models.dev](https://models.dev) `api.json` | Capability-rich model catalog (modalities, reasoning dials, cache/reasoning prices, release dates, canonical ids), MIT data | ✅ `model_intel` worker (0.17) | Live for the first-party providers somm routes to (anthropic, openai, deepseek, minimax, google→gemini, perplexity). Its `canonical_model_id` seeds `model_aliases`. OpenRouter rows still come from OpenRouter's own catalog. |
 | Static pricing table | Minimal seed rows (offline fallback below the bundle) | ✅ `seed_known_pricing` | Superseded by the bundle for coverage; kept as the zero-dependency floor. |
 | Ollama `/api/tags` | Locally installed models | ✅ `model_intel` worker | No pricing. No context window (not exposed). |
-| **[LMArena](https://lmarena.ai)** | Crowd-sourced Elo rankings — the single best *quality* signal across proprietary + open models | ❌ | See notes below. |
+| **[Arena](https://arena.ai) leaderboard dataset** (ex-LMArena) | Crowd-sourced ratings with confidence bounds — the single best *quality* signal across proprietary + open models | ❌ | Now a CC-BY-4.0 Hugging Face dataset (`lmarena-ai/leaderboard-dataset`, 24 subsets incl. webdev/agent), updated weekly — redistributable, so the canonicalization blocker below is the only one left. |
 | **[Artificial Analysis](https://artificialanalysis.ai)** | Composite quality + speed (tokens/s) + price per model | ❌ | Commercial-heavy coverage. Has an API (check terms). |
 | **[canirun.ai](https://canirun.ai)** | "Can my local GPU run model X at acceptable speed?" | ❌ | Critical for ollama-first workflows — price alone is the wrong filter when hardware is the bottleneck. |
-| **[LiveBench](https://livebench.ai)** | Contamination-resistant per-category benchmarks (reasoning, coding, math, data) | ❌ | Monthly refresh. Good for "which model for coding vs reasoning?" differentiation. |
+| **[LiveBench](https://livebench.ai)** | Contamination-resistant per-category benchmarks (reasoning, coding, math, data) | ❌ | The published dataset stopped updating in April 2025; unreliable for 2026 models. Epoch AI's `benchmarks.csv` (CC-BY) is the live alternative for frontier scores. |
 | **[HuggingFace Hub `pipeline_tag`](https://huggingface.co/api/models)** | Canonical per-model task type → input/output modalities | ✅ `HuggingFaceIntelWorker` (opt-in, `--hf` / `SOMM_ENABLE_HF_INTEL=1`) | Enriches OpenRouter rows with `pipeline_tag` + derived `input_modalities` / `output_modalities`. See notes below. |
-| **[HuggingFace Open LLM Leaderboard](https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard)** | MMLU / GPQA / HellaSwag / ARC-C / TruthfulQA / Winogrande, composite score | ❌ | Already in TODOs as "HF trending". DOM scraping is fragile. |
+| ~~HuggingFace Open LLM Leaderboard~~ | MMLU / GPQA / … composite | ❌ retired | Shut down March 2025. Not coming back; removed from the roadmap. |
 | SWE-bench / SWE-bench Verified | Coding-specific quality (real GitHub issue solve rate) | ❌ | Per-model, slow to update, narrow task. |
 | `somm` internal shadow-eval | Workload-specific quality on YOUR prompts | ✅ (opt-in) | The highest-signal source for a specific workload, but only once it has coverage. |
 
