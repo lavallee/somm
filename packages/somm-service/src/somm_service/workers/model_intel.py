@@ -101,6 +101,16 @@ class ModelIntelWorker:
             except Exception as e:
                 _log.warning("model_intel %s failed: %s", key, e)
                 summary["errors"].append(f"{key}: {e}")
+        # Fresh routes get their canonical identities in the same pass, so the
+        # sommelier never ranks `claude-opus-5[1m]` and `claude-opus-5` as
+        # two models.
+        try:
+            from somm_core.aliases import seed_model_aliases
+
+            summary["aliases"] = seed_model_aliases(self.repo)
+        except Exception as e:  # noqa: BLE001
+            _log.warning("model_intel alias seeding failed: %s", e)
+            summary["errors"].append(f"aliases: {e}")
         return summary
 
     # ------------------------------------------------------------------

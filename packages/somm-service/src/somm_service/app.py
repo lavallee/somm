@@ -49,6 +49,7 @@ from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.models import Call, Outcome
 from somm_core.parse import stable_hash
+from somm_core.read import search_calls
 from somm_core.repository import Repository
 from somm_core.schema import current_schema_version
 from starlette.applications import Starlette
@@ -635,67 +636,17 @@ def _query_calls(
     provider: str | None = None,
     model: str | None = None,
 ) -> list[dict]:
-    clauses = ["c.project = ?", "c.ts >= datetime('now', ?)"]
-    params: list[object] = [cfg.project, f"-{window} days"]
-    if workload:
-        clauses.append("(w.name = ? OR c.workload_id = ?)")
-        params.extend([workload, workload])
-    if provider:
-        clauses.append("c.provider = ?")
-        params.append(provider)
-    if model:
-        clauses.append("c.model = ?")
-        params.append(model)
-    if q:
-        like = f"%{q}%"
-        clauses.append(
-            "("
-            "c.id LIKE ? OR c.provider LIKE ? OR c.model LIKE ? OR "
-            "COALESCE(w.name, '') LIKE ? OR COALESCE(c.session_id, '') LIKE ? OR "
-            "COALESCE(c.correlation_id, '') LIKE ?"
-            ")"
-        )
-        params.extend([like, like, like, like, like, like])
-    where = " AND ".join(clauses)
-    params.append(limit)
     with repo._open() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT c.id, c.ts, COALESCE(w.name, 'ad_hoc') AS workload,
-                   c.provider, c.model, c.tokens_in, c.tokens_out,
-                   c.latency_ms, c.cost_usd, c.outcome, c.error_kind,
-                   c.session_id, c.parent_call_id, c.correlation_id,
-                   c.ttft_ms, c.cache_tokens_in, c.cache_tokens_out
-            FROM calls c
-            LEFT JOIN workloads w ON w.id = c.workload_id
-            WHERE {where}
-            ORDER BY c.ts DESC
-            LIMIT ?
-            """,
-            params,
-        ).fetchall()
-    return [
-        {
-            "id": r[0],
-            "ts": r[1],
-            "workload": r[2],
-            "provider": r[3],
-            "model": r[4],
-            "tokens_in": r[5],
-            "tokens_out": r[6],
-            "latency_ms": r[7],
-            "cost_usd": r[8] or 0.0,
-            "outcome": r[9],
-            "error_kind": r[10],
-            "session_id": r[11],
-            "parent_call_id": r[12],
-            "correlation_id": r[13],
-            "ttft_ms": r[14],
-            "cache_tokens_in": r[15],
-            "cache_tokens_out": r[16],
-        }
-        for r in rows
-    ]
+        return search_calls(
+            conn,
+            cfg.project,
+            since_days=window,
+            workload=workload,
+            provider=provider,
+            model=model,
+            q=q,
+            limit=limit,
+        )
 
 
 def _session_groups(calls: list[dict]) -> list[dict]:

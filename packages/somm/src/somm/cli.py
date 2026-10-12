@@ -8,12 +8,14 @@ Commands:
     somm tail            live call stream
   somm compare         run a prompt through N models side-by-side
   somm frontier        adequacy frontier per (provider, model) for a workload
-  somm doctor          health check (config, ollama, db, model_intel, workers, cooldowns)
+  somm doctor          health check (config, ollama, db, intel, workers, loop, fleet)
   somm serve           run the web admin + HTTP API (requires somm-service)
   somm spend           today's LLM spend vs daily budget cap per workload
   somm backfill-costs  recompute cost_usd for calls missing pricing
   somm plans           metered-plan quota usage + pacing
   somm drain-spool     replay spooled telemetry into the DB
+  somm prune           delete calls older than a retention window
+  somm alias           canonical model identities (list, seed, set)
   somm workload        register, constrain, and inspect project workloads
   somm prompt          manage prompt versions, labels, and A/B variants
   somm eval            promote calls to datasets and run eval gates
@@ -38,7 +40,7 @@ from pathlib import Path
 from somm_core import VERSION, list_intel
 from somm_core.config import load as load_config
 from somm_core.models import Outcome, PrivacyClass
-from somm_core.read import spend_today
+from somm_core.read import fleet_summary, search_calls, spend_today
 from somm_core.repository import Repository
 
 from somm.providers.ollama import OllamaProvider
@@ -1754,36 +1756,15 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 def _fetch_since(
     repo: Repository, project: str, since: datetime, workload: str | None = None
 ) -> list[dict]:
-    q = [
-        "SELECT c.id, c.ts, COALESCE(w.name, '(unregistered)') AS workload, "
-        "       c.provider, c.model, c.latency_ms, c.tokens_in, c.tokens_out, "
-        "       c.cost_usd, c.outcome "
-        "FROM calls c LEFT JOIN workloads w ON w.id = c.workload_id "
-        "WHERE c.project = ? AND c.ts > ? "
-    ]
-    params: list = [project, since.isoformat()]
-    if workload:
-        q.append("AND w.name = ? ")
-        params.append(workload)
-    q.append("ORDER BY c.ts ASC LIMIT 200")
-
     with repo._open() as conn:
-        rows = conn.execute("".join(q), params).fetchall()
-    return [
-        {
-            "id": r[0],
-            "ts": r[1],
-            "workload": r[2],
-            "provider": r[3],
-            "model": r[4],
-            "latency_ms": r[5],
-            "tokens_in": r[6],
-            "tokens_out": r[7],
-            "cost_usd": r[8] or 0.0,
-            "outcome": r[9],
-        }
-        for r in rows
-    ]
+        return search_calls(
+            conn,
+            project,
+            since=since.isoformat(),
+            workload=workload,
+            limit=200,
+            newest_first=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1980,12 +1961,17 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
-    repo_exists = cfg.db_path.exists()
+    global_view = bool(getattr(args, "global_view", False))
+    db_path = cfg.global_db_path if global_view else cfg.db_path
+    repo_exists = db_path.exists()
     print(f"somm v{VERSION}")
-    print(f"project: {cfg.project}  mode: {cfg.mode}")
-    print(f"db_path: {cfg.db_path}   exists: {repo_exists}")
+    if global_view:
+        print("scope: global (every project that mirrors here)")
+    else:
+        print(f"project: {cfg.project}  mode: {cfg.mode}")
+    print(f"db_path: {db_path}   exists: {repo_exists}")
     if repo_exists:
-        mode = oct(cfg.db_path.stat().st_mode)[-3:]
+        mode = oct(db_path.stat().st_mode)[-3:]
         ok = mode in ("600",)
         print(f"db perms: {mode} {'(ok)' if ok else '(WARN — expect 600)'}")
 
@@ -2002,7 +1988,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print("db missing — skipping intel/workers/cooldowns checks")
         return 0 if ok_overall else 1
 
-    repo = Repository(cfg.db_path)
+    repo = Repository(db_path)
 
     # Model intel freshness
     rows = list_intel(repo)
@@ -2102,7 +2088,65 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         if len(undeclared) > 10:
             print(f"  ... and {len(undeclared) - 10} more")
 
+    _print_fleet_section(db_path)
+
     return 0 if ok_overall else 1
+
+
+def _print_fleet_section(db_path: Path, *, since_days: int = 7) -> None:
+    """What only a cross-project view can say: who writes with which client,
+    whether the intelligence loop has ever run, and what pollutes the rollups.
+
+    Printed for the project ledger too — a single project can be on an old
+    client, and the loop can be idle there as well."""
+    try:
+        fleet = fleet_summary(db_path, since_days=since_days)
+    except Exception as exc:  # noqa: BLE001 - a doctor must not crash on a report
+        print(f"fleet: unavailable ({exc})")
+        return
+    print(f"clients ({since_days}d):")
+    if not fleet["clients"]:
+        print("  no calls in the window")
+    for row in fleet["clients"][:12]:
+        stale = "" if row["client_version"] == VERSION else "  (older than this somm)"
+        print(
+            f"  {row['project'][:20]:<22} {row['client_version']:<14} "
+            f"{row['calls']:>8} calls{stale}"
+        )
+    loop = fleet["loop"]
+    if loop["shadow_configured_workloads"] and not loop["eval_results"]:
+        print(
+            f"intelligence loop: DORMANT — {loop['shadow_configured_workloads']} workload(s) "
+            "opted into online eval, nothing has ever been graded, and no worker has run. "
+            "Run `somm loop run` (or `somm loop install`) to start it."
+        )
+    elif not loop["recommendations"] and not loop["eval_results"]:
+        print(
+            "intelligence loop: idle — no evals or recommendations yet "
+            f"({loop['decisions']} sommelier decisions recorded). "
+            "Opt a workload in with `somm workload set-shadow` and run `somm loop run`."
+        )
+    else:
+        print(
+            f"intelligence loop: {loop['eval_results']} evals, {loop['recommendations']} "
+            f"recommendations, {loop['decisions']} decisions, "
+            f"{loop['worker_heartbeats']} worker heartbeat(s)"
+        )
+    if fleet["sentinel_rows"]:
+        print(
+            f"sentinel rows ({since_days}d): {fleet['sentinel_rows']} calls with a blank or "
+            "`*` model — exhaustion rows from pre-0.17 clients; they are excluded from "
+            "per-model rollups"
+        )
+    for norm, spellings in fleet["provider_spellings"].items():
+        print(f"provider spelling: {', '.join(spellings)} are the same provider ({norm})")
+    if fleet["unaliased"]:
+        shown = ", ".join(f"{p}/{m}" for p, m in fleet["unaliased"][:6])
+        more = len(fleet["unaliased"]) - 6
+        print(
+            f"model aliases: {len(fleet['unaliased'])} route(s) with no canonical id "
+            f"({shown}{', …' if more > 0 else ''}); run `somm alias seed`"
+        )
 
 
 def _exhausted_rate_24h(
@@ -2513,6 +2557,63 @@ def _cmd_plans(args: argparse.Namespace) -> int:
                 f"\n⚠ catalog entry {pl.catalog_ref} last verified {age_s} — "
                 f"limits may have changed; check {entry.source or 'the vendor page'}"
             )
+    return 0
+
+
+def _cmd_prune(args: argparse.Namespace) -> int:
+    cfg = load_config(project=args.project)
+    db_path = cfg.global_db_path if getattr(args, "global_view", False) else cfg.db_path
+    if not db_path.exists():
+        print(f"no ledger at {db_path}")
+        return 0
+    repo = Repository(db_path)
+    try:
+        counts = repo.prune_calls(older_than_days=args.older_than, dry_run=args.dry_run)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    verb = "would delete" if args.dry_run else "deleted"
+    print(f"{verb} rows older than {args.older_than} days from {db_path}:")
+    for table, n in counts.items():
+        print(f"  {table:<14} {n:>10}")
+    if args.vacuum and not args.dry_run:
+        before = db_path.stat().st_size
+        repo.vacuum()
+        after = db_path.stat().st_size
+        print(f"vacuum: {before / 1e6:.1f} MB → {after / 1e6:.1f} MB")
+    return 0
+
+
+def _cmd_alias(args: argparse.Namespace) -> int:
+    from somm_core.aliases import seed_model_aliases
+
+    cfg = load_config(project=args.project)
+    db_path = cfg.global_db_path if getattr(args, "global_view", False) else cfg.db_path
+    if not db_path.exists():
+        print(f"no ledger at {db_path}")
+        return 0
+    repo = Repository(db_path)
+    if args.alias_cmd == "seed":
+        n = seed_model_aliases(repo)
+        print(f"wrote {n} rule-derived alias row(s) to {db_path}")
+        return 0
+    if args.alias_cmd == "set":
+        repo.set_model_alias(args.canonical, args.provider, args.model, source="manual")
+        print(f"{args.provider}/{args.model} → {args.canonical}")
+        return 0
+    rows = repo.model_aliases()
+    if getattr(args, "json", False):
+        print(json.dumps([
+            {"provider": r.provider, "model": r.model, "canonical_id": r.canonical_id,
+             "source": r.source} for r in rows
+        ], indent=2))
+        return 0
+    if not rows:
+        print("no aliases; run `somm alias seed`")
+        return 0
+    print(f"{'provider':<12} {'model':<42} {'canonical':<42} source")
+    for r in rows:
+        print(f"{r.provider[:11]:<12} {r.model[:41]:<42} {r.canonical_id[:41]:<42} {r.source}")
     return 0
 
 
@@ -2990,7 +3091,41 @@ def build_parser() -> argparse.ArgumentParser:
             "code — suitable for a cron/timer health check."
         ),
     )
+    pd.add_argument(
+        "--global",
+        dest="global_view",
+        action="store_true",
+        help="check ~/.somm/global.sqlite (every mirroring project) instead of this project",
+    )
     pd.set_defaults(func=_cmd_doctor)
+
+    ppr = sub.add_parser(
+        "prune",
+        help="delete calls (and their samples/updates/evals) older than a retention window",
+    )
+    ppr.add_argument("--project", default=None)
+    ppr.add_argument(
+        "--older-than", type=int, required=True, metavar="DAYS", help="retention window in days"
+    )
+    ppr.add_argument("--dry-run", action="store_true", help="report counts without deleting")
+    ppr.add_argument("--vacuum", action="store_true", help="reclaim file space afterwards")
+    ppr.add_argument("--global", dest="global_view", action="store_true",
+                     help="prune ~/.somm/global.sqlite instead of this project's ledger")
+    ppr.set_defaults(func=_cmd_prune)
+
+    pal = sub.add_parser("alias", help="canonical model identities (list, seed, set)")
+    pal.add_argument("--project", default=None)
+    pal.add_argument("--global", dest="global_view", action="store_true",
+                     help="operate on ~/.somm/global.sqlite")
+    pal_sub = pal.add_subparsers(dest="alias_cmd")
+    pal_list = pal_sub.add_parser("list", help="show alias rows")
+    pal_list.add_argument("--json", action="store_true")
+    pal_sub.add_parser("seed", help="derive aliases by rule from routes seen in the ledger")
+    pal_set = pal_sub.add_parser("set", help="map one provider/model route to a canonical id")
+    pal_set.add_argument("provider")
+    pal_set.add_argument("model")
+    pal_set.add_argument("canonical")
+    pal.set_defaults(func=_cmd_alias, alias_cmd="list")
 
     psr = sub.add_parser("serve", help="run the web admin + HTTP API (localhost:7878)")
     psr.add_argument("--project", default=None)

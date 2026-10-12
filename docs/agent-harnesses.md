@@ -47,30 +47,93 @@ result = harnesses.inspect(
 
 ## Stable names and capabilities
 
-| Name | Executable | Resume | Turn limit | Agent selection | Reasoning effort |
-|---|---|---:|---:|---:|---:|
-| `claude-cli` | `claude` | yes | yes | no | yes |
-| `codex` (`codex-cli` alias) | `codex` | yes | no | no | yes |
-| `opencode` | `opencode` | yes | no | yes | no |
+| Name | Executable | Resume | Turn limit | Agent selection | Reasoning effort | Stdin prompt | Reports cost | Reports model |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `claude-cli` | `claude` | yes | yes | no | yes | no | yes | yes |
+| `codex` (`codex-cli` alias) | `codex` | yes | no | no | yes | yes | no | no |
+| `opencode` | `opencode` | yes | no | yes | no | no | yes | yes |
+| `pi` | `pi` | yes | no | no | yes | yes | no | yes |
 
-Use `harnesses.available()` for installed canonical names and
-`harnesses.get(name).capabilities` before relying on an optional feature.
+`harnesses.capability_profile(name)` returns this row as a versioned record
+(plus `available` and the installed CLI version) so an outer runner can make an
+admission decision without branching on the harness name.
+`harnesses.validate_request(name, request)` fails closed: a request field the
+harness cannot honor — `max_turns` on Codex, `agent` on Claude, `session_id` on
+a harness without resume — is rejected before launch rather than silently
+dropped. `start()` and `run()` call it for you.
 
-## Result contract
+## Result contract (envelope 2)
 
-Somm normalizes native JSON/NDJSON streams into:
+`HarnessResult` is versioned (`harnesses.ENVELOPE_VERSION`, currently 2) and
+changes are additive: a field keeps its name and meaning once published, and an
+older consumer can read a newer result. `result.as_dict()` is the JSON view.
+`None` always means "the harness did not say", never a guess.
 
-- `outcome`: completed, turn/context limit, refusal, rate limit, network,
-  provider, authentication, generic failure, or unknown;
+- `outcome`: one of the portable terminations below;
 - `final_text`: the final agent-facing response;
 - `session_id`: the native session/thread identifier for resumption;
-- `usage`: tokens reported by the harness when available;
+- `model`: the model that actually served the attempt, as the harness
+  reported it (Claude's `modelUsage`, OpenCode's `metadata.model`, Pi's
+  message `model`; Codex does not report one);
+- `harness_version`: the CLI's version (from the capture when it writes one,
+  else `<cli> --version`, cached per process);
+- `usage`: the harness's own token block, plus portable aliases where the
+  native names differ (`reasoning_tokens`, `cache_read_input_tokens`,
+  `prompt_tokens_total` for Claude's three-way prompt split);
+- `billing_usage`: a per-step rollup where steps are billed separately
+  (OpenCode);
+- `cost_usd`: what the harness said the attempt cost (Claude
+  `total_cost_usd`, OpenCode step costs, Pi `usage.cost.total`);
+- `duration_ms`, `turns`: wall time and agent turns, from the harness or the
+  caller's timing;
+- `retry_after_s`: seconds until a limit lifts, when a rate-limit or seat
+  message said so (`retry-after: N`, or Claude's "resets 3pm
+  (America/New_York)");
 - `terminal_event`: the untouched native terminal event for diagnostics;
 - `correlation_id`: the caller's task/trace/job identifier.
 
-Unknown remains distinct from failure. An interrupted process may have no
-terminal event, and an outer supervisor may have better evidence (for example,
-that its activity watchdog killed the attempt).
+Outcomes: `completed`, `turn_limit`, `context_limit`, `refused`,
+`rate_limit`, `network_error`, `provider_error`, `auth_error`,
+`budget_exhausted`, `input_error` (the request itself was rejected; the same
+input will fail again), `agent_blocked` (the agent ended with
+`<stuck>reason</stuck>`; retrying the same prompt is futile), `interrupted`
+(no terminal event and an unclean exit — a supervisor usually knows why),
+`failed`, `unknown`.
+
+Unknown remains distinct from failure: a clean exit with no terminal event is
+`unknown`, because the outer supervisor may have better evidence.
+
+## The attempt in the ledger
+
+A coding-agent attempt is the most expensive call a project makes, and until
+0.17 it was the one call the ledger never saw. `record_attempt()` writes one
+`calls` row per finished attempt with `origin="harness"`, `provider` set to
+the harness name (which is also the seat it ran on), the served model, the
+reported cost (`cost_basis="reported"`) or a computed one, the session id, and
+the caller's correlation id — so a runner's receipt and the ledger row name the
+same attempt and `somm status` shows seat spend beside API spend.
+
+```python
+result = harnesses.run("claude-cli", request, timeout=1800, record=True)
+# or, when the runner owns the process:
+result = harnesses.inspect("claude-cli", out, err, exit_code=rc,
+                           started_at=handle.started_at, record=True,
+                           request=request, project="my-project")
+# or explicitly:
+harnesses.record_attempt(result, request=request, project="my-project")
+```
+
+Recording is opt-in because a library must not write to a project's ledger
+behind a runner's back; a runner that wants the row asks for it once.
+
+## Process environment
+
+`start()` launches the CLI with the process environment minus the seat's API
+key (`ANTHROPIC_API_KEY` for Claude Code, `OPENAI_API_KEY` for Codex): a
+subscription attempt must not quietly bill the API account and attribute the
+spend to the wrong plan. `HarnessRequest.env` layers extra variables on top
+(a workspace path, a feature flag); `start_new_session=True` puts the child in
+its own session so a supervisor can cancel or reap the whole tree.
 
 ## Deliberate boundary
 

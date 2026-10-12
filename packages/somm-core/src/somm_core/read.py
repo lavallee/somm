@@ -64,3 +64,182 @@ def spend_today(
             }
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Call search — the one query behind `somm tail`, MCP `somm_search_calls`, and
+# the service's /api/calls and session views.
+
+_CALL_COLUMNS = (
+    "id", "ts", "workload", "provider", "model", "tokens_in", "tokens_out",
+    "latency_ms", "cost_usd", "outcome", "error_kind", "prompt_hash", "response_hash",
+    "session_id", "parent_call_id", "correlation_id", "ttft_ms", "cache_tokens_in",
+    "cache_tokens_out", "reasoning_tokens", "origin", "call_site", "client_version",
+)
+
+
+def search_calls(
+    conn_or_path,
+    project: str,
+    *,
+    since_days: int | None = 7,
+    since: str | None = None,
+    workload: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    outcome: str | None = None,
+    q: str | None = None,
+    origin: str | None = None,
+    limit: int = 50,
+    newest_first: bool = True,
+) -> list[dict]:
+    """Filtered rows from ``calls`` joined to their workload name.
+
+    ``conn_or_path`` is an open ``sqlite3.Connection`` or a database path (opened
+    read-only). ``since`` (ISO timestamp, exclusive) overrides ``since_days``.
+    ``workload`` matches the registered name or the workload id. ``q`` is a
+    substring search across id, provider, model, workload, session, and
+    correlation ids. Every row carries the keys in ``_CALL_COLUMNS``; an
+    unregistered workload reads ``(unregistered)``.
+    """
+    clauses = ["c.project = ?"]
+    params: list[object] = [project]
+    if since is not None:
+        clauses.append("c.ts > ?")
+        params.append(since)
+    elif since_days is not None:
+        clauses.append("c.ts >= datetime('now', ?)")
+        params.append(f"-{int(since_days)} days")
+    if workload:
+        clauses.append("(w.name = ? OR c.workload_id = ?)")
+        params.extend([workload, workload])
+    if provider:
+        clauses.append("c.provider = ?")
+        params.append(provider)
+    if model:
+        clauses.append("c.model = ?")
+        params.append(model)
+    if outcome:
+        clauses.append("c.outcome = ?")
+        params.append(outcome)
+    if origin:
+        clauses.append("c.origin = ?")
+        params.append(origin)
+    if q:
+        like = f"%{q}%"
+        clauses.append(
+            "(c.id LIKE ? OR c.provider LIKE ? OR c.model LIKE ? OR "
+            "COALESCE(w.name, '') LIKE ? OR COALESCE(c.session_id, '') LIKE ? OR "
+            "COALESCE(c.correlation_id, '') LIKE ?)"
+        )
+        params.extend([like] * 6)
+    order = "DESC" if newest_first else "ASC"
+    params.append(int(limit))
+    sql = f"""
+        SELECT c.id, c.ts, COALESCE(w.name, ?) AS workload, c.provider, c.model,
+               c.tokens_in, c.tokens_out, c.latency_ms, c.cost_usd, c.outcome,
+               c.error_kind, c.prompt_hash, c.response_hash, c.session_id,
+               c.parent_call_id, c.correlation_id, c.ttft_ms, c.cache_tokens_in,
+               c.cache_tokens_out, c.reasoning_tokens, c.origin, c.call_site,
+               c.client_version
+        FROM calls c
+        LEFT JOIN workloads w ON w.id = c.workload_id
+        WHERE {" AND ".join(clauses)}
+        ORDER BY c.ts {order}
+        LIMIT ?
+    """
+    params.insert(0, UNREGISTERED)
+    rows = _execute(conn_or_path, sql, params)
+    out = []
+    for r in rows:
+        row = dict(zip(_CALL_COLUMNS, r, strict=True))
+        row["cost_usd"] = row["cost_usd"] or 0.0
+        out.append(row)
+    return out
+
+
+def _execute(conn_or_path, sql: str, params) -> list:
+    if isinstance(conn_or_path, sqlite3.Connection):
+        return conn_or_path.execute(sql, params).fetchall()
+    with _connect_ro(Path(conn_or_path)) as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Fleet health — what `somm doctor --global` reports about a shared ledger.
+
+SENTINEL_MODEL_PREFIX = "*"
+
+
+def fleet_summary(db_path: Path, *, since_days: int = 7) -> dict:
+    """Facts about a ledger that only make sense across projects.
+
+    - ``clients``: rows per (project, client_version) in the window, so an
+      operator can see which projects write with an old library;
+    - ``loop``: whether the intelligence loop has ever produced anything —
+      samples, eval results, recommendations, worker heartbeats;
+    - ``sentinel_rows``: rows whose model is a routing sentinel or blank,
+      which older clients wrote for exhaustion and which pollute rollups;
+    - ``provider_spellings``: providers that differ only by ``-`` vs ``_``;
+    - ``unaliased``: (provider, model) pairs seen in the window with no row in
+      ``model_aliases``.
+    """
+    window = f"-{int(since_days)} days"
+    with _connect_ro(db_path) as conn:
+        clients = conn.execute(
+            "SELECT project, COALESCE(client_version, '(pre-0.17)') AS client_version, "
+            "COUNT(*) FROM calls WHERE ts >= datetime('now', ?) "
+            "GROUP BY project, client_version ORDER BY project, 3 DESC",
+            (window,),
+        ).fetchall()
+
+        def count(table: str) -> int:
+            try:
+                return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            except sqlite3.Error:
+                return 0
+
+        loop = {
+            "samples": count("samples"),
+            "eval_results": count("eval_results"),
+            "recommendations": count("recommendations"),
+            "decisions": count("decisions"),
+            "worker_heartbeats": count("worker_heartbeat"),
+            "shadow_configured_workloads": conn.execute(
+                "SELECT COUNT(*) FROM workloads WHERE shadow_config_json IS NOT NULL"
+            ).fetchone()[0],
+        }
+        sentinel_rows = conn.execute(
+            "SELECT COUNT(*) FROM calls WHERE ts >= datetime('now', ?) "
+            "AND (model = '' OR model LIKE ? ESCAPE '\\')",
+            (window, SENTINEL_MODEL_PREFIX.replace("*", "\\*") + "%"),
+        ).fetchone()[0]
+        providers = [
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT provider FROM calls WHERE ts >= datetime('now', ?)", (window,)
+            )
+        ]
+        pairs = conn.execute(
+            "SELECT DISTINCT c.provider, c.model FROM calls c "
+            "LEFT JOIN model_aliases a ON a.provider = c.provider AND a.model = c.model "
+            "WHERE c.ts >= datetime('now', ?) AND c.model != '' AND c.model NOT LIKE '*%' "
+            "AND a.canonical_id IS NULL ORDER BY 1, 2",
+            (window,),
+        ).fetchall()
+
+    by_norm: dict[str, set[str]] = {}
+    for p in providers:
+        if p:
+            by_norm.setdefault(p.replace("_", "-"), set()).add(p)
+    spellings = {k: sorted(v) for k, v in by_norm.items() if len(v) > 1}
+    return {
+        "window_days": since_days,
+        "clients": [
+            {"project": r[0], "client_version": r[1], "calls": r[2]} for r in clients
+        ],
+        "loop": loop,
+        "sentinel_rows": sentinel_rows,
+        "provider_spellings": spellings,
+        "unaliased": [(r[0], r[1]) for r in pairs],
+    }

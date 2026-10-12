@@ -1959,6 +1959,54 @@ class Repository:
             client_version=row[41],
         )
 
+    def prune_calls(self, *, older_than_days: int, dry_run: bool = False) -> dict:
+        """Delete ``calls`` rows (and their samples, updates, and eval results)
+        older than the cutoff. Returns counts per table.
+
+        The ledger is write-once, so this is the one sanctioned deletion and
+        it is coarse by design: a retention window, not a filter. Decisions,
+        workloads, prompts, datasets, and recommendations are never touched —
+        they are the memory; calls are the sensor record that produced it.
+        ``dry_run`` reports what would go without deleting.
+        """
+        if older_than_days < 1:
+            raise ValueError("older_than_days must be at least 1")
+        cutoff = f"-{int(older_than_days)} days"
+        with self._open() as conn:
+            ids_sql = "SELECT id FROM calls WHERE ts < datetime('now', ?)"
+            counts = {
+                "calls": conn.execute(
+                    "SELECT COUNT(*) FROM calls WHERE ts < datetime('now', ?)", (cutoff,)
+                ).fetchone()[0],
+                "samples": conn.execute(
+                    f"SELECT COUNT(*) FROM samples WHERE call_id IN ({ids_sql})", (cutoff,)
+                ).fetchone()[0],
+                "call_updates": conn.execute(
+                    f"SELECT COUNT(*) FROM call_updates WHERE call_id IN ({ids_sql})", (cutoff,)
+                ).fetchone()[0],
+                "eval_results": conn.execute(
+                    f"SELECT COUNT(*) FROM eval_results WHERE call_id IN ({ids_sql})", (cutoff,)
+                ).fetchone()[0],
+            }
+            if dry_run or not counts["calls"]:
+                return counts
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(f"DELETE FROM samples WHERE call_id IN ({ids_sql})", (cutoff,))
+                conn.execute(f"DELETE FROM call_updates WHERE call_id IN ({ids_sql})", (cutoff,))
+                conn.execute(f"DELETE FROM eval_results WHERE call_id IN ({ids_sql})", (cutoff,))
+                conn.execute("DELETE FROM calls WHERE ts < datetime('now', ?)", (cutoff,))
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return counts
+
+    def vacuum(self) -> None:
+        """Reclaim file space after a prune. Takes an exclusive lock briefly."""
+        with self._open() as conn:
+            conn.execute("VACUUM")
+
     def record_outcome_update(self, call_id: str, outcome: Outcome) -> None:
         """Late-arriving outcome mark. Goes into call_updates, not calls."""
         self.record_call_update(call_id, field="outcome", value=outcome.value)
