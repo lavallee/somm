@@ -1,8 +1,10 @@
 """SommLLM — the library entry point.
 
-D1 minimal: .generate() against a single provider (ollama), telemetry writes
-via WriterQueue, demo-mode default (auto-registers unknown workloads with a
-warning), call_id in result for provenance.
+``somm.llm()`` returns a :class:`SommLLM`: one object that resolves the
+workload, applies pre-call hooks and the budget gate, dispatches to a pinned
+provider or through the router chain, and records one ``calls`` row per
+attempt. ``generate``, ``stream``, ``embed``, and the structured-output
+wrappers share that path; the ``a*`` variants run it off the event loop.
 """
 
 from __future__ import annotations
@@ -847,13 +849,6 @@ class SommLLM:
         self._writer = WriterQueue(self.repo, self.config.spool_dir, mirror_repo=mirror_repo)
         self._writer.start()
         self._mirror_repo = mirror_repo
-
-        # Decisions are ALWAYS mirrored to the global store — unlike calls
-        # (per-project for privacy), advisory memory is explicitly
-        # cross-project: "last time I picked a vision model, here's why."
-        # We lazily create the handle so cold starts don't touch the global
-        # path unless a decision is actually recorded.
-        self._decision_mirror: Repository | None = mirror_repo
 
         # Seed pricing on first use so cost tracking works out of the box.
         seed_known_pricing(self.repo)

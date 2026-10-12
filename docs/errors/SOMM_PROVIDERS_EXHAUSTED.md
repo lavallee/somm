@@ -54,5 +54,3 @@ provider is down for a long window, the call fails loud rather than
 hanging — that's safer for batch jobs and servers.
 
 **Related.**
-- [`SOMM_SCHEMA_STALE`](./SOMM_SCHEMA_STALE.md) — different issue; DB
-  schema needs migration.

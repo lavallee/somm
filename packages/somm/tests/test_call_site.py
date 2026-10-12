@@ -15,9 +15,18 @@ from somm import hooks
 from somm_core.models import Call, Outcome
 from somm_core.repository import Repository
 
+REPO_MARKER = ".somm-test-repo"
+PKG_MARKER = "somm-test-package.toml"
+
 
 @pytest.fixture(autouse=True)
-def _restore_provider():
+def _restore_provider(monkeypatch):
+    # The resolver walks up to the filesystem root looking for repo/package
+    # markers. A tmp_path under a checked-out tree (TMPDIR inside a git repo)
+    # would find that tree's `.git`, so the tests use markers of their own.
+    monkeypatch.setattr(hooks, "_REPO_MARKERS", (REPO_MARKER,))
+    monkeypatch.setattr(hooks, "_PACKAGE_MARKERS", (PKG_MARKER,))
+    hooks._site_path_cache.clear()
     yield
     hooks.set_call_site_provider(None)
     hooks._site_path_cache.clear()
@@ -80,7 +89,7 @@ def test_site_is_repo_relative_and_names_the_repo(tmp_path) -> None:
     """A site is only joinable to a static audit if it says which repo it is
     in, so the repository directory itself stays in the path."""
     repo = tmp_path / "acme-service"
-    (repo / ".git").mkdir(parents=True)
+    (repo / REPO_MARKER).mkdir(parents=True)
     src = repo / "acme_service" / "ingest"
     src.mkdir(parents=True)
     target = src / "tools.py"
@@ -94,10 +103,10 @@ def test_repo_marker_beats_a_nearer_package_marker(tmp_path) -> None:
     there yields `somm/src/somm/client.py` where the joinable answer is
     `somm/packages/somm/src/somm/client.py`."""
     repo = tmp_path / "somm"
-    (repo / ".git").mkdir(parents=True)
+    (repo / REPO_MARKER).mkdir(parents=True)
     pkg = repo / "packages" / "somm"
     pkg.mkdir(parents=True)
-    (pkg / "pyproject.toml").write_text("[project]\n")
+    (pkg / PKG_MARKER).write_text("[project]\n")
     src = pkg / "src" / "somm"
     src.mkdir(parents=True)
     target = src / "client.py"
@@ -109,7 +118,7 @@ def test_repo_marker_beats_a_nearer_package_marker(tmp_path) -> None:
 def test_package_marker_is_used_when_there_is_no_repo(tmp_path) -> None:
     pkg = tmp_path / "loose"
     (pkg / "src").mkdir(parents=True)
-    (pkg / "pyproject.toml").write_text("[project]\n")
+    (pkg / PKG_MARKER).write_text("[project]\n")
     target = pkg / "src" / "mod.py"
     target.write_text("x = 1\n")
 
@@ -130,7 +139,7 @@ def test_a_file_outside_any_project_does_not_leak_the_filesystem(tmp_path) -> No
 
 def test_resolution_is_cached_per_file(tmp_path) -> None:
     repo = tmp_path / "proj"
-    (repo / ".git").mkdir(parents=True)
+    (repo / REPO_MARKER).mkdir(parents=True)
     target = repo / "mod.py"
     target.write_text("x = 1\n")
 
