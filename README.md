@@ -22,14 +22,19 @@ platform doesn't.
 - 🟢 **No phone-home**, no cloud account, no hosted service
 - 🟢 **One-line drop-in** for codebases with an existing LLM wrapper
 - 🟢 **Ten providers** — ollama, OpenRouter, DeepSeek, Minimax,
-  Anthropic, Gemini, OpenAI, Perplexity, `claude`/`codex` CLI
-  executors + any OpenAI-compatible gateway
-- 🟢 **Tool calling** on every provider — neutral schema in, native
+  Anthropic, Gemini, OpenAI, Perplexity, `claude`/`codex` CLI seats, and
+  any OpenAI-compatible gateway; see the capability matrix below for
+  what each one honors
+- 🟢 **Tool calling** on every API provider — neutral schema in, native
   format out, `ToolCall`s back
 - 🟢 **Streaming, embeddings, multimodal** — image prompts routed only
   to capable models
+- 🟢 **Coding-agent harnesses** — one normalized attempt for Claude Code,
+  Codex, OpenCode, and Pi, recorded in the same ledger as every API call
 - 🟢 **Sommelier** — cross-project model memory: pick once, remember
   everywhere
+- 🟢 **An intelligence loop you can actually run** — `somm loop run`, or
+  `somm loop install` for a timer; no service required
 - 🟢 **Loud on failure** — `calls.error_detail` + inline `on_error`
   callback so crashes don't hide
 - 🟢 **MCP** (14 tools) for Claude Code / Cursor / Windsurf to query
@@ -126,8 +131,12 @@ LLM-using Python projects all grow along the same axes. You end up with:
 ### What's NOT here
 
 The self-hosted LLM-tooling space has a pattern: open-source today,
-acquired or gated tomorrow. somm is structured so that can't happen to
-you:
+acquired or gated tomorrow. The 2026 scorecard: Langfuse was acquired by
+ClickHouse (January), Helicone by Mintlify and put in maintenance mode
+(March), Traceloop by ServiceNow (March), Portkey by Palo Alto Networks
+(May); TensorZero archived its repository in June; Arize Phoenix ships
+under the Elastic License; Braintrust's "self-hosting" keeps a hosted
+control plane. somm is structured so that can't happen to you:
 
 - **No `ee/` directory.** Every feature in this repo is MIT, forever.
 - **No license keys, no feature flags tied to a vendor account.**
@@ -233,6 +242,25 @@ Schema); per-provider adapters translate to and from native formats
 raise loudly instead of silently dropping it, and the router falls
 through. Full design: [`docs/tool-calling.md`](./docs/tool-calling.md).
 
+What each provider honors today — an honest matrix beats a slogan:
+
+| Provider | Tools | Multi-turn `messages` | Native streaming | Embeddings | Structured output | Reasoning dial | Reports cost |
+|---|---|---|---|---|---|---|---|
+| `ollama` | yes | yes | yes | yes | `format` (schema or JSON) | `think` flag | n/a (local) |
+| `openrouter` | yes | yes | SSE | — | `response_format` | `reasoning_effort` | yes (`usage.cost`) |
+| `deepseek` | yes | yes | SSE | — | JSON mode (schema rides in the prompt) | `reasoning_effort` | — |
+| `minimax` | yes | yes | SSE | — | `response_format` | `reasoning_effort` | — |
+| `openai` and gateways | yes | yes | SSE | — | `response_format` | `reasoning_effort` | — |
+| `gemini` (OpenAI-compat) | yes | yes | SSE | — | `response_format` | `reasoning_effort` | — |
+| `anthropic` | yes | yes | one chunk | — | `output_config.format` | `output_config.effort` | — |
+| `perplexity` | yes | yes | SSE | — | — | — | — |
+| `claude-cli` seat | — | — | one chunk | — | — | — | yes |
+| `codex-cli` seat | — | — | one chunk | — | — | — | — |
+
+A provider that cannot take a request shape raises `SommBadRequest` and the
+router moves on; an OpenAI-compatible endpoint that rejects a structured
+`response_format` steps down to JSON mode and remembers.
+
 ### Streaming and embeddings
 
 ```python
@@ -327,7 +355,9 @@ concrete recommendations:
 > (score 0.4, 500ms). Shadow evals show ollama/gemma3:27b scoring 0.85
 > at 100ms — +45% quality, -80% latency, same cost. Try it?
 
-Budget-capped per workload. Skipped entirely on private workloads.
+Budget-capped per workload. Skipped entirely on private workloads. The
+workers run with `somm loop run` (one pass) or `somm loop install` (a
+systemd user timer); see [`docs/intelligence-loop.md`](./docs/intelligence-loop.md).
 
 Production samples can also become durable CI fixtures. Promote a captured
 call or import reviewed JSONL prompt/reference pairs into a dataset, run it
@@ -381,7 +411,11 @@ print(result.outcome, result.final_text)
 ```
 
 Use `harnesses.start()` plus `harnesses.inspect()` when a scheduler needs to
-own watchdogs and cancellation. Permission bypass is explicit and off by
+own watchdogs and cancellation. The result carries the served model, the
+harness version, the cost the CLI reported, duration, turns, and a
+`retry_after_s` when a seat limit said when it lifts; `record=True` (or
+`harnesses.record_attempt()`) writes the attempt into the ledger as a
+`calls` row beside every API call. Permission bypass is explicit and off by
 default. See [`docs/agent-harnesses.md`](./docs/agent-harnesses.md).
 
 ### Extension hooks
@@ -448,16 +482,19 @@ somm generate <prompt> [--workload W] [--json]      # one-shot LLM call through 
 somm tail [--workload NAME] [--poll-interval S]    # live call stream
 somm compare <prompt> --models p/m,p/m             # side-by-side N-model comparison
 somm frontier --workload NAME [--since N]          # adequacy frontier per (provider, model)
+somm loop run|install|status|uninstall             # the intelligence loop, one pass or a timer
 somm spend [--json]                                # today's spend vs daily budget cap
 somm plans [--json] [--project-only]               # metered-plan quota usage + pacing (fleet-wide)
 somm backfill-costs [--since N] [--dry-run]        # recompute $0 calls that now have pricing
 somm drain-spool                                   # replay spooled telemetry into the DB
+somm prune --older-than DAYS [--dry-run] [--vacuum] # retention: delete old calls + their samples/evals
+somm alias list|seed|set                           # canonical model identities across routes
 somm workload add/list/show/set-constraints        # register and inspect workloads
 somm prompt list/show/register/fork/diff/label     # immutable prompt versions + mutable labels
 somm eval promote-call/import/run                  # durable datasets + synchronous eval gates
 somm optimize --workload NAME                      # propose a prompt fork from failing graded calls
 somm campaign run --workload NAME --dataset NAME   # repeated eval campaign with keep/revert log
-somm doctor                                        # config, ollama, db, intel, workers, cooldowns
+somm doctor [--global]                             # health: config, ollama, db, intel, loop, fleet
 somm serve [--host H] [--port N]                   # web admin + scheduler + workers
 ```
 
@@ -523,8 +560,11 @@ curl -H "Authorization: Bearer $SOMM_SERVICE_TOKEN" \
   http://127.0.0.1:7878/api/otlp/v1/traces
 ```
 
-The OTLP parser is lenient about `gen_ai` semantic-convention drift and
-stores accepted spans as ordinary `calls` rows. Ingest rejects oversized
+The OTLP parser reads the current GenAI semantic conventions
+(`gen_ai.provider.name`, `gen_ai.usage.cache_read.input_tokens`,
+`gen_ai.usage.reasoning.output_tokens`, …) beside the pre-1.37 names and
+OpenInference's `llm.*` spellings, and stores accepted spans as ordinary
+`calls` rows. Ingest rejects oversized
 JSON bodies and over-cap span batches before writing rows. SQLite remains
 the default backend; the `somm[postgres]` extra installs the Postgres
 driver dependency for shared-deployment experiments.
@@ -681,22 +721,32 @@ provider is opt-in via its own env var.
 | `OPENROUTER_API_KEY` | — | enables OpenRouter |
 | `SOMM_OPENROUTER_ROSTER` | built-in free roster | comma-sep model ids |
 | `DEEPSEEK_API_KEY` | — | enables DeepSeek |
-| `SOMM_DEEPSEEK_MODEL` | `deepseek-chat` | |
+| `SOMM_DEEPSEEK_MODEL` | `deepseek-flash` | |
 | `MINIMAX_API_KEY` | — | enables Minimax |
 | `SOMM_MINIMAX_MODEL` | `MiniMax-M3` | first configured default route |
 | `ANTHROPIC_API_KEY` | — | enables Anthropic |
-| `SOMM_ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | |
+| `SOMM_ANTHROPIC_MODEL` | `claude-haiku-5-5` | |
+| `SOMM_ANTHROPIC_AUTO_CACHE` | `1` | top-level `cache_control` on every Anthropic request (automatic prompt caching); `0` to opt out |
 | `GEMINI_API_KEY` | — | enables Gemini (via OpenAI-compat endpoint) |
-| `SOMM_GEMINI_MODEL` | `gemini-2.5-pro` | |
+| `SOMM_GEMINI_MODEL` | `gemini-3.8-flash` | |
 | `OPENAI_API_KEY` | — | enables OpenAI |
-| `SOMM_OPENAI_MODEL` | `gpt-4o-mini` | |
+| `SOMM_OPENAI_MODEL` | `gpt-6-luna` | |
 | `SOMM_OPENAI_BASE_URL` | `https://api.openai.com/v1` | for OpenAI-compatible gateways |
 | `PERPLEXITY_API_KEY` | — | enables Perplexity (pinned-only; never a routine fallback) |
 | `SOMM_PERPLEXITY_MODEL` | `sonar` | |
 | `SOMM_HTTP_TIMEOUT` | `180` | seconds, OpenAI-compat providers |
 | `SOMM_BUDGET_FAIL_CLOSED` | `0` | `1` blocks calls once a workload's daily cap is reached |
 | `SOMM_BUDGET_DEFAULT_CAP_USD_DAILY` | — | daily cap for workloads without an explicit one (fail-closed mode) |
-| `SOMM_INPROCESS_WORKERS` | `0` | `1` runs the intelligence-loop scheduler inside your process (needs somm-service) |
+| `SOMM_INPROCESS_WORKERS` | `0` | `1` runs the intelligence-loop scheduler inside a long-lived process; short-lived ones use `somm loop install` |
+| `SOMM_WAIT_ON_EXHAUSTED` | — | default seconds to wait when every routed provider is cooling, instead of failing fast |
+| `SOMM_CLAUDE_CLI_MODEL` / `SOMM_CLAUDE_CLI_ARGS` | — | seat model and extra flags (shell-split) for the `claude-cli` provider |
+| `SOMM_PLANS_PATH` | `~/.somm/plans.toml` | billing-plan declarations |
+| `SOMM_REGISTRY_PATH` | `~/.somm/registry.json` | fleet registry of project ledgers (`SOMM_REGISTRY_ALLOW_TMP=1` lets tests register under a temp dir) |
+| `SOMM_DB_DIR` | `./.somm` | where this project's ledger lives |
+| `SOMM_SERVICE_PUBLIC_READ` | `0` | `1` exposes the read API without a token (deliberate deployments only) |
+| `SOMM_SERVICE_PROXY_MAX_BODY_BYTES` | `1048576` | proxy request body cap |
+| `SOMM_SERVICE_OTLP_MAX_BODY_BYTES` / `_MAX_SPANS` / `_MAX_ATTR_CHARS` | `1048576` / `1000` / `2048` | OTLP ingest caps |
+| `SOMM_MCP_COMPARE_MAX_MODELS` / `_MAX_TOKENS` | `5` / `1024` | `somm_compare` ceilings (`_ALLOW_EXPENSIVE_*` variants: `10` / `4096` when the caller opts in) |
 | `SOMM_CROSS_PROJECT` | `0` | `1` mirrors telemetry to `~/.somm/global.sqlite` |
 | `SOMM_GLOBAL_PATH` | `~/.somm/global.sqlite` | mirror file location |
 | `SOMM_KEY_PROFILE` | — | named key profile; see below |
@@ -736,13 +786,11 @@ Anthropic reports separately from `input_tokens`.
 ## Architecture
 
 ```
-   library (sensor) ──► local store ◄── service (brain)
-       ▲                    ▲                  │
-       │                    │                  ├─► online-eval worker
-       │                    │                  ├─► model-intel worker
-       │                    │                  ├─► agent worker
-       │                    │                  └─► web admin
+   library (sensor) ──► local store ◄── workers (brain): model-intel, shadow-eval, agent
+       ▲                    ▲                  run by `somm loop run` / a timer / `somm serve`
        │                    │
+       │                    └── service: web admin + read API + proxy + OTLP ingest
+       │
        └── skill (onboarding) ─── MCP (interface for coding agents)
 ```
 
@@ -751,19 +799,20 @@ Six packages:
 - **`somm-core`** — schema, migrations, repository, config, parse
   helpers (incl. multimodal content-block + capability helpers)
 - **`somm`** — `SommLLM`, providers, routing, streaming, embeddings,
-  tool calling, one-attempt coding-agent harnesses, sommelier, compat shims,
-  hooks, CLI
-- **`somm-service`** — starlette web admin + HTTP API + scheduler + 3 workers
+  tool calling, one-attempt coding-agent harnesses, the three loop workers
+  and `somm loop`, sommelier, compat shims, hooks, CLI
+- **`somm-service`** — starlette web admin + HTTP read API + provider proxy +
+  OTLP ingest; hosts the scheduler beside the dashboard
 - **`somm-mcp`** — stdio MCP server with 14 tools
 - **`somm-langchain`** — `SommChatModel` adapter for LangChain/LangGraph/deepagents
 - **`somm-skill`** — onboarding markdown templates for coding agents
 
-`somm-core` ships a bundled pricing snapshot (~350 models, derived from
+`somm-core` ships a bundled pricing snapshot (~300 models, derived from
 [LiteLLM's price file](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json))
 that syncs into every project database on init — cost tracking works
 offline, out of the box, for every provider somm routes to. The
-service tier's background workers run under `somm serve`, or inside
-your own process with `SOMM_INPROCESS_WORKERS=1`.
+model-intel worker then refreshes live from [models.dev](https://models.dev)
+(MIT) and OpenRouter's catalog.
 
 ## Docs
 
@@ -771,8 +820,12 @@ your own process with `SOMM_INPROCESS_WORKERS=1`.
   load-bearing forces + the data model
 - 🗺️ [**ROADMAP.md**](./ROADMAP.md) — what's next, what's deferred, what's not planned
 - 📜 [**CHANGELOG.md**](./CHANGELOG.md) — release log
+- 🔁 [**The intelligence loop**](./docs/intelligence-loop.md) — what the
+  workers do and how to run them
+- 📖 [**Reading the ledger**](./docs/read-api.md) — the supported read
+  API and column-stability contract
 - 🔧 [**Tool calling**](./docs/tool-calling.md) — neutral schema + per-provider adapters
-- 🤖 [**Coding-agent harnesses**](./docs/agent-harnesses.md) — one-attempt Claude, Codex, and OpenCode execution
+- 🤖 [**Coding-agent harnesses**](./docs/agent-harnesses.md) — one-attempt Claude Code, Codex, OpenCode, and Pi execution, recorded in the ledger
 - [**Plugins and hooks**](./docs/plugins.md) — hook phases, reference plugins, and provider entry points
 - 🖼️ [**Multimodal prompts**](./docs/multimodal.md) — image blocks +
   capability-aware routing
@@ -800,7 +853,7 @@ internal names or personal paths.
 
 ## Status
 
-**v0.14.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
+**v0.17.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
 the public API, MCP tools, service contracts, and migration semantics are not
 yet declared stable. See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

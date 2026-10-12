@@ -50,7 +50,9 @@ isn't earning its keep.
   stronger model reclaims ground.
 
   Somm's job in that loop is what it has always been: be the meter and the
-  memory. It does not own the deterministic components — the first non-LLM kind,
+  memory. The first climb is live: gabe's `same_event` — 700,000 calls on a
+  7B local model — runs as a chipsocket socket with somm as its gateway and
+  meter. It does not own the deterministic components — the first non-LLM kind,
   `chip`, is published by fab — it owns the record that tells you where each
   workload belongs.
 
@@ -63,6 +65,25 @@ isn't earning its keep.
   contract, which means nothing downstream can decide whether a fixture could
   falsify a workload's result. A record that cannot say where a workload runs
   or what it promises can meter the climb but cannot adjudicate it.
+
+## Re-grounding, October 2026
+
+A census of this machine's fleet — 1.7 million calls since June — showed what
+the north-star metric was hiding. The sensor was everywhere: nine projects
+writing, the busiest at 300,000 calls a month. The brain had never run: zero
+recommendations, zero evaluations, three workloads opted into online eval and
+never graded, and 87 sommelier decisions recorded, nearly all from one MCP
+session. The estate had routed around the gaps — seven tools reading the
+ledger with their own SQL, every production unit overriding the
+sovereign-first default with an environment drop-in, coding-agent attempts
+accounted for everywhere except here.
+
+Two lessons for the strategy. First, "the agent closes the loop" needs the
+loop to be runnable by a project with no resident process; 0.17 made it a
+command and a timer. Second, cross-project memory is only a moat if the
+projects write with a current client; the ledger now records which version
+wrote each row so the skew is a finding, not a mystery. The metric stands.
+The honest reading of it today is low, and that is the point of having one.
 
 ## Non-goals
 
