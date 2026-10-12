@@ -11,22 +11,23 @@ treats every provider uniformly. Each subclass just overrides `name`,
 
 from __future__ import annotations
 
+import logging
 import time
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
-from somm_core.parse import strip_think_block
+from somm_core.parse import (
+    extract_reported_cost,
+    reasoning_tokens_from_usage,
+    strip_think_block,
+)
 
 from somm.errors import (
-    SommAuthError,
     SommBadRequest,
-    SommInsufficientCredit,
-    SommRateLimited,
     SommTimeout,
     SommTransientError,
-    SommUpstream5xx,
-    looks_like_insufficient_credit,
+    classify_body_error,
+    classify_http_status,
 )
 from somm.providers.base import (
     ProviderHealth,
@@ -52,6 +53,16 @@ class OpenAICompatProvider:
     name: str = "openai-compat"
     base_url: str = "https://api.example.com/v1"
     default_model: str = ""
+    # How this endpoint takes a structured-output request. "json_schema" sends
+    # the schema in response_format; "json_object" sends only the JSON-mode
+    # flag (the schema still rides in the system prompt, and
+    # generate_structured validates); "prompt" sends nothing. An endpoint
+    # that 400s on response_format is downgraded one rung at runtime and the
+    # lesson is kept for the life of the provider object, so a bake-off does
+    # not report a model as "12/12 invalid output" because the gateway never
+    # let the request reach it (issue #36).
+    structured_output_mode: str = "json_schema"
+    _STRUCTURED_LADDER = ("json_schema", "json_object", "prompt")
 
     def __init__(
         self,
@@ -68,6 +79,7 @@ class OpenAICompatProvider:
         if default_model is not None:
             self.default_model = default_model
         self.timeout = timeout
+        self._structured_mode = self.structured_output_mode
 
     # ------------------------------------------------------------------
 
@@ -115,7 +127,9 @@ class OpenAICompatProvider:
         if request.tool_choice is not None:
             payload["tool_choice"] = _translate_tool_choice_to_openai(request.tool_choice)
         if request.response_format is not None:
-            payload["response_format"] = request.response_format
+            translated = _translate_response_format(request.response_format, self._structured_mode)
+            if translated is not None:
+                payload["response_format"] = translated
         if request.reasoning_effort is not None:
             payload["reasoning_effort"] = request.reasoning_effort
         return payload
@@ -128,26 +142,32 @@ class OpenAICompatProvider:
             raise SommBadRequest(f"{self.name}: no model configured or requested")
 
         t0 = time.monotonic()
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp = client.post(
-                    self._chat_url(),
-                    headers=self._headers(),
-                    json=self._build_payload(request, model),
-                )
-        except httpx.TimeoutException as e:
-            raise SommTimeout(f"{self.name} timeout on {model}: {e}", cooldown_s=60.0) from e
-        except httpx.RequestError as e:
-            raise SommTransientError(
-                f"{self.name} network error on {model}: {e}", cooldown_s=30.0
-            ) from e
+        while True:
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    resp = client.post(
+                        self._chat_url(),
+                        headers=self._headers(),
+                        json=self._build_payload(request, model),
+                    )
+            except httpx.TimeoutException as e:
+                raise SommTimeout(f"{self.name} timeout on {model}: {e}", cooldown_s=60.0) from e
+            except httpx.RequestError as e:
+                raise SommTransientError(
+                    f"{self.name} network error on {model}: {e}", cooldown_s=30.0
+                ) from e
+
+            try:
+                self._classify_status(resp, model)
+                data = resp.json()
+                if isinstance(data, dict) and data.get("error"):
+                    self._raise_body_error(data["error"], model)
+            except SommBadRequest as exc:
+                if self._downgrade_structured_mode(request, exc):
+                    continue
+                raise
+            break
         latency_ms = int((time.monotonic() - t0) * 1000)
-
-        self._classify_status(resp, model)
-
-        data = resp.json()
-        if isinstance(data, dict) and data.get("error"):
-            self._raise_body_error(data["error"], model)
 
         choices = data.get("choices") or []
         if not choices:
@@ -178,48 +198,44 @@ class OpenAICompatProvider:
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             reasoning_content=reasoning_content,
+            reasoning_tokens=reasoning_tokens_from_usage(usage),
+            # A gateway that states what it charged (OpenRouter's usage.cost)
+            # beats a token-times-price estimate; the client records the
+            # basis as "reported" when this is set.
+            cost_usd=extract_reported_cost(data),
         )
 
+    def _downgrade_structured_mode(self, request: SommRequest, exc: SommBadRequest) -> bool:
+        """A 400 that blames response_format means the endpoint cannot take the
+        structured-output shape we sent. Step down one rung and say so; the
+        caller's request is retried. False when there is nothing to step down."""
+        if request.response_format is None or "response_format" not in str(exc).lower():
+            return False
+        ladder = self._STRUCTURED_LADDER
+        try:
+            rung = ladder.index(self._structured_mode)
+        except ValueError:
+            return False
+        if rung + 1 >= len(ladder):
+            return False
+        self._structured_mode = ladder[rung + 1]
+        logging.getLogger("somm.providers").info(
+            "%s rejected response_format (%s); using %s for the rest of this session",
+            self.name,
+            str(exc)[:120],
+            self._structured_mode,
+        )
+        return True
+
     def _classify_status(self, resp: httpx.Response, model: str) -> None:
-        sc = resp.status_code
-        if sc == 200:
+        if 200 <= resp.status_code < 300:
             return
-        body = resp.text[:200]
-        if looks_like_insufficient_credit(resp.text):
-            # Out of money/quota — a billing state on this provider, not a bad
-            # request or bad key. Transient so the router falls through to the
-            # next provider instead of aborting the chain.
-            raise SommInsufficientCredit(f"{self.name} out of credit on {model}: {body}")
-        if sc in (401, 403):
-            raise SommAuthError(f"{self.name} auth failed ({sc}): {body}")
-        if sc == 400:
-            raise SommBadRequest(f"{self.name} 400 on {model}: {body}")
-        if sc == 404:
-            raise SommBadRequest(f"{self.name} 404 — model {model!r} not found: {body}")
-        if sc == 429:
-            retry = _retry_after(resp) or 120.0
-            raise SommRateLimited(f"{self.name} 429 on {model}: {body}", retry_after_s=retry)
-        if 500 <= sc < 600:
-            raise SommUpstream5xx(f"{self.name} {sc} on {model}", cooldown_s=30.0)
-        raise SommTransientError(f"{self.name} unexpected {sc} on {model}: {body}", cooldown_s=30.0)
+        classify_http_status(
+            resp.status_code, resp.text, provider=self.name, model=model, headers=resp.headers
+        )
 
     def _raise_body_error(self, err: dict | str, model: str) -> None:
-        if isinstance(err, dict):
-            msg = err.get("message", "")
-            code = err.get("code")
-            typ = err.get("type", "")
-            if looks_like_insufficient_credit(f"{code} {typ} {msg}"):
-                raise SommInsufficientCredit(
-                    f"{self.name} out of credit on {model}: {msg}"
-                )
-            if code == 429 or "rate" in str(msg).lower():
-                raise SommRateLimited(
-                    f"{self.name} body-429 on {model}: {msg}", retry_after_s=120.0
-                )
-            if "auth" in str(typ).lower() or "auth" in str(msg).lower():
-                raise SommAuthError(f"{self.name} body-auth on {model}: {msg}")
-            raise SommTransientError(f"{self.name} body-error on {model}: {msg}", cooldown_s=60.0)
-        raise SommTransientError(f"{self.name} body-error on {model}: {err}", cooldown_s=60.0)
+        classify_body_error(err, provider=self.name, model=model)
 
     # ------------------------------------------------------------------
 
@@ -252,7 +268,8 @@ class OpenAICompatProvider:
                     text = resp.read().decode("utf-8", errors="replace")[:200]
                 except Exception:
                     text = ""
-                fake = httpx.Response(resp.status_code, text=text)
+                # Keep the headers: a 429 mid-stream carries Retry-After too.
+                fake = httpx.Response(resp.status_code, headers=resp.headers, text=text)
                 self._classify_status(fake, model)
                 return
 
@@ -309,6 +326,15 @@ class OpenAICompatProvider:
         # OpenAI: ~85 for low-res image + tiles for hi-res. Use a middling
         # estimate; a precise tokenizer lives behind `somm[tokenizers]` later.
         return estimate_prompt_tokens(text, image_token_cost=700)
+
+
+def _translate_response_format(response_format: dict, mode: str) -> dict | None:
+    """Shape a structured-output hint for what the endpoint accepts."""
+    if mode == "prompt":
+        return None
+    if mode == "json_object" and response_format.get("type") == "json_schema":
+        return {"type": "json_object"}
+    return response_format
 
 
 def _translate_tool_to_openai(tool: dict) -> dict:
@@ -471,24 +497,6 @@ def _normalize_finish_reason(reason: str | None) -> str:
     if not reason:
         return ""
     return _OPENAI_FINISH_REASON_TO_SOMM.get(reason, reason)
-
-
-def _retry_after(resp: httpx.Response) -> float | None:
-    raw = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-    if not raw:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        try:
-            from email.utils import parsedate_to_datetime
-
-            then = parsedate_to_datetime(raw)
-            if then.tzinfo is None:
-                then = then.replace(tzinfo=UTC)
-            return max(0.0, (then - datetime.now(UTC)).total_seconds())
-        except Exception:
-            return None
 
 
 def _uses_max_completion_tokens(model: str) -> bool:

@@ -34,6 +34,7 @@ from somm_core.parse import (
     extract_cache_tokens,
     extract_citations,
     extract_json,
+    extract_reasoning_tokens,
     infer_capabilities,
     stable_hash,
 )
@@ -44,6 +45,7 @@ from somm_core.plans import load_plans
 from somm_core.pricing import seed_known_pricing, sync_bundled_pricing
 from somm_core.registry import fleet_db_paths, register_project
 from somm_core.repository import Repository
+from somm_core.version import VERSION as _CLIENT_VERSION
 
 from somm import hooks
 from somm._redaction import scrub_text
@@ -225,7 +227,19 @@ def _validate_structured_json_schema_light(parsed: dict | list, schema: dict) ->
             )
 
 
-def _format_structured_failure(last_raw: str, last_error: str) -> str:
+def _format_structured_failure(
+    last_raw: str, last_error: str, *, delivery_failure: bool = False
+) -> str:
+    if delivery_failure:
+        return (
+            "SOMM_STRUCTURED_OUTPUT_FAILED\n\n"
+            "Problem: generate_structured() got no model output to validate.\n"
+            f"Cause: {last_error}\n"
+            "Fix: This is a delivery failure (throttling, an upstream error, or an "
+            "exhausted chain), not a schema failure. Back off and retry, space out "
+            "burst calls, or pick another provider; do not loosen the schema.\n"
+            "Docs: docs/errors/SOMM_STRUCTURED_OUTPUT_FAILED.md"
+        )
     return (
         "SOMM_STRUCTURED_OUTPUT_FAILED\n\n"
         "Problem: generate_structured() could not produce JSON matching the supplied schema.\n"
@@ -1453,6 +1467,7 @@ class SommLLM:
                     raise_after_record = exc
 
         cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
+        reasoning_tokens = extract_reasoning_tokens(raw_out)
         citations = extract_citations(raw_out)
         citations_json = _citations_json(citations)
         provider_request_id, billing_id = _provider_custody(raw_out)
@@ -1479,6 +1494,7 @@ class SommLLM:
             reasoning_content=reasoning_content_out,
             cache_tokens_in=cache_tokens_in,
             cache_tokens_out=cache_tokens_out,
+            reasoning_tokens=reasoning_tokens,
             citations=citations,
         )
 
@@ -1528,10 +1544,9 @@ class SommLLM:
             pricing_version=pricing_version,
             provider_request_id=provider_request_id,
             billing_id=billing_id,
-            # Which code asked for this call. The embed and stream paths
-            # already recorded it; generate() — the busiest path, and the one
-            # a cost question actually lands on — did not.
             call_site=hooks.current_call_site(),
+            reasoning_tokens=reasoning_tokens,
+            client_version=_CLIENT_VERSION,
         )
         self._writer.submit(call)
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
@@ -1897,6 +1912,7 @@ class SommLLM:
             response_hash=response_hash,
             correlation_id=(correlation_id := hooks.current_correlation_id()),
             call_site=hooks.current_call_site(),
+            client_version=_CLIENT_VERSION,
             session_id=session_id,
             parent_call_id=parent_call_id,
             cost_basis=cost_basis,
@@ -2259,6 +2275,8 @@ class SommLLM:
                 response_hash=stable_hash(full_text),
                 correlation_id=(correlation_id := hooks.current_correlation_id()),
                 call_site=hooks.current_call_site(),
+                client_version=_CLIENT_VERSION,
+                reasoning_tokens=extract_reasoning_tokens(raw_out),
                 temperature=temperature,
                 max_tokens=max_tokens,
                 ttft_ms=ttft_ms,
@@ -2400,6 +2418,7 @@ class SommLLM:
         last_raw = ""
         last_error = "no response"
         last_result: SommResult | None = None
+        delivery_failure = False
 
         for attempt in range(retries + 1):
             attempt_system = base_system
@@ -2427,6 +2446,21 @@ class SommLLM:
             last_result = result
             last_raw = result.text
 
+            if result.outcome != Outcome.OK and not result.text.strip():
+                # Nothing came back to validate. An empty or errored delivery
+                # is a provider problem (burst throttling, a 5xx, an exhausted
+                # chain) and must not be reported as "the model produced
+                # invalid JSON" — that misread eliminated a provider from a
+                # bake-off once (issue #37). Leave the row's outcome alone;
+                # it already says what happened.
+                last_error = (
+                    f"{result.outcome.value}: "
+                    f"{result.error_detail or result.error_kind or 'no model output'}"
+                )
+                delivery_failure = True
+                continue
+            delivery_failure = False
+
             parsed = extract_json(result.text)
             if parsed is None:
                 last_error = "response did not contain a parseable JSON object or array"
@@ -2447,9 +2481,16 @@ class SommLLM:
 
             return validated, result
 
-        if last_result is not None:
+        if last_result is not None and not delivery_failure:
             last_result.mark(Outcome.BAD_JSON)
-        raise SommStructuredError(_format_structured_failure(last_raw, last_error))
+        raise SommStructuredError(
+            _format_structured_failure(last_raw, last_error, delivery_failure=delivery_failure),
+            last_raw=last_raw,
+            last_error=last_error,
+            last_outcome=last_result.outcome.value if last_result is not None else None,
+            delivery_failure=delivery_failure,
+            last_result=last_result,
+        )
 
     async def agenerate_structured(
         self,
@@ -2504,7 +2545,8 @@ class SommLLM:
         allow_fallback: bool | None = None,
         reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
-    ) -> dict | list:
+        with_result: bool = False,
+    ) -> dict | list | tuple[dict | list, SommResult]:
         """Call the LLM and extract JSON from the response.
 
         Handles markdown fences, bracket-balanced extraction, qwen2.5 double-
@@ -2523,8 +2565,12 @@ class SommLLM:
         ``None`` or ``0`` to fail fast on provider exhaustion.
         A pinned ``provider``/``model`` is sticky across every retry; pass
         ``allow_fallback=True`` to let a failed pin fall through the chain.
+        ``with_result=True`` returns ``(parsed, result)`` so the caller can
+        read which provider and model served the parse, the ``call_id``, and
+        the cost, instead of re-reading the ledger to find out.
         """
         last_text = ""
+        result: SommResult | None = None
         for attempt in range(retries + 1):
             temp = temperature + (attempt * temperature_jitter)
             result = self.generate(
@@ -2542,9 +2588,10 @@ class SommLLM:
             last_text = result.text
             parsed = extract_json(result.text)
             if parsed is not None:
-                return parsed
+                return (parsed, result) if with_result else parsed
             result.mark(Outcome.BAD_JSON)
-        return {"raw": last_text, "_somm_parse_err": True}
+        failed = {"raw": last_text, "_somm_parse_err": True}
+        return (failed, result) if with_result else failed
 
     async def aextract_structured(
         self,
@@ -2560,7 +2607,8 @@ class SommLLM:
         allow_fallback: bool | None = None,
         reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
-    ) -> dict | list:
+        with_result: bool = False,
+    ) -> dict | list | tuple[dict | list, SommResult]:
         """Await :meth:`extract_structured` using the same retry pipeline."""
         import asyncio
 
@@ -2578,6 +2626,7 @@ class SommLLM:
             allow_fallback=allow_fallback,
             reasoning_effort=reasoning_effort,
             wait=wait,
+            with_result=with_result,
         )
 
     # ------------------------------------------------------------------

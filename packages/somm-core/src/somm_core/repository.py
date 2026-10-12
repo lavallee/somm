@@ -1767,10 +1767,10 @@ class Repository:
                     cache_tokens_out, citations_json, cost_basis, cost_kind,
                     cost_accuracy, cost_source, pricing_version, observation_role,
                     source_call_id, eval_result_id, provider_request_id, billing_id,
-                    origin, budget_eligible, call_site
+                    origin, budget_eligible, call_site, reasoning_tokens, client_version
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -1814,6 +1814,8 @@ class Repository:
                     call.origin,
                     int(call.budget_eligible),
                     call.call_site,
+                    call.reasoning_tokens,
+                    call.client_version,
                 ),
             )
 
@@ -1836,10 +1838,10 @@ class Repository:
                         cache_tokens_out, citations_json, cost_basis, cost_kind,
                         cost_accuracy, cost_source, pricing_version, observation_role,
                         source_call_id, eval_result_id, provider_request_id, billing_id,
-                        origin, budget_eligible, call_site
+                        origin, budget_eligible, call_site, reasoning_tokens, client_version
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     [
@@ -1884,6 +1886,8 @@ class Repository:
                             c.origin,
                             int(c.budget_eligible),
                             c.call_site,
+                            c.reasoning_tokens,
+                            c.client_version,
                         )
                         for c in calls
                     ],
@@ -1904,7 +1908,7 @@ class Repository:
                 "citations_json, cost_basis, cost_kind, cost_accuracy, cost_source, "
                 "pricing_version, observation_role, source_call_id, eval_result_id, "
                 "provider_request_id, billing_id, origin, budget_eligible, "
-                "call_site "
+                "call_site, reasoning_tokens, client_version "
                 "FROM calls WHERE id = ?",
                 (call_id,),
             ).fetchone()
@@ -1951,6 +1955,8 @@ class Repository:
             origin=row[37],
             budget_eligible=bool(row[38]),
             call_site=row[39],
+            reasoning_tokens=row[40],
+            client_version=row[41],
         )
 
     def record_outcome_update(self, call_id: str, outcome: Outcome) -> None:

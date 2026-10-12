@@ -57,6 +57,21 @@ def current_schema_version(conn: sqlite3.Connection) -> int:
     return row[0] or 0
 
 
+def _already_applied(version: int, conn: sqlite3.Connection) -> bool:
+    """Recognize a migration whose DDL landed but whose version stamp did not.
+
+    The pre-0.8 migration runner committed DDL and the schema_version row
+    separately, so a crash between the two left databases that look older than
+    they are. Re-running additive DDL fails loudly on a duplicate column, which
+    is the right outcome; a DROP has no such guard, so the one destructive
+    migration gets an explicit check (issue #44).
+    """
+    if version == 10:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
+        return "commission_id" not in columns
+    return False
+
+
 def ensure_schema(conn: sqlite3.Connection) -> int:
     """Apply any pending migrations. Returns the schema version after running.
 
@@ -90,6 +105,9 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
         try:
             for version, path in pending:
                 statements = _split_statements(path.read_text())
+                if _already_applied(version, conn):
+                    # Stamp only; the DDL is already in place.
+                    statements = []
                 # PRAGMA statements (e.g. journal_mode = WAL) cannot run inside
                 # a transaction; run them first, outside BEGIN. They set durable
                 # DB properties, so re-running a rolled-back migration that only

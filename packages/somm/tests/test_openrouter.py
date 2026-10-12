@@ -254,3 +254,88 @@ def _patch_client(handler):
             super().__init__(*args, transport=transport, **kwargs)
 
     return _MockedClient
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter rides the OpenAI-compatible base: nothing on the request is
+# dropped, and the gateway's own cost figure is recorded as reported.
+
+
+def test_openrouter_forwards_tools_messages_and_reasoning(tmp_path, monkeypatch):
+    tr = _tmp_tracker(tmp_path)
+    captured = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenRouterProvider(api_key="k", roster=["m-a"], tracker=tr)
+    p.generate(
+        SommRequest(
+            prompt="ignored when messages is set",
+            system="be brief",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"name": "get_weather", "parameters": {"type": "object"}}],
+            tool_choice="any",
+            response_format={"type": "json_object"},
+            reasoning_effort="low",
+        )
+    )
+    assert captured["model"] == "m-a"
+    assert captured["messages"][0] == {"role": "system", "content": "be brief"}
+    assert captured["messages"][1] == {"role": "user", "content": "hi"}
+    assert captured["tools"][0]["function"]["name"] == "get_weather"
+    assert captured["tool_choice"] == "required"
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["reasoning_effort"] == "low"
+    assert captured["usage"] == {"include": True}
+
+
+def test_openrouter_reported_cost_and_reasoning_tokens(tmp_path, monkeypatch):
+    tr = _tmp_tracker(tmp_path)
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 30,
+                    "completion_tokens_details": {"reasoning_tokens": 25},
+                    "cost": 0.00042,
+                },
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenRouterProvider(api_key="k", roster=["m-a"], tracker=tr)
+    resp = p.generate(SommRequest(prompt="hi"))
+    assert resp.cost_usd == 0.00042
+    assert resp.reasoning_tokens == 25
+    assert resp.tokens_out == 30
+
+
+def test_openrouter_exhaustion_has_no_sentinel_model(tmp_path, monkeypatch):
+    """Sentinel names in the model field used to leak into per-model rollups."""
+    tr = _tmp_tracker(tmp_path)
+    tr.mark_failure("openrouter", "m-a", cooldown_s=300)
+
+    def handler(request):
+        pytest.fail("all cooled — no network")
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenRouterProvider(api_key="k", roster=["m-a"], tracker=tr)
+    with pytest.raises(SommTransientError) as exc_info:
+        p.generate(SommRequest(prompt="hi"))
+    assert exc_info.value.model == ""
+    assert "cooldown" in str(exc_info.value)

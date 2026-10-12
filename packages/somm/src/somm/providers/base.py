@@ -95,6 +95,10 @@ class SommResponse:
     # invent a number for a call that already has a real one. None means the
     # provider said nothing and the client should compute as usual.
     cost_usd: float | None = None
+    # Tokens the model spent thinking before it answered, when the provider
+    # reports them separately (OpenAI-compatible
+    # ``completion_tokens_details.reasoning_tokens``). None when unknown.
+    reasoning_tokens: int | None = None
 
 
 @dataclass(slots=True)

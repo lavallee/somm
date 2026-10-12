@@ -1353,3 +1353,137 @@ def test_a_flash_model_that_dials_reasoning_is_not_filtered_out_of_thinking(tmp_
     assert model_has_capability(repo, "deepseek", "deepseek-v4-pro", "thinking") is True
     # Families that really are non-thinking keep their classification.
     assert model_has_capability(repo, "gemini", "gemini-2.5-flash", "thinking") is False
+
+
+# ---------------------------------------------------------------------------
+# One error ladder for every HTTP provider.
+
+
+def test_ollama_connection_refused_is_transient(monkeypatch):
+    """A local daemon that is not running used to escape as a raw httpx error
+    the router could not classify."""
+    from somm.errors import SommTransientError
+    from somm.providers.ollama import OllamaProvider
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    with pytest.raises(SommTransientError) as exc_info:
+        OllamaProvider().generate(SommRequest(prompt="hi"))
+    assert "unreachable" in str(exc_info.value)
+
+
+def test_ollama_model_not_pulled_is_bad_request(monkeypatch):
+    from somm.providers.ollama import OllamaProvider
+
+    def handler(request):
+        return httpx.Response(404, json={"error": "model 'nope' not found"})
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    with pytest.raises(SommBadRequest):
+        OllamaProvider().generate(SommRequest(prompt="hi", model="nope"))
+
+
+def test_openai_stream_429_keeps_retry_after(monkeypatch):
+    from somm.errors import SommRateLimited
+
+    def handler(request):
+        return httpx.Response(429, headers={"Retry-After": "77"}, text="slow down")
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    with pytest.raises(SommRateLimited) as exc_info:
+        list(p.stream(SommRequest(prompt="hi")))
+    assert exc_info.value.retry_after_s == 77.0
+
+
+def test_deepseek_cache_hits_land_in_cache_tokens(monkeypatch):
+    from somm_core.parse import extract_cache_tokens
+
+    raw = {"usage": {"prompt_tokens": 100, "prompt_cache_hit_tokens": 64}}
+    assert extract_cache_tokens(raw) == (64, None)
+
+
+def test_openai_reasoning_tokens_parsed(monkeypatch):
+    usage = {
+        "prompt_tokens": 5,
+        "completion_tokens": 50,
+        "completion_tokens_details": {"reasoning_tokens": 40},
+    }
+    monkeypatch.setattr(httpx, "Client", _patch_client(_oai_ok_handler("ok", usage)))
+    resp = OpenAIProvider(api_key="sk-fake").generate(SommRequest(prompt="hi"))
+    assert resp.reasoning_tokens == 40
+    assert resp.cost_usd is None  # OpenAI states no cost; the client computes
+
+
+# ---------------------------------------------------------------------------
+# Structured-output shape per endpoint (issue #36).
+
+
+def test_deepseek_sends_json_object_not_json_schema(monkeypatch):
+    from somm.providers.deepseek import DeepSeekProvider
+
+    captured = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    DeepSeekProvider(api_key="k").generate(
+        SommRequest(
+            prompt="hi",
+            response_format={"type": "json_schema", "json_schema": {"schema": {"type": "object"}}},
+        )
+    )
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+def test_openai_compat_downgrades_response_format_after_400(monkeypatch):
+    """A gateway that 400s on json_schema gets json_object, then nothing; the
+    lesson sticks for the provider object."""
+    seen = []
+
+    def handler(request):
+        import json as _json
+
+        body = _json.loads(request.read())
+        seen.append(body.get("response_format"))
+        if body.get("response_format", {}).get("type") == "json_schema":
+            return httpx.Response(
+                400, json={"error": {"message": "This response_format type is unavailable now"}}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    rf = {"type": "json_schema", "json_schema": {"schema": {"type": "object"}}}
+    p.generate(SommRequest(prompt="hi", response_format=rf))
+    p.generate(SommRequest(prompt="again", response_format=rf))
+    assert seen == [rf, {"type": "json_object"}, {"type": "json_object"}]
+
+
+def test_openai_compat_unrelated_400_is_not_downgraded(monkeypatch):
+    def handler(request):
+        return httpx.Response(400, json={"error": {"message": "max_tokens too large"}})
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    p = OpenAIProvider(api_key="sk-fake")
+    with pytest.raises(SommBadRequest):
+        p.generate(SommRequest(prompt="hi", response_format={"type": "json_object"}))
+    assert p._structured_mode == "json_schema"

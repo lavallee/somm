@@ -17,14 +17,9 @@ import httpx
 from somm_core.parse import anthropic_prompt_tokens, strip_think_block
 
 from somm.errors import (
-    SommAuthError,
-    SommBadRequest,
-    SommInsufficientCredit,
-    SommRateLimited,
     SommTimeout,
     SommTransientError,
-    SommUpstream5xx,
-    looks_like_insufficient_credit,
+    classify_http_status,
 )
 from somm.providers.base import (
     ProviderHealth,
@@ -162,28 +157,17 @@ class AnthropicProvider:
         )
 
     def _classify_status(self, resp: httpx.Response, model: str) -> None:
-        sc = resp.status_code
-        if sc == 200:
+        if 200 <= resp.status_code < 300:
             return
-        body = resp.text[:200]
-        if looks_like_insufficient_credit(resp.text):
-            # Billing state, not a bad request — the call would succeed on
-            # another provider, so let the router skip this one (long cooldown).
-            raise SommInsufficientCredit(f"anthropic out of credit on {model}: {body}")
-        if sc in (401, 403):
-            raise SommAuthError(f"anthropic auth failed ({sc}): {body}")
-        if sc == 400:
-            raise SommBadRequest(f"anthropic 400 on {model}: {body}")
-        if sc == 404:
-            raise SommBadRequest(f"anthropic 404 — model {model!r} not found: {body}")
-        if sc == 429:
-            retry = _retry_after(resp) or 120.0
-            raise SommRateLimited(f"anthropic 429 on {model}: {body}", retry_after_s=retry)
-        if sc == 529:  # overloaded (Anthropic-specific)
-            raise SommTransientError(f"anthropic overloaded on {model}", cooldown_s=60.0)
-        if 500 <= sc < 600:
-            raise SommUpstream5xx(f"anthropic {sc} on {model}", cooldown_s=30.0)
-        raise SommTransientError(f"anthropic unexpected {sc} on {model}: {body}", cooldown_s=30.0)
+        # 529 is Anthropic's "overloaded": transient, retry shortly.
+        classify_http_status(
+            resp.status_code,
+            resp.text,
+            provider=self.name,
+            model=model,
+            headers=resp.headers,
+            overloaded_statuses=(529,),
+        )
 
     # ------------------------------------------------------------------
 
@@ -229,13 +213,3 @@ def _translate_tool_choice(choice: str | dict) -> dict:
     if isinstance(choice, dict) and choice.get("type") == "tool":
         return {"type": "tool", "name": choice["name"]}
     raise ValueError(f"unrecognized tool_choice: {choice!r}")
-
-
-def _retry_after(resp: httpx.Response) -> float | None:
-    raw = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-    if not raw:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        return None

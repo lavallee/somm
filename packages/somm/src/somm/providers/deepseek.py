@@ -24,6 +24,10 @@ class DeepSeekProvider(OpenAICompatProvider):
     name = "deepseek"
     base_url = "https://api.deepseek.com/v1"
     default_model = "deepseek-chat"
+    # DeepSeek accepts JSON mode but 400s on a json_schema response_format
+    # ("This response_format type is unavailable now"). The schema rides in the
+    # system prompt and generate_structured validates, so JSON mode is enough.
+    structured_output_mode = "json_object"
 
     def __init__(self, api_key: str, default_model: str | None = None,
                  timeout: float = 180.0) -> None:

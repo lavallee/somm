@@ -139,9 +139,68 @@ def extract_cache_tokens(raw: dict | None) -> tuple[int | None, int | None]:
             if openai_cached is not None:
                 cache_in = openai_cached
 
+        # DeepSeek reports the split at the top of usage rather than in
+        # prompt_tokens_details.
+        if cache_in is None:
+            cache_in = _int_or_none(usage.get("prompt_cache_hit_tokens"))
+
         return cache_in, cache_out
     except Exception:
         return None, None
+
+
+def reasoning_tokens_from_usage(usage: dict | None) -> int | None:
+    """Tokens a model spent thinking, when the usage block says so.
+
+    OpenAI-compatible endpoints (OpenAI, DeepSeek, OpenRouter, MiniMax) report
+    ``completion_tokens_details.reasoning_tokens``; some gateways flatten it to
+    ``reasoning_tokens``. Anthropic bills thinking inside ``output_tokens`` and
+    does not break it out, so it is honestly ``None`` there. Malformed input
+    never raises.
+    """
+    try:
+        if not isinstance(usage, dict):
+            return None
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict):
+            value = _int_or_none(details.get("reasoning_tokens"))
+            if value is not None:
+                return value
+        return _int_or_none(usage.get("reasoning_tokens"))
+    except Exception:
+        return None
+
+
+def extract_reasoning_tokens(raw: dict | None) -> int | None:
+    """``reasoning_tokens_from_usage`` applied to a raw provider payload."""
+    if not isinstance(raw, dict):
+        return None
+    return reasoning_tokens_from_usage(raw.get("usage"))
+
+
+def extract_reported_cost(raw: dict | None) -> float | None:
+    """What the provider says the call cost in USD, when it says.
+
+    OpenRouter returns ``usage.cost`` once ``usage: {"include": true}`` is
+    requested. A reported figure must never be confused with an estimate, so
+    callers record it with ``cost_basis="reported"``. Zero is a valid report
+    (free-tier models). Missing or malformed values return ``None``.
+    """
+    try:
+        if not isinstance(raw, dict):
+            return None
+        usage = raw.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        value = usage.get("cost")
+        if value is None or isinstance(value, bool):
+            return None
+        cost = float(value)
+        if cost < 0 or cost != cost:  # negative or NaN
+            return None
+        return cost
+    except Exception:
+        return None
 
 
 def anthropic_prompt_tokens(usage: dict | None) -> int:
