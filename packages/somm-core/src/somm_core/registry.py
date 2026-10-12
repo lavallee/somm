@@ -154,6 +154,20 @@ def register_project(project: str, db_path: Path) -> None:
         pass
 
 
+def registered_ledgers() -> list[tuple[str, Path]]:
+    """``(project, db_path)`` for every registered project ledger that still exists."""
+    out: list[tuple[str, Path]] = []
+    data = _load(registry_path())
+    for project, entry in data["projects"].items():
+        raw = entry.get("db_path")
+        if not raw:
+            continue
+        p = Path(raw)
+        if p.exists():
+            out.append((str(project), p))
+    return out
+
+
 def fleet_db_paths(include: Path | None = None) -> list[Path]:
     """Every registered project DB that still exists, deduplicated.
     `include` (usually the current project's DB) is always present."""

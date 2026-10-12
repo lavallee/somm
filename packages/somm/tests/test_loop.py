@@ -75,10 +75,13 @@ def test_install_writes_units_and_enables_timer(tmp_path):
     written = loop.install(cfg, every="30min", target_dir=tmp_path / "units", systemctl=calls.append)
 
     names = sorted(p.name for p in written)
-    assert names == ["somm-loop@.service", "somm-loop@.timer"]
+    assert names == ["10-somm.conf", "somm-loop@.service", "somm-loop@.timer"]
     service = (tmp_path / "units" / "somm-loop@.service").read_text()
     assert "loop run --project %i" in service
-    assert f"SOMM_DB_DIR={cfg.db_dir.resolve()}" in service
+    # The template is shared across projects; the ledger location is per project.
+    assert "SOMM_DB_DIR" not in service
+    dropin = (tmp_path / "units" / "somm-loop@loop-test.service.d" / "10-somm.conf").read_text()
+    assert f"SOMM_DB_DIR={cfg.db_dir.resolve()}" in dropin
     timer = (tmp_path / "units" / "somm-loop@.timer").read_text()
     assert "OnUnitActiveSec=30min" in timer
     assert calls == [["daemon-reload"], ["enable", "--now", "somm-loop@loop-test.timer"]]

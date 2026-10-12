@@ -2122,7 +2122,8 @@ def _print_loop_state(loop: dict, ledgers: list[dict], *, is_mirror: bool) -> No
     else:
         print(f"intelligence loop: {line(loop)}")
     for state in ledgers:
-        print(f"  {Path(state['db_path']).parent.parent.name[:30]:<32} {line(state)}")
+        label = state.get("project") or Path(state["db_path"]).parent.parent.name
+        print(f"  {label[:30]:<32} {line(state)}")
     if is_mirror and not ledgers:
         print("  (no project ledgers registered in ~/.somm/registry.json)")
 

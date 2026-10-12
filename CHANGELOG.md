@@ -53,8 +53,9 @@ rebuilding.
 - `somm loop run [--force] [--only W] [--all-projects] [--json]`: one pass of
   the workers that are due (intel daily, grading always, recommendations
   weekly), heartbeats recorded, no service required.
-- `somm loop install [--every 15min]` writes and enables a systemd user timer
-  for that command; `somm loop status|uninstall`.
+- `somm loop install [--every 15min]` writes the shared `somm-loop@` service
+  and timer templates plus a per-project drop-in naming the ledger
+  (`SOMM_DB_DIR`), and enables the timer; `somm loop status|uninstall`.
 - `somm doctor` prints the loop's state for its ledger and for every
   registered project ledger (`DORMANT`, `idle`, or evals / recommendations /
   last worker success); on the mirror it says so instead of calling an absent
