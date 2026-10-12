@@ -7,6 +7,18 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.17.1] — 2026-10-12
+
+### Fixed
+
+- `somm loop status --project X` and `somm alias seed --project X` were
+  rejected: `--project` (and `alias`'s `--global`) were declared only on the
+  parent command, so they had to precede the subcommand. Both placements work
+  now, and a flag given before the subcommand is no longer clobbered.
+- `somm loop install` resolved `somm` from `PATH`, so a timer installed from a
+  project's own venv could point at a different checkout. It now prefers the
+  `somm` beside the interpreter running the install.
+
 ## [0.17.0] — 2026-10-12
 
 A census of this machine's fleet in October 2026 set the agenda. The shared

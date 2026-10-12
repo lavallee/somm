@@ -2,7 +2,7 @@
 
 [app]
 name = "somm"
-version = "0.17.0"
+version = "0.17.1"
 description = "Self-hosted LLM telemetry, routing, model intelligence, and native one-attempt harness normalization. Wraps a provider chain with per-call cost tracking, shadow-eval, and cross-project model memory; its harness adapters normalize one process attempt while Fab retains queue, retry, and receipt custody."
 
 [[capabilities]]
