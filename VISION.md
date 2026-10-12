@@ -70,17 +70,20 @@ isn't earning its keep.
 
 A census of this machine's fleet — 1.7 million calls since June — showed what
 the north-star metric was hiding. The sensor was everywhere: nine projects
-writing, the busiest at 300,000 calls a month. The brain had never run: zero
-recommendations, zero evaluations, three workloads opted into online eval and
-never graded, and 87 sommelier decisions recorded, nearly all from one MCP
-session. The estate had routed around the gaps — seven tools reading the
+writing, the busiest at 300,000 calls a month. The brain was invisible from the
+fleet view — zero recommendations, zero evaluations in the shared ledger — and
+had in fact run for one project inside its own web process, graded 7,000
+samples, left 21 recommendations unactioned, and stopped with that process
+three weeks earlier. 87 sommelier decisions had been recorded, nearly all from
+one MCP session. The estate had routed around the gaps — seven tools reading the
 ledger with their own SQL, every production unit overriding the
 sovereign-first default with an environment drop-in, coding-agent attempts
 accounted for everywhere except here.
 
 Two lessons for the strategy. First, "the agent closes the loop" needs the
-loop to be runnable by a project with no resident process; 0.17 made it a
-command and a timer. Second, cross-project memory is only a moat if the
+loop to be runnable by a project with no resident process, and visible from
+the fleet when it runs; 0.17 made it a command and a timer and taught the
+doctor to look in every ledger. Second, cross-project memory is only a moat if the
 projects write with a current client; the ledger now records which version
 wrote each row so the skew is a finding, not a mystery. The metric stands.
 The honest reading of it today is low, and that is the point of having one.
