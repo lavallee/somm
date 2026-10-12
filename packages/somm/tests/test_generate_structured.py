@@ -228,3 +228,74 @@ def test_generate_structured_threads_session_parent_to_call_row(tmp_path):
         llm.close()
 
     assert row == ("sess-structured", "parent-structured")
+
+
+# ---------------------------------------------------------------------------
+# A delivery failure is not a schema failure (issue #37).
+
+
+class EmptyProvider(ScriptedProvider):
+    """Burst-throttled: 200s with no content, every time."""
+
+    def __init__(self) -> None:
+        super().__init__([""])
+
+    def generate(self, request):
+        self.requests.append(request)
+        return SommResponse(
+            text="", model=request.model or "fake-model", tokens_in=1, tokens_out=0,
+            latency_ms=1, raw={},
+        )
+
+
+def test_generate_structured_empty_delivery_is_not_a_schema_failure(tmp_path):
+    provider = EmptyProvider()
+    llm = SommLLM(config=_tmp_config(tmp_path), providers=[provider])
+    try:
+        with pytest.raises(SommStructuredError) as exc_info:
+            llm.generate_structured(
+                "extract", schema={"type": "object"}, workload="throttled",
+                provider="fake", retries=1,
+            )
+        exc = exc_info.value
+        assert exc.delivery_failure is True
+        assert exc.last_outcome == "empty"
+        assert "delivery failure" in str(exc)
+        assert "schema" not in str(exc).split("Problem:")[1].split("\n")[0].lower()
+    finally:
+        llm.close()
+    # The ledger keeps the truthful outcome; nothing was re-marked BAD_JSON.
+    with sqlite3.connect(llm.config.db_path) as conn:
+        outcomes = {r[0] for r in conn.execute("SELECT outcome FROM calls")}
+    assert outcomes == {"empty"}
+
+
+def test_generate_structured_schema_failure_carries_evidence(tmp_path):
+    provider = ScriptedProvider(["not json"])
+    llm = SommLLM(config=_tmp_config(tmp_path), providers=[provider])
+    try:
+        with pytest.raises(SommStructuredError) as exc_info:
+            llm.generate_structured(
+                "extract", schema={"type": "object"}, workload="bad", provider="fake", retries=0
+            )
+    finally:
+        llm.close()
+    exc = exc_info.value
+    assert exc.delivery_failure is False
+    assert exc.last_raw == "not json"
+    assert "parseable" in exc.last_error
+    assert exc.last_result is not None and exc.last_result.outcome is Outcome.BAD_JSON
+
+
+def test_extract_structured_with_result_reports_who_served(tmp_path):
+    provider = ScriptedProvider(['{"a": 1}'])
+    llm = SommLLM(config=_tmp_config(tmp_path), providers=[provider])
+    try:
+        parsed, result = llm.extract_structured(
+            "extract", workload="who", provider="fake", with_result=True
+        )
+    finally:
+        llm.close()
+    assert parsed == {"a": 1}
+    assert isinstance(result, SommResult)
+    assert result.provider == "fake" and result.model == "fake-model" and result.call_id

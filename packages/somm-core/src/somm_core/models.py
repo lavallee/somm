@@ -283,6 +283,10 @@ class Call:
     # None on rows written before capture existed and on calls whose site could
     # not be determined; never an empty string, which would read as an answer.
     call_site: str | None = None
+    # 0024: tokens spent thinking (already inside tokens_out) when the provider
+    # reports them; and the somm version that wrote the row.
+    reasoning_tokens: int | None = None
+    client_version: str | None = None
 
 
 @dataclass(slots=True)
@@ -373,6 +377,9 @@ class SommResult:
     ttft_ms: int | None = None
     cache_tokens_in: int | None = None
     cache_tokens_out: int | None = None
+    # Thinking tokens, when the provider reports them separately. Already
+    # included in tokens_out.
+    reasoning_tokens: int | None = None
     citations: list | None = None
 
     def mark(self, outcome: Outcome) -> SommResult:

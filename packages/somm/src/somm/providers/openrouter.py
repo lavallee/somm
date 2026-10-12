@@ -1,50 +1,46 @@
-"""OpenRouter provider — free-roster + per-model cooldown pattern.
+"""OpenRouter provider — the OpenAI-compatible base plus a free-tier roster.
 
-OpenRouter's free tier is heavily subject to rate limits + ephemeral
-availability. Internal roster cycling with per-model cooldowns is the
-pattern battle-tested in prior LLM-heavy codebases.
+OpenRouter speaks the OpenAI chat-completions wire format, so request shaping
+(messages, tools, tool_choice, response_format, reasoning_effort), status
+classification, think-stripping, and usage parsing all come from
+:class:`OpenAICompatProvider`. This adapter adds what is specific to
+OpenRouter:
 
-- Iterates through `roster` on each call, skipping models still cooling.
-- Uses the shared ProviderHealthTracker so cooldowns survive restarts.
-- Raises SommTransientError when every model in the roster is cooled —
-  the Router then falls through to the next provider.
-- Strips `<think>` blocks post-hoc (models with reasoning leak them).
-- Honors HTTP-Referer + X-Title headers (recommended by OpenRouter).
+- **Roster cycling.** The free tier is heavily rate-limited and models come
+  and go. With no explicit model, each call walks ``roster`` in order,
+  skipping models still in cooldown, and cools the ones that fail. Cooldowns
+  live in the shared ProviderHealthTracker so they survive restarts.
+- **Reported cost.** ``usage: {"include": true}`` asks OpenRouter to state
+  what the call cost; the base parses ``usage.cost`` into
+  ``SommResponse.cost_usd`` so the ledger records an invoice figure rather
+  than an estimate.
+- **Attribution headers.** ``HTTP-Referer`` and ``X-Title``, which OpenRouter
+  recommends.
+
+When every roster model is cooling or failed, the adapter raises a
+provider-level ``SommTransientError`` (``model=""``) and the router falls
+through to the next provider. Earlier versions put sentinel names such as
+``*all_cooled`` in the model field; those leaked into per-model rollups as if
+they were models.
 """
 
 from __future__ import annotations
 
-import time
-from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
-from somm_core.parse import strip_think_block
-
-from somm.errors import (
-    SommAuthError,
-    SommBadRequest,
-    SommRateLimited,
-    SommTimeout,
-    SommTransientError,
-    SommUpstream5xx,
-)
-from somm.providers.base import (
-    ProviderHealth,
-    SommChunk,
-    SommModel,
-    SommRequest,
-    SommResponse,
-)
+from somm.errors import SommTransientError
+from somm.providers._openai_compat import OpenAICompatProvider
+from somm.providers.base import SommModel, SommRequest, SommResponse
 
 if TYPE_CHECKING:
     from somm.routing import ProviderHealthTracker
 
 
-# Free-tier roster as of Apr 2026. Tested live — 404'd models removed.
-# Model-intel worker (D3) will refresh this from OpenRouter's /models
-# endpoint. Keep this short — it's a seed, not the source of truth.
+# Free-tier roster seed. The model-intel worker refreshes availability from
+# OpenRouter's /models endpoint; keep this short — it is a seed, not the
+# source of truth.
 DEFAULT_FREE_ROSTER: list[str] = [
     "openrouter/elephant-alpha",
     "google/gemma-4-31b-it:free",
@@ -54,10 +50,9 @@ DEFAULT_FREE_ROSTER: list[str] = [
 ]
 
 
-class OpenRouterProvider:
+class OpenRouterProvider(OpenAICompatProvider):
     name = "openrouter"
-
-    API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    base_url = "https://openrouter.ai/api/v1"
 
     def __init__(
         self,
@@ -65,47 +60,28 @@ class OpenRouterProvider:
         roster: list[str] | None = None,
         tracker: ProviderHealthTracker | None = None,
         timeout: float = 60.0,
-        referer: str = "https://github.com/somm-dev/somm",
+        referer: str = "https://github.com/lavallee/somm",
         app_title: str = "somm",
     ) -> None:
-        if not api_key:
-            raise ValueError("OpenRouterProvider requires an api_key")
-        self.api_key = api_key
+        super().__init__(api_key=api_key, timeout=timeout)
         self.roster = list(roster) if roster else list(DEFAULT_FREE_ROSTER)
         self.tracker = tracker
-        self.timeout = timeout
         self.referer = referer
         self.app_title = app_title
 
     # ------------------------------------------------------------------
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": self.referer,
-            "X-Title": self.app_title,
-        }
+    def extra_headers(self) -> dict[str, str]:
+        return {"HTTP-Referer": self.referer, "X-Title": self.app_title}
 
     def _build_payload(self, request: SommRequest, model: str) -> dict:
-        messages = []
-        if request.system:
-            messages.append({"role": "system", "content": request.system})
-        messages.append({"role": "user", "content": request.prompt})
-        return {
-            "model": model,
-            "messages": messages,
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "stream": False,
-        }
+        payload = super()._build_payload(request, model)
+        # Ask for the invoice figure; the base records it as reported cost.
+        payload["usage"] = {"include": True}
+        return payload
 
     def generate(self, request: SommRequest) -> SommResponse:
-        """Try each model in roster; return first success.
-
-        Raises SommTransientError when all roster models are cooled (router
-        falls through) or SommFatalError (auth, bad request) immediately.
-        """
+        # Explicit model: a pin is a pin — no roster, no substitution.
         if request.model:
             return self._call_single(request, request.model)
 
@@ -127,130 +103,25 @@ class OpenRouterProvider:
             raise SommTransientError(
                 "all openrouter roster models in cooldown",
                 cooldown_s=_estimated_roster_cooldown(self, default=120.0),
-                model="*all_cooled",
             )
         raise SommTransientError(
             f"all openrouter roster models failed this round (last: {last_exc})",
             cooldown_s=120.0,
-            model="*roster_exhausted",
         )
 
     def _call_single(self, request: SommRequest, model: str) -> SommResponse:
-        t0 = time.monotonic()
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp = client.post(
-                    self.API_URL,
-                    headers=self._headers(),
-                    json=self._build_payload(request, model),
-                )
-        except httpx.TimeoutException as e:
-            raise SommTimeout(f"openrouter timeout on {model}: {e}", cooldown_s=60.0, model=model) from e
-        except httpx.RequestError as e:
-            raise SommTransientError(f"network error on {model}: {e}", cooldown_s=30.0, model=model) from e
-        latency_ms = int((time.monotonic() - t0) * 1000)
-
-        if resp.status_code == 401 or resp.status_code == 403:
-            raise SommAuthError(
-                f"openrouter rejected credentials ({resp.status_code}): {resp.text[:200]}"
-            )
-        if resp.status_code == 400:
-            raise SommBadRequest(f"openrouter 400 on {model}: {resp.text[:200]}")
-        if resp.status_code == 429:
-            retry = _retry_after(resp) or 120.0
-            raise SommRateLimited(
-                f"openrouter 429 on {model}: {resp.text[:200]}", retry_after_s=retry,
-            )
-        if 500 <= resp.status_code < 600:
-            raise SommUpstream5xx(f"openrouter {resp.status_code} on {model}", cooldown_s=30.0, model=model)
-        if resp.status_code != 200:
-            raise SommTransientError(
-                f"openrouter unexpected {resp.status_code} on {model}: {resp.text[:200]}",
-                cooldown_s=30.0, model=model,
-            )
-
-        data = resp.json()
-        # OpenRouter returns error *inside* a 200 response sometimes.
-        if isinstance(data, dict) and data.get("error"):
-            err = data["error"]
-            msg = err.get("message", "") if isinstance(err, dict) else str(err)
-            code = err.get("code") if isinstance(err, dict) else None
-            if code == 429 or "rate" in msg.lower():
-                raise SommRateLimited(f"openrouter body-error: {msg}", retry_after_s=120.0)
-            raise SommTransientError(f"openrouter body-error on {model}: {msg}", cooldown_s=60.0, model=model)
-
-        choices = data.get("choices") or []
-        if not choices:
-            raise SommTransientError(f"openrouter: no choices on {model}", cooldown_s=15.0)
-        # Some OpenRouter models (notably ephemeral free ones like
-        # openrouter/elephant-alpha) occasionally return {"content": null}
-        # on a 200 response — safety filter, upstream hiccup, model quirk.
-        # Treat null exactly like an empty string: SommLLM already maps that
-        # to Outcome.EMPTY, letting callers distinguish "got nothing" from
-        # "got garbage". Without the `or ""`, strip_think_block blows up
-        # with TypeError on None and the whole call tree reports a crash
-        # instead of the truer "empty response" signal.
-        raw_text = choices[0].get("message", {}).get("content") or ""
-        text = strip_think_block(raw_text)
-
-        usage = data.get("usage") or {}
-        tokens_in = int(usage.get("prompt_tokens", 0))
-        tokens_out = int(usage.get("completion_tokens", 0))
-
+        # The base class raises on any non-2xx or in-body error and returns a
+        # fully parsed response. Pin the model for this attempt without
+        # mutating the caller's request.
+        pinned = replace(request, model=model)
+        resp = super().generate(pinned)
         if self.tracker:
             self.tracker.mark_ok(self.name, model)
+        return resp
 
-        return SommResponse(
-            text=text,
-            model=model,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            latency_ms=latency_ms,
-            raw=data,
-        )
-
-    # ------------------------------------------------------------------
-
-    def stream(self, request: SommRequest) -> Iterator[SommChunk]:  # pragma: no cover
-        # D3 delivers full streaming with <think> buffered strip.
-        resp = self.generate(request)
-        yield SommChunk(text=resp.text, done=True)
-
-    def health(self) -> ProviderHealth:
-        try:
-            with httpx.Client(timeout=5.0) as client:
-                r = client.get(
-                    "https://openrouter.ai/api/v1/models",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                )
-                r.raise_for_status()
-            return ProviderHealth(available=True, detail="openrouter.ai reachable")
-        except Exception as e:
-            return ProviderHealth(available=False, detail=str(e))
-
-    def models(self) -> list[SommModel]:
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                r = client.get(
-                    "https://openrouter.ai/api/v1/models",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                )
-                r.raise_for_status()
-                data = r.json()
-        except Exception:
-            return [SommModel(name=m) for m in self.roster]
-        out: list[SommModel] = []
-        for m in data.get("data", []):
-            name = m.get("id")
-            if not name:
-                continue
-            out.append(
-                SommModel(
-                    name=name,
-                    context_window=m.get("context_length"),
-                )
-            )
-        return out
+    def models(self):
+        # /models unreachable → the roster is still the honest answer.
+        return super().models() or [SommModel(name=m) for m in self.roster]
 
     def estimate_tokens(self, text: str | list[dict], model: str) -> int:
         from somm_core.parse import estimate_prompt_tokens
@@ -259,26 +130,6 @@ class OpenRouterProvider:
 
 
 # ---------------------------------------------------------------------------
-
-
-def _retry_after(resp: httpx.Response) -> float | None:
-    """Parse Retry-After (seconds, or HTTP-date)."""
-    raw = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-    if not raw:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        try:
-            from email.utils import parsedate_to_datetime
-
-            then = parsedate_to_datetime(raw)
-            now = datetime.now(UTC)
-            if then.tzinfo is None:
-                then = then.replace(tzinfo=UTC)
-            return max(0.0, (then - now).total_seconds())
-        except Exception:
-            return None
 
 
 def _estimated_roster_cooldown(provider: OpenRouterProvider, default: float) -> float:

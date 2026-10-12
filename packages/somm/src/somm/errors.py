@@ -8,6 +8,8 @@ exception carries a canonical SOMM_* code so error messages stay consistent
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -38,8 +40,8 @@ class SommTimeout(SommTransientError):
 class SommRateLimited(SommTransientError):
     code = "SOMM_PROVIDER_RATE_LIMIT"
 
-    def __init__(self, detail: str = "", retry_after_s: float = 120.0) -> None:
-        super().__init__(detail, cooldown_s=retry_after_s)
+    def __init__(self, detail: str = "", retry_after_s: float = 120.0, model: str = "") -> None:
+        super().__init__(detail, cooldown_s=retry_after_s, model=model)
         self.retry_after_s = retry_after_s
 
 
@@ -155,9 +157,32 @@ class SommPrivacyViolation(SommError):
 
 
 class SommStructuredError(SommError):
-    """Strict structured-output generation failed after corrective retries."""
+    """Strict structured-output generation failed after corrective retries.
+
+    ``delivery_failure`` is True when the last attempt never produced model
+    output at all (empty response, upstream error, exhaustion) — a provider or
+    throttling problem, not a schema problem. Callers should back off rather
+    than loosen the schema; ``last_outcome`` says which it was.
+    """
 
     code = "SOMM_STRUCTURED_OUTPUT_FAILED"
+
+    def __init__(
+        self,
+        detail: str = "",
+        *,
+        last_raw: str = "",
+        last_error: str = "",
+        last_outcome: str | None = None,
+        delivery_failure: bool = False,
+        last_result: Any = None,
+    ) -> None:
+        super().__init__(detail)
+        self.last_raw = last_raw
+        self.last_error = last_error
+        self.last_outcome = last_outcome
+        self.delivery_failure = delivery_failure
+        self.last_result = last_result
 
 
 def describe_error(error: SommError) -> dict[str, Any]:
@@ -183,7 +208,16 @@ def describe_error(error: SommError) -> dict[str, Any]:
     if retry_after_s is not None:
         description["retry_after_s"] = float(retry_after_s)
 
-    for field in ("model", "workload", "spent_usd", "cap_usd", "required", "skipped"):
+    for field in (
+        "model",
+        "workload",
+        "spent_usd",
+        "cap_usd",
+        "required",
+        "skipped",
+        "last_outcome",
+        "delivery_failure",
+    ):
         value = getattr(error, field, None)
         if value not in (None, "", [], ()):
             description[field] = value
@@ -213,3 +247,98 @@ def looks_like_insufficient_credit(body: str) -> bool:
     """
     low = body.lower()
     return any(sig in low for sig in _INSUFFICIENT_CREDIT_SIGNALS)
+
+
+# ---------------------------------------------------------------------------
+# HTTP → taxonomy. One mapping for every HTTP provider.
+#
+# Each adapter used to carry its own copy of this ladder, and the copies
+# disagreed: one knew about exhausted credit, another about HTTP-date
+# Retry-After, a third about neither. The router can only treat providers
+# uniformly if they classify uniformly, so the ladder lives here and adapters
+# call it.
+
+
+def retry_after_seconds(headers: Mapping[str, str] | None) -> float | None:
+    """Parse ``Retry-After`` as delta-seconds or an HTTP-date. ``None`` if absent
+    or unparseable."""
+    if not headers:
+        return None
+    raw = headers.get("Retry-After") or headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        then = parsedate_to_datetime(raw)
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=UTC)
+        return max(0.0, (then - datetime.now(UTC)).total_seconds())
+    except Exception:
+        return None
+
+
+def classify_http_status(
+    status: int,
+    body: str,
+    *,
+    provider: str,
+    model: str,
+    headers: Mapping[str, str] | None = None,
+    overloaded_statuses: tuple[int, ...] = (529,),
+) -> None:
+    """Raise the SommError that an HTTP status from a provider means.
+
+    Returns normally on 2xx. ``body`` is the response text (it is truncated
+    for the message; the whole thing is scanned for billing phrases).
+    ``overloaded_statuses`` are provider-specific "try again shortly" codes
+    outside the 5xx range (Anthropic's 529).
+    """
+    if 200 <= status < 300:
+        return
+    snippet = body[:200]
+    if looks_like_insufficient_credit(body):
+        # Out of money or quota: a billing state on this provider, not a bad
+        # request or a bad key. Transient, so the router falls through.
+        raise SommInsufficientCredit(f"{provider} out of credit on {model}: {snippet}", model=model)
+    if status in (401, 403):
+        raise SommAuthError(f"{provider} auth failed ({status}): {snippet}")
+    if status == 400:
+        raise SommBadRequest(f"{provider} 400 on {model}: {snippet}")
+    if status == 404:
+        raise SommBadRequest(f"{provider} 404 — model {model!r} not found: {snippet}")
+    if status == 429:
+        retry = retry_after_seconds(headers) or 120.0
+        raise SommRateLimited(f"{provider} 429 on {model}: {snippet}", retry_after_s=retry, model=model)
+    if status in overloaded_statuses:
+        raise SommTransientError(f"{provider} overloaded ({status}) on {model}", cooldown_s=60.0, model=model)
+    if 500 <= status < 600:
+        raise SommUpstream5xx(f"{provider} {status} on {model}", cooldown_s=30.0, model=model)
+    raise SommTransientError(
+        f"{provider} unexpected {status} on {model}: {snippet}", cooldown_s=30.0, model=model
+    )
+
+
+def classify_body_error(err: object, *, provider: str, model: str) -> None:
+    """Raise for an error object a provider returned inside a 2xx body.
+
+    OpenRouter and some gateways answer ``200 {"error": {...}}``. The shape is
+    OpenAI-ish: ``code`` may be an HTTP status, ``type`` and ``message`` are
+    free text.
+    """
+    if isinstance(err, dict):
+        msg = str(err.get("message", ""))
+        code = err.get("code")
+        typ = str(err.get("type", ""))
+        if looks_like_insufficient_credit(f"{code} {typ} {msg}"):
+            raise SommInsufficientCredit(f"{provider} out of credit on {model}: {msg}", model=model)
+        if code == 429 or "rate" in msg.lower():
+            raise SommRateLimited(f"{provider} body-429 on {model}: {msg}", retry_after_s=120.0, model=model)
+        if "auth" in typ.lower() or "auth" in msg.lower():
+            raise SommAuthError(f"{provider} body-auth on {model}: {msg}")
+        raise SommTransientError(f"{provider} body-error on {model}: {msg}", cooldown_s=60.0, model=model)
+    raise SommTransientError(f"{provider} body-error on {model}: {err}", cooldown_s=60.0, model=model)

@@ -1,8 +1,8 @@
 """Ollama provider — local first-party adapter.
 
-D1 target: `generate()` works against a live local ollama. Streaming is stubbed.
-`<think>` block stripping applies before returning `.text`; tokens_out counts
-only non-think content.
+Native ``/api/chat`` (generate, streaming, tools, structured ``format``) and
+``/api/embeddings``. ``<think>`` block stripping applies before returning
+``.text``; tokens_out counts only non-think content.
 """
 
 from __future__ import annotations
@@ -13,7 +13,12 @@ from collections.abc import Iterator
 import httpx
 from somm_core.parse import strip_think_block
 
-from somm.errors import SommBadRequest
+from somm.errors import (
+    SommBadRequest,
+    SommTimeout,
+    SommTransientError,
+    classify_http_status,
+)
 from somm.providers._openai_compat import (
     _translate_messages_to_openai,
     _translate_tool_to_openai,
@@ -64,6 +69,25 @@ class OllamaProvider:
 
     def _client(self) -> httpx.Client:
         return httpx.Client(timeout=self.timeout)
+
+    def _post(self, client: httpx.Client, path: str, payload: dict, model: str) -> dict:
+        """POST and classify. A local daemon fails in a few ways — not running
+        (connection refused), model not pulled (404), out of memory (500) — and
+        each used to escape as a raw httpx exception the router could not
+        classify. They are somm errors like any other provider's."""
+        try:
+            resp = client.post(f"{self.base_url}{path}", json=payload)
+        except httpx.TimeoutException as e:
+            raise SommTimeout(f"ollama timeout on {model}: {e}", cooldown_s=60.0, model=model) from e
+        except httpx.RequestError as e:
+            raise SommTransientError(
+                f"ollama unreachable at {self.base_url}: {e}", cooldown_s=30.0, model=model
+            ) from e
+        if not (200 <= resp.status_code < 300):
+            classify_http_status(
+                resp.status_code, resp.text, provider=self.name, model=model, headers=resp.headers
+            )
+        return resp.json()
 
     def generate(self, request: SommRequest) -> SommResponse:
         model = request.model or self.default_model
@@ -118,9 +142,7 @@ class OllamaProvider:
 
         t0 = time.monotonic()
         with self._client() as client:
-            resp = client.post(f"{self.base_url}/api/chat", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._post(client, "/api/chat", payload, model)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         message = data.get("message") or {}
@@ -175,7 +197,11 @@ class OllamaProvider:
 
         with httpx.Client(timeout=self.timeout) as client:
             with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    body = resp.read().decode("utf-8", errors="replace")
+                    classify_http_status(
+                        resp.status_code, body, provider=self.name, model=model, headers=resp.headers
+                    )
                 for line in resp.iter_lines():
                     if not line:
                         continue
@@ -201,9 +227,7 @@ class OllamaProvider:
 
         t0 = time.monotonic()
         with self._client() as client:
-            resp = client.post(f"{self.base_url}/api/embeddings", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._post(client, "/api/embeddings", payload, model)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         embedding = data.get("embedding") or []
