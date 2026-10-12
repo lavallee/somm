@@ -107,10 +107,22 @@ class Config:
         return Path.home() / ".somm" / "global.sqlite"
 
 
-def load(project: str | None = None, cwd: Path | None = None) -> Config:
+def load(
+    project: str | None = None,
+    cwd: Path | None = None,
+    *,
+    prefer_registry: bool = False,
+) -> Config:
     """Load config from env + ./pyproject.toml [tool.somm] + defaults.
 
     Order: defaults < pyproject [tool.somm] < env (SOMM_*) < explicit args.
+
+    ``prefer_registry`` is for the CLI: when ``project`` names a project other
+    than the one this directory belongs to, and nothing pins the ledger
+    location (no ``SOMM_DB_DIR``, no ``[tool.somm].db_dir``), the ledger
+    registered for that project in ``~/.somm/registry.json`` is used. Without
+    it ``somm inbox list --project research-app`` run from another checkout
+    would silently read this directory's ledger and report nothing.
     """
     cwd = (cwd or Path.cwd()).resolve()
     project_root = _discover_project_root(cwd)
@@ -250,6 +262,12 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
             cfg.http_timeout = float(os.environ["SOMM_HTTP_TIMEOUT"])
 
     if project is not None:
+        if prefer_registry and not explicit_db_dir and project != cfg.project:
+            registered = registered_db_path(project)
+            if registered is not None:
+                cfg.db_dir = registered.parent
+                explicit_db_dir = True
+                db_dir_base = cwd
         cfg.project = project
 
     # Resolve paths relative to cwd; caller may also pass explicit paths.

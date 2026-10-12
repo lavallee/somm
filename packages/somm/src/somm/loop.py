@@ -22,7 +22,7 @@ from pathlib import Path
 
 from somm_core.config import Config
 from somm_core.config import load as load_config
-from somm_core.registry import fleet_db_paths
+from somm_core.registry import fleet_db_paths, register_project
 from somm_core.repository import Repository
 
 from somm.workers._heartbeat import beat
@@ -86,6 +86,9 @@ def run_once(
     to named workers. ``factory`` and ``now`` are injection points for tests.
     """
     repo = Repository(cfg.db_path)
+    # A ledger the loop runs against is one the fleet view should know about,
+    # whether or not a client in this project has registered it yet.
+    register_project(cfg.project, cfg.db_path)
     report = LoopReport(project=cfg.project, db_path=cfg.db_path)
     staleness = staleness or DEFAULT_STALENESS
     now = now or datetime.now(UTC)
@@ -214,6 +217,8 @@ def install(
     """
     target = target_dir or unit_dir()
     target.mkdir(parents=True, exist_ok=True)
+    if cfg.db_path.exists():
+        register_project(cfg.project, cfg.db_path)
     somm_bin = somm_executable()
     written = []
     for name, body in render_units(somm_bin=somm_bin, every=every).items():

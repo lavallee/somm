@@ -123,6 +123,55 @@ def test_next_uncool_at_finds_soonest(tmp_path):
     assert 50 <= delta <= 65  # p2's cooldown
 
 
+def test_cooldown_escalates_with_consecutive_failures(tmp_path):
+    """The requested cooldown is the floor; every ten failures in a row double
+    it, to a day at most. A withdrawn roster model stops costing a probe every
+    two minutes and costs one a day instead."""
+    from somm.routing import MAX_COOLDOWN_S, escalated_cooldown_s
+
+    assert escalated_cooldown_s(60, 1) == 60
+    assert escalated_cooldown_s(60, 10) == 60
+    assert escalated_cooldown_s(60, 11) == 120
+    assert escalated_cooldown_s(60, 21) == 240
+    assert escalated_cooldown_s(60, 68166) == 60 * 2**10  # ten doublings is the most applied
+    assert escalated_cooldown_s(120, 101) == MAX_COOLDOWN_S  # 120 * 2**10 would exceed the cap
+
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    for _ in range(10):
+        h = tr.mark_failure("openrouter", "dead-model", cooldown_s=60)
+    remaining = (h.cooldown_until - datetime.now(UTC)).total_seconds()
+    assert 50 <= remaining <= 65
+    h = tr.mark_failure("openrouter", "dead-model", cooldown_s=60)
+    remaining = (h.cooldown_until - datetime.now(UTC)).total_seconds()
+    assert 110 <= remaining <= 125 and h.consecutive_failures == 11
+    tr.mark_ok("openrouter", "dead-model")
+    h = tr.mark_failure("openrouter", "dead-model", cooldown_s=60)
+    assert h.consecutive_failures == 1
+
+
+def test_dead_entries_are_long_failed_and_long_quiet(tmp_path):
+    from somm.routing import dead_entries
+
+    repo = _tmp_repo(tmp_path)
+    with repo._open() as conn:
+        conn.executemany(
+            "INSERT INTO provider_health (provider, model, last_ok_at, consecutive_failures) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                ("openrouter", "openrouter/elephant-alpha", "2026-04-21T19:04:40+00:00", 68166),
+                ("openrouter", "google/gemma-3-27b-it:free", None, 23862),
+                ("openrouter", "nvidia/nemotron-3-super-120b-a12b:free", datetime.now(UTC).isoformat(), 150),
+                ("minimax", "", "2026-01-01T00:00:00+00:00", 3),
+            ],
+        )
+    dead = dead_entries(repo)
+    assert [(d.provider, d.model) for d in dead] == [
+        ("openrouter", "openrouter/elephant-alpha"),
+        ("openrouter", "google/gemma-3-27b-it:free"),
+    ]
+
+
 def test_tracker_per_model_isolation(tmp_path):
     repo = _tmp_repo(tmp_path)
     tr = ProviderHealthTracker(repo)

@@ -50,6 +50,58 @@ class HealthRecord:
         return self.cooldown_until > now
 
 
+ESCALATION_STEP = 10
+"""Consecutive failures per doubling of the cooldown."""
+MAX_COOLDOWN_S = 86_400.0
+"""The longest an escalated cooldown gets: one probe a day."""
+
+
+def escalated_cooldown_s(base_s: float, consecutive_failures: int) -> float:
+    """The cooldown after ``consecutive_failures`` failures in a row.
+
+    The first ``ESCALATION_STEP`` failures get the base cooldown the error
+    asked for; each further block of ``ESCALATION_STEP`` doubles it, capped
+    at ``MAX_COOLDOWN_S``. Ten doublings is the most that is ever applied.
+    """
+    doublings = min(max(consecutive_failures - 1, 0) // ESCALATION_STEP, 10)
+    return float(min(MAX_COOLDOWN_S, max(base_s, base_s * (2**doublings))))
+
+
+def dead_entries(
+    repo: Repository, *, min_failures: int = 100, quiet_days: int = 7
+) -> list[HealthRecord]:
+    """Health entries that look withdrawn rather than flaky.
+
+    An entry with at least ``min_failures`` consecutive failures and no
+    success in ``quiet_days`` is a roster model the provider has retired, or
+    a key that no longer works. The escalated cooldown keeps the cost of
+    retrying it to one probe a day; ``somm doctor`` lists them so the roster
+    (``SOMM_OPENROUTER_ROSTER``) can be pruned.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(days=quiet_days)).isoformat()
+    with repo._open() as conn:
+        rows = conn.execute(
+            """
+            SELECT provider, model, last_ok_at, cooldown_until, consecutive_failures
+            FROM provider_health
+            WHERE consecutive_failures >= ?
+              AND (last_ok_at IS NULL OR last_ok_at < ?)
+            ORDER BY consecutive_failures DESC
+            """,
+            (min_failures, cutoff),
+        ).fetchall()
+    return [
+        HealthRecord(
+            provider=row[0],
+            model=row[1],
+            last_ok_at=_parse_ts(row[2]),
+            cooldown_until=_parse_ts(row[3]),
+            consecutive_failures=int(row[4]),
+        )
+        for row in rows
+    ]
+
+
 class ProviderHealthTracker:
     """SQLite-backed cooldown tracker. Per (provider, model) entries.
 
@@ -102,8 +154,17 @@ class ProviderHealthTracker:
             )
 
     def mark_failure(self, provider: str, model: str = "", cooldown_s: float = 60) -> HealthRecord:
-        """Mark a failure. Returns the updated health record."""
-        cooldown_until = datetime.now(UTC) + timedelta(seconds=cooldown_s)
+        """Mark a failure and cool the entry. Returns the updated record.
+
+        ``cooldown_s`` is the floor. Every ``ESCALATION_STEP`` consecutive
+        failures double it, up to ``MAX_COOLDOWN_S``, so an entry that has
+        failed a thousand times in a row is probed about once a day rather
+        than every couple of minutes. In October 2026 one project's ledger
+        held a roster model with 68,166 consecutive failures since April —
+        retried, and billed as latency, on a two-minute cycle for six months.
+        A single success (:meth:`mark_ok`) resets the count and the cooldown.
+        """
+        now = datetime.now(UTC)
         with self._repo._open() as conn:
             conn.execute(
                 """
@@ -114,8 +175,19 @@ class ProviderHealthTracker:
                     cooldown_until = excluded.cooldown_until,
                     consecutive_failures = consecutive_failures + 1
                 """,
-                (provider, model, cooldown_until.isoformat()),
+                (provider, model, (now + timedelta(seconds=cooldown_s)).isoformat()),
             )
+            row = conn.execute(
+                "SELECT consecutive_failures FROM provider_health WHERE provider = ? AND model = ?",
+                (provider, model),
+            ).fetchone()
+            failures = int(row[0]) if row else 1
+            escalated = escalated_cooldown_s(cooldown_s, failures)
+            if escalated > cooldown_s:
+                conn.execute(
+                    "UPDATE provider_health SET cooldown_until = ? WHERE provider = ? AND model = ?",
+                    ((now + timedelta(seconds=escalated)).isoformat(), provider, model),
+                )
         return self.get(provider, model)
 
     def clear(self, provider: str, model: str = "") -> None:

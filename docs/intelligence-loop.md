@@ -86,8 +86,22 @@ the last success per worker.
 
 ## What comes out
 
-`somm inbox` lists recommendations; `somm inbox apply <id>` applies one and
-records the decision. The MCP tools `somm_recommend`, `somm_inbox`,
+The agent worker emits four kinds of recommendation. Each is a row in
+`recommendations` with the evidence it was drawn from, and each is proposed
+once per workload while it is open.
+
+| action | fires when | evidence |
+|---|---|---|
+| `switch_model` | the workload has been shadow-graded on two or more models in the window and one scores at least 10% higher at no more cost (or much lower latency) | per-model score, cost, latency, eval count |
+| `new_model_landed` | a same-provider model whose `model_intel.first_seen` is inside the window and later than the current model's is at least 20% cheaper; proposed once per workload, dismissed is remembered | current and candidate price, context window, first and last seen |
+| `chronic_cooldown` | at least 10% (`chronic_failure_rate`) of the workload's production calls to a provider in the window failed to deliver: upstream error, exhausted chain, timeout, rate limit | call and failure counts, rate, the provider's entries currently cooling |
+| `adaptive_param_bump` | a reasoning model keeps returning empty after spending its output budget thinking | the failure signature and the proposed `max_tokens` floor |
+
+`somm inbox list` shows them with the date each was created; `somm inbox show
+<id>` prints one with its evidence; `somm inbox apply <id>` applies one and
+records the decision; `somm inbox dismiss <id> [<id> ...]` records that it was
+seen and declined. Run from another checkout, `--project X` reads the ledger
+registered for X. The MCP tools `somm_recommend`, `somm_inbox`,
 `somm_apply_recommendation`, and `somm_dismiss_recommendation` do the same
 from inside a coding agent. Graded samples also feed `somm frontier`, the
 sommelier's ranking, and `somm eval promote-call`, which turns a graded

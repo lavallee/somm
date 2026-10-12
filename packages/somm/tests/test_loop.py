@@ -87,6 +87,23 @@ def test_install_writes_units_and_enables_timer(tmp_path):
     assert calls == [["daemon-reload"], ["enable", "--now", "somm-loop@loop-test.timer"]]
 
 
+def test_run_once_registers_the_ledger_it_ran_against(tmp_path, monkeypatch):
+    """A ledger the loop grades is one `somm doctor --global` must list, even
+    when no client in that project has registered it. The October 2026 census
+    found the busiest project missing from the registry for exactly that reason."""
+    from somm_core import registry
+
+    monkeypatch.setenv("SOMM_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.setenv("SOMM_REGISTRY_ALLOW_TMP", "1")
+    monkeypatch.setattr(registry, "_registered_projects", set())
+    cfg = _cfg(tmp_path)
+    Repository(cfg.db_path)
+
+    loop.run_once(cfg, factory=lambda n: _Worker(n, []))
+
+    assert registry.registered_db_path("loop-test") == cfg.db_path.resolve()
+
+
 def test_loop_cli_run_and_status(tmp_path, capsys, monkeypatch):
     cfg = _cfg(tmp_path)
     Repository(cfg.db_path)
