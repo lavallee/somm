@@ -66,8 +66,11 @@ def seed_model_aliases(repo: Repository, *, since_days: int = 90) -> int:
     """Insert rule-derived aliases for routes seen in the ledger or in
     ``model_intel``. Rule rows never overwrite a manual alias. Returns the
     number of rows written."""
+    import json
+
     existing = repo.model_alias_map()
     written = 0
+    catalog: dict[tuple[str, str], str] = {}
     with repo._open() as conn:
         pairs = set(
             conn.execute(
@@ -75,14 +78,27 @@ def seed_model_aliases(repo: Repository, *, since_days: int = 90) -> int:
                 (f"-{int(since_days)} days",),
             ).fetchall()
         )
-        pairs |= set(conn.execute("SELECT DISTINCT provider, model FROM model_intel").fetchall())
+        intel = conn.execute(
+            "SELECT provider, model, capabilities_json FROM model_intel"
+        ).fetchall()
+    for provider, model, caps_json in intel:
+        pairs.add((provider, model))
+        try:
+            caps = json.loads(caps_json) if caps_json else {}
+        except ValueError:
+            caps = {}
+        canonical = (caps.get("models_dev") or {}).get("canonical_model_id") if isinstance(caps, dict) else None
+        if isinstance(canonical, str) and canonical and canonical != f"{provider}/{model}":
+            catalog[(provider, model)] = canonical
     for provider, model in sorted(pairs):
         if not provider or not model or (provider, model) in existing:
             continue
-        canonical = canonicalize(provider, model)
+        # A catalog's own canonical id beats a spelling rule.
+        canonical = catalog.get((provider, model)) or canonicalize(provider, model)
         if canonical is None:
             continue
-        repo.set_model_alias(canonical, provider, model, source="rule")
+        source = "models_dev" if (provider, model) in catalog else "rule"
+        repo.set_model_alias(canonical, provider, model, source=source)
         written += 1
     return written
 

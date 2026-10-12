@@ -65,7 +65,17 @@ def _clear_price_cache(db_path: Path | str | None = None) -> None:
 # Run `somm-serve admin refresh-intel` to pull live pricing.
 _TOOLS: dict[str, bool] = {"tools": True}
 _KNOWN_PRICING: list[tuple[str, str, float, float, dict | None]] = [
-    # Current Anthropic (Claude 4.5–4.7 family)
+    # Current lineup (Oct 2026), per models.dev and provider pricing pages
+    ("anthropic", "claude-haiku-5-5", 0.10, 0.50, _TOOLS),
+    ("anthropic", "claude-sonnet-5-5", 2.00, 10.00, _TOOLS),
+    ("anthropic", "claude-opus-5-5", 4.00, 20.00, _TOOLS),
+    ("anthropic", "claude-fable-5-1", 10.00, 50.00, _TOOLS),
+    ("openai", "gpt-6-luna", 0.10, 0.50, _TOOLS),
+    ("openai", "gpt-6.1-sol", 2.00, 10.00, _TOOLS),
+    ("deepseek", "deepseek-flash", 0.15, 0.60, _TOOLS),
+    ("gemini", "gemini-3.8-flash", 0.75, 3.75, _TOOLS),
+    ("minimax", "MiniMax-M3", 0.30, 1.20, _TOOLS),
+    # Prior Anthropic (Claude 4.5–4.7 family), kept so older pins cost-track
     ("anthropic", "claude-haiku-4-5-20251001", 0.80, 4.00, _TOOLS),
     ("anthropic", "claude-sonnet-4-6", 3.00, 15.00, _TOOLS),
     ("anthropic", "claude-opus-4-7", 15.00, 75.00, _TOOLS),

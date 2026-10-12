@@ -148,11 +148,18 @@ class ClaudeCLIHarness(BaseHarness):
 
     def classify(self, terminal: dict, stdout_path: Path, stderr_path: Path):
         subtype = str(terminal.get("subtype") or "").lower()
+        reason = str(terminal.get("terminal_reason") or "").lower()
         if not terminal.get("is_error") and subtype == "success":
             return HarnessOutcome.COMPLETED, ""
-        if subtype == "error_max_turns":
+        if subtype == "error_max_turns" or reason == "max_turns":
             return HarnessOutcome.TURN_LIMIT, ""
-        if terminal.get("terminal_reason") == "api_error":
+        if subtype == "error_max_budget_usd" or reason == "budget_exhausted":
+            # The caller's --max-budget-usd cap, enforced client-side by the CLI.
+            return HarnessOutcome.BUDGET_EXHAUSTED, (
+                f"claude --max-budget-usd reached (total_cost_usd="
+                f"{terminal.get('total_cost_usd')})"
+            )
+        if reason == "api_error":
             # Only a provider terminal error can establish a seat limit —
             # never quoted tool output in the transcript.
             message = str(terminal.get("result", ""))

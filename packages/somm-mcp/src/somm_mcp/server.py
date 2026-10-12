@@ -561,7 +561,7 @@ def build_server(
 
         Args:
             prompt: the prompt text.
-            models: list like ["minimax/MiniMax-M3", "openai/gpt-4o-mini"].
+            models: list like ["minimax/MiniMax-M3", "openai/gpt-6-luna"].
             workload: workload name to tag telemetry (default "compare").
             max_tokens, temperature: per-call params.
             allow_expensive: opt in to the elevated compare caps. The

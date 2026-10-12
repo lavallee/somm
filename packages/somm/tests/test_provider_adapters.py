@@ -111,7 +111,7 @@ def test_openai_happy_path(monkeypatch):
     p = OpenAIProvider(api_key="sk-fake")
     resp = p.generate(SommRequest(prompt="hi"))
     assert resp.text == "pong"
-    assert resp.model == "gpt-4o-mini"
+    assert resp.model == "gpt-6-luna"
     assert resp.tokens_in == 5
     assert resp.tokens_out == 2
 
@@ -1487,3 +1487,92 @@ def test_openai_compat_unrelated_400_is_not_downgraded(monkeypatch):
     with pytest.raises(SommBadRequest):
         p.generate(SommRequest(prompt="hi", response_format={"type": "json_object"}))
     assert p._structured_mode == "json_schema"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic, current API: effort and structured outputs in output_config,
+# automatic caching, no sampling parameters on 4.7+.
+
+
+def _anthropic_capture(monkeypatch):
+    captured = {}
+
+    def handler(request):
+        import json as _json
+
+        captured.update(_json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "content": [{"type": "text", "text": "{}"}],
+                "model": "claude-haiku-5-5",
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 40,
+                    "output_tokens_details": {"thinking_tokens": 25},
+                },
+            },
+        )
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    return captured
+
+
+def test_anthropic_sends_effort_format_and_cache_control(monkeypatch):
+    captured = _anthropic_capture(monkeypatch)
+    resp = AnthropicProvider(api_key="k").generate(
+        SommRequest(
+            prompt="extract",
+            reasoning_effort="low",
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "x", "schema": {"type": "object"}, "strict": True},
+            },
+        )
+    )
+    assert captured["model"] == "claude-haiku-5-5"
+    assert captured["output_config"] == {
+        "effort": "low",
+        "format": {"type": "json_schema", "schema": {"type": "object"}},
+    }
+    assert captured["cache_control"] == {"type": "ephemeral"}
+    # Claude 4.7+ rejects sampling parameters; none are sent.
+    assert "temperature" not in captured
+    assert resp.reasoning_tokens == 25
+
+
+def test_anthropic_json_object_mode_is_not_forwarded(monkeypatch):
+    captured = _anthropic_capture(monkeypatch)
+    AnthropicProvider(api_key="k").generate(
+        SommRequest(prompt="hi", response_format={"type": "json_object"})
+    )
+    assert "output_config" not in captured
+
+
+def test_anthropic_auto_cache_can_be_turned_off(monkeypatch):
+    captured = _anthropic_capture(monkeypatch)
+    AnthropicProvider(api_key="k", auto_cache=False).generate(SommRequest(prompt="hi"))
+    assert "cache_control" not in captured
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("claude-haiku-4-5-20251001", True),
+        ("claude-sonnet-4-6", True),
+        ("claude-opus-4-7", False),
+        ("claude-opus-4-8", False),
+        ("claude-sonnet-5-5", False),
+        ("claude-haiku-5-5", False),
+        ("claude-fable-5-1", False),
+        ("some-future-name", True),
+    ],
+)
+def test_anthropic_temperature_gating(monkeypatch, model, expected):
+    from somm.providers.anthropic import accepts_temperature
+
+    assert accepts_temperature(model) is expected
+    captured = _anthropic_capture(monkeypatch)
+    AnthropicProvider(api_key="k").generate(SommRequest(prompt="hi", model=model, temperature=0.3))
+    assert ("temperature" in captured) is expected

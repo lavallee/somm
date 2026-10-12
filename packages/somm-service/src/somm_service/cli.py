@@ -8,11 +8,11 @@ from __future__ import annotations
 import argparse
 import sys
 
+from somm.workers._heartbeat import beat
 from somm_core.config import load as load_config
 from somm_core.repository import Repository
 
 from somm_service.app import run_server
-from somm_service.workers._heartbeat import beat
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,8 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_refresh_intel(args: argparse.Namespace) -> int:
-    from somm_service.workers.hf_intel import HuggingFaceIntelWorker
-    from somm_service.workers.model_intel import ModelIntelWorker
+    from somm.workers.hf_intel import HuggingFaceIntelWorker
+    from somm.workers.model_intel import ModelIntelWorker
 
     cfg = load_config(project=args.project)
     repo = Repository(cfg.db_path)
@@ -95,7 +95,7 @@ def _cmd_refresh_intel(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_agent(args: argparse.Namespace) -> int:
-    from somm_service.workers.agent import AgentWorker
+    from somm.workers.agent import AgentWorker
 
     cfg = load_config(project=args.project)
     repo = Repository(cfg.db_path)
@@ -113,7 +113,7 @@ def _cmd_run_agent(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_shadow(args: argparse.Namespace) -> int:
-    from somm_service.inprocess import build_workers_factory
+    from somm.workers.inprocess import build_workers_factory
 
     cfg = load_config(project=args.project)
     repo = Repository(cfg.db_path)

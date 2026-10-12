@@ -48,7 +48,8 @@ class Config:
     openrouter_api_key: str | None = None
     openrouter_roster: list[str] | None = None
     anthropic_api_key: str | None = None
-    anthropic_model: str = "claude-haiku-4-5-20251001"
+    anthropic_model: str = "claude-haiku-5-5"
+    anthropic_auto_cache: bool = True  # top-level cache_control on every Anthropic request
     # CLI-seat executors. `claude_cli_model` pins the model the seat runs;
     # None leaves the CLI's own default. `claude_cli_extra_args` are appended
     # to every invocation — the generator-only flag set that strips the
@@ -57,14 +58,14 @@ class Config:
     claude_cli_model: str | None = None
     claude_cli_extra_args: list[str] | None = None
     openai_api_key: str | None = None
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-6-luna"
     openai_base_url: str = "https://api.openai.com/v1"
     minimax_api_key: str | None = None
     minimax_model: str = "MiniMax-M3"
     deepseek_api_key: str | None = None
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-flash"
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-pro"
+    gemini_model: str = "gemini-3.8-flash"
     perplexity_api_key: str | None = None
     perplexity_model: str = "sonar"  # search-grounded; only used when pinned
     http_timeout: float = 180.0  # seconds; used by openai-compat providers
@@ -192,6 +193,9 @@ def load(project: str | None = None, cwd: Path | None = None) -> Config:
     if "SOMM_BUDGET_DEFAULT_CAP_USD_DAILY" in os.environ:
         with contextlib.suppress(ValueError):
             cfg.budget_default_cap_usd_daily = float(os.environ["SOMM_BUDGET_DEFAULT_CAP_USD_DAILY"])
+    if "SOMM_ANTHROPIC_AUTO_CACHE" in os.environ:
+        val = os.environ["SOMM_ANTHROPIC_AUTO_CACHE"].strip().lower()
+        cfg.anthropic_auto_cache = val not in ("0", "false", "no", "off")
     if "SOMM_PINNED_FALLBACK" in os.environ:
         val = os.environ["SOMM_PINNED_FALLBACK"].strip().lower()
         cfg.pinned_fallback = val in ("1", "true", "yes", "on")

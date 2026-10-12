@@ -4,7 +4,7 @@ Google exposes Gemini at `generativelanguage.googleapis.com/v1beta/openai/`
 with the same wire format as OpenAI's `/v1/chat/completions`. That lets
 us reuse the OpenAICompatProvider base directly.
 
-Model IDs use Google's naming (`gemini-2.5-pro`, `gemini-2.5-flash`,
+Model IDs use Google's naming (`gemini-3.8-flash`, `gemini-3.1-pro-preview`,
 `gemini-2.0-flash`, etc.). Auth is a bearer token with the Gemini API
 key — no project/location needed for this endpoint variant.
 
@@ -49,7 +49,7 @@ from somm.providers.base import SommRequest
 class GeminiProvider(OpenAICompatProvider):
     name = "gemini"
     base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
-    default_model = "gemini-2.5-pro"
+    default_model = "gemini-3.8-flash"
 
     # Default reasoning_effort for the OAI-compat endpoint. "low" keeps
     # thinking cheap for straightforward prompts; callers override per

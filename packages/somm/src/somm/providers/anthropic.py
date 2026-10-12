@@ -10,11 +10,16 @@ in a top-level `system` field).
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Iterator
 
 import httpx
-from somm_core.parse import anthropic_prompt_tokens, strip_think_block
+from somm_core.parse import (
+    anthropic_prompt_tokens,
+    reasoning_tokens_from_usage,
+    strip_think_block,
+)
 
 from somm.errors import (
     SommTimeout,
@@ -31,10 +36,32 @@ from somm.providers.base import (
 )
 
 DEFAULT_ANTHROPIC_MODELS = [
-    "claude-haiku-4-5-20251001",
-    "claude-sonnet-4-6",
-    "claude-opus-4-7",
+    "claude-haiku-5-5",
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
 ]
+
+_VERSIONED = re.compile(r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?")
+
+
+def accepts_temperature(model: str) -> bool:
+    """Whether this model still takes sampling parameters.
+
+    Claude 4.7 and later reject ``temperature`` (Fable/Mythos and Opus 4.7+
+    with a 400 on any value; Sonnet 5.5 and Haiku 5.5 on any non-default
+    value). Sending it would fail every call on the current lineup, so it is
+    omitted there and kept for the 4.6-and-earlier models that honor it.
+    Unknown names send it: a 400 is louder than a silently ignored dial.
+    """
+    name = model.lower()
+    if name.startswith(("claude-fable", "claude-mythos")):
+        return False
+    m = _VERSIONED.search(name)
+    if not m:
+        return True
+    major = int(m.group(1))
+    minor = int(m.group(2) or 0)
+    return (major, minor) < (4, 7)
 
 
 class AnthropicProvider:
@@ -45,14 +72,20 @@ class AnthropicProvider:
     def __init__(
         self,
         api_key: str,
-        default_model: str = "claude-haiku-4-5-20251001",
+        default_model: str = "claude-haiku-5-5",
         timeout: float = 60.0,
+        auto_cache: bool = True,
     ) -> None:
         if not api_key:
             raise ValueError("AnthropicProvider requires an api_key")
         self.api_key = api_key
         self.default_model = default_model
         self.timeout = timeout
+        # Top-level automatic prompt caching: the API caches the last cacheable
+        # prefix block (tools → system → messages) so a repeated system prompt
+        # is read at 0.025–0.1x. Prefixes under the model's minimum are simply
+        # not cached, so the flag costs nothing on short prompts.
+        self.auto_cache = auto_cache
 
     # ------------------------------------------------------------------
 
@@ -80,15 +113,30 @@ class AnthropicProvider:
         payload: dict = {
             "model": model,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
             "messages": messages,
         }
+        if accepts_temperature(model):
+            payload["temperature"] = request.temperature
         if request.system:
             payload["system"] = request.system
         if request.tools:
             payload["tools"] = [_translate_tool(t) for t in request.tools]
         if request.tool_choice is not None:
             payload["tool_choice"] = _translate_tool_choice(request.tool_choice)
+        output_config: dict = {}
+        if request.reasoning_effort:
+            # GA: low | medium | high | xhigh | max. Thinking itself is adaptive
+            # and on by default on current models; effort is the dial.
+            output_config["effort"] = request.reasoning_effort
+        schema = _json_schema_from_response_format(request.response_format)
+        if schema is not None:
+            # Structured outputs (GA): the first content block is text holding
+            # JSON that validates against the schema.
+            output_config["format"] = {"type": "json_schema", "schema": schema}
+        if output_config:
+            payload["output_config"] = output_config
+        if self.auto_cache:
+            payload["cache_control"] = {"type": "ephemeral"}
         return payload
 
     def generate(self, request: SommRequest) -> SommResponse:
@@ -114,8 +162,8 @@ class AnthropicProvider:
 
         # Anthropic: content is a list of blocks. Text blocks concatenate
         # into `text`; tool_use blocks become ToolCall entries; thinking
-        # blocks are intentionally ignored (not billed as output tokens in
-        # the somm view, even though Anthropic may bill them).
+        # blocks are not surfaced (their token count is, via
+        # usage.output_tokens_details.thinking_tokens → reasoning_tokens).
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         for block in data.get("content") or []:
@@ -154,6 +202,7 @@ class AnthropicProvider:
             raw=data,
             tool_calls=tool_calls,
             stop_reason=str(data.get("stop_reason") or ""),
+            reasoning_tokens=reasoning_tokens_from_usage(usage),
         )
 
     def _classify_status(self, resp: httpx.Response, model: str) -> None:
@@ -189,6 +238,20 @@ class AnthropicProvider:
 
         # Anthropic bills ~1568 tokens for a 1092×1092 image.
         return estimate_prompt_tokens(text, image_token_cost=1568)
+
+
+def _json_schema_from_response_format(response_format: dict | None) -> dict | None:
+    """The schema inside an OpenAI-style ``response_format``, if it carries one.
+
+    ``json_object`` (JSON mode without a schema) has no Anthropic equivalent;
+    the system prompt already asks for JSON and ``generate_structured``
+    validates, so it is simply not forwarded.
+    """
+    if not isinstance(response_format, dict) or response_format.get("type") != "json_schema":
+        return None
+    inner = response_format.get("json_schema")
+    schema = inner.get("schema") if isinstance(inner, dict) else None
+    return schema if isinstance(schema, dict) else None
 
 
 def _translate_tool(tool: dict) -> dict:

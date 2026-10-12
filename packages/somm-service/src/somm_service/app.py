@@ -1434,12 +1434,12 @@ def create_app(config: Config | None = None) -> Starlette:
     return app
 
 
-# Moved to somm_service.inprocess (workers-only import weight, no
+# Lives in somm.workers.inprocess (workers-only import weight, no
 # starlette) — re-exported here for backward compatibility.
-from somm_service.inprocess import (  # noqa: E402
+from somm.workers.inprocess import (  # noqa: E402
     build_workers_factory as _build_workers_factory,
 )
-from somm_service.inprocess import (  # noqa: E402,F401
+from somm.workers.inprocess import (  # noqa: E402,F401
     start_inprocess_scheduler,
 )
 
@@ -1468,7 +1468,7 @@ def run_server(
 
     scheduler = None
     if enable_scheduler:
-        from somm_service.workers import Scheduler
+        from somm.workers import Scheduler
 
         scheduler = Scheduler(repo, _build_workers_factory(cfg, repo))
         scheduler.start()

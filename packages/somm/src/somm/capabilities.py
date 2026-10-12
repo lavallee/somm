@@ -35,6 +35,11 @@ _VISION_NAME_HINTS: tuple[str, ...] = (
     "claude-opus-4",
     "claude-sonnet-4",
     "claude-haiku-4",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-5",
+    "claude-fable",
+    "gpt-6",
     "gpt-4o",
     "gpt-4.1",
     "gpt-5",
@@ -59,6 +64,7 @@ _THINKING_NAME_HINTS: tuple[str, ...] = (
     "deepseek-reasoner",
     "claude-opus-4-7",  # Opus families default to extended thinking
     "claude-opus-4-6",
+    "claude-opus-4-8",
     "o1-",       # OpenAI o1 family
     "o3-",       # OpenAI o3 family
     "gemini-2.5-pro",
@@ -73,6 +79,18 @@ _THINKING_NAME_HINTS: tuple[str, ...] = (
 # "-flash" suffix said the opposite of what the API does.
 _EFFORT_DIALLED_NAME_HINTS: tuple[str, ...] = (
     "deepseek-v4",
+    "deepseek-flash",
+    # Claude 5.x: adaptive thinking is on by default and `effort` is the dial,
+    # on every tier including Haiku 5.5.
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-5",
+    "claude-fable",
+    "claude-mythos",
+    # GPT-6 family: reasoning.effort none..max.
+    "gpt-6",
+    # Gemini 3.x: thinking_level minimal..high.
+    "gemini-3",
 )
 
 _NON_THINKING_NAME_HINTS: tuple[str, ...] = (
@@ -98,8 +116,15 @@ _TOOLS_NAME_HINTS: tuple[str, ...] = (
     "claude-opus-4",
     "claude-sonnet-4",
     "claude-haiku-4",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-5",
+    "claude-fable",
     "gpt-4",       # gpt-4o, gpt-4.1, gpt-4-turbo …
     "gpt-5",
+    "gpt-6",
+    "deepseek-flash",
+    "minimax-m",
     "o1-",
     "o3-",
     "o4-",
