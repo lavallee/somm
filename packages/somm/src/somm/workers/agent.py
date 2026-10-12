@@ -6,11 +6,14 @@ scored by evidence strength. v0.3c ships 3 recommendation types:
 1. switch_model — same workload has been shadow-graded on ≥2 models; one
    scores ≥10% higher (structural or text) AND costs ≤ the current cost
    OR latency is substantially better.
-2. new_model_landed — model_intel saw a model appear in the last N days
-   that hits a cheaper-or-bigger-ctx profile than the workload's current
-   model. Surfaces as a "try this" candidate, not an auto-switch.
-3. chronic_cooldown — a provider on a workload's chain has been cooled
-   for >50% of the analysis window. Recommends re-ordering or removing.
+2. new_model_landed — a same-provider model whose model_intel.first_seen is
+   inside the window and later than the current model's, at least 20%
+   cheaper. Surfaces as a "try this" candidate, not an auto-switch, and is
+   proposed once per workload: dismissed is remembered.
+3. chronic_cooldown — at least `chronic_failure_rate` of a workload's
+   production calls to a provider in the window failed to deliver (upstream
+   error, exhausted chain, timeout, rate limit). Recommends a fallback,
+   re-ordering, or pruning dead roster models.
 4. adaptive_param_bump — PENDING BY DEFAULT. A (workload, provider, model) keeps
    returning empty with the `stripped_empty` signature (a reasoning model
    exhausting its output budget on thinking before answering). Writes a
@@ -37,6 +40,10 @@ if TYPE_CHECKING:
 _log = logging.getLogger("somm.workers.agent")
 
 
+DELIVERY_FAILURE_OUTCOMES: tuple[str, ...] = ("upstream_error", "exhausted", "timeout", "rate_limit")
+"""Outcomes that mean the provider did not deliver, as opposed to delivering badly."""
+
+
 @dataclass(slots=True)
 class Recommendation:
     workload_id: str
@@ -58,6 +65,7 @@ class AgentWorker:
         min_calls_for_consideration: int = 10,
         min_evals_for_switch: int = 5,
         quality_threshold: float = 0.1,  # 10% improvement minimum
+        chronic_failure_rate: float = 0.10,  # share of a workload's calls to a provider that fail
         notify_sink: str = "stdout",
     ) -> None:
         self.repo = repo
@@ -65,6 +73,7 @@ class AgentWorker:
         self.min_calls = min_calls_for_consideration
         self.min_evals = min_evals_for_switch
         self.threshold = quality_threshold
+        self.chronic_failure_rate = chronic_failure_rate
         self.notify_sink = notify_sink
 
     def run_once(self) -> dict:
@@ -242,8 +251,16 @@ class AgentWorker:
     # Rec: new model landed (from model_intel)
 
     def _rec_new_model_landed(self) -> list[Recommendation]:
-        """If a new model appeared in model_intel within the window that's
-        cheaper than the workload's current model (same provider family), flag it."""
+        """A cheaper model from the same provider landed after the one in use.
+
+        "Landed" means ``model_intel.first_seen`` falls inside the window and
+        is later than the current model's own ``first_seen``. Until 0.17.2
+        this read ``last_seen``, which every intel pass refreshes, so the rule
+        proposed every cheaper sibling already in the catalog — older
+        generations included — once per workload, forever. A landing is also
+        proposed once: a candidate already open, dismissed, or applied for the
+        workload is not raised again.
+        """
         out: list[Recommendation] = []
         since = _iso(self._window_start())
 
@@ -263,35 +280,43 @@ class AgentWorker:
 
             for wl_id, provider, model, name in workloads:
                 current = conn.execute(
-                    "SELECT price_in_per_1m, price_out_per_1m, context_window "
+                    "SELECT price_in_per_1m, price_out_per_1m, context_window, first_seen "
                     "FROM model_intel WHERE provider = ? AND model = ?",
                     (provider, model),
                 ).fetchone()
                 if not current:
                     continue
                 cur_in, cur_out = current[0] or 0, current[1] or 0
+                cur_first_seen = current[3]
                 if cur_in == 0 and cur_out == 0:
                     continue  # can't beat free; skip
 
-                # Candidates: same provider, appeared recently, cheaper.
-                # Require both prices present and non-negative so that
-                # dynamic-pricing sentinels (OpenRouter's "-1" on meta-models
-                # like openrouter/auto) don't rank as infinitely cheap.
+                # Candidates: same provider, landed in the window and after the
+                # current model, at least 20% cheaper. Both prices must be
+                # present and non-negative so dynamic-pricing sentinels
+                # (OpenRouter's "-1" on meta-models) don't rank as free.
                 cands = conn.execute(
                     """
-                    SELECT model, price_in_per_1m, price_out_per_1m, context_window, last_seen
+                    SELECT model, price_in_per_1m, price_out_per_1m, context_window,
+                           first_seen, last_seen
                     FROM model_intel WHERE provider = ? AND model != ?
-                      AND last_seen >= ?
+                      AND first_seen IS NOT NULL AND first_seen >= ?
+                      AND (? IS NULL OR first_seen > ?)
                       AND price_in_per_1m IS NOT NULL AND price_out_per_1m IS NOT NULL
                       AND price_in_per_1m >= 0 AND price_out_per_1m >= 0
                       AND price_in_per_1m + price_out_per_1m < ?
-                    ORDER BY (price_in_per_1m + price_out_per_1m) ASC LIMIT 1
+                    ORDER BY (price_in_per_1m + price_out_per_1m) ASC
                     """,
-                    (provider, model, since, (cur_in + cur_out) * 0.8),
-                ).fetchone()
-                if not cands:
+                    (provider, model, since, cur_first_seen, cur_first_seen, (cur_in + cur_out) * 0.8),
+                ).fetchall()
+                chosen = None
+                for cand in cands:
+                    if not self._already_proposed(wl_id, "new_model_landed", cand[0]):
+                        chosen = cand
+                        break
+                if chosen is None:
                     continue
-                cand_model, cand_in, cand_out, cand_ctx, last_seen = cands
+                cand_model, cand_in, cand_out, cand_ctx, cand_first_seen, last_seen = chosen
                 out.append(
                     Recommendation(
                         workload_id=wl_id,
@@ -303,6 +328,7 @@ class AgentWorker:
                                 "model": model,
                                 "price_in_per_1m": cur_in,
                                 "price_out_per_1m": cur_out,
+                                "first_seen": cur_first_seen,
                             },
                             "candidate": {
                                 "provider": provider,
@@ -310,6 +336,7 @@ class AgentWorker:
                                 "price_in_per_1m": cand_in,
                                 "price_out_per_1m": cand_out,
                                 "context_window": cand_ctx,
+                                "first_seen": cand_first_seen,
                                 "last_seen": last_seen,
                             },
                         },
@@ -326,40 +353,50 @@ class AgentWorker:
     # Rec: chronic cooldown
 
     def _rec_chronic_cooldown(self) -> list[Recommendation]:
+        """A provider that keeps failing to deliver for a workload.
+
+        Answered from the calls in the window: of this workload's production
+        calls to this provider, what share ended in a delivery failure
+        (upstream error, exhausted chain, timeout, rate limit)? At or above
+        ``chronic_failure_rate`` with at least ``min_calls`` calls, it is
+        chronic. Until 0.17.2 this read ``provider_health.consecutive_failures``
+        and indicted every workload that had ever used a provider with one
+        bad entry, so a roster model dead since spring kept flagging workloads
+        the provider was serving fine, and the flags never cleared.
+        """
         out: list[Recommendation] = []
         since = _iso(self._window_start())
+        failed = ",".join("?" for _ in DELIVERY_FAILURE_OUTCOMES)
 
         with self.repo._open() as conn:
-            # Providers that have been cooling for >half the window on
-            # workloads with >min_calls calls. Approximation: look at
-            # current cooldown_until + consecutive_failures.
             rows = conn.execute(
-                """
-                SELECT ph.provider, ph.consecutive_failures,
-                       ph.cooldown_until, ph.last_ok_at
-                FROM provider_health ph
-                WHERE ph.consecutive_failures >= 5
-                """,
-            ).fetchall()
-            if not rows:
-                return out
-            # Find workloads that have called any of those providers a lot
-            chronic_providers = [r[0] for r in rows]
-            placeholders = ",".join("?" for _ in chronic_providers)
-            wls = conn.execute(
                 f"""
-                SELECT c.workload_id, w.name, c.provider, COUNT(*) AS n
+                SELECT c.workload_id, w.name, c.provider,
+                       COUNT(*) AS n,
+                       SUM(CASE WHEN c.outcome IN ({failed}) THEN 1 ELSE 0 END) AS n_failed
                 FROM calls c JOIN workloads w ON w.id = c.workload_id
-                WHERE c.provider IN ({placeholders}) AND c.ts >= ?
+                WHERE c.ts >= ? AND c.provider != ''
                   AND c.observation_role = 'production'
                   AND c.budget_eligible != 0
                 GROUP BY c.workload_id, c.provider
-                HAVING COUNT(*) >= ?
+                HAVING COUNT(*) >= ? AND n_failed * 1.0 / COUNT(*) >= ?
                 """,
-                (*chronic_providers, since, self.min_calls),
+                (*DELIVERY_FAILURE_OUTCOMES, since, self.min_calls, self.chronic_failure_rate),
+            ).fetchall()
+            cooling = conn.execute(
+                "SELECT provider, model, consecutive_failures FROM provider_health "
+                "WHERE cooldown_until > ?",
+                (_iso(datetime.now(UTC)),),
             ).fetchall()
 
-        for wl_id, name, provider, n in wls:
+        cooling_by_provider: dict[str, list[dict]] = {}
+        for provider, model, failures in cooling:
+            cooling_by_provider.setdefault(provider, []).append(
+                {"model": model or None, "consecutive_failures": failures}
+            )
+
+        for wl_id, name, provider, n, n_failed in rows:
+            rate = n_failed / n
             out.append(
                 Recommendation(
                     workload_id=wl_id,
@@ -368,10 +405,20 @@ class AgentWorker:
                         "workload": name,
                         "provider": provider,
                         "n_calls": n,
-                        "note": f"provider {provider!r} has hit circuit-break threshold — "
-                        "consider adding a fallback provider or reordering the chain",
+                        "n_failed": n_failed,
+                        "failure_rate": round(rate, 3),
+                        "window_days": self.window_days,
+                        "cooling": cooling_by_provider.get(provider, []),
+                        "note": (
+                            f"{n_failed} of {n} calls to {provider!r} in the last "
+                            f"{self.window_days} days failed to deliver — add a fallback "
+                            "provider, reorder the chain, or drop dead roster models"
+                        ),
                     },
-                    expected_impact="reduce latency + exhausted-call rate on this workload",
+                    expected_impact=(
+                        f"recover the ~{100 * rate:.0f}% of this workload's calls to "
+                        f"{provider!r} that currently fail"
+                    ),
                     confidence=0.7,
                 )
             )
@@ -427,6 +474,16 @@ class AgentWorker:
         return out
 
     # ------------------------------------------------------------------
+
+    def _already_proposed(self, workload_id: str, action: str, candidate_model: str) -> bool:
+        """Open, dismissed, or applied: a landing is proposed once per workload."""
+        with self.repo._open() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM recommendations WHERE workload_id = ? AND action = ? "
+                "AND json_extract(evidence_json, '$.candidate.model') = ? LIMIT 1",
+                (workload_id, action, candidate_model),
+            ).fetchone()
+        return row is not None
 
     def _already_open(self, rec: Recommendation) -> bool:
         with self.repo._open() as conn:

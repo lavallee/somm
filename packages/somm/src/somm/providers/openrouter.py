@@ -38,15 +38,15 @@ if TYPE_CHECKING:
     from somm.routing import ProviderHealthTracker
 
 
-# Free-tier roster seed. The model-intel worker refreshes availability from
-# OpenRouter's /models endpoint; keep this short — it is a seed, not the
-# source of truth.
+# Free-tier roster seed, used by every project that sets no
+# SOMM_OPENROUTER_ROSTER. Keep it short and keep it alive: a withdrawn model
+# left here is retried by every such project until its cooldown escalates.
+# Pruned 2026-10 — openrouter/elephant-alpha (withdrawn April 2026),
+# google/gemma-3-27b-it:free and meta-llama/llama-3.3-70b-instruct:free (no
+# successful call since July) had together failed 100,000 times in one ledger.
 DEFAULT_FREE_ROSTER: list[str] = [
-    "openrouter/elephant-alpha",
     "google/gemma-4-31b-it:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
-    "google/gemma-3-27b-it:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
 ]
 
 

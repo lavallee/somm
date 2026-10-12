@@ -311,7 +311,11 @@ def write_intel(
     capabilities: dict | list | None,
     source: str,
 ) -> None:
-    """Upsert a row into `model_intel`. Uses CURRENT_TIMESTAMP for last_seen."""
+    """Upsert a row into `model_intel`.
+
+    ``last_seen`` is refreshed on every write; ``first_seen`` is set on the
+    first and kept, so "did this land after the model I use?" has an answer.
+    """
     import json
 
     caps_json = json.dumps(capabilities) if capabilities is not None else None
@@ -320,15 +324,16 @@ def write_intel(
             """
             INSERT INTO model_intel
                 (provider, model, price_in_per_1m, price_out_per_1m,
-                 context_window, capabilities_json, source, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 context_window, capabilities_json, source, last_seen, first_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(provider, model) DO UPDATE SET
                 price_in_per_1m = excluded.price_in_per_1m,
                 price_out_per_1m = excluded.price_out_per_1m,
                 context_window = excluded.context_window,
                 capabilities_json = excluded.capabilities_json,
                 source = excluded.source,
-                last_seen = CURRENT_TIMESTAMP
+                last_seen = CURRENT_TIMESTAMP,
+                first_seen = COALESCE(model_intel.first_seen, excluded.first_seen)
             """,
             (provider, model, price_in_per_1m, price_out_per_1m, context_window, caps_json, source),
         )

@@ -39,7 +39,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from somm_core import VERSION, list_intel
-from somm_core.config import load as load_config
+from somm_core.config import load as _load_config
 from somm_core.models import Outcome, PrivacyClass
 from somm_core.read import fleet_summary, search_calls, spend_today
 from somm_core.repository import Repository
@@ -93,6 +93,13 @@ WORKLOAD_EXAMPLES: dict[str, dict] = {
         "quality_criteria": [],
     },
 }
+
+
+def load_config(project: str | None = None, **kwargs):
+    """The CLI's config: ``--project X`` run outside X's checkout reads the
+    ledger registered for X in ``~/.somm/registry.json`` instead of silently
+    reading this directory's ledger and reporting nothing."""
+    return _load_config(project=project, prefer_registry=True, **kwargs)
 
 
 def _cmd_workload_add(args: argparse.Namespace) -> int:
@@ -1125,19 +1132,52 @@ def _cmd_inbox_list(args: argparse.Namespace) -> int:
     if not recs:
         print("no recommendations")
         return 0
-    print(f"{'id':>5} {'workload':<24} {'action':<18} {'conf':>6} {'state':<9} impact")
+    print(
+        f"{'id':>5} {'created':<10} {'workload':<24} {'action':<18} "
+        f"{'conf':>6} {'state':<9} impact"
+    )
     for rec in recs:
-        if rec.applied_at:
-            state = "applied"
-        elif rec.dismissed_at:
-            state = "dismissed"
-        else:
-            state = "open"
         confidence = "-" if rec.confidence is None else f"{rec.confidence:.2f}"
         print(
-            f"{rec.id:>5} {rec.workload[:23]:<24} {rec.action:<18} "
-            f"{confidence:>6} {state:<9} {rec.expected_impact}"
+            f"{rec.id:>5} {str(rec.created_at)[:10]:<10} {rec.workload[:23]:<24} "
+            f"{rec.action:<18} {confidence:>6} {_rec_state(rec):<9} {rec.expected_impact}"
         )
+    return 0
+
+
+def _rec_state(rec) -> str:
+    if rec.applied_at:
+        return "applied"
+    if rec.dismissed_at:
+        return "dismissed"
+    return "open"
+
+
+def _cmd_inbox_show(args: argparse.Namespace) -> int:
+    from somm.recommendations import get_recommendation
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    rec = get_recommendation(repo, args.recommendation_id)
+    if rec is None:
+        print(f"recommendation {args.recommendation_id} not found", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(rec.as_dict(), indent=2))
+        return 0
+    confidence = "-" if rec.confidence is None else f"{rec.confidence:.2f}"
+    print(f"recommendation {rec.id}  {rec.action}  {_rec_state(rec)}")
+    print(f"  workload:   {rec.workload}")
+    print(f"  created:    {rec.created_at}")
+    if rec.applied_at:
+        print(f"  applied:    {rec.applied_at}")
+    if rec.dismissed_at:
+        print(f"  dismissed:  {rec.dismissed_at}")
+    print(f"  confidence: {confidence}")
+    print(f"  impact:     {rec.expected_impact}")
+    print("  evidence:")
+    for line in json.dumps(rec.evidence, indent=2, sort_keys=True).splitlines():
+        print(f"    {line}")
     return 0
 
 
@@ -1174,16 +1214,20 @@ def _cmd_inbox_dismiss(args: argparse.Namespace) -> int:
 
     cfg = load_config(project=args.project)
     repo = Repository(cfg.db_path)
-    try:
-        rec = dismiss_recommendation(repo, args.recommendation_id)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+    dismissed = []
+    rc = 0
+    for rec_id in args.recommendation_ids:
+        try:
+            dismissed.append(dismiss_recommendation(repo, rec_id))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            rc = 2
     if args.json:
-        print(json.dumps(rec.as_dict(), indent=2))
+        print(json.dumps([rec.as_dict() for rec in dismissed], indent=2))
     else:
-        print(f"dismissed recommendation {rec.id} for {rec.workload}")
-    return 0
+        for rec in dismissed:
+            print(f"dismissed recommendation {rec.id} for {rec.workload}")
+    return rc
 
 
 # ---------------------------------------------------------------------------
@@ -2043,6 +2087,21 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             remaining = _age_until(until)
             slot = f"{provider}/{model}" if model else provider
             print(f"  {slot:<42} expires in {remaining}   (failures={failures})")
+
+    # Entries that have failed for so long they look withdrawn, not flaky.
+    from somm.routing import dead_entries
+
+    dead = dead_entries(repo)
+    if dead:
+        print(
+            f"dead entries: {len(dead)} — no success in a week after 100+ consecutive "
+            "failures; drop them from the roster (SOMM_OPENROUTER_ROSTER) or clear "
+            "the cooldown once the provider lists them again"
+        )
+        for rec in dead:
+            slot = f"{rec.provider}/{rec.model}" if rec.model else rec.provider
+            last_ok = rec.last_ok_at.date().isoformat() if rec.last_ok_at else "never"
+            print(f"  {slot:<42} failures={rec.consecutive_failures}   last ok {last_ok}")
 
     # Provider-exhaustion regression gate. Always computed and printed —
     # the July 2026 incident (SommProvidersExhausted at 90%+ of calls for
@@ -3123,7 +3182,7 @@ def build_parser() -> argparse.ArgumentParser:
     pcamp_run.add_argument("--json", action="store_true")
     pcamp_run.set_defaults(func=_cmd_campaign_run)
 
-    pinbox = sub.add_parser("inbox", help="list, apply, and dismiss recommendations")
+    pinbox = sub.add_parser("inbox", help="list, show, apply, and dismiss recommendations")
     pinbox_sub = pinbox.add_subparsers(dest="inbox_cmd", required=True)
     pinbox_list = pinbox_sub.add_parser("list", help="list recommendations")
     pinbox_list.add_argument("--project", default=None)
@@ -3138,11 +3197,17 @@ def build_parser() -> argparse.ArgumentParser:
     pinbox_apply.add_argument("--json", action="store_true")
     pinbox_apply.set_defaults(func=_cmd_inbox_apply)
 
-    pinbox_dismiss = pinbox_sub.add_parser("dismiss", help="dismiss a recommendation")
-    pinbox_dismiss.add_argument("recommendation_id", type=int)
+    pinbox_dismiss = pinbox_sub.add_parser("dismiss", help="dismiss one or more recommendations")
+    pinbox_dismiss.add_argument("recommendation_ids", type=int, nargs="+", metavar="recommendation_id")
     pinbox_dismiss.add_argument("--project", default=None)
     pinbox_dismiss.add_argument("--json", action="store_true")
     pinbox_dismiss.set_defaults(func=_cmd_inbox_dismiss)
+
+    pinbox_show = pinbox_sub.add_parser("show", help="print one recommendation with its evidence")
+    pinbox_show.add_argument("recommendation_id", type=int)
+    pinbox_show.add_argument("--project", default=None)
+    pinbox_show.add_argument("--json", action="store_true")
+    pinbox_show.set_defaults(func=_cmd_inbox_show)
 
     pp = sub.add_parser("plugin", help="list and inspect plugins, hooks, and providers")
     pp_sub = pp.add_subparsers(dest="plugin_cmd", required=True)

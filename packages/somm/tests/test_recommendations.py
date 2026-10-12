@@ -124,3 +124,24 @@ def test_inbox_cli_lists_and_applies(tmp_path, capsys, monkeypatch):
 
     refreshed = repo.workload_by_name("claims", "cli-recs")
     assert refreshed.policy["fallback"][0] == {"provider": "openrouter", "model": "fast"}
+
+
+def test_inbox_cli_shows_evidence_and_dismisses_several(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    repo = Repository(tmp_path / ".somm" / "calls.sqlite")
+    _wl, first = _seed_switch_recommendation(repo, project="cli-recs")
+    _wl2, second = _seed_switch_recommendation(repo, project="cli-recs")
+
+    assert main(["inbox", "show", str(first), "--project", "cli-recs"]) == 0
+    out = capsys.readouterr().out
+    assert f"recommendation {first}  switch_model  open" in out
+    assert "evidence:" in out and '"candidate"' in out
+
+    assert main(["inbox", "dismiss", str(first), str(second), "--project", "cli-recs"]) == 0
+    out = capsys.readouterr().out
+    assert f"dismissed recommendation {first}" in out
+    assert f"dismissed recommendation {second}" in out
+
+    assert main(["inbox", "list", "--project", "cli-recs"]) == 0
+    assert "no recommendations" in capsys.readouterr().out
+    assert main(["inbox", "show", "999", "--project", "cli-recs"]) == 2

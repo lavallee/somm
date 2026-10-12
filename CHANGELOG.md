@@ -7,6 +7,54 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.17.2] — 2026-10-12
+
+Triaging the 49 recommendations the census had left open showed that 40 of
+them were one rule misreading one column, and that the instrument used to read
+them pointed at the wrong ledger. This release fixes what the triage found.
+
+### Fixed
+
+- **`--project X` from outside X's checkout read the wrong ledger.** Every
+  `somm` subcommand resolved the ledger from the current directory, so
+  `somm inbox list --project research-app` run from another repo printed "no
+  recommendations" and `somm loop status --project research-app` showed
+  "never" for a loop that had run an hour earlier. The CLI now uses the ledger
+  registered for that project in `~/.somm/registry.json` unless `SOMM_DB_DIR`
+  or `[tool.somm].db_dir` pins one. Library callers are unchanged.
+- **`new_model_landed` proposed models older than the one in production.**
+  It read `model_intel.last_seen`, which every intel pass refreshes, as
+  "appeared recently", so every cheaper sibling in the catalog qualified —
+  including earlier generations whose stale seed price was `$0`. A new
+  `first_seen` column (migration 0025, backfilled from `last_seen` so nothing
+  already known counts as new) is set once per model; the rule requires it to
+  be inside the window and later than the current model's. A candidate that
+  was proposed for a workload and dismissed is not proposed again.
+- **`chronic_cooldown` indicted workloads a provider was serving fine.** It
+  read `provider_health.consecutive_failures`, so one roster model dead since
+  April flagged every workload that had ever touched the provider, and the
+  flags never cleared. The rule now reads the calls: a provider is chronic for
+  a workload when at least 10% of that workload's production calls to it in
+  the window failed to deliver (`chronic_failure_rate`). Evidence carries the
+  counts and the entries currently cooling.
+- **A withdrawn roster model was retried every two minutes for six months.**
+  Cooldowns were fixed-length, so `openrouter/elephant-alpha` accumulated
+  68,166 consecutive failures in one ledger. `ProviderHealthTracker` now
+  doubles the cooldown every ten consecutive failures, to a day at most; one
+  success resets it. `somm doctor` lists "dead entries" (100+ failures, no
+  success in a week). The default OpenRouter roster drops the three models
+  that had been dead since spring.
+- **The project running the loop was missing from the fleet registry.** Only
+  a client registered a ledger, so a project graded by `somm loop run` but
+  whose clients predate the registry did not appear in `somm doctor --global`.
+  `somm loop run` and `somm loop install` register the ledger they run against.
+
+### Added
+
+- `somm inbox show <id>` prints one recommendation with its evidence;
+  `somm inbox dismiss` takes several ids; `somm inbox list` shows the date each
+  recommendation was created, so a stale one is visible as stale.
+
 ## [0.17.1] — 2026-10-12
 
 ### Fixed
