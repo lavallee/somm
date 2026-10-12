@@ -103,3 +103,36 @@ def test_loop_cli_run_and_status(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "somm-loop@loop-test.timer" in out and "last success" in out
     assert main(["loop"]) == 0  # default is status
+
+
+def test_loop_cli_accepts_project_after_the_subcommand(tmp_path, capsys, monkeypatch):
+    seen = {}
+
+    def fake_load(project=None):
+        seen["project"] = project
+        cfg = _cfg(tmp_path)
+        cfg.project = project or cfg.project
+        return cfg
+
+    monkeypatch.setattr("somm.cli.load_config", fake_load)
+    monkeypatch.setattr(loop, "_systemctl", lambda args, capture=False: "inactive\n")
+    Repository(_cfg(tmp_path).db_path)
+
+    assert main(["loop", "status", "--project", "after"]) == 0
+    assert seen["project"] == "after"
+    assert main(["loop", "--project", "before", "status"]) == 0
+    assert seen["project"] == "before"
+
+
+def test_install_prefers_the_somm_beside_the_interpreter(tmp_path, monkeypatch):
+    import sys
+
+    fake_bin = tmp_path / "venv" / "bin"
+    fake_bin.mkdir(parents=True)
+    (fake_bin / "somm").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
+    assert loop.somm_executable() == str(fake_bin / "somm")
+    cfg = _cfg(tmp_path)
+    loop.install(cfg, target_dir=tmp_path / "units", systemctl=lambda a: None)
+    service = (tmp_path / "units" / "somm-loop@.service").read_text()
+    assert f"ExecStart={fake_bin / 'somm'} loop run --project %i" in service

@@ -3183,6 +3183,9 @@ def build_parser() -> argparse.ArgumentParser:
     plp.add_argument("--project", default=None)
     plp_sub = plp.add_subparsers(dest="loop_cmd")
     plr = plp_sub.add_parser("run", help="one pass: run the workers that are due, then exit")
+    # `--project` is accepted on either side of the subcommand (`somm loop
+    # status --project X` reads like every other command).
+    plr.add_argument("--project", default=argparse.SUPPRESS)
     plr.add_argument("--force", action="store_true", help="run every worker regardless of staleness")
     plr.add_argument(
         "--only", action="append", choices=["model_intel", "shadow_eval", "agent"],
@@ -3192,10 +3195,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="every registered project ledger, not just this one")
     plr.add_argument("--json", action="store_true")
     pli = plp_sub.add_parser("install", help="write a systemd user timer that runs `somm loop run`")
+    pli.add_argument("--project", default=argparse.SUPPRESS)
     pli.add_argument("--every", default="15min", help="timer cadence (systemd span, default 15min)")
     pli.add_argument("--no-enable", action="store_true", help="write units without enabling")
-    plp_sub.add_parser("uninstall", help="disable the timer for this project")
+    plu = plp_sub.add_parser("uninstall", help="disable the timer for this project")
+    plu.add_argument("--project", default=argparse.SUPPRESS)
     pls = plp_sub.add_parser("status", help="timer state and worker heartbeats")
+    pls.add_argument("--project", default=argparse.SUPPRESS)
     pls.add_argument("--json", action="store_true")
     plp.set_defaults(func=_cmd_loop, loop_cmd="status", json=False)
 
@@ -3220,11 +3226,15 @@ def build_parser() -> argparse.ArgumentParser:
     pal_sub = pal.add_subparsers(dest="alias_cmd")
     pal_list = pal_sub.add_parser("list", help="show alias rows")
     pal_list.add_argument("--json", action="store_true")
-    pal_sub.add_parser("seed", help="derive aliases by rule from routes seen in the ledger")
+    pal_seed = pal_sub.add_parser("seed", help="derive aliases by rule from routes seen in the ledger")
     pal_set = pal_sub.add_parser("set", help="map one provider/model route to a canonical id")
     pal_set.add_argument("provider")
     pal_set.add_argument("model")
     pal_set.add_argument("canonical")
+    for sp in (pal_list, pal_seed, pal_set):
+        sp.add_argument("--project", default=argparse.SUPPRESS)
+        sp.add_argument("--global", dest="global_view", action="store_true",
+                        default=argparse.SUPPRESS, help="operate on ~/.somm/global.sqlite")
     pal.set_defaults(func=_cmd_alias, alias_cmd="list")
 
     psr = sub.add_parser("serve", help="run the web admin + HTTP API (localhost:7878)")

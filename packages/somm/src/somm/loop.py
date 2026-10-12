@@ -138,6 +138,17 @@ def _ago(delta: timedelta) -> str:
 # systemd user units
 
 
+def somm_executable() -> str:
+    """The `somm` the timer should run: the one beside this interpreter when
+    there is one (a project's own venv), else whatever PATH says."""
+    import sys
+
+    beside = Path(sys.executable).with_name("somm")
+    if beside.exists():
+        return str(beside)
+    return shutil.which("somm") or "/usr/bin/env somm"
+
+
 def unit_dir() -> Path:
     return Path.home() / ".config" / "systemd" / "user"
 
@@ -203,7 +214,7 @@ def install(
     """
     target = target_dir or unit_dir()
     target.mkdir(parents=True, exist_ok=True)
-    somm_bin = shutil.which("somm") or "/usr/bin/env somm"
+    somm_bin = somm_executable()
     written = []
     for name, body in render_units(somm_bin=somm_bin, every=every).items():
         path = target / name
@@ -265,6 +276,7 @@ __all__ = [
     "last_success",
     "render_dropin",
     "render_units",
+    "somm_executable",
     "run_fleet",
     "run_once",
     "status",
