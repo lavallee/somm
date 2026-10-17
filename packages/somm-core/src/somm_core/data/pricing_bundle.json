@@ -1,5 +1,5 @@
 {
- "generated_on": "2026-10-12",
+ "generated_on": "2026-10-16",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "license": "MIT (LiteLLM); see source",
  "models": [
@@ -598,6 +598,17 @@
   },
   {
    "provider": "gemini",
+   "model": "gemini-4-argon",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": 1048576,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
    "model": "gemini-embedding-001",
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.0,
@@ -957,6 +968,17 @@
   {
    "provider": "openai",
    "model": "computer-use-preview",
+   "price_in_per_1m": 3.0,
+   "price_out_per_1m": 12.0,
+   "context_window": 8192,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "computer-use-preview-2025-03-11",
    "price_in_per_1m": 3.0,
    "price_out_per_1m": 12.0,
    "context_window": 8192,
@@ -1367,7 +1389,29 @@
   },
   {
    "provider": "openai",
+   "model": "gpt-4o-mini-search-preview-2025-03-11",
+   "price_in_per_1m": 0.15,
+   "price_out_per_1m": 0.6,
+   "context_window": 128000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
    "model": "gpt-4o-search-preview",
+   "price_in_per_1m": 2.5,
+   "price_out_per_1m": 10.0,
+   "context_window": 128000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-4o-search-preview-2025-03-11",
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
@@ -1791,6 +1835,13 @@
   },
   {
    "provider": "openai",
+   "model": "gpt-5.5-cyber-preview",
+   "price_in_per_1m": 12.5,
+   "price_out_per_1m": 75.0,
+   "context_window": null
+  },
+  {
+   "provider": "openai",
    "model": "gpt-5.5-pro",
    "price_in_per_1m": 30.0,
    "price_out_per_1m": 180.0,
@@ -1952,6 +2003,16 @@
   },
   {
    "provider": "openai",
+   "model": "gpt-audio-mini-2025-10-06",
+   "price_in_per_1m": 0.6,
+   "price_out_per_1m": 2.4,
+   "context_window": 128000,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "openai",
    "model": "gpt-audio-mini-2025-12-15",
    "price_in_per_1m": 0.6,
    "price_out_per_1m": 2.4,
@@ -2074,6 +2135,16 @@
   },
   {
    "provider": "openai",
+   "model": "o3-deep-research-2025-06-26",
+   "price_in_per_1m": 10.0,
+   "price_out_per_1m": 40.0,
+   "context_window": 200000,
+   "capabilities": {
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
    "model": "o3-mini",
    "price_in_per_1m": 1.1,
    "price_out_per_1m": 4.4,
@@ -2139,6 +2210,16 @@
   {
    "provider": "openai",
    "model": "o4-mini-deep-research",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 8.0,
+   "context_window": 200000,
+   "capabilities": {
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "o4-mini-deep-research-2025-06-26",
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 8.0,
    "context_window": 200000,

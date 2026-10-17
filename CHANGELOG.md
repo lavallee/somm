@@ -7,6 +7,42 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-16
+
+The Codex harness now fails closed. Its scope comes only from typed request
+fields, and a missing workspace is an error rather than a silent widening to
+the home directory. This is the patch Fab carried privately in CI since
+2026-10-15; publishing it lets downstream runners use stock Somm again.
+
+### Breaking
+
+- **The Codex adapter rejects `allow_unsafe=True` and every `extra=`
+  argument** with `HarnessCapabilityError`. Callers that passed
+  `--sandbox …`, `--ephemeral` or `--ignore-user-config` through `extra=`
+  should use the new typed fields. `--ignore-user-config` is now always
+  passed. `--ignore-rules` has no typed equivalent and is no longer sent.
+- **A missing or non-directory `cwd` raises** (`FileNotFoundError` or
+  `NotADirectoryError`) instead of running in the home directory.
+
+### Added
+
+- `HarnessRequest.sandbox_mode`: `"read-only"` or `"workspace-write"`. Codex
+  defaults to `workspace-write`.
+- `HarnessRequest.ephemeral`: Codex adds `--ephemeral`. Ephemeral requests
+  cannot resume a session.
+
+### Fixed
+
+- **Option-looking prompts and session ids could be read as Codex CLI
+  flags.** Positional data now follows a `--` separator.
+- **The Codex CLI and its subprocess could disagree about the working
+  directory** when `cwd` was a symlink. Both now use one canonical path, passed
+  as `--cd`.
+
+### Changed
+
+- Pricing bundle refreshed from LiteLLM (new models only).
+
 ## [0.17.2] — 2026-10-12
 
 Triaging the 49 recommendations the census had left open showed that 40 of

@@ -150,9 +150,24 @@ other project runners without making Somm depend on any of them.
 
 ## Permission safety
 
-`allow_unsafe=False` is the default. When true, adapters translate the request
-to each CLI's explicit permission-bypass flag. Only an outer runner that has
-already established workspace isolation and authorization should enable it.
+`allow_unsafe=False` is the default. When true, adapters that support it
+translate the request to the CLI's explicit permission-bypass flag. Only an
+outer runner that has already established workspace isolation and
+authorization should enable it.
+
+The Codex adapter does not support a bypass. It raises `HarnessCapabilityError`
+for `allow_unsafe=True` and for any `extra=` arguments, so its scope can only
+be set through typed fields:
+
+- `sandbox_mode` is `"read-only"` or `"workspace-write"` (the default). The
+  adapter always passes `--cd <cwd>`, `--sandbox <mode>` and
+  `--ignore-user-config`.
+- `ephemeral=True` adds `--ephemeral`. It cannot be combined with
+  `session_id`.
+
+For every adapter, a `cwd` that is missing or is not a directory raises. Somm
+never falls back to the home directory. Codex prompts and session ids follow a
+`--` separator, so text that looks like an option is passed as data.
 
 `executable=` can pin a specific CLI path when PATH is not authoritative (for
 example, when a maintained per-user installation should win over an older
@@ -161,6 +176,6 @@ system binary).
 `prompt_via_stdin=True` keeps large prompts out of the process argument list.
 The Codex adapter translates it to `codex exec -` and writes the prompt to stdin.
 
-`extra=` passes harness-specific arguments through unchanged. Treat it as an
-escape hatch; portable integrations should prefer typed request fields and
-capability checks.
+`extra=` passes harness-specific arguments through unchanged where an adapter
+allows it (Codex does not). Treat it as an escape hatch; portable integrations
+should prefer typed request fields and capability checks.
