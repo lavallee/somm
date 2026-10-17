@@ -222,11 +222,14 @@ def test_codex_argv_resume_and_result(tmp_path: Path) -> None:
         reasoning_effort="high",
         session_id="thread-1",
         executable="/opt/codex",
+        allow_unsafe=False,
     )
     argv = adapter.build_argv(request)
-    assert argv[:3] == ["/opt/codex", "exec", "resume"]
+    assert argv[:2] == ["/opt/codex", "exec"]
+    assert argv.index("--cd") < argv.index("resume")
+    assert argv[argv.index("--cd") + 1] == str(tmp_path.resolve())
     assert argv[-2:] == ["thread-1", "do it"]
-    assert "--dangerously-bypass-approvals-and-sandbox" in argv
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
     assert argv[argv.index("--config") + 1] == 'model_reasoning_effort="high"'
 
     stdout = _write(tmp_path, "stdout", _stream(
@@ -246,7 +249,7 @@ def test_codex_argv_resume_and_result(tmp_path: Path) -> None:
 
 def test_codex_argv_can_read_prompt_from_stdin(tmp_path: Path) -> None:
     adapter = harnesses.get("codex")
-    request = _request(tmp_path, prompt="a large evidence packet", prompt_via_stdin=True)
+    request = _request(tmp_path, prompt="a large evidence packet", prompt_via_stdin=True, allow_unsafe=False)
 
     argv = adapter.build_argv(request)
 
@@ -256,7 +259,7 @@ def test_codex_argv_can_read_prompt_from_stdin(tmp_path: Path) -> None:
 
 def test_codex_start_passes_prompt_as_stdin(tmp_path: Path, monkeypatch) -> None:
     adapter = harnesses.get("codex")
-    request = _request(tmp_path, prompt="large packet", prompt_via_stdin=True)
+    request = _request(tmp_path, prompt="large packet", prompt_via_stdin=True, allow_unsafe=False)
     seen = {}
 
     def fake_launch(argv, req, *, stdin_data=None, **kwargs):
@@ -268,7 +271,7 @@ def test_codex_start_passes_prompt_as_stdin(tmp_path: Path, monkeypatch) -> None
     adapter.start(request)
 
     assert seen["argv"][-1] == "-"
-    assert seen["request"] is request
+    assert seen["request"].cwd == str(tmp_path.resolve())
     assert seen["stdin_data"] == "large packet"
 
 
@@ -812,3 +815,67 @@ def test_record_attempt_lands_in_the_ledger(tmp_path: Path, monkeypatch) -> None
     assert row[8] == 232599
     assert row[9] == "sess-9" and row[10] == "job-42" and row[11] == "ok"
     assert row[12] == 100328 and row[13]
+
+@pytest.mark.parametrize("session_id", [None, "thread-1"])
+def test_codex_cli_and_popen_share_canonical_cwd(tmp_path, monkeypatch, session_id):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(workspace, target_is_directory=True)
+    seen = {}
+    class Process:
+        stdin = None
+    def popen(argv, **kwargs):
+        seen.update(argv=argv, **kwargs)
+        return Process()
+    monkeypatch.setattr(base_module, "scrubbed_env", lambda *_: {})
+    monkeypatch.setattr(base_module.subprocess, "Popen", popen)
+    handle = harnesses.get("codex").start(_request(
+        tmp_path, cwd=link, allow_unsafe=False, session_id=session_id))
+    handle.stdout_fh.close()
+    handle.stderr_fh.close()
+    argv = seen["argv"]
+    assert seen["cwd"] == str(workspace.resolve()) == argv[argv.index("--cd") + 1]
+    assert argv[argv.index("--sandbox") + 1] == "workspace-write"
+    assert "--ignore-user-config" in argv
+    if session_id:
+        assert argv.index("--sandbox") < argv.index("resume")
+
+@pytest.mark.parametrize("bad_cwd", ["missing", "file"])
+def test_missing_workspace_never_falls_back_home(tmp_path, monkeypatch, bad_cwd):
+    (tmp_path / "file").write_text("synthetic")
+    monkeypatch.setattr(base_module.subprocess, "Popen", lambda *a, **k: pytest.fail("launched"))
+    with pytest.raises((FileNotFoundError, NotADirectoryError)):
+        harnesses.get("codex").start(_request(tmp_path, cwd=tmp_path / bad_cwd, allow_unsafe=False))
+
+@pytest.mark.parametrize("overrides", [
+    {"allow_unsafe": True}, {"extra": ["--sandbox", "danger-full-access"]},
+    {"extra": ["--cd", "/"]}, {"extra": ["--config", "x=y"]},
+    {"session_id": "--last"},
+])
+def test_codex_rejects_untyped_scope_overrides(tmp_path, overrides):
+    values = {"allow_unsafe": False, **overrides}
+    with pytest.raises(HarnessCapabilityError):
+        harnesses.get("codex").build_argv(_request(tmp_path, **values))
+
+@pytest.mark.parametrize("session_id", [None, "thread-1"])
+def test_codex_option_looking_prompt_is_positional(tmp_path, session_id):
+    argv = harnesses.get("codex").build_argv(_request(
+        tmp_path, allow_unsafe=False, session_id=session_id,
+        prompt="--dangerously-bypass-approvals-and-sandbox"))
+    separator = argv.index("--")
+    assert argv[-1] == "--dangerously-bypass-approvals-and-sandbox"
+    assert argv[-1] not in argv[:separator]
+    assert argv[separator + 1:] == ([session_id] if session_id else []) + [argv[-1]]
+
+
+@pytest.mark.parametrize("mode", ["read-only", "workspace-write"])
+def test_codex_typed_sandbox_and_ephemeral(tmp_path, mode):
+    argv = harnesses.get("codex").build_argv(_request(tmp_path, allow_unsafe=False, sandbox_mode=mode, ephemeral=True))
+    assert argv[argv.index("--sandbox") + 1] == mode
+    assert "--ephemeral" in argv
+
+@pytest.mark.parametrize("values", [{"sandbox_mode":"danger-full-access"}, {"ephemeral":True,"session_id":"thread-1"}])
+def test_codex_rejects_unsafe_typed_mode_or_ephemeral_resume(tmp_path, values):
+    with pytest.raises(HarnessCapabilityError):
+        harnesses.get("codex").build_argv(_request(tmp_path, allow_unsafe=False, **values))
