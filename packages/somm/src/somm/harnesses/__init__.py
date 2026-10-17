@@ -116,6 +116,12 @@ def validate_request(name: str, request: HarnessRequest) -> None:
         unsupported.append("prompt_via_stdin")
     if request.allow_unsafe and not caps.permission_bypass:
         unsupported.append("allow_unsafe")
+    if request.sandbox_mode is not None and request.sandbox_mode not in caps.sandbox_modes:
+        unsupported.append(f"sandbox_mode={request.sandbox_mode!r}")
+    if request.ephemeral and not caps.ephemeral:
+        unsupported.append("ephemeral")
+    if request.network_access is not None and not caps.network_sandbox:
+        unsupported.append("network_access")
     if unsupported:
         raise HarnessCapabilityError(
             f"harness {name!r} cannot honor {', '.join(unsupported)}; "

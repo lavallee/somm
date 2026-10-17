@@ -34,6 +34,9 @@ class CodexHarness(BaseHarness):
         reasoning_effort=True,
         prompt_via_stdin=True,
         model_families=frozenset({"openai"}),
+        sandbox_modes=frozenset({"read-only", "workspace-write"}),
+        ephemeral=True,
+        network_sandbox=True,
     )
     scrub_env = ("OPENAI_API_KEY",)
 
@@ -55,6 +58,8 @@ class CodexHarness(BaseHarness):
             raise HarnessCapabilityError("codex requires read-only or workspace-write sandbox")
         if request.ephemeral and request.session_id:
             raise HarnessCapabilityError("ephemeral codex requests cannot resume a session")
+        if request.network_access and sandbox != "workspace-write":
+            raise HarnessCapabilityError("codex network access requires the workspace-write sandbox")
         argv = [request.resolved_executable(self.executable), "exec",
                 "--cd", request.resolved_cwd(),
                 "--sandbox", sandbox, "--ignore-user-config"]
@@ -71,6 +76,11 @@ class CodexHarness(BaseHarness):
                 "--config",
                 f"model_reasoning_effort={json.dumps(request.reasoning_effort)}",
             ])
+        if sandbox == "workspace-write":
+            # Always explicit, so no system or managed config can open the
+            # network behind a request that did not ask for it.
+            network = "true" if request.network_access else "false"
+            argv.extend(["--config", f"sandbox_workspace_write.network_access={network}"])
         # Treat both session identifiers and prompts as positional data.
         argv.append("--")
         if request.session_id:
