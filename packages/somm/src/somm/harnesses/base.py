@@ -109,6 +109,8 @@ class HarnessRequest:
     session_id: str | None = None
     agent: str | None = None
     extra: Sequence[str] = field(default_factory=tuple)
+    sandbox_mode: str | None = None
+    ephemeral: bool = False
     allow_unsafe: bool = False
     correlation_id: str | None = None
     executable: str | Path | None = None
@@ -123,8 +125,10 @@ class HarnessRequest:
     start_new_session: bool = False
 
     def resolved_cwd(self) -> str:
-        path = Path(self.cwd).expanduser()
-        return str(path if path.is_dir() else Path.home())
+        path = Path(self.cwd).expanduser().resolve(strict=True)
+        if not path.is_dir():
+            raise NotADirectoryError(str(path))
+        return str(path)
 
     def resolved_capture_dir(self) -> Path:
         path = Path(self.capture_dir).expanduser()
