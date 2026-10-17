@@ -43,6 +43,10 @@ the home directory. This is the patch Fab carried privately in CI since
 
 - Pricing bundle refreshed from LiteLLM (new models only).
 
+### Security
+
+- `somm-mcp` requires `mcp>=1.30.0` (CVE-2026-59951 in earlier versions).
+
 ## [0.17.2] — 2026-10-12
 
 Triaging the 49 recommendations the census had left open showed that 40 of
