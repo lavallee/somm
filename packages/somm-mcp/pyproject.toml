@@ -16,7 +16,7 @@ classifiers = [
 dependencies = [
     "somm-core==0.18.0",
     "somm==0.18.0",
-    "mcp>=1.28.1",
+    "mcp>=1.30.0",
 ]
 
 [project.scripts]
