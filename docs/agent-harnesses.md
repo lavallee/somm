@@ -164,6 +164,20 @@ be set through typed fields:
   `--ignore-user-config`.
 - `ephemeral=True` adds `--ephemeral`. It cannot be combined with
   `session_id`.
+- `network_access=True` allows network access inside the `workspace-write`
+  sandbox. The sandbox stays on: writes are still confined to `cwd`. By
+  default (`None`) network is off. In `workspace-write` the adapter always
+  passes `sandbox_workspace_write.network_access` explicitly, so no system or
+  managed Codex config can open the network for a request that did not ask.
+  Combining it with `read-only` raises.
+
+Adapters declare the scope they can enforce in their capability profile
+(`sandbox_modes`, `ephemeral`, `network_sandbox`). `validate_request`, which
+`harnesses.start()` and `harnesses.run()` call, rejects a request for scope an
+adapter cannot enforce. For example, `sandbox_mode="read-only"` sent to
+`claude-cli` raises instead of running with write access. `network_access=False`
+means "network must be blocked", so it is rejected on adapters without a
+network sandbox. Leave it `None` there.
 
 For every adapter, a `cwd` that is missing or is not a directory raises. Somm
 never falls back to the home directory. Codex prompts and session ids follow a
