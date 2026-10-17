@@ -879,3 +879,49 @@ def test_codex_typed_sandbox_and_ephemeral(tmp_path, mode):
 def test_codex_rejects_unsafe_typed_mode_or_ephemeral_resume(tmp_path, values):
     with pytest.raises(HarnessCapabilityError):
         harnesses.get("codex").build_argv(_request(tmp_path, allow_unsafe=False, **values))
+
+
+@pytest.mark.parametrize("network,expected", [(None, "false"), (False, "false"), (True, "true")])
+def test_codex_workspace_write_network_is_always_explicit(tmp_path, network, expected):
+    argv = harnesses.get("codex").build_argv(_request(
+        tmp_path, allow_unsafe=False, network_access=network))
+    configs = [argv[i + 1] for i, a in enumerate(argv) if a == "--config"]
+    assert f"sandbox_workspace_write.network_access={expected}" in configs
+    assert argv.index("sandbox_workspace_write.network_access=" + expected) < argv.index("--")
+
+
+def test_codex_read_only_sends_no_network_override(tmp_path):
+    argv = harnesses.get("codex").build_argv(_request(
+        tmp_path, allow_unsafe=False, sandbox_mode="read-only"))
+    assert not any(a.startswith("sandbox_workspace_write.") for a in argv)
+
+
+def test_codex_network_requires_workspace_write(tmp_path):
+    with pytest.raises(HarnessCapabilityError, match="workspace-write"):
+        harnesses.get("codex").build_argv(_request(
+            tmp_path, allow_unsafe=False, sandbox_mode="read-only", network_access=True))
+
+
+def test_codex_network_override_survives_resume(tmp_path):
+    argv = harnesses.get("codex").build_argv(_request(
+        tmp_path, allow_unsafe=False, session_id="thread-1", network_access=True))
+    assert "sandbox_workspace_write.network_access=true" in argv
+    assert argv[-2:] == ["thread-1", "do it"]
+
+
+@pytest.mark.parametrize("name", ["claude-cli", "opencode"])
+@pytest.mark.parametrize("field,value", [
+    ("sandbox_mode", "read-only"), ("ephemeral", True),
+    ("network_access", False), ("network_access", True),
+])
+def test_unsandboxed_harnesses_reject_scope_they_cannot_enforce(tmp_path, name, field, value):
+    request = _request(tmp_path, allow_unsafe=False, **{field: value})
+    with pytest.raises(HarnessCapabilityError, match=field):
+        harnesses.validate_request(name, request)
+
+
+def test_codex_declares_its_enforceable_scope():
+    caps = harnesses.get("codex").capabilities.as_dict()
+    assert caps["sandbox_modes"] == ["read-only", "workspace-write"]
+    assert caps["ephemeral"] is True and caps["network_sandbox"] is True
+    assert harnesses.get("claude-cli").capabilities.network_sandbox is False

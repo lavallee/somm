@@ -79,6 +79,12 @@ class HarnessCapabilities:
     reports_cost: bool = False
     reports_model: bool = False
     model_families: frozenset[str] = frozenset()
+    # Typed scope the adapter can enforce. An adapter without an OS sandbox
+    # declares none of these, and validate_request rejects a request that
+    # asks for scope it cannot enforce.
+    sandbox_modes: frozenset[str] = frozenset()
+    ephemeral: bool = False
+    network_sandbox: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +99,9 @@ class HarnessCapabilities:
             "reports_cost": self.reports_cost,
             "reports_model": self.reports_model,
             "model_families": sorted(self.model_families),
+            "sandbox_modes": sorted(self.sandbox_modes),
+            "ephemeral": self.ephemeral,
+            "network_sandbox": self.network_sandbox,
         }
 
 
@@ -111,6 +120,10 @@ class HarnessRequest:
     extra: Sequence[str] = field(default_factory=tuple)
     sandbox_mode: str | None = None
     ephemeral: bool = False
+    # None: the adapter's default (Codex: no network). True: allow network
+    # inside the sandbox. False: require network to be blocked, which only an
+    # adapter with ``network_sandbox`` can guarantee.
+    network_access: bool | None = None
     allow_unsafe: bool = False
     correlation_id: str | None = None
     executable: str | Path | None = None
