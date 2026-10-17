@@ -225,8 +225,10 @@ Schedulers that own cancellation or inactivity checks should use
 `harnesses.start()` and `harnesses.inspect()`. Keep `allow_unsafe=False`
 unless the caller has explicitly authorized and isolated the workspace. For
 Codex, set scope with `sandbox_mode=` (`"read-only"` or `"workspace-write"`)
-and `ephemeral=`; the Codex adapter rejects `allow_unsafe=True` and `extra=`
-arguments. A missing `cwd` raises rather than falling back to home. Somm
+and `ephemeral=`, and pass `network_access=True` when a `workspace-write` task
+needs the network (it is off by default). The Codex adapter rejects
+`allow_unsafe=True` and `extra=` arguments, and every adapter rejects scope
+fields it cannot enforce. A missing `cwd` raises rather than falling back to home. Somm
 executes one attempt; queues, retries, failover, verification, and releases
 belong to the outer task runner.
 

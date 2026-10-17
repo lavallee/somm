@@ -7,6 +7,31 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-10-16
+
+Codex agents that need the network no longer need a permission bypass. They
+can open the network inside the sandbox and keep every other limit.
+
+### Added
+
+- **`HarnessRequest.network_access`.** `True` allows network access inside
+  Codex's `workspace-write` sandbox; writes stay confined to `cwd`. `None`
+  (the default) keeps the network off. In `workspace-write`, Codex always
+  receives an explicit `sandbox_workspace_write.network_access`, so a system
+  or managed config cannot open the network for a request that did not ask.
+  `network_access=True` with `read-only` raises. Verified end to end against
+  codex-cli 0.162.1: off by default fails DNS; `True` reaches PyPI.
+- Capability profile fields `sandbox_modes`, `ephemeral` and
+  `network_sandbox`.
+
+### Fixed
+
+- **Scope fields were silently ignored by adapters that cannot enforce
+  them.** In 0.18, `sandbox_mode="read-only"` or `ephemeral=True` sent to
+  `claude-cli` or `opencode` ran anyway, with full write access.
+  `validate_request` now rejects `sandbox_mode`, `ephemeral` and
+  `network_access` on adapters that do not declare them.
+
 ## [0.18.0] — 2026-10-16
 
 The Codex harness now fails closed. Its scope comes only from typed request
