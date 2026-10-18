@@ -7,6 +7,27 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-10-18
+
+### Fixed
+
+- **Short Claude CLI replies could be attributed to an auxiliary Haiku pass.**
+  Confirm the requested or default model against `modelUsage` keys and
+  `canonicalModel` before using prompt volume (uncached input plus cache reads
+  and writes) to identify the main model. Output tokens remain the fallback
+  only when all prompt volumes are zero. Reported total cost, token counts,
+  and raw payloads are unchanged.
+- Reviewed all other providers for the same mixed-model selection bug;
+  no matching implementation found. Codex CLI remains unchanged.
+
+### Changed
+
+- Refreshed the bundled pricing snapshot and reviewed stale plan sources.
+  Claude limits were reverified; legacy MiniMax and Codex quota estimates
+  retain stale verification dates and now carry explicit review warnings.
+- Updated agent skill guidance on Claude CLI attribution and removed private
+  tooling names from public release/scorer documentation.
+
 ## [0.19.0] — 2026-10-16
 
 Codex agents that need the network no longer need a permission bypass. They
