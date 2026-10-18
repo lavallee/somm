@@ -7,12 +7,12 @@ correct somm usage. This is that grader.
 
 It is deterministic and needs no API key, so the same scorer drives both the
 agent-driven SkillOpt loop (a human/agent proposes edits) and the automated
-`ivy optimize --score-cmd` CI path. Each case asserts that the skill gives clear,
+external skill-optimizer CI path. Each case asserts that the skill gives clear,
 actionable guidance for one behavior a somm-using codebase must exhibit. The
 cases are split into a TRAIN slice (read while proposing edits) and a HELD-OUT
 slice (the gate — scored, never read edit-by-edit).
 
-Contract (matches `ivy optimize`): read the candidate skill from $IVY_SKILL_FILE
+Contract: read the candidate skill from $IVY_SKILL_FILE
 (fallback: argv[1], else the repo's canonical SKILL.md). Print ONE float in
 [0,1] to stdout — the HELD-OUT aggregate. A human-readable breakdown goes to
 stderr so it never pollutes the score the CLI parses.
@@ -62,7 +62,7 @@ def ho_budget(text: str) -> bool:
 
 def ho_guardrail_convention(text: str) -> bool:
     """The 'never ship these patterns' guardrails must use the protected,
-    all-caps convention (NEVER / DO NOT / MUST NOT / ALWAYS) so ivy's renderer
+    all-caps convention (NEVER / DO NOT / MUST NOT / ALWAYS) so the optimizer's renderer
     floor + SkillOpt's guardrail gate actually protect them. Lowercase 'never'
     is unprotected and can be optimized away."""
     caps = len(re.findall(r"\b(?:ALWAYS|NEVER|MUST NOT|DO NOT)\b", text))
@@ -144,7 +144,7 @@ def main() -> int:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}", file=sys.stderr)
     print(f"train score: {tr_score:.3f}", file=sys.stderr)
 
-    # stdout: the single gating number ivy optimize parses.
+    # stdout: the single gating number the optimizer parses.
     print(f"{ho_score:.6f}")
     return 0
 

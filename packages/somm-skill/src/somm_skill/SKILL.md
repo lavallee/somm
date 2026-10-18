@@ -175,6 +175,10 @@ with cross-project decision memory.
   (or set `SOMM_PINNED_FALLBACK=1`) when an answer from some healthy model
   beats no answer — e.g. batch workers that must not lose a run when one
   provider drops.
+  Claude CLI attribution confirms a pin against `modelUsage` keys or
+  `canonicalModel`; without a match, it selects the largest prompt volume
+  (including cache reads/writes), then output tokens when all prompts are
+  zero. Auxiliary passes therefore do not relabel short pinned answers.
 - **Reasoning budget** — pass `reasoning_effort=` (`none`, `minimal`, `low`,
   `medium`, `high`, `xhigh`, `max`) on any generate call to dial how much a
   model thinks before answering. It reaches only providers that accept it.

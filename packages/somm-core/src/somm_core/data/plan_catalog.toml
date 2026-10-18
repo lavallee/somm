@@ -14,6 +14,18 @@
 # ceilings" — trailing-window usage at the moment of your own
 # quota-429s.
 #
+# Release review 2026-10-18: the MiniMax source now redirects to M Plan
+# (Go/Explore/Build); it no longer confirms the legacy Token Plan tiers or
+# numeric estimates below. The Codex source now lists model-specific Plus
+# ranges and says Pro has no five-hour limit, so the old GPT-5.5 midpoints
+# below are historical estimates, not verified current limits. Keep their
+# last_verified dates stale and the existing thresholds unchanged in this
+# attribution-only patch; use explicit local limits or observed ceilings.
+# Sources checked: https://platform.minimax.io/docs/m-plan/intro and
+# https://learn.chatgpt.com/docs/pricing (redirect targets of source URLs).
+# Claude sources still confirm five-hour sessions, weekly caps, and 5x/20x
+# Max allowances. The temporary July promotion is no longer current.
+#
 # Reference an entry from ~/.somm/plans.toml:
 #   [minimax]
 #   mode = "metered"
@@ -52,19 +64,19 @@ unit = "tokens_total"
 [claude-cli.pro]
 display = "Claude Pro ($20/mo)"
 source = "https://support.claude.com/en/articles/11647753"
-last_verified = "2026-07-02"
-notes = "Anthropic publishes NO absolute numbers — limits are 5h rolling sessions plus weekly caps, described only relatively; pool is shared across claude.ai/Desktop/Claude Code. 5h limits doubled May 2026; +50% weekly boost expires 2026-07-13. No limits encoded here: rely on observed ceilings from your own 429s, or set your own from Settings > Usage."
+last_verified = "2026-10-18"
+notes = "Anthropic publishes NO absolute numbers — limits are 5h rolling sessions plus weekly caps, described only relatively; pool is shared across claude.ai/Desktop/Claude Code. No limits encoded here: rely on observed ceilings from your own 429s, or set your own from Settings > Usage."
 
 [claude-cli.max-5x]
 display = "Claude Max 5x ($100/mo)"
 source = "https://support.claude.com/en/articles/11049741"
-last_verified = "2026-07-02"
+last_verified = "2026-10-18"
 notes = "'5x Pro'; otherwise identical structure to Pro (see claude-cli/pro). The 'monthly spend limit' 429 message corresponds to the OPT-IN usage-credits cap you set at claude.ai/settings/usage, or was a mid-2026 labeling bug — not a published plan cap."
 
 [claude-cli.max-20x]
 display = "Claude Max 20x ($200/mo)"
 source = "https://support.claude.com/en/articles/11049741"
-last_verified = "2026-07-02"
+last_verified = "2026-10-18"
 notes = "'20x Pro'; see claude-cli/pro and claude-cli/max-5x notes."
 
 [codex-cli.chatgpt-plus]

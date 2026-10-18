@@ -14,6 +14,10 @@ agent. The relevant tools are `somm_advise`, `somm_record_decision`,
 `somm_search_decisions`, plus the existing `somm_recommend`,
 `somm_compare`, and `somm_stats`.
 
+When comparing Claude CLI telemetry, auxiliary passes do not identify the
+answering model: Somm confirms the requested/default pin against reported
+model usage, then falls back to prompt volume including cached tokens.
+
 ## The loop
 
 Three phases: **recall → advise → record**.

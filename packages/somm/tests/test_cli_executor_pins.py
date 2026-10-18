@@ -9,6 +9,7 @@ usage block must count the cached prompt, not just the uncached slice.
 from __future__ import annotations
 
 import inspect
+import json
 import subprocess
 from pathlib import Path
 
@@ -193,6 +194,76 @@ def test_claude_cli_reports_whole_prompt_and_seat_cost(monkeypatch):
     assert resp.tokens_out == 5
     assert resp.cost_usd == pytest.approx(0.0265)
     assert resp.model == "claude-sonnet-4-6"
+
+
+@pytest.mark.parametrize("pin_source", ["request", "default"])
+@pytest.mark.parametrize("match", ["exact", "canonical"])
+def test_claude_cli_attributes_confirmed_pin_over_auxiliary_pass(monkeypatch, pin_source, match):
+    from somm.providers.claude_cli import ClaudeCLIProvider
+
+    # The pinned answer is shorter AND has less prompt volume than Haiku:
+    # neither usage heuristic may override a pin confirmed by the envelope.
+    key = "claude-opus-5-5" if match == "exact" else "claude-opus-5-5-20261001"
+    envelope = {
+        "result": "pong", "total_cost_usd": 0.11772,
+        "usage": {"input_tokens": 2, "cache_read_input_tokens": 13774,
+                  "cache_creation_input_tokens": 14342, "output_tokens": 4},
+        "modelUsage": {
+            "claude-haiku-5-5": {"inputTokens": 50000, "outputTokens": 12},
+            key: {"canonicalModel": "claude-opus-5-5", "inputTokens": 2, "outputTokens": 4},
+        },
+    }
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[-2:] == ["--model", "claude-opus-5-5"]
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(envelope), stderr="")
+
+    monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", fake_run)
+    provider = ClaudeCLIProvider(default_model="claude-opus-5-5" if pin_source == "default" else "other")
+    response = provider.generate(SommRequest(
+        prompt="ping", model="claude-opus-5-5" if pin_source == "request" else None,
+    ))
+    assert response.model == key
+    assert response.tokens_in == 28118
+    assert response.tokens_out == 4
+    assert response.cost_usd == pytest.approx(0.11772)
+    assert response.raw == envelope
+
+
+@pytest.mark.parametrize("pin", [None, "absent-model"])
+@pytest.mark.parametrize("prompt_field", ["inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"])
+def test_claude_cli_attributes_main_model_by_prompt_volume(monkeypatch, pin, prompt_field):
+    from somm.providers.claude_cli import ClaudeCLIProvider
+
+    envelope = {"result": "pong", "modelUsage": {
+        "claude-haiku-5-5": {"inputTokens": 1174, "outputTokens": 12},
+        "claude-opus-5-5": {prompt_field: 13774, "outputTokens": 4},
+    }}
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(envelope), stderr="")
+
+    monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", fake_run)
+    response = ClaudeCLIProvider().generate(SommRequest(prompt="ping", model=pin))
+    assert response.model == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize(("model_usage", "pin", "expected"), [
+    ({"claude-opus-5-5": {"inputTokens": 2, "outputTokens": 4}}, None, "claude-opus-5-5"),
+    ({"aux": {"outputTokens": 1}, "main": {"outputTokens": 4}}, None, "main"),
+    ({}, "pinned", "pinned"),
+    ({}, None, "claude-cli"),
+])
+def test_claude_cli_usage_fallbacks(monkeypatch, model_usage, pin, expected):
+    from somm.providers.claude_cli import ClaudeCLIProvider
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"result": "pong", "modelUsage": model_usage}), stderr="",
+        )
+
+    monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", fake_run)
+    assert ClaudeCLIProvider().generate(SommRequest(prompt="ping", model=pin)).model == expected
 
 
 def test_claude_cli_without_cost_in_envelope_leaves_cost_unset(monkeypatch):

@@ -37,7 +37,7 @@ prior run — `budget_cap_usd_daily` is taught in the registration example and
 **Epoch 1 — ACCEPT (0.800 → 1.000)**
 - *Weakness:* §9 "Never ship these patterns" — the skill's most safety-critical
   content — is lowercase prose, outside the protected ALL-CAPS convention that
-  ivy's renderer floor (`render.verify_preserved`) and SkillOpt's own guardrail
+  the optimizer's renderer floor (`render.verify_preserved`) and SkillOpt's own guardrail
   gate enforce. A future optimization pass could legally weaken or drop it.
   (Same weakness the 2026-06-12 run found; re-derived against today's §9,
   which has since grown a sixth bullet — unbudgeted paid workloads.)
@@ -106,7 +106,7 @@ Train slice stayed **1.000** throughout (no regression on already-covered behavi
 - *Held-out:* `budget_guidance` FAIL → PASS. **Accepted.**
 
 **Epoch 2 — ACCEPT (0.800 → 1.000)**
-- *Weakness:* the "Never ship these patterns" guardrails use lowercase, so ivy's
+- *Weakness:* the "Never ship these patterns" guardrails use lowercase, so the optimizer's
   renderer floor (`render.verify_preserved`) and SkillOpt's guardrail gate —
   which only protect all-caps `ALWAYS`/`NEVER`/`MUST NOT`/`DO NOT` — do **not**
   cover them. They could be optimized away in a future pass.
@@ -126,14 +126,15 @@ further bounded edit. Loop halted at epoch 2 of a 5-epoch budget.
 
 - **APPLIED** (2026-06-12, with approval): `skillopt/somm.candidate.md` copied to
   `packages/somm-skill/src/somm_skill/SKILL.md`; live source re-scores 1.000.
-- **PROMOTED**: pattern → ivy verdict `skill-guardrails-allcaps-convention`
+- **PROMOTED**: pattern → optimizer verdict `skill-guardrails-allcaps-convention`
   (`try` / `candidate`, source `somm`) at
-  `~/projects/ivy/forge/verdicts/skill-guardrails-allcaps-convention.md`.
+  `skill-guardrails-allcaps-convention.md` in the external verdict store.
 - Not yet committed to git (working-tree change awaiting your commit decision).
 - Proposed-skill snapshot retained at: `skillopt/somm.candidate.md`.
 - Reproduce: `IVY_SKILL_FILE=skillopt/somm.candidate.md python3 scripts/score_skill.py`
 - CI path (needs `ANTHROPIC_API_KEY` for the edit *proposer*):
-  `ivy optimize packages/somm-skill/src/somm_skill/SKILL.md --score-cmd "python scripts/score_skill.py" --epochs 5`
+  configure the external optimizer to edit `packages/somm-skill/src/somm_skill/SKILL.md`
+  with score command `python scripts/score_skill.py` and a five-epoch budget.
 
 ## Goodhart note
 
