@@ -103,10 +103,28 @@ class ClaudeCLIProvider:
 
         usage = data.get("usage") or {}
         model_usage = data.get("modelUsage") or {}
-        # the model the answer mostly came from (max output tokens among models the run touched)
-        actual_model = max(
-            model_usage, key=lambda k: (model_usage[k] or {}).get("outputTokens", 0), default=None
-        ) or model or "claude-cli"
+        # Claude Code may run an auxiliary Haiku pass with more output than
+        # a short main answer. Prefer a confirmed pin, then the model carrying
+        # the main prompt (including cache reads/writes), not the longest reply.
+        actual_model = model if model in model_usage else next(
+            (key for key, entry in model_usage.items()
+             if model and (entry or {}).get("canonicalModel") == model),
+            None,
+        )
+        if actual_model is None:
+            prompt_volumes = {
+                key: sum((entry or {}).get(field, 0) or 0 for field in (
+                    "inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"
+                ))
+                for key, entry in model_usage.items()
+            }
+            has_prompt_volume = any(prompt_volumes.values())
+            actual_model = max(
+                model_usage,
+                key=lambda key: prompt_volumes[key] if has_prompt_volume
+                else (model_usage[key] or {}).get("outputTokens", 0),
+                default=None,
+            ) or model or "claude-cli"
         # The seat reports what it actually charged; prefer it over a computed
         # price. Absent (older CLI, or an error envelope) leaves cost_usd None
         # so the client falls back to its own pricing rather than recording $0.

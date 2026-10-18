@@ -94,7 +94,7 @@ independent.
    to the corresponding `docs/*.md`.
 
 5. **Skill parity check.** `somm-skill` is how coding agents (and any
-   skill-distribution system that brokers it, e.g. ivy's lyra-forge)
+   skill-distribution system that brokers it)
    learn to use somm — it ships stale unless the release keeps it
    honest. If this release adds or changes a user-facing surface
    (API, CLI command, env var, MCP tool, billing/plan concept), reflect
