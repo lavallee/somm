@@ -160,7 +160,7 @@ graph TD
 
 <div class="article-mrow">
   <p>Failures in somm are deliberately visible and bounded rather than silently swallowed (<code>README.md:162</code>), and each named failure gets a canonical page. Every <code>SOMM_*</code> page documents the same four things: the problem, its cause, the runtime behavior, and the fix (<code>docs/errors/index.html:28</code>).</p>
-  <aside class="article-marginnote article-marginnote--def"><span class="term">Transient vs. fatal</span> timeouts, rate limits, 5xx responses, and insufficient credit cool the provider and fall through to the next candidate; policy and configuration failures are fatal and stop the call immediately (<code>docs/errors/index.html:28</code>).</aside>
+  <aside class="article-marginnote article-marginnote--def"><span class="term">Transient vs. fatal</span> timeouts, rate limits, 5xx responses, and insufficient credit cool the provider and fall through to the next candidate; policy and configuration failures are fatal and stop the call immediately. The exception is a rejected API key, which an unpinned call routes past (<code>docs/errors/index.html:28</code>).</aside>
 </div>
 
 <table>

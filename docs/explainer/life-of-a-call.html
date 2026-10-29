@@ -114,7 +114,7 @@ flowchart TD
 
 <h2>When things break: transient fallthrough vs. fatal <code>SOMM_*</code> errors</h2>
 
-<p>somm splits failure into two regimes. Transient failures — timeouts, rate limits, 5xx responses, insufficient credit — cool the offending provider and fall through to the next candidate. Fatal policy or configuration failures stop immediately, and each has a canonical <code>SOMM_*</code> page documenting the problem, cause, behavior, and fix (<code>docs/errors/index.html:28</code>). Budget exhaustion and privacy violations are on the fatal side precisely so that fallback can never launder a policy refusal into a successful call.</p>
+<p>somm splits failure into two regimes. Transient failures — timeouts, rate limits, 5xx responses, insufficient credit — cool the offending provider and fall through to the next candidate. Fatal policy or configuration failures stop immediately, with one exception: a provider that rejects its API key is cooled and routed past on an unpinned call, because one bad key says nothing about the request, and the skip is reported through <code>on_fallback</code> (<code>docs/errors/SOMM_PROVIDER_AUTH.md</code>). Each fatal error has a canonical <code>SOMM_*</code> page documenting the problem, cause, behavior, and fix (<code>docs/errors/index.html:28</code>). Budget exhaustion and privacy violations are on the fatal side precisely so that fallback can never launder a policy refusal into a successful call.</p>
 
 <blockquote class="article-pullquote">
   Failures are deliberately visible and bounded in telemetry rather than silently swallowed.
