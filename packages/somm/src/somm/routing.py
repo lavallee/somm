@@ -15,9 +15,10 @@ at dawn.
 
 from __future__ import annotations
 
+import logging
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from somm_core.repository import Repository
 
 from somm.capabilities import provider_can_serve
 from somm.errors import (
+    SommAuthError,
     SommFatalError,
     SommNoCapableProvider,
     SommProvidersExhausted,
@@ -54,6 +56,12 @@ ESCALATION_STEP = 10
 """Consecutive failures per doubling of the cooldown."""
 MAX_COOLDOWN_S = 86_400.0
 """The longest an escalated cooldown gets: one probe a day."""
+AUTH_COOLDOWN_S = 300.0
+"""How long a provider that failed authentication sits out of the chain.
+
+A bad key will not fix itself in seconds, but a rotated one should be picked
+up within minutes, and the escalation ladder lengthens this for a key that
+stays bad (issue #71)."""
 
 
 def escalated_cooldown_s(base_s: float, consecutive_failures: int) -> float:
@@ -225,6 +233,10 @@ class ProviderHealthTracker:
 class RouterResult:
     response: SommResponse
     provider: str
+    # Providers the chain routed past because they failed authentication on
+    # this call: (provider, error). The call succeeded, but a bad key is a
+    # degradation the caller should hear about (issue #71).
+    skipped: list[tuple[str, Exception]] = field(default_factory=list)
 
 
 class Router:
@@ -320,7 +332,11 @@ class Router:
                 Raised before any network call.
             SommProvidersExhausted: all providers cooled past the caller's
                 wait deadline, or fail-fast exhaustion when wait is omitted.
-            SommFatalError: any provider raised a fatal error.
+            SommAuthError: every provider that was tried failed
+                authentication. A provider that fails authentication is
+                cooled and routed past; the error is raised only when nothing
+                else in the chain answered.
+            SommFatalError: any provider raised another fatal error.
         """
         required = list(getattr(request, "capabilities_required", None) or [])
         capable_providers, skipped = self._capability_filter(required)
@@ -355,13 +371,22 @@ class Router:
             else None
         )
         while True:
+            auth_failures: list[tuple[str, Exception]] = []
             attempt = self._try_once(
                 request,
                 active,
                 transient_cooldown_s=retry_cooldown_s,
+                auth_failures=auth_failures,
             )
             if attempt is not None:
                 return attempt
+            if auth_failures and (
+                len(auth_failures) == len(active) or (deadline is None and not retry_policy)
+            ):
+                # Nothing answered and at least one provider rejected its
+                # key. Waiting will not mend a key, so say that rather than
+                # "all providers cooled", which points at the wrong fix.
+                raise _auth_chain_error(auth_failures)
 
             # All providers cooled or all failed transiently this round.
             next_ok = self.tracker.next_uncool_at([p.name for p in active])
@@ -446,7 +471,9 @@ class Router:
         request: SommRequest,
         providers: list[SommProvider] | None = None,
         transient_cooldown_s: float | None = None,
+        auth_failures: list[tuple[str, Exception]] | None = None,
     ) -> RouterResult | None:
+        skipped = auth_failures if auth_failures is not None else []
         for provider in (providers if providers is not None else self.providers):
             health = self.tracker.get(provider.name)
             if health.is_cooling():
@@ -470,7 +497,24 @@ class Router:
                     )
                     continue
                 self.tracker.mark_ok(provider.name)
-                return RouterResult(response=resp, provider=provider.name)
+                return RouterResult(
+                    response=resp, provider=provider.name, skipped=list(skipped)
+                )
+            except SommAuthError as e:
+                # One provider's bad key is that provider's problem, not the
+                # request's: cool it and route on. Before 0.19.2 this raised,
+                # so a bad key on the head of the chain failed every unpinned
+                # call even with a healthy provider behind it (issue #71).
+                # Pinned calls never reach the router, so they stay sticky.
+                self.tracker.mark_failure(provider.name, cooldown_s=AUTH_COOLDOWN_S)
+                skipped.append((provider.name, e))
+                logging.getLogger("somm.routing").warning(
+                    "%s failed authentication; routing past it for %.0fs: %s",
+                    provider.name,
+                    AUTH_COOLDOWN_S,
+                    str(e)[:200],
+                )
+                continue
             except SommFatalError:
                 raise
             except SommTransientError as e:
@@ -493,6 +537,17 @@ class Router:
 
 
 # ---------------------------------------------------------------------------
+
+
+def _auth_chain_error(failures: list[tuple[str, Exception]]) -> SommAuthError:
+    """The first auth error, naming every provider that rejected its key."""
+    _, first = failures[0]
+    if len(failures) == 1:
+        return first if isinstance(first, SommAuthError) else SommAuthError(str(first))
+    names = ", ".join(name for name, _ in failures)
+    err = SommAuthError(f"{first} | every provider tried failed authentication: {names}")
+    err.__cause__ = first
+    return err
 
 
 def _sleep_bounded(duration_s: float, deadline: float) -> None:

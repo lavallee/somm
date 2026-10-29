@@ -654,11 +654,30 @@ def _pinned_error_detail(exc: Exception, provider: str, model: str | None) -> st
 
     A sticky pin that fails is a dead end by design, so the recorded detail
     has to say how to opt into the chain — otherwise `somm tail` shows an
-    error with no next step.
+    error with no next step. It names the pin, because a caller that did not
+    know it was passing ``provider=`` (a wrapper forwarding its own default)
+    could not tell why the chain was skipped (issue #71).
     """
-    hint = " | pinned call: no fallback (allow_fallback=True to route past it)"
+    pin = f"provider={provider!r}" + (f", model={model!r}" if model else "")
+    hint = f" | pinned call ({pin} passed by the caller): no fallback (allow_fallback=True to route past it)"
     detail = _format_error_detail(exc, provider, model)
     return detail[: 512 - len(hint)] + hint
+
+
+def _routed_past_info(router_result, model: str | None) -> dict | None:
+    """on_fallback payload for an unpinned call the chain served after
+    routing past providers that failed authentication; None when it didn't."""
+    skipped = getattr(router_result, "skipped", None) or []
+    if not skipped:
+        return None
+    first_provider, first_exc = skipped[0]
+    return {
+        "pinned_provider": None,
+        "pinned_model": model,
+        "error_kind": type(first_exc).__name__,
+        "error_detail": _format_error_detail(first_exc, first_provider, model),
+        "routed_past": [name for name, _ in skipped],
+    }
 
 
 def _scrub_secrets(text: str) -> str:
@@ -786,13 +805,19 @@ def _default_stderr_fallback_notifier(event: dict) -> None:
     """Default on_fallback handler — self-healing notice to stderr.
 
     Fires when a pinned (provider, model) call failed and the chain
-    recovered via fallback. The call succeeded; this is *not* an error,
-    just a signal that a degradation happened. Suppress via
-    `SommLLM(on_fallback=lambda _: None)` or reroute to logging.
+    recovered via fallback, or when an unpinned call was served only after
+    the chain routed past a provider that failed authentication. The call
+    succeeded; this is *not* an error, just a signal that a degradation
+    happened. Suppress via `SommLLM(on_fallback=lambda _: None)` or reroute
+    to logging.
     """
+    if event.get("pinned_provider") is None:
+        origin = "routed_past=" + ",".join(event.get("routed_past") or [])
+    else:
+        origin = f"pinned={event.get('pinned_provider')}/{event.get('pinned_model')}"
     print(
         f"[somm] FALLBACK workload={event.get('workload')} "
-        f"pinned={event.get('pinned_provider')}/{event.get('pinned_model')} "
+        f"{origin} "
         f"→ actual={event.get('actual_provider')}/{event.get('actual_model')} "
         f"reason={event.get('error_kind')} "
         f"detail={event.get('error_detail')}",
@@ -1469,6 +1494,7 @@ class SommLLM:
                     tool_calls_out, stop_reason_out, reasoning_content_out, raw_out,
                     cost_usd_out, reported_cost_source, outcome, error_kind, error_detail,
                 ) = _served(router_result.response, router_result.provider)
+                fallback_info = _routed_past_info(router_result, model)
             except Exception as exc:
                 if hasattr(exc, "model") and exc.model:
                     actual_model = exc.model
@@ -1602,6 +1628,7 @@ class SommLLM:
                         "actual_model": actual_model,
                         "error_kind": fallback_info["error_kind"],
                         "error_detail": fallback_info["error_detail"],
+                        "routed_past": fallback_info.get("routed_past", []),
                     }
                 )
             except Exception:
@@ -2380,6 +2407,10 @@ class SommLLM:
                     f"{result.error_detail or result.error_kind or 'no model output'}"
                 )
                 delivery_failure = True
+                if result.error_kind == "SommAuthError":
+                    # A rejected key fails the same way on every retry; the
+                    # retries only re-hit the provider (issue #71).
+                    break
                 continue
             delivery_failure = False
 

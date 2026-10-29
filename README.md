@@ -213,7 +213,10 @@ r = llm.generate(..., allow_fallback=True)   # per call
 
 or `SOMM_PINNED_FALLBACK=1` to make that the default process-wide. When no
 provider is pinned, routing works as it always has, and an explicit `model=`
-rides unchanged across every provider the chain tries.
+rides unchanged across every provider the chain tries. An unpinned call also
+routes past a provider whose key is rejected: that provider is cooled and
+reported through `on_fallback` (see
+[`SOMM_PROVIDER_AUTH`](./docs/errors/SOMM_PROVIDER_AUTH.md)).
 
 ### Tool calling — one neutral shape, every provider
 

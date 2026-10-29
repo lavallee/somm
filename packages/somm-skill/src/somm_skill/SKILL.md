@@ -175,10 +175,20 @@ with cross-project decision memory.
   (or set `SOMM_PINNED_FALLBACK=1`) when an answer from some healthy model
   beats no answer — e.g. batch workers that must not lose a run when one
   provider drops.
+  Only pin on purpose. A wrapper that forwards its own default `provider=`
+  on every call turns off routing: one bad key on that provider then fails
+  every call. Leave `provider=None` and let the chain decide. An unpinned
+  call routes past a provider whose key is rejected and reports it through
+  `on_fallback`.
   Claude CLI attribution confirms a pin against `modelUsage` keys or
   `canonicalModel`; without a match, it selects the largest prompt volume
   (including cache reads/writes), then output tokens when all prompts are
   zero. Auxiliary passes therefore do not relabel short pinned answers.
+- **Images** — build them with `somm_core.parse.image_prompt()` and pass
+  the list as `prompt`. Every adapter translates the block for its wire
+  format. Do not hand-build OpenAI `image_url` or Ollama `images` payloads:
+  somm accepts them, but the neutral block is the one every provider is
+  tested with.
 - **Reasoning budget** — pass `reasoning_effort=` (`none`, `minimal`, `low`,
   `medium`, `high`, `xhigh`, `max`) on any generate call to dial how much a
   model thinks before answering. It reaches only providers that accept it.
