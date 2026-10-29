@@ -105,11 +105,15 @@ class AnthropicProvider:
             # somm_langchain adapter attaches for DeepSeek thinking models).
             # Anthropic rejects unknown message keys; it has no use for them.
             messages = [
-                {k: v for k, v in m.items() if k not in ("reasoning_content",)}
+                {
+                    k: (_content_to_anthropic(v) if k == "content" else v)
+                    for k, v in m.items()
+                    if k not in ("reasoning_content",)
+                }
                 for m in request.messages
             ]
         else:
-            messages = [{"role": "user", "content": request.prompt}]
+            messages = [{"role": "user", "content": _content_to_anthropic(request.prompt)}]
         payload: dict = {
             "model": model,
             "max_tokens": request.max_tokens,
@@ -276,3 +280,29 @@ def _translate_tool_choice(choice: str | dict) -> dict:
     if isinstance(choice, dict) and choice.get("type") == "tool":
         return {"type": "tool", "name": choice["name"]}
     raise ValueError(f"unrecognized tool_choice: {choice!r}")
+
+
+def _content_to_anthropic(content):
+    """Accept OpenAI-shaped `image_url` blocks on the native endpoint.
+
+    somm's neutral image block is Anthropic's own shape, so it passes through.
+    A caller that built `{"type": "image_url", ...}` for an OpenAI-compatible
+    provider (issue #70's downstream workaround) would otherwise 400 here, so
+    data URLs become base64 sources and other URLs become url sources.
+    """
+    if not isinstance(content, list):
+        return content
+    out = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "image_url":
+            image_url = block.get("image_url")
+            url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url or "")
+            if url.startswith("data:") and ";base64," in url:
+                header, data = url[len("data:") :].split(";base64,", 1)
+                source = {"type": "base64", "media_type": header or "image/png", "data": data}
+            else:
+                source = {"type": "url", "url": url}
+            out.append({"type": "image", "source": source})
+        else:
+            out.append(block)
+    return out

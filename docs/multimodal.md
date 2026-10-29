@@ -28,9 +28,21 @@ result = llm.generate(
 result = llm.generate(prompt="text only", workload="default")
 ```
 
-Under the hood the prompt is passed to each provider as
-`messages[0].content` — a list of blocks. Anthropic, OpenAI, and
-OpenRouter all accept this shape natively.
+`image_prompt()` builds Anthropic's block shape,
+`{"type": "image", "source": {...}}`, and each adapter translates it for its
+own wire format:
+
+| Provider | What it sends |
+|---|---|
+| Anthropic | The block unchanged |
+| OpenAI-compatible (OpenAI, Gemini, OpenRouter, DeepSeek, MiniMax, Perplexity) | `{"type": "image_url", "image_url": {"url": ...}}`: a `data:` URL for inline bytes, the URL itself for a url source |
+| Ollama | Text joined into `content`; base64 images in the message's `images` list. A URL source is a bad request, because Ollama can't fetch remote images. |
+
+A prompt that already uses OpenAI's `image_url` block works too: OpenAI-compatible
+providers pass it through, Anthropic and Ollama translate it, and it still
+counts as `vision` for routing. Before 0.19.2 the Anthropic block went to
+OpenAI-compatible providers unchanged, and Gemini answered every image
+prompt with `400 Invalid content part type: image` (issue #70).
 
 ## Capability-aware routing
 

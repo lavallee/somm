@@ -113,6 +113,7 @@ class OllamaProvider:
             messages.extend(_translate_messages_to_openai(request.messages))
         else:
             messages.append({"role": "user", "content": request.prompt})
+        messages = [_to_ollama_message(m) for m in messages]
 
         payload: dict = {
             "model": model,
@@ -193,7 +194,7 @@ class OllamaProvider:
             payload["keep_alive"] = self.keep_alive
         if request.system:
             payload["messages"].append({"role": "system", "content": request.system})
-        payload["messages"].append({"role": "user", "content": request.prompt})
+        payload["messages"].append(_to_ollama_message({"role": "user", "content": request.prompt}))
 
         with httpx.Client(timeout=self.timeout) as client:
             with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
@@ -328,3 +329,44 @@ def _normalize_ollama_done_reason(reason: str | None, *, has_tool_calls: bool) -
     if not reason:
         return ""
     return _OLLAMA_DONE_REASON_TO_SOMM.get(reason, reason)
+
+
+def _to_ollama_message(msg: dict) -> dict:
+    """Content blocks → Ollama's `content` string plus `images` list.
+
+    /api/chat takes text in `content` and base64 images (no data-URL prefix)
+    in a sibling `images` array; it rejects a list of content parts. Accepts
+    both somm's neutral image block and the OpenAI `image_url` shape. Ollama
+    cannot fetch a remote image, so a URL source is a bad request the router
+    can route past rather than a silent drop.
+    """
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return msg
+    texts: list[str] = []
+    images: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            texts.append(block)
+            continue
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            texts.append(block.get("text", ""))
+        elif btype == "image":
+            source = block.get("source") or {}
+            if source.get("type") != "base64":
+                raise SommBadRequest("ollama needs inline image bytes, not an image URL")
+            images.append(source.get("data", ""))
+        elif btype == "image_url":
+            image_url = block.get("image_url")
+            url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url or "")
+            if not (url.startswith("data:") and ";base64," in url):
+                raise SommBadRequest("ollama needs inline image bytes, not an image URL")
+            images.append(url.split(";base64,", 1)[1])
+    out = {k: v for k, v in msg.items() if k != "content"}
+    out["content"] = "\n".join(t for t in texts if t)
+    if images:
+        out["images"] = [*msg.get("images", []), *images]
+    return out
