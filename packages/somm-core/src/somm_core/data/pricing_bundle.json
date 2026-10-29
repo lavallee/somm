@@ -1,5 +1,5 @@
 {
- "generated_on": "2026-10-18",
+ "generated_on": "2026-10-29",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "license": "MIT (LiteLLM); see source",
  "models": [
@@ -716,7 +716,7 @@
    "model": "gemini-gemma-2-27b-it",
    "price_in_per_1m": 0.35,
    "price_out_per_1m": 1.05,
-   "context_window": null,
+   "context_window": 8192,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -727,7 +727,7 @@
    "model": "gemini-gemma-2-9b-it",
    "price_in_per_1m": 0.35,
    "price_out_per_1m": 1.05,
-   "context_window": null,
+   "context_window": 8192,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1955,6 +1955,17 @@
    "model": "gpt-6.1-sol",
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
+   "context_window": 922000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.1-terra",
+   "price_in_per_1m": 1.0,
+   "price_out_per_1m": 5.0,
    "context_window": 922000,
    "capabilities": {
     "tools": true,
