@@ -334,3 +334,117 @@ def test_router_uses_full_chain_when_no_caps_required(tmp_path):
 
     result = router.dispatch(SommRequest(prompt="hi"))
     assert result.provider == "ollama"
+
+
+# ---------------------------------------------------------------------------
+# Wire translation: the neutral image block is Anthropic's shape; every other
+# adapter must translate it (issue #70).
+# ---------------------------------------------------------------------------
+
+
+def _png_prompt():
+    return image_prompt("Describe this", b"\x89PNG\r\n", media_type="image/png")
+
+
+def _b64(data: bytes) -> str:
+    import base64
+
+    return base64.b64encode(data).decode()
+
+
+def test_openai_compat_translates_base64_image_to_data_url():
+    from somm.providers.gemini import GeminiProvider
+
+    provider = GeminiProvider(api_key="k")
+    payload = provider._build_payload(SommRequest(prompt=_png_prompt()), "gemini-x")
+    content = payload["messages"][-1]["content"]
+    assert content[0] == {"type": "text", "text": "Describe this"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/png;base64,{_b64(b'\x89PNG\r\n')}"},
+    }
+
+
+def test_openai_compat_translates_url_image():
+    from somm.providers.openai import OpenAIProvider
+
+    provider = OpenAIProvider(api_key="k")
+    prompt = image_prompt("see", url="https://example.com/x.png")
+    payload = provider._build_payload(SommRequest(prompt=prompt), "gpt-4o")
+    assert payload["messages"][-1]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "https://example.com/x.png"},
+    }
+
+
+def test_openai_compat_translates_images_in_multi_turn_messages():
+    from somm.providers.openrouter import OpenRouterProvider
+
+    provider = OpenRouterProvider(api_key="k")
+    req = SommRequest(prompt="", messages=[{"role": "user", "content": _png_prompt()}])
+    payload = provider._build_payload(req, "some/model")
+    assert payload["messages"][-1]["content"][1]["type"] == "image_url"
+
+
+def test_openai_compat_leaves_image_url_blocks_alone():
+    from somm.providers.openai import OpenAIProvider
+
+    block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    payload = OpenAIProvider(api_key="k")._build_payload(
+        SommRequest(prompt=[{"type": "text", "text": "x"}, block]), "gpt-4o"
+    )
+    assert payload["messages"][-1]["content"][1] == block
+
+
+def test_anthropic_keeps_native_shape_and_accepts_image_url():
+    from somm.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(api_key="k")
+    native = provider._build_payload(SommRequest(prompt=_png_prompt()), "claude-sonnet-4-5")
+    assert native["messages"][0]["content"] == _png_prompt()
+
+    oai = [
+        {"type": "text", "text": "x"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}},
+        {"type": "image_url", "image_url": {"url": "https://example.com/y.png"}},
+    ]
+    payload = provider._build_payload(SommRequest(prompt=oai), "claude-sonnet-4-5")
+    content = payload["messages"][0]["content"]
+    assert content[1] == {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/jpeg", "data": "QUJD"},
+    }
+    assert content[2] == {"type": "image", "source": {"type": "url", "url": "https://example.com/y.png"}}
+
+
+def test_ollama_moves_images_to_images_field(monkeypatch):
+    from somm.providers.ollama import OllamaProvider
+
+    provider = OllamaProvider()
+    seen: dict = {}
+
+    def fake_post(client, path, payload, model):
+        seen.update(payload)
+        return {"message": {"content": "a cat"}, "done": True}
+
+    monkeypatch.setattr(provider, "_post", fake_post)
+    provider.generate(SommRequest(prompt=_png_prompt(), model="llava"))
+    msg = seen["messages"][-1]
+    assert msg["content"] == "Describe this"
+    assert msg["images"] == [_b64(b"\x89PNG\r\n")]
+
+
+def test_ollama_rejects_remote_image_url():
+    from somm.errors import SommBadRequest
+    from somm.providers.ollama import _to_ollama_message
+
+    with pytest.raises(SommBadRequest):
+        _to_ollama_message(
+            {"role": "user", "content": image_prompt("see", url="https://example.com/x.png")}
+        )
+
+
+def test_image_url_blocks_count_as_vision():
+    block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    assert infer_capabilities([{"type": "text", "text": "x"}, block]) == ["vision"]
+    assert estimate_prompt_tokens([block], image_token_cost=900) == 900

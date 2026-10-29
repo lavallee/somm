@@ -301,7 +301,7 @@ def infer_capabilities(prompt: str | list[dict]) -> list[str]:
         if not isinstance(block, dict):
             continue
         btype = block.get("type")
-        if btype == "image":
+        if btype in ("image", "image_url"):
             caps.add("vision")
     return sorted(caps)
 
@@ -326,7 +326,7 @@ def estimate_prompt_tokens(
         btype = block.get("type")
         if btype == "text":
             total += max(1, len(block.get("text", "")) // 4)
-        elif btype == "image":
+        elif btype in ("image", "image_url"):
             total += image_token_cost
     return max(1, total)
 

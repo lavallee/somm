@@ -112,7 +112,7 @@ class OpenAICompatProvider:
         if request.messages is not None:
             messages.extend(_translate_messages_to_openai(request.messages))
         else:
-            messages.append({"role": "user", "content": request.prompt})
+            messages.append({"role": "user", "content": _translate_content_to_openai(request.prompt)})
         payload = {
             "model": model,
             "messages": messages,
@@ -429,11 +429,40 @@ def _translate_messages_to_openai(messages: list[dict]) -> list[dict]:
                 else:
                     other_blocks.append(block)
             if other_blocks:
-                out.append({"role": "user", "content": other_blocks})
+                out.append({"role": "user", "content": _translate_content_to_openai(other_blocks)})
             continue
 
         # Plain text content or system message — forward unchanged.
         out.append(msg)
+    return out
+
+
+def _translate_content_to_openai(content: str | list) -> str | list:
+    """somm-neutral (Anthropic-shaped) content blocks → OpenAI content parts.
+
+    `image_prompt()` builds `{"type": "image", "source": {...}}`; every
+    OpenAI-compatible endpoint wants `{"type": "image_url", "image_url":
+    {"url": ...}}` instead, and Gemini 400s on the native shape (issue #70).
+    Base64 sources become data URLs; url sources pass their URL through.
+    Blocks already in OpenAI shape, and plain strings, are left alone.
+    """
+    if not isinstance(content, list):
+        return content
+    out: list = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "image":
+            source = block.get("source") or {}
+            if source.get("type") == "base64":
+                media_type = source.get("media_type") or "image/png"
+                url = f"data:{media_type};base64,{source.get('data', '')}"
+            elif source.get("type") == "url":
+                url = source.get("url", "")
+            else:
+                out.append(block)
+                continue
+            out.append({"type": "image_url", "image_url": {"url": url}})
+        else:
+            out.append(block)
     return out
 
 
