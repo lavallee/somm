@@ -7,6 +7,20 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.19.3] — 2026-10-29
+
+### Fixed
+
+- **Streams had no fallback.** `stream()` and `astream()` used the first
+  non-cooled provider and failed with it. An unpinned stream now falls back
+  along the chain until its first visible text: a provider that fails
+  transiently, rejects its key, or streams nothing is cooled, and the next is
+  tried. A failure after text has been yielded still raises, because yielded
+  text can't be taken back. Pinned streams stay sticky. A key skip fires
+  `on_fallback` with `routed_past`, as in `generate()`. When every provider
+  is cooling, the stream raises `SommProvidersExhausted` and records an
+  `exhausted` row, instead of calling a cooled provider anyway.
+
 ## [0.19.2] — 2026-10-29
 
 ### Fixed
