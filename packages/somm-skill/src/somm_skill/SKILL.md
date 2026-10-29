@@ -157,7 +157,10 @@ with cross-project decision memory.
   for call in result.tool_calls: ...       # result.stop_reason == "tool_use"
   ```
 
-- `llm.stream(prompt, workload=...)` for streamed responses
+- `llm.stream(prompt, workload=...)` for streamed responses. An unpinned
+  stream falls back until its first visible chunk; a failure after that
+  raises, so callers that need an answer on a mid-stream failure must retry
+  the whole stream themselves.
   (`<think>` blocks stripped).
 - `llm.embed(text, workload=...)` for embeddings (telemetry row like
   any call).

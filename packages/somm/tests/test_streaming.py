@@ -211,6 +211,178 @@ def test_stream_provider_error_propagates(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Stream fallback: an unpinned stream moves along the chain until the first
+# visible text; after that, a failure raises.
+
+
+class ScriptedStreamProvider:
+    """Streams `chunks`, raising `error` after `fail_after` chunks."""
+
+    def __init__(self, name, chunks=(), error=None, fail_after=0):
+        self.name = name
+        self.default_model = f"{name}-m"
+        self._chunks = list(chunks)
+        self._error = error
+        self._fail_after = fail_after
+        self.calls = 0
+
+    def generate(self, request):  # pragma: no cover
+        raise AssertionError("stream tests never call generate")
+
+    def stream(self, request):
+        self.calls += 1
+        for i, c in enumerate(self._chunks):
+            if self._error is not None and i == self._fail_after:
+                raise self._error
+            yield SommChunk(text=c, done=False)
+        if self._error is not None and self._fail_after >= len(self._chunks):
+            raise self._error
+        yield SommChunk(text="", done=True)
+
+    def health(self):
+        return ProviderHealth(available=True)
+
+    def models(self):
+        return []
+
+    def estimate_tokens(self, text, model):
+        return 1
+
+
+def _last_call(repo):
+    return [c for c in _all_calls(repo) if c.workload_id][-1]
+
+
+def test_stream_falls_back_on_transient_error_before_first_chunk(tmp_path):
+    from somm.errors import SommTransientError
+    from somm_core import Outcome
+
+    cfg = _tmp_config(tmp_path)
+    down = ScriptedStreamProvider("down", error=SommTransientError("502"))
+    up = ScriptedStreamProvider("up", chunks=["hel", "lo"])
+    llm = SommLLM(config=cfg, providers=[down, up], on_error=lambda _: None)
+    try:
+        assert "".join(llm.stream("hi", workload="s")) == "hello"
+        assert llm._tracker.get("down").is_cooling()
+    finally:
+        llm.close()
+    call = _last_call(llm.repo)
+    assert call.provider == "up"
+    assert call.outcome == Outcome.OK
+
+
+def test_stream_routes_past_rejected_key_and_reports_it(tmp_path):
+    from somm.errors import SommAuthError
+
+    cfg = _tmp_config(tmp_path)
+    events: list[dict] = []
+    bad = ScriptedStreamProvider("minimax", error=SommAuthError("401"))
+    good = ScriptedStreamProvider("gemini", chunks=["ok"])
+    llm = SommLLM(config=cfg, providers=[bad, good], on_fallback=events.append)
+    try:
+        assert "".join(llm.stream("hi", workload="s")) == "ok"
+    finally:
+        llm.close()
+    assert [e["routed_past"] for e in events] == [["minimax"]]
+    assert events[0]["actual_provider"] == "gemini"
+
+
+def test_stream_falls_back_on_empty_stream(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    empty = ScriptedStreamProvider("empty", chunks=[""])
+    good = ScriptedStreamProvider("good", chunks=["text"])
+    llm = SommLLM(config=cfg, providers=[empty, good])
+    try:
+        assert "".join(llm.stream("hi", workload="s")) == "text"
+    finally:
+        llm.close()
+    assert _last_call(llm.repo).provider == "good"
+
+
+def test_stream_does_not_fall_back_after_text_was_yielded(tmp_path):
+    from somm.errors import SommTransientError
+
+    cfg = _tmp_config(tmp_path)
+    flaky = ScriptedStreamProvider(
+        "flaky", chunks=["partial ", "more"], error=SommTransientError("reset"), fail_after=1
+    )
+    spare = ScriptedStreamProvider("spare", chunks=["never"])
+    llm = SommLLM(config=cfg, providers=[flaky, spare], on_error=lambda _: None)
+    got: list[str] = []
+    try:
+        with pytest.raises(SommTransientError):
+            for piece in llm.stream("hi", workload="s"):
+                got.append(piece)
+    finally:
+        llm.close()
+    assert got == ["partial "]
+    assert spare.calls == 0
+
+
+def test_pinned_stream_does_not_fall_back(tmp_path):
+    from somm.errors import SommTransientError
+
+    cfg = _tmp_config(tmp_path)
+    down = ScriptedStreamProvider("down", error=SommTransientError("502"))
+    up = ScriptedStreamProvider("up", chunks=["x"])
+    llm = SommLLM(config=cfg, providers=[down, up], on_error=lambda _: None)
+    try:
+        with pytest.raises(SommTransientError):
+            list(llm.stream("hi", workload="s", provider="down"))
+    finally:
+        llm.close()
+    assert up.calls == 0
+
+
+def test_stream_bad_request_is_fatal(tmp_path):
+    from somm.errors import SommBadRequest
+
+    cfg = _tmp_config(tmp_path)
+    bad = ScriptedStreamProvider("bad", error=SommBadRequest("400"))
+    up = ScriptedStreamProvider("up", chunks=["x"])
+    llm = SommLLM(config=cfg, providers=[bad, up], on_error=lambda _: None)
+    try:
+        with pytest.raises(SommBadRequest):
+            list(llm.stream("hi", workload="s"))
+    finally:
+        llm.close()
+    assert up.calls == 0
+
+
+def test_stream_raises_auth_when_every_key_is_rejected(tmp_path):
+    from somm.errors import SommAuthError
+
+    cfg = _tmp_config(tmp_path)
+    a = ScriptedStreamProvider("a", error=SommAuthError("a 401"))
+    b = ScriptedStreamProvider("b", error=SommAuthError("b 401"))
+    llm = SommLLM(config=cfg, providers=[a, b], on_error=lambda _: None)
+    try:
+        with pytest.raises(SommAuthError, match="a, b"):
+            list(llm.stream("hi", workload="s"))
+    finally:
+        llm.close()
+
+
+def test_stream_exhausted_when_every_provider_is_cooling(tmp_path):
+    from somm.errors import SommProvidersExhausted
+    from somm_core import Outcome
+
+    cfg = _tmp_config(tmp_path)
+    p = ScriptedStreamProvider("p", chunks=["x"])
+    llm = SommLLM(config=cfg, providers=[p], on_error=lambda _: None)
+    try:
+        llm._tracker.mark_failure("p", cooldown_s=300)
+        with pytest.raises(SommProvidersExhausted):
+            list(llm.stream("hi", workload="s"))
+    finally:
+        llm.close()
+    assert p.calls == 0
+    call = _last_call(llm.repo)
+    assert call.outcome == Outcome.EXHAUSTED
+    assert call.provider == ""
+
+
+# ---------------------------------------------------------------------------
 # Live ollama streaming (skipped if ollama down)
 
 

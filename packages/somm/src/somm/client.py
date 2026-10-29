@@ -50,7 +50,13 @@ from somm_core.version import VERSION as _CLIENT_VERSION
 
 from somm import hooks
 from somm._redaction import scrub_text
-from somm.errors import SommProvidersExhausted, SommStructuredError
+from somm.errors import (
+    SommAuthError,
+    SommFatalError,
+    SommProvidersExhausted,
+    SommStructuredError,
+    SommTransientError,
+)
 from somm.errors import SommStrictMode as _SommStrictMode
 from somm.prompts import fork_prompt as fork_prompt_version
 from somm.prompts import (
@@ -70,7 +76,13 @@ from somm.providers.registry import (
     ProviderSpec,
     load_entrypoint_provider_specs,
 )
-from somm.routing import ProviderHealthTracker, Router
+from somm.routing import (
+    AUTH_COOLDOWN_S,
+    ProviderHealthTracker,
+    Router,
+    _auth_chain_error,
+    _classify_unknown,
+)
 from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
 
@@ -662,6 +674,19 @@ def _pinned_error_detail(exc: Exception, provider: str, model: str | None) -> st
     hint = f" | pinned call ({pin} passed by the caller): no fallback (allow_fallback=True to route past it)"
     detail = _format_error_detail(exc, provider, model)
     return detail[: 512 - len(hint)] + hint
+
+
+def _stream_failure_cooldown(exc: Exception) -> float | None:
+    """Cooldown for a stream attempt that failed before any text, or None
+    when the failure is fatal and should not fall back. Mirrors the router."""
+    if isinstance(exc, SommAuthError):
+        return AUTH_COOLDOWN_S
+    if isinstance(exc, SommFatalError):
+        return None
+    if isinstance(exc, SommTransientError):
+        return exc.cooldown_s
+    cooldown_s, transient = _classify_unknown(exc)
+    return cooldown_s if transient else None
 
 
 def _routed_past_info(router_result, model: str | None) -> dict | None:
@@ -2035,9 +2060,12 @@ class SommLLM:
         """Stream text deltas from the LLM. Yields user-visible text chunks
         (with `<think>` blocks stripped across chunk boundaries).
 
-        Telemetry is written after the stream completes. No mid-stream
-        router fallback in v0.1 — first non-cooled provider handles the
-        whole stream or errors out.
+        Telemetry is written after the stream completes. An unpinned stream
+        falls back along the chain until the first visible text reaches the
+        caller: a provider that fails transiently, rejects its key, or
+        streams nothing is cooled and the next one is tried. Once text has
+        been yielded it cannot be taken back, so a failure after that point
+        raises. A pinned ``provider`` is sticky, as in :meth:`generate`.
         ``prompt`` may be a string, multimodal prompt list, or registered
         ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
         that prompt version on the telemetry row.
@@ -2113,11 +2141,14 @@ class SommLLM:
             self._enforce_budget(wl)
 
         chosen = None
+        stream_candidates: list = []
         if short_circuit is None and wait_on_exhausted is not None:
             candidates = [self._pick_provider(provider)] if provider else list(self.providers)
             self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
         if short_circuit is None:
-            chosen = self._pick_stream_provider(provider)
+            stream_candidates = self._stream_candidates(provider)
+            chosen = stream_candidates[0] if stream_candidates else None
+        routed_past: list[tuple[str, Exception]] = []
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
         stripper = ThinkStreamStripper()
@@ -2147,26 +2178,66 @@ class SommLLM:
                     ttft_ms = int((time.monotonic() - t0) * 1000)
                     yield text
             else:
-                assert chosen is not None
-                for chunk in chosen.stream(req):
-                    chunk_raw = getattr(chunk, "raw", None)
-                    if isinstance(chunk_raw, dict):
-                        raw_out = chunk_raw
-                    if chunk.text:
-                        visible = stripper.feed(chunk.text)
-                        if visible:
-                            collected.append(visible)
-                            if ttft_ms is None:
-                                ttft_ms = int((time.monotonic() - t0) * 1000)
-                            yield visible
-                    if chunk.done:
-                        tail = stripper.flush()
-                        if tail:
-                            collected.append(tail)
-                            if ttft_ms is None:
-                                ttft_ms = int((time.monotonic() - t0) * 1000)
-                            yield tail
-                        break
+                if not stream_candidates:
+                    next_ok = self._tracker.next_uncool_at([p.name for p in self.providers])
+                    wait_s = (
+                        (next_ok - datetime.now(UTC)).total_seconds() if next_ok else None
+                    )
+                    raise SommProvidersExhausted(
+                        "all stream providers cooled"
+                        + (f"; next available in {wait_s:.0f}s" if wait_s is not None else ""),
+                        next_cool_in_s=wait_s,
+                    )
+                for attempt_no, candidate in enumerate(stream_candidates):
+                    chosen = candidate
+                    has_next = attempt_no + 1 < len(stream_candidates)
+                    stripper = ThinkStreamStripper()
+                    raw_out = None
+                    try:
+                        for chunk in candidate.stream(req):
+                            chunk_raw = getattr(chunk, "raw", None)
+                            if isinstance(chunk_raw, dict):
+                                raw_out = chunk_raw
+                            if chunk.text:
+                                visible = stripper.feed(chunk.text)
+                                if visible:
+                                    collected.append(visible)
+                                    if ttft_ms is None:
+                                        ttft_ms = int((time.monotonic() - t0) * 1000)
+                                    yield visible
+                            if chunk.done:
+                                tail = stripper.flush()
+                                if tail:
+                                    collected.append(tail)
+                                    if ttft_ms is None:
+                                        ttft_ms = int((time.monotonic() - t0) * 1000)
+                                    yield tail
+                                break
+                    except Exception as exc:
+                        # Text already reached the caller, the stream is
+                        # pinned, or this was the last candidate: nothing to
+                        # fall back to. Otherwise cool the provider and move on.
+                        if collected or provider or not has_next:
+                            if not provider and isinstance(exc, SommAuthError):
+                                routed_past.append((candidate.name, exc))
+                                if len(routed_past) > 1 and not collected:
+                                    raise _auth_chain_error(routed_past) from exc
+                            raise
+                        cooldown_s = _stream_failure_cooldown(exc)
+                        if cooldown_s is None:
+                            raise
+                        self._tracker.mark_failure(candidate.name, cooldown_s=cooldown_s)
+                        if isinstance(exc, SommAuthError):
+                            routed_past.append((candidate.name, exc))
+                        continue
+                    if not collected and not provider and has_next:
+                        # Empty stream: like the router, move on rather than
+                        # hand the caller nothing, and cool briefly.
+                        self._tracker.mark_failure(candidate.name, cooldown_s=15)
+                        continue
+                    if collected:
+                        self._tracker.mark_ok(candidate.name)
+                    break
                 # Streaming providers don't always give token counts — estimate
                 # from length as a fallback.
                 text = "".join(collected)
@@ -2189,7 +2260,11 @@ class SommLLM:
                         latency_ms=int((time.monotonic() - t0) * 1000),
                     )
         except Exception as exc:
-            outcome = Outcome.UPSTREAM_ERROR
+            outcome = (
+                Outcome.EXHAUSTED
+                if isinstance(exc, SommProvidersExhausted)
+                else Outcome.UPSTREAM_ERROR
+            )
             error_kind = type(exc).__name__
             error_detail = _format_error_detail(
                 exc, chosen.name if chosen is not None else actual_provider, actual_model
@@ -2199,7 +2274,9 @@ class SommLLM:
         finally:
             latency_ms = int((time.monotonic() - t0) * 1000)
             full_text = "".join(collected)
-            provider_name = actual_provider or (chosen.name if chosen is not None else "hook")
+            provider_name = actual_provider or (
+                chosen.name if chosen is not None else ("hook" if short_circuit is not None else "")
+            )
             model_name = actual_model or provider_name
             cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
             citations = extract_citations(raw_out)
@@ -2270,6 +2347,22 @@ class SommLLM:
                 max_tokens=max_tokens,
             )
             self._maybe_capture_sample(wl, call_id, prompt_text, None, full_text, outcome)
+            if routed_past and outcome == Outcome.OK and self._on_fallback is not None:
+                first_provider, first_exc = routed_past[0]
+                with contextlib.suppress(Exception):  # the hook must not break the caller
+                    self._on_fallback(
+                        {
+                            "call_id": call_id,
+                            "workload": workload,
+                            "pinned_provider": None,
+                            "pinned_model": model,
+                            "actual_provider": provider_name,
+                            "actual_model": model_name,
+                            "error_kind": type(first_exc).__name__,
+                            "error_detail": _format_error_detail(first_exc, first_provider, model),
+                            "routed_past": [name for name, _ in routed_past],
+                        }
+                    )
 
     async def astream(
         self,
@@ -2315,15 +2408,12 @@ class SommLLM:
         finally:
             await asyncio.to_thread(iterator.close)
 
-    def _pick_stream_provider(self, name: str | None):
+    def _stream_candidates(self, name: str | None) -> list:
+        """Providers a stream may use, in order. A pin is the only candidate;
+        otherwise every non-cooled provider in chain order."""
         if name:
-            return self._pick_provider(name)
-        # First non-cooled provider for streams (no mid-stream fallback).
-        for p in self.providers:
-            if not self._tracker.get(p.name).is_cooling():
-                return p
-        # If all cooled, use the first and let it raise.
-        return self.providers[0]
+            return [self._pick_provider(name)]
+        return [p for p in self.providers if not self._tracker.get(p.name).is_cooling()]
 
     # ------------------------------------------------------------------
     # Structured output

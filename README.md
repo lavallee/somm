@@ -274,6 +274,11 @@ vec = llm.embed("the quick brown fox", workload="search_index")
 print(vec.dim, vec.cost_usd)             # telemetry row lands like any call
 ```
 
+An unpinned stream falls back along the chain until its first visible text.
+A provider that fails transiently, rejects its key, or streams nothing is
+cooled, and the next one is tried. Text already yielded can't be taken back,
+so a failure after the first chunk raises. A pinned stream is sticky.
+
 ### Async callers
 
 Async applications use the same router, fallback chain, plan governor, hooks,
