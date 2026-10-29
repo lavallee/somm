@@ -11,11 +11,29 @@ response body).
   endpoint.
 - A typo'd env var name, so somm picked up an empty or wrong key.
 
-**Behavior in the router.** `SOMM_PROVIDER_AUTH` is **fatal**. Unlike
-timeouts, rate limits, or 5xx, the router does **not** cool the
-provider and try the next one — it raises immediately and aborts the
-whole call. A bad key won't fix itself by waiting, and silently falling
-back could mask a misconfiguration you need to see.
+**Behavior in the router.** A bad key is that provider's problem, not the
+request's. Since 0.19.2:
+
+- **Unpinned calls** route past it. The router cools the provider for
+  5 minutes (longer if the key keeps failing, on the usual escalation
+  ladder), logs a warning, and tries the next provider in the chain. If
+  another provider answers, the call succeeds and `on_fallback` fires with
+  `pinned_provider=None` and `routed_past=["<provider>"]`, so the bad key is
+  still reported. If nothing answers, the call fails with
+  `SOMM_PROVIDER_AUTH` itself, not `SOMM_PROVIDERS_EXHAUSTED`, because
+  waiting won't fix a key.
+- **Pinned calls** (`provider=` given) stay sticky, as with every other
+  error: the call fails with the auth error and the detail names the pin.
+  `generate_structured` stops after the first auth failure instead of
+  spending its retries on the same rejected key.
+
+Before 0.19.2 an auth error aborted the whole call. One bad key at the
+head of the chain then failed every unpinned call, even when a healthy
+provider sat behind it (issue #71).
+
+Cooldowns are stored in the ledger and survive restarts. After you rotate
+a key, the provider can stay skipped for up to the remaining cooldown.
+`somm doctor` lists the active cooldowns.
 
 **Fix.**
 

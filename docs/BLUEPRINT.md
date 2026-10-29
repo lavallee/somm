@@ -99,7 +99,10 @@ Fix:     concrete commands
 Docs:    link
 ```
 Transient vs fatal is encoded in the exception hierarchy (routing
-falls through on transient; raises on fatal). Cooldowns survive
+falls through on transient; raises on fatal). An auth failure is fatal
+for a pinned call but not for the chain: the router cools that provider
+and routes on, because one bad key says nothing about the request
+(issue #71). Cooldowns survive
 process restarts so an overnight-flaky provider doesn't get
 re-hammered at dawn.
 

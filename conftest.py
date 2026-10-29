@@ -7,11 +7,18 @@ never reads or writes the developer's real fleet metadata.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _isolate_somm_machine_state(tmp_path_factory, monkeypatch):
+    # The developer's own SOMM_* policy must not leak in: an operator shell
+    # exporting SOMM_BUDGET_DEFAULT_CAP_USD_DAILY gave every "no cap" test a
+    # cap. Tests that need a SOMM_* variable set it themselves.
+    for name in [k for k in os.environ if k.startswith("SOMM_")]:
+        monkeypatch.delenv(name, raising=False)
     d = tmp_path_factory.mktemp("somm-home")
     monkeypatch.setenv("SOMM_REGISTRY_PATH", str(d / "registry.json"))
     monkeypatch.setenv("SOMM_PLANS_PATH", str(d / "plans.toml"))

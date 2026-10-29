@@ -357,3 +357,68 @@ def test_structured_wrappers_forward_allow_fallback(tmp_path):
         assert result.provider == "fake"
     finally:
         llm.close()
+
+
+# ---------------------------------------------------------------------------
+# Auth failures (issue #71)
+
+
+class AuthFailingProvider(FailingProvider):
+    name = "minimax"
+    default_model = "MiniMax-M3"
+
+    def generate(self, request):
+        from somm.errors import SommAuthError
+
+        self.seen_models.append(request.model)
+        raise SommAuthError("minimax auth failed (401): login fail")
+
+
+class JsonProvider(FakeProvider):
+    name = "gemini"
+
+    def __init__(self) -> None:
+        super().__init__(text='{"kind": "soup"}')
+
+
+def test_unpinned_structured_call_routes_past_bad_key(tmp_path):
+    cfg = _tmp_config(tmp_path)
+    bad, good = AuthFailingProvider(), JsonProvider()
+    events: list[dict] = []
+    llm = SommLLM(config=cfg, providers=[bad, good], on_fallback=events.append)
+    try:
+        parsed, result = llm.generate_structured(
+            "classify", schema={"type": "object"}, workload="classify_recipe"
+        )
+        assert parsed == {"kind": "soup"}
+        assert result.provider == "gemini"
+        assert result.outcome == Outcome.OK
+        assert len(bad.seen_models) == 1
+        # Loud, though it succeeded: the bad key is reported.
+        assert len(events) == 1
+        assert events[0]["pinned_provider"] is None
+        assert events[0]["routed_past"] == ["minimax"]
+        assert events[0]["error_kind"] == "SommAuthError"
+    finally:
+        llm.close()
+
+
+def test_pinned_auth_failure_stays_sticky_and_stops_retrying(tmp_path):
+    import pytest
+    from somm.errors import SommStructuredError
+
+    cfg = _tmp_config(tmp_path)
+    bad, good = AuthFailingProvider(), JsonProvider()
+    llm = SommLLM(config=cfg, providers=[bad, good], on_error=lambda _: None)
+    try:
+        with pytest.raises(SommStructuredError) as excinfo:
+            llm.generate_structured(
+                "classify", schema={"type": "object"}, workload="w", provider="minimax"
+            )
+        detail = str(excinfo.value)
+        assert "pinned call (provider='minimax' passed by the caller)" in detail
+        # One attempt, not three: a rejected key fails the same way every time.
+        assert len(bad.seen_models) == 1
+        assert good.seen_models == []
+    finally:
+        llm.close()

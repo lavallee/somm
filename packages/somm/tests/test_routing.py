@@ -13,6 +13,7 @@ import pytest
 from somm.client import SommLLM
 from somm.errors import (
     SommAuthError,
+    SommBadRequest,
     SommInsufficientCredit,
     SommProvidersExhausted,
     SommRateLimited,
@@ -234,14 +235,60 @@ def test_router_falls_through_insufficient_credit(tmp_path):
 def test_router_raises_fatal_immediately(tmp_path):
     repo = _tmp_repo(tmp_path)
     tr = ProviderHealthTracker(repo)
-    p1 = ScriptedProvider("p1", [SommAuthError("bad key")])
+    p1 = ScriptedProvider("p1", [SommBadRequest("malformed")])
     p2 = ScriptedProvider("p2", [_ok()])
     r = Router([p1, p2], tr)
 
-    with pytest.raises(SommAuthError):
+    with pytest.raises(SommBadRequest):
         r.dispatch(SommRequest(prompt="hi"))
     # p2 never called
     assert p2.calls == 0
+
+
+def test_router_routes_past_auth_failure(tmp_path):
+    """Issue #71: one bad key on the head of the chain must not fail every
+    unpinned call when a healthy provider sits behind it."""
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    p1 = ScriptedProvider("minimax", [SommAuthError("minimax auth failed (401)")])
+    p2 = ScriptedProvider("gemini", [_ok(model="g"), _ok(model="g")])
+    r = Router([p1, p2], tr)
+
+    result = r.dispatch(SommRequest(prompt="hi"))
+    assert result.provider == "gemini"
+    assert [name for name, _ in result.skipped] == ["minimax"]
+    assert isinstance(result.skipped[0][1], SommAuthError)
+    # The bad provider is cooled, so the next call does not re-hit it.
+    assert tr.get("minimax").is_cooling()
+    second = r.dispatch(SommRequest(prompt="hi"))
+    assert second.provider == "gemini"
+    assert second.skipped == []
+    assert p1.calls == 1
+
+
+def test_router_raises_auth_when_every_provider_rejects_its_key(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    p1 = ScriptedProvider("p1", [SommAuthError("p1 bad key")])
+    p2 = ScriptedProvider("p2", [SommAuthError("p2 bad key")])
+    r = Router([p1, p2], tr)
+
+    with pytest.raises(SommAuthError) as excinfo:
+        r.dispatch(SommRequest(prompt="hi"), wait=30)
+    assert "p1 bad key" in str(excinfo.value)
+    assert "p1, p2" in str(excinfo.value)
+
+
+def test_router_raises_auth_not_exhausted_when_rest_of_chain_is_cooling(tmp_path):
+    repo = _tmp_repo(tmp_path)
+    tr = ProviderHealthTracker(repo)
+    tr.mark_failure("p2", cooldown_s=300)
+    p1 = ScriptedProvider("p1", [SommAuthError("p1 bad key")])
+    p2 = ScriptedProvider("p2", [])
+    r = Router([p1, p2], tr)
+
+    with pytest.raises(SommAuthError, match="p1 bad key"):
+        r.dispatch(SommRequest(prompt="hi"))
 
 
 def test_router_skips_cooled_provider(tmp_path):
