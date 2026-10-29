@@ -7,6 +7,50 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.19.2] — 2026-10-29
+
+### Fixed
+
+- **Image prompts failed on every OpenAI-compatible provider (#70).**
+  `image_prompt()` builds Anthropic's `{"type": "image", "source": ...}`
+  block, and `OpenAICompatProvider` sent it unchanged, so Gemini returned
+  `400 Invalid content part type: image` and OpenAI, OpenRouter, DeepSeek,
+  MiniMax and Perplexity got a shape they don't document. These providers now
+  send `{"type": "image_url", "image_url": {"url": ...}}`: a `data:` URL for
+  inline bytes, or the URL itself. This covers single-turn prompts and
+  multi-turn `messages`. Ollama now sends text in `content` and base64 images
+  in `images`. A URL image is a bad request on Ollama, because it can't fetch
+  one. The Anthropic provider keeps its native shape and also accepts OpenAI
+  `image_url` blocks, so the downstream workaround of hand-building those
+  blocks no longer breaks there. `image_url` blocks also count as `vision`
+  for routing and token estimates.
+- **One bad key at the head of the chain failed every unpinned call (#71).**
+  The router treated `SommAuthError` as fatal for the whole call, so it never
+  tried the healthy provider behind the bad one. For an unpinned call the
+  router now cools that provider for 5 minutes (escalating if the key stays
+  bad), logs a warning, and routes on. If the chain recovers, `on_fallback`
+  fires with `pinned_provider=None` and a new `routed_past` list, so the bad
+  key is still reported. If nothing answers, the call fails with
+  `SommAuthError`, not `SommProvidersExhausted`. Pinned calls stay sticky.
+- `generate_structured` stops after an auth failure instead of spending its
+  retries on the same rejected key.
+- The "pinned call: no fallback" detail now names the pin, for example
+  `provider='minimax' passed by the caller`. A wrapper that forwards its own
+  default `provider=` is pinning without knowing it, and the old message
+  didn't say which pin it meant.
+- The test suite clears inherited `SOMM_*` environment variables. A shell
+  that exported `SOMM_BUDGET_DEFAULT_CAP_USD_DAILY` failed the "no cap" spend
+  tests.
+
+### Changed
+
+- `RouterResult` has a `skipped` field: the `(provider, error)` pairs the
+  router routed past on this call.
+- Docs: `SOMM_PROVIDER_AUTH`, the README pin section, `docs/multimodal.md`
+  (it wrongly said OpenAI accepts the Anthropic block) and the agent skill
+  ("only pin on purpose"; use `image_prompt`).
+- Refreshed the bundled pricing snapshot.
+
 ## [0.19.1] — 2026-10-18
 
 ### Fixed
