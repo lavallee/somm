@@ -51,6 +51,14 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   ("only pin on purpose"; use `image_prompt`).
 - Refreshed the bundled pricing snapshot.
 
+### Security
+
+- Lockfile upgrades for advisories published since 0.19.1: aiohttp 3.14.5,
+  certifi 2026.10.23, filelock 4.2.4 and the OpenTelemetry 1.45.1 stack.
+  litellm 1.106 caps `filelock<4`, so the lock holds litellm at 1.103.10
+  until a later litellm lifts the cap. These pins affect somm's CI and dev
+  environment only. Published package constraints are unchanged.
+
 ## [0.19.1] — 2026-10-18
 
 ### Fixed
