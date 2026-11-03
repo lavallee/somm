@@ -83,6 +83,12 @@ class OllamaProvider:
             raise SommTransientError(
                 f"ollama unreachable at {self.base_url}: {e}", cooldown_s=30.0, model=model
             ) from e
+        if resp.status_code == 404:
+            raise SommBadRequest(
+                f"ollama model {model!r} unavailable (404). Run ollama pull {model}, "
+                "or use ollama list and set SOMM_OLLAMA_MODEL / [tool.somm].ollama_model "
+                "to an installed model (or pass --model).",
+            )
         if not (200 <= resp.status_code < 300):
             classify_http_status(
                 resp.status_code, resp.text, provider=self.name, model=model, headers=resp.headers

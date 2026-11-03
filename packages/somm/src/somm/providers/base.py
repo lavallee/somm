@@ -64,6 +64,7 @@ class SommRequest:
     # this through as response_format; Ollama maps it to format. Validation
     # still belongs to SommLLM.generate_structured().
     response_format: dict | None = None
+    claude_cli_text_only: bool = False
 
 
 @dataclass(slots=True)

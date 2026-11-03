@@ -38,3 +38,38 @@ print(result.outcome, result.final_text)
 
 Full documentation, design docs, and examples live in the
 [somm repository](https://github.com/lavallee/somm).
+
+### New-project Ollama default and text-only Claude CLI calls
+
+The Ollama default remains `qwen3:8b` for compatibility; Somm does not
+automatically substitute an installed model. If it is absent, install it with
+`ollama pull qwen3:8b`, or run `ollama list` and select an installed generation
+model using `SOMM_OLLAMA_MODEL`, `[tool.somm].ollama_model` in pyproject.toml,
+or the per-call `--model` / `model=` option. A 404 now includes this guidance.
+
+Claude CLI retains its existing agent/tool behavior by default, even though
+Somm exposes a single-shot generation interface. For untrusted text, explicitly
+disable built-in tools, MCP configuration, and setting sources:
+
+```sh
+somm generate --provider claude-cli --claude-cli-text-only --json "Summarize this text"
+```
+
+```python
+result = llm.generate(
+    untrusted_text,
+    provider="claude-cli",
+    claude_cli_text_only=True,
+    allow_fallback=False,
+)
+```
+
+This passes `--tools '' --strict-mcp-config --setting-sources ''` as literal
+argv entries. It requires a Claude CLI provider pin and disabled fallback.
+Remove configured `claude_cli_extra_args` / `SOMM_CLAUDE_CLI_ARGS` first:
+combining arbitrary CLI arguments with this mode is rejected. This mode controls
+CLI tool access; it is not an operating-system sandbox.
+
+`somm generate` exits 0 only for an OK result, and nonzero for failed outcomes,
+including empty responses. JSON results retain `ok`, `outcome`, and
+`error_kind`, and include `error_detail` for actionable diagnostics.

@@ -1207,6 +1207,7 @@ class SommLLM:
         correlation_id: str | None = None,
         observation_role: str = "production",
         source_call_id: str | None = None,
+        claude_cli_text_only: bool = False,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -1215,6 +1216,10 @@ class SommLLM:
         ``prompt`` may be a string, multimodal prompt list, or registered
         ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
         that prompt version on the telemetry row.
+
+        ``claude_cli_text_only=True`` disables Claude CLI tools, MCP configuration,
+        and setting sources. Requires provider="claude-cli", allow_fallback=False,
+        and no configured CLI extra arguments. Default False preserves CLI behavior.
 
         **Pins are sticky.** Naming a ``provider`` and/or ``model`` means
         "serve this call with that", not "try it first". If the pinned
@@ -1298,6 +1303,12 @@ class SommLLM:
             except Exception:
                 pass  # never let a learned-override lookup break a live call
 
+        if claude_cli_text_only and (
+            provider != "claude-cli"
+            or self._resolve_allow_fallback(allow_fallback, no_fallback)
+        ):
+            raise ValueError("claude_cli_text_only requires provider='claude-cli' and allow_fallback=False")
+
         wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
         allow_fallback_resolved = self._resolve_allow_fallback(allow_fallback, no_fallback)
 
@@ -1323,6 +1334,7 @@ class SommLLM:
             tool_choice=tool_choice,
             response_format=response_format,
             reasoning_effort=reasoning_effort,
+            claude_cli_text_only=claude_cli_text_only,
         )
 
         short_circuit: hooks.ShortCircuit | None = None
@@ -1378,6 +1390,7 @@ class SommLLM:
                 tool_choice=tool_choice,
                 response_format=response_format,
                 reasoning_effort=reasoning_effort,
+                claude_cli_text_only=claude_cli_text_only,
             )
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
@@ -1729,6 +1742,7 @@ class SommLLM:
         correlation_id: str | None = None,
         observation_role: str = "production",
         source_call_id: str | None = None,
+        claude_cli_text_only: bool = False,
     ) -> SommResult:
         """Await :meth:`generate` without blocking the caller's event loop.
 
@@ -1758,6 +1772,7 @@ class SommLLM:
             tool_choice=tool_choice,
             response_format=response_format,
             reasoning_effort=reasoning_effort,
+            claude_cli_text_only=claude_cli_text_only,
             wait=wait,
             session_id=session_id,
             parent_call_id=parent_call_id,
