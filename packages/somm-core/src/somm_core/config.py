@@ -42,6 +42,8 @@ class Config:
     db_dir: Path = field(default_factory=lambda: Path("./.somm"))
     spool_dir: Path = field(default_factory=lambda: Path("./.somm/spool"))
     ollama_url: str = "http://localhost:11434"
+    # Stable default; installations choose a local model via env or [tool.somm].
+    # Missing models fail with pull/configuration guidance rather than auto-substitution.
     ollama_model: str = "qwen3:8b"
     ollama_think: bool = False  # Set "think": true on ollama requests (reasoning models)
     ollama_keep_alive: str = "30m"  # Model residency window; "0" to opt out

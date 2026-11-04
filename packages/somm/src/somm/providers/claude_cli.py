@@ -6,9 +6,10 @@ workloads OFF the metered/gateway hot path onto a seat they already pay for. som
 telemetry: `claude -p --output-format json` reports the model actually used, token usage, cost,
 and latency, which this adapter maps onto SommResponse.
 
-Single-shot text generation only: no tool-calling, no multi-turn `messages`, no native streaming
-(stream() emits the whole result as one chunk). The subprocess runs in a neutral temp cwd so it
-does NOT inherit a project's CLAUDE.md / tools — it's a generator, not an agent.
+Single-shot API: no tool-calling interface, multi-turn messages, or native streaming.
+The CLI can still use its own tools by default. Opt into claude_cli_text_only
+to disable tools, MCP configuration, and setting sources. A neutral temporary
+cwd avoids inheriting the calling project's CLAUDE.md.
 """
 
 from __future__ import annotations
@@ -70,7 +71,15 @@ class ClaudeCLIProvider:
         cmd = [self.binary, "-p", "--output-format", "json"]
         if model:
             cmd += ["--model", model]
-        cmd += self.extra_args
+        if request.claude_cli_text_only:
+            if self.extra_args:
+                raise SommBadRequest(
+                    "claude_cli_text_only cannot be combined with claude_cli_extra_args "
+                    "(including SOMM_CLAUDE_CLI_ARGS); remove the extra arguments"
+                )
+            cmd += ["--tools", "", "--strict-mcp-config", "--setting-sources", ""]
+        else:
+            cmd += self.extra_args
         # This provider exists to spend the SUBSCRIPTION seat. An ambient
         # ANTHROPIC_API_KEY (set for the API provider) silently takes auth
         # precedence inside the CLI and bills — or fails on — the API

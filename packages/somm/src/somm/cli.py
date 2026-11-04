@@ -1555,6 +1555,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             model=args.model,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
+            claude_cli_text_only=args.claude_cli_text_only,
+            **({"allow_fallback": False} if args.claude_cli_text_only else {}),
         )
     finally:
         llm.close()
@@ -1571,6 +1573,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         "call_id": result.call_id,
         "outcome": result.outcome.value,
         "error_kind": result.error_kind,
+        "error_detail": result.error_detail,
         "ttft_ms": result.ttft_ms,
         "cache_tokens_in": result.cache_tokens_in,
         "cache_tokens_out": result.cache_tokens_out,
@@ -1580,7 +1583,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
     else:
         print(result.text)
-    return 0
+    if not payload["ok"] and not args.json:
+        print(result.error_detail or result.error_kind or result.outcome.value, file=sys.stderr)
+    return 0 if payload["ok"] else 1
 
 
 def _bench_prompt(args: argparse.Namespace) -> str:
@@ -2899,6 +2904,8 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--max-tokens", type=int, default=1024)
     pg.add_argument("--temperature", type=float, default=0.0)
     pg.add_argument("--json", action="store_true", help="emit a machine-readable result")
+    pg.add_argument("--claude-cli-text-only", action="store_true",
+                    help="disable Claude CLI tools, MCP config, and settings; requires --provider claude-cli")
     pg.set_defaults(func=_cmd_generate)
 
     pb = sub.add_parser("bench", help="run latency and throughput probes")
