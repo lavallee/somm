@@ -8,7 +8,12 @@ appears as ``metadata.model.{providerID,modelID}`` on message parts.
 
 from __future__ import annotations
 
+import functools
 import math
+import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from .base import (
@@ -20,6 +25,34 @@ from .base import (
     iter_json_events,
     read_capture,
 )
+
+_VERSION = re.compile(r"(\d+)\.\d+")
+
+
+@functools.lru_cache(maxsize=8)
+def _major_version(executable: str, modified_ns: int) -> int | None:
+    """The installed major version, or None when it cannot be determined."""
+    try:
+        result = subprocess.run(
+            [executable, "--version"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _VERSION.search(result.stdout) if result.returncode == 0 else None
+    return int(match.group(1)) if match else None
+
+
+def _uses_v2_cli(executable: str) -> bool:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        return False
+    try:
+        modified_ns = os.stat(resolved).st_mtime_ns
+    except OSError:
+        return False
+    major = _major_version(resolved, modified_ns)
+    return major is not None and major >= 2
 
 
 def _number(value: object) -> float | None:
@@ -41,16 +74,25 @@ class OpenCodeHarness(BaseHarness):
     )
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
-        argv = [request.resolved_executable(self.executable), "run", "--format", "json"]
+        executable = request.resolved_executable(self.executable)
+        v2 = _uses_v2_cli(executable)
+        argv = [executable, "run"]
+        if v2:
+            # 2.x attaches to a shared background service unless told otherwise.
+            # A private server stays inside the caller's process tree.
+            argv.append("--standalone")
+        argv.extend(["--format", "json"])
         if request.allow_unsafe:
-            argv.append("--dangerously-skip-permissions")
+            argv.append("--auto" if v2 else "--dangerously-skip-permissions")
         if request.model:
             argv.extend(["--model", request.model])
         if request.agent:
             argv.extend(["--agent", request.agent])
         if request.session_id:
             argv.extend(["--session", request.session_id])
-        argv.extend(["--dir", request.resolved_cwd()])
+        if not v2:
+            # 2.x removed --dir and runs in the process working directory.
+            argv.extend(["--dir", request.resolved_cwd()])
         argv.extend(str(arg) for arg in request.extra)
         argv.append(request.prompt)
         return argv

@@ -940,3 +940,48 @@ def test_codex_writable_roots_are_refused_when_read_only_or_relative(tmp_path):
     for kwargs in ({"writable_roots": ("/x",), "sandbox_mode": "read-only"}, {"writable_roots": ("relative",)}):
         with pytest.raises(harnesses.HarnessCapabilityError):
             harnesses.get("codex").build_argv(harnesses.HarnessRequest(prompt="p", cwd=tmp_path, capture_dir=tmp_path, **kwargs))
+
+
+def _fake_opencode(tmp_path: Path, version_output: str, rc: int = 0) -> str:
+    fake = tmp_path / "opencode"
+    fake.write_text(f"#!/bin/sh\necho '{version_output}'\nexit {rc}\n")
+    fake.chmod(0o755)
+    return str(fake)
+
+
+def _opencode_argv(tmp_path: Path, executable: str, **kwargs) -> list[str]:
+    return harnesses.get("opencode").build_argv(
+        HarnessRequest(
+            prompt="hi", cwd=tmp_path, capture_dir=tmp_path,
+            executable=executable, **kwargs,
+        )
+    )
+
+
+def test_opencode_v2_runs_standalone_in_process_cwd(tmp_path: Path) -> None:
+    argv = _opencode_argv(tmp_path, _fake_opencode(tmp_path, "opencode v2.2.5"))
+    assert "--standalone" in argv
+    assert "--dir" not in argv
+
+
+def test_opencode_v2_maps_unsafe_to_auto(tmp_path: Path) -> None:
+    argv = _opencode_argv(
+        tmp_path, _fake_opencode(tmp_path, "opencode v2.2.5"), allow_unsafe=True,
+    )
+    assert "--auto" in argv
+    assert "--dangerously-skip-permissions" not in argv
+
+
+def test_opencode_v1_keeps_dir_flag(tmp_path: Path) -> None:
+    argv = _opencode_argv(
+        tmp_path, _fake_opencode(tmp_path, "1.18.34"), allow_unsafe=True,
+    )
+    assert argv[argv.index("--dir") + 1] == str(tmp_path.resolve())
+    assert "--dangerously-skip-permissions" in argv
+    assert "--standalone" not in argv
+
+
+def test_opencode_unknown_version_keeps_v1_flags(tmp_path: Path) -> None:
+    argv = _opencode_argv(tmp_path, _fake_opencode(tmp_path, "error", rc=1))
+    assert "--dir" in argv
+    assert "--standalone" not in argv
