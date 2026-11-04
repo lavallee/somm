@@ -63,6 +63,12 @@ class CodexHarness(BaseHarness):
         argv = [request.resolved_executable(self.executable), "exec",
                 "--cd", request.resolved_cwd(),
                 "--sandbox", sandbox, "--ignore-user-config"]
+        if request.writable_roots and sandbox != "workspace-write":
+            raise HarnessCapabilityError("codex writable roots require the workspace-write sandbox")
+        for root in request.writable_roots:
+            if not str(root).startswith("/"):
+                raise HarnessCapabilityError("codex writable roots must be absolute paths")
+            argv.extend(["--add-dir", str(root)])
         if request.ephemeral:
             argv.append("--ephemeral")
         # cwd/sandbox belong to exec, not the resume subcommand.
