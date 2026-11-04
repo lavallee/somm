@@ -232,6 +232,7 @@ _INSUFFICIENT_CREDIT_SIGNALS = (
     "insufficient_quota",
     "insufficient quota",
     "insufficient credit",
+    "insufficient balance",
     "credit balance is too low",
     "credit balance too low",
     "exceeded your current quota",
@@ -304,6 +305,9 @@ def classify_http_status(
     if looks_like_insufficient_credit(body):
         # Out of money or quota: a billing state on this provider, not a bad
         # request or a bad key. Transient, so the router falls through.
+        raise SommInsufficientCredit(f"{provider} out of credit on {model}: {snippet}", model=model)
+    if status == 402:
+        # Payment Required means the same thing whatever the body says.
         raise SommInsufficientCredit(f"{provider} out of credit on {model}: {snippet}", model=model)
     if status in (401, 403):
         raise SommAuthError(f"{provider} auth failed ({status}): {snippet}")
