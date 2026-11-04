@@ -1576,3 +1576,38 @@ def test_anthropic_temperature_gating(monkeypatch, model, expected):
     captured = _anthropic_capture(monkeypatch)
     AnthropicProvider(api_key="k").generate(SommRequest(prompt="hi", model=model, temperature=0.3))
     assert ("temperature" in captured) is expected
+
+
+@pytest.mark.parametrize(
+    "status, body",
+    [
+        (402, '{"error":{"message":"Insufficient Balance (request_id: x)"}}'),  # DeepSeek's wording
+        (402, "payment required"),  # the status alone is enough
+        (400, '{"error":{"message":"Insufficient Balance"}}'),  # the wording alone too
+    ],
+)
+def test_exhausted_balance_is_a_credit_error_not_a_generic_transient(status, body):
+    from somm.errors import classify_http_status
+
+    with pytest.raises(SommInsufficientCredit) as exc_info:
+        classify_http_status(status, body, provider="deepseek", model="deepseek-v4-flash")
+    assert exc_info.value.cooldown_s >= 600
+
+
+def test_plan_remains_reads_percentages_and_survives_a_bad_response(monkeypatch):
+    import io
+    import json
+    import urllib.request
+
+    from somm.providers.minimax import plan_remains
+
+    body = {"model_remains": [
+        {"model_name": "video", "current_interval_remaining_percent": 100,
+         "current_weekly_remaining_percent": 100},
+        {"model_name": "general", "current_interval_remaining_percent": 90,
+         "current_weekly_remaining_percent": 68},
+    ]}
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: io.BytesIO(json.dumps(body).encode()))
+    assert plan_remains("k") == {"interval_used_pct": 10, "weekly_used_pct": 32}
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"{}"))
+    assert plan_remains("k") is None

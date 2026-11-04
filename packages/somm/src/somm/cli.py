@@ -2531,6 +2531,19 @@ def _cmd_plans(args: argparse.Namespace) -> int:
         for line in value_lines:
             print(line)
 
+    if "minimax" in plans and plans["minimax"].mode == "metered":
+        import os
+
+        from somm.providers.minimax import plan_remains
+
+        key = os.environ.get("MINIMAX_API_KEY")
+        live = plan_remains(key) if key else None
+        if live:
+            print(
+                f"\nvendor-reported: minimax {live['interval_used_pct']}% of this 5h window, "
+                f"{live['weekly_used_pct']}% of this week"
+            )
+
     metered_no_limits = [p for p, pl in plans.items() if pl.mode == "metered" and not pl.limits]
     if metered_no_limits:
         print(

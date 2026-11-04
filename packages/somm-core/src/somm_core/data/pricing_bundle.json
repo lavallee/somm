@@ -955,6 +955,17 @@
    }
   },
   {
+   "provider": "minimax",
+   "model": "MiniMax-M3.1-Flash",
+   "price_in_per_1m": 0.15,
+   "price_out_per_1m": 0.6,
+   "context_window": 1000000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
    "provider": "openai",
    "model": "chat-latest",
    "price_in_per_1m": 5.0,

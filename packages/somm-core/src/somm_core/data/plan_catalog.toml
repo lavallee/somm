@@ -21,6 +21,9 @@
 # below are historical estimates, not verified current limits. Keep their
 # last_verified dates stale and the existing thresholds unchanged in this
 # attribution-only patch; use explicit local limits or observed ceilings.
+# Review 2026-11-04: real MiniMax 429s land near 1.8M tokens/5h and 29M tokens/7d on a
+# $20 plan, far below the monthly estimates below. Prefer observed ceilings, and read the
+# vendor's percentages from `somm plans`.
 # Sources checked: https://platform.minimax.io/docs/m-plan/intro and
 # https://learn.chatgpt.com/docs/pricing (redirect targets of source URLs).
 # Claude sources still confirm five-hour sessions, weekly caps, and 5x/20x
