@@ -119,6 +119,9 @@ class HarnessRequest:
     agent: str | None = None
     extra: Sequence[str] = field(default_factory=tuple)
     sandbox_mode: str | None = None
+    # Extra directories a sandboxed harness may write, such as a linked Git
+    # worktree's metadata. Adapters that cannot honor this must reject it.
+    writable_roots: Sequence[str] = field(default_factory=tuple)
     ephemeral: bool = False
     # None: the adapter's default (Codex: no network). True: allow network
     # inside the sandbox. False: require network to be blocked, which only an

@@ -925,3 +925,18 @@ def test_codex_declares_its_enforceable_scope():
     assert caps["sandbox_modes"] == ["read-only", "workspace-write"]
     assert caps["ephemeral"] is True and caps["network_sandbox"] is True
     assert harnesses.get("claude-cli").capabilities.network_sandbox is False
+
+
+def test_codex_writable_roots_become_add_dir_before_any_resume(tmp_path):
+    request = harnesses.HarnessRequest(
+        prompt="p", cwd=tmp_path, capture_dir=tmp_path, writable_roots=("/repo/.git/worktrees/x",),
+    )
+    argv = harnesses.get("codex").build_argv(request)
+    assert argv[argv.index("--add-dir") + 1] == "/repo/.git/worktrees/x"
+    assert argv.index("--add-dir") < argv.index("--")
+
+
+def test_codex_writable_roots_are_refused_when_read_only_or_relative(tmp_path):
+    for kwargs in ({"writable_roots": ("/x",), "sandbox_mode": "read-only"}, {"writable_roots": ("relative",)}):
+        with pytest.raises(harnesses.HarnessCapabilityError):
+            harnesses.get("codex").build_argv(harnesses.HarnessRequest(prompt="p", cwd=tmp_path, capture_dir=tmp_path, **kwargs))

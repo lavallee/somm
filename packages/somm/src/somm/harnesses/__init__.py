@@ -116,6 +116,8 @@ def validate_request(name: str, request: HarnessRequest) -> None:
         unsupported.append("prompt_via_stdin")
     if request.allow_unsafe and not caps.permission_bypass:
         unsupported.append("allow_unsafe")
+    if request.writable_roots and not caps.sandbox_modes:
+        unsupported.append("writable_roots")
     if request.sandbox_mode is not None and request.sandbox_mode not in caps.sandbox_modes:
         unsupported.append(f"sandbox_mode={request.sandbox_mode!r}")
     if request.ephemeral and not caps.ephemeral:
