@@ -65,7 +65,8 @@ def no_entrypoint_providers(monkeypatch):
 
 @pytest.fixture
 def no_cli(monkeypatch):
-    monkeypatch.setattr("somm.providers.registry.shutil.which", lambda _name: None)
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: None)
+    monkeypatch.setattr("somm.providers._cli_bin.WELL_KNOWN_BIN_DIRS", ())
 
 
 def test_default_config_is_ollama_only(no_cli):
@@ -73,7 +74,7 @@ def test_default_config_is_ollama_only(no_cli):
 
 
 def test_configured_default_chain_prefers_minimax_and_keeps_ollama_last(monkeypatch):
-    monkeypatch.setattr("somm.providers.registry.shutil.which", lambda _name: "/usr/bin/tool")
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: "/usr/bin/tool")
 
     assert _names(build_default_providers(_configured())) == [
         "minimax",
@@ -88,7 +89,7 @@ def test_configured_default_chain_prefers_minimax_and_keeps_ollama_last(monkeypa
 
 
 def test_provider_order_is_exclusive_and_keeps_requested_order(monkeypatch):
-    monkeypatch.setattr("somm.providers.registry.shutil.which", lambda _name: "/usr/bin/tool")
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: "/usr/bin/tool")
     config = _configured()
     config.provider_order = ["codex-cli", "minimax", "ollama", "missing", "claude-cli"]
 
@@ -101,7 +102,7 @@ def test_provider_order_is_exclusive_and_keeps_requested_order(monkeypatch):
 
 
 def test_full_includes_providers_outside_default_order(monkeypatch):
-    monkeypatch.setattr("somm.providers.registry.shutil.which", lambda _name: "/usr/bin/tool")
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: "/usr/bin/tool")
 
     assert _names(build_default_providers(_configured(), full=True)) == [
         "ollama",

@@ -1594,6 +1594,47 @@ def test_exhausted_balance_is_a_credit_error_not_a_generic_transient(status, bod
     assert exc_info.value.cooldown_s >= 600
 
 
+_MINIMAX_PLAN_EXHAUSTED = (
+    '{"type":"error","error":{"type":"rate_limit_error","message":"Token Plan usage limit '
+    'reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)"}}'
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _MINIMAX_PLAN_EXHAUSTED,  # the production body, 2026-11-08
+        '{"error":{"code":2056,"message":"quota gone"}}',  # the code alone
+        '{"base_resp":{"status_code":2056,"status_msg":"x"}}',  # MiniMax 200-body shape
+        "Token Plan usage limit reached (window)",  # the phrase alone, no code
+    ],
+)
+def test_minimax_plan_exhaustion_on_429_is_credit_not_rate_limit(body):
+    from somm.errors import classify_http_status
+
+    with pytest.raises(SommInsufficientCredit) as exc_info:
+        classify_http_status(429, body, provider="minimax", model="MiniMax-M3")
+    assert exc_info.value.cooldown_s >= 600  # the #76 cooldown, not a 120s burst wait
+    assert "minimax out of credit on MiniMax-M3" in str(exc_info.value)
+    if "Token Plan" in body:
+        assert "Token Plan usage limit reached" in str(exc_info.value)  # MiniMax's own words
+
+
+def test_genuine_minimax_429_stays_a_rate_limit():
+    from somm.errors import SommRateLimited, classify_http_status
+
+    body = '{"type":"error","error":{"type":"rate_limit_error","message":"Too many requests (1002)"}}'
+    with pytest.raises(SommRateLimited):
+        classify_http_status(429, body, provider="minimax", model="MiniMax-M3")
+
+
+def test_minimax_body_error_with_plan_code_is_credit():
+    from somm.errors import classify_body_error
+
+    with pytest.raises(SommInsufficientCredit):
+        classify_body_error({"code": 2056, "message": "limit"}, provider="minimax", model="MiniMax-M3")
+
+
 def test_plan_remains_reads_percentages_and_survives_a_bad_response(monkeypatch):
     import io
     import json

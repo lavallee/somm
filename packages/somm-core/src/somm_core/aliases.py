@@ -62,6 +62,22 @@ def canonicalize(provider: str, model: str) -> str | None:
     return canonical
 
 
+def needs_alias(provider: str, model: str) -> bool:
+    """True when a route without an alias row is worth a doctor warning:
+    a rule can derive its canonical id (``somm alias seed`` fixes it) or it
+    is a moving nickname (nothing can). A route that is already canonical,
+    like ``minimax/MiniMax-M3``, is neither — the seed writes no row for it,
+    so flagging it would nag forever."""
+    if canonical_provider(provider) != provider:
+        return True
+    name = model.strip()
+    if not name or name.startswith("*"):
+        return False
+    if name in _MOVING_NICKNAMES:
+        return True
+    return canonicalize(provider, model) is not None
+
+
 def seed_model_aliases(repo: Repository, *, since_days: int = 90) -> int:
     """Insert rule-derived aliases for routes seen in the ledger or in
     ``model_intel``. Rule rows never overwrite a manual alias. Returns the
@@ -103,4 +119,4 @@ def seed_model_aliases(repo: Repository, *, since_days: int = 90) -> int:
     return written
 
 
-__all__ = ["canonical_provider", "canonicalize", "seed_model_aliases"]
+__all__ = ["canonical_provider", "canonicalize", "needs_alias", "seed_model_aliases"]

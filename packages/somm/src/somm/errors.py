@@ -8,6 +8,8 @@ exception carries a canonical SOMM_* code so error messages stay consistent
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -236,7 +238,44 @@ _INSUFFICIENT_CREDIT_SIGNALS = (
     "credit balance is too low",
     "credit balance too low",
     "exceeded your current quota",
+    # MiniMax Token Plan, sent as a 429 "rate_limit_error": "Token Plan usage
+    # limit reached: Upgrade your Token Plan or purchase Credits for more
+    # usage. (2056)". A plan that is used up for the window, not a burst.
+    "usage limit reached",
+    "purchase credits",
 )
+
+# Vendor-specific numeric codes that mean "plan or balance exhausted" even
+# when the surrounding wording changes. MiniMax puts the code at the end of
+# the message, "(2056)", and in ``base_resp.status_code`` on 200 bodies.
+#   2056 — MiniMax: Token Plan usage limit reached (window quota used up).
+# MiniMax 1008 ("insufficient balance") is caught by the phrase list.
+_PLAN_EXHAUSTED_BODY_CODES: frozenset[str] = frozenset({"2056"})
+_PAREN_CODE = re.compile(r"\((\d{3,5})\)")
+
+
+def _body_codes(body: str) -> set[str]:
+    """Numeric vendor codes carried by an error body, as strings."""
+    codes: set[str] = set()
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            for key in ("code", "status_code"):
+                if err.get(key) not in (None, ""):
+                    codes.add(str(err[key]))
+            msg = err.get("message")
+            if isinstance(msg, str):
+                codes.update(_PAREN_CODE.findall(msg))
+        base = data.get("base_resp")
+        if isinstance(base, dict) and base.get("status_code") not in (None, ""):
+            codes.add(str(base["status_code"]))
+    else:
+        codes.update(_PAREN_CODE.findall(body))
+    return codes
 
 
 def looks_like_insufficient_credit(body: str) -> bool:
@@ -244,10 +283,13 @@ def looks_like_insufficient_credit(body: str) -> bool:
 
     Used by provider adapters to reclassify an otherwise-fatal billing 400/429
     as a transient SommInsufficientCredit so the router skips the lapsed
-    provider instead of aborting the whole fallback chain.
+    provider instead of aborting the whole fallback chain. Matches the phrase
+    list and the vendor codes in ``_PLAN_EXHAUSTED_BODY_CODES``.
     """
     low = body.lower()
-    return any(sig in low for sig in _INSUFFICIENT_CREDIT_SIGNALS)
+    if any(sig in low for sig in _INSUFFICIENT_CREDIT_SIGNALS):
+        return True
+    return bool(_body_codes(body) & _PLAN_EXHAUSTED_BODY_CODES)
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +380,7 @@ def classify_body_error(err: object, *, provider: str, model: str) -> None:
         msg = str(err.get("message", ""))
         code = err.get("code")
         typ = str(err.get("type", ""))
-        if looks_like_insufficient_credit(f"{code} {typ} {msg}"):
+        if str(code) in _PLAN_EXHAUSTED_BODY_CODES or looks_like_insufficient_credit(f"{code} {typ} {msg}"):
             raise SommInsufficientCredit(f"{provider} out of credit on {model}: {msg}", model=model)
         if code == 429 or "rate" in msg.lower():
             raise SommRateLimited(f"{provider} body-429 on {model}: {msg}", retry_after_s=120.0, model=model)

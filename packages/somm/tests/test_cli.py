@@ -391,6 +391,52 @@ def test_bench_latency_json_uses_somm_llm(tmp_path, capsys, monkeypatch):
     assert FakeLLM.instances[0].seen[0][1]["provider"] == "fake"
 
 
+def test_generate_json_failure_envelope_carries_a_readable_reason(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOMM_PROJECT", cfg.project)
+    detail = (
+        "SommInsufficientCredit: minimax out of credit on MiniMax-M3: Token Plan usage limit "
+        "reached (2056) | provider=minimax | model=MiniMax-M3"
+    )
+
+    class FakeLLM:
+        def __init__(self, config):
+            pass
+
+        def generate(self, prompt, **kwargs):
+            return SommResult(
+                text="", provider="minimax", model="MiniMax-M3", tokens_in=0, tokens_out=0,
+                latency_ms=0, cost_usd=0.0, call_id="call-2", outcome=Outcome.UPSTREAM_ERROR,
+                error_kind="SommInsufficientCredit", error_detail=detail,
+            )
+
+        def close(self):
+            pass
+
+    import somm.client as client_mod
+
+    monkeypatch.setattr(client_mod, "SommLLM", FakeLLM)
+    rc = main(["generate", "hello", "--provider", "minimax", "--json"])
+    data = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert data["ok"] is False
+    assert data["error_kind"] == "SommInsufficientCredit"
+    assert data["error_message"].startswith("minimax out of credit on MiniMax-M3: Token Plan")
+    assert data["provider"] == "minimax" and data["model"] == "MiniMax-M3"
+    assert data["error_detail"] == detail
+
+
+def test_error_message_strips_kind_and_caps_length():
+    from somm.cli import _error_message
+
+    assert _error_message(None, None) is None
+    assert _error_message("ValueError", "ValueError: boom") == "boom"
+    assert _error_message("Other", "ValueError: boom") == "ValueError: boom"
+    assert len(_error_message("E", "E: " + "x" * 1000)) == 400
+
+
 def test_generate_json_error_envelope(capsys):
     rc = main(["generate", "--json"])
     captured = capsys.readouterr()

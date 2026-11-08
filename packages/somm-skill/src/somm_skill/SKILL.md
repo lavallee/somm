@@ -137,7 +137,13 @@ pace ("metered plan 62% used, pace 1.3x"). Don't aim a new high-volume
 workload at a metered provider that's already over pace — the router
 will deprioritize it anyway. The `claude-cli`/`codex-cli` seat providers
 are deliberately **pinned-only**: excellent for gold grading and
-quality-sensitive low-volume calls, never for hot loops.
+quality-sensitive low-volume calls, never for hot loops. somm finds their
+binaries on PATH, then in `~/.local/bin`, `~/.npm-global/bin`,
+`~/.volta/bin`, `/usr/local/bin` and `/opt/homebrew/bin`; under a
+service manager with a bare PATH, set `SOMM_CLAUDE_BIN=/path/to/claude`
+or `SOMM_CODEX_BIN=/path/to/codex` (or `claude_cli_bin` / `codex_cli_bin`
+under `[tool.somm]`). A pin that fails with `not configured` says which
+of those it searched.
 
 For free-form model advice, the dedicated [sommelier
 skill](./SOMMELIER.md) covers the full recall → advise → record loop
@@ -277,6 +283,10 @@ These are guardrails, not style preferences — DO NOT weaken or remove them.
 ```bash
 somm status --json           # machine-readable project/global status
 somm generate "prompt" --workload ad_hoc --json
+#   one JSON object on stdout: ok, text, provider, model, tokens_in/out, latency_ms,
+#   cost_usd, call_id, outcome; a failed call (exit 1) adds error_kind,
+#   error_message (the readable reason, <=400 chars) and error_detail.
+#   A usage error exits 2 with {"ok": false, "error": {...}} on stderr.
 somm plans --learn           # metered quota pacing + learned ceilings
 somm inbox list              # recommendation inbox
 somm inbox apply <id>        # apply a recommendation + record decision

@@ -11,8 +11,16 @@ neither a bad request nor a bad key, it's a *billing state* on that one
 provider. The request itself is fine and would succeed on another
 provider. somm matches known billing-signal phrases in the response
 body (case-insensitively, e.g. `"insufficient_quota"`, `"credit
-balance is too low"`, `"exceeded your current quota"`) to make this
-call.
+balance is too low"`, `"exceeded your current quota"`, `"usage limit
+reached"`) and a short list of vendor codes to make this call. A 402
+means this whatever the body says.
+
+MiniMax is the case to know: a used-up Token Plan comes back as HTTP
+429 `rate_limit_error` with `"Token Plan usage limit reached: Upgrade
+your Token Plan or purchase Credits for more usage. (2056)"`. That is
+plan exhaustion, not a burst, so somm raises this error (carrying
+MiniMax's message) with the hour-long cooldown instead of a two-minute
+rate-limit wait. `somm plans` shows MiniMax's own remaining percentage.
 
 **Behavior in the router.** `SOMM_PROVIDER_INSUFFICIENT_CREDIT` is
 **transient**, deliberately with a long cooldown (default 3600s / 1

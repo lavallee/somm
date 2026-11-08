@@ -2053,6 +2053,13 @@ class SommLLM:
             pinned_only = self._pinned_only_providers().get(name)
             if pinned_only is not None:
                 return pinned_only
+            from somm.providers.registry import pinned_only_unavailable_reason
+
+            reason = pinned_only_unavailable_reason(name, self.config)
+            if reason:
+                # Say where somm looked: "not configured" alone reads as "not
+                # installed" when the unit's PATH is the real problem.
+                raise ValueError(f"provider {name!r} not configured: {reason}")
             raise ValueError(f"provider {name!r} not configured")
         return self.providers[0]
 
