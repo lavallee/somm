@@ -39,12 +39,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from somm_core import VERSION, list_intel
+from somm_core.aliases import needs_alias
 from somm_core.config import load as _load_config
 from somm_core.models import Outcome, PrivacyClass
 from somm_core.read import fleet_summary, search_calls, spend_today
 from somm_core.repository import Repository
 
 from somm.providers.ollama import OllamaProvider
+from somm.providers.registry import PINNED_ONLY_PROVIDER_NAMES
 
 # ---------------------------------------------------------------------------
 # somm workload
@@ -1573,6 +1575,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         "call_id": result.call_id,
         "outcome": result.outcome.value,
         "error_kind": result.error_kind,
+        "error_message": _error_message(result.error_kind, result.error_detail),
         "error_detail": result.error_detail,
         "ttft_ms": result.ttft_ms,
         "cache_tokens_in": result.cache_tokens_in,
@@ -1586,6 +1589,22 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     if not payload["ok"] and not args.json:
         print(result.error_detail or result.error_kind or result.outcome.value, file=sys.stderr)
     return 0 if payload["ok"] else 1
+
+
+def _error_message(error_kind: str | None, error_detail: str | None) -> str | None:
+    """The human-readable reason for a failed call, for the ``--json`` envelope.
+
+    ``error_detail`` is the ledger's bounded operator string
+    (``Kind: message | http_status=… | provider=… | model=…``). Callers had
+    to open the calls table to read it; this is the message part without
+    the kind prefix, capped at 400 chars. None when the call succeeded.
+    """
+    if not error_detail:
+        return None
+    message = error_detail
+    if error_kind and message.startswith(f"{error_kind}: "):
+        message = message[len(error_kind) + 2 :]
+    return message[:400]
 
 
 def _bench_prompt(args: argparse.Namespace) -> str:
@@ -1844,7 +1863,12 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                     {
                         "provider": provider_name,
                         "model": model,
-                        "error": f"provider {provider_name!r} not configured (missing env key?)",
+                        "error": (
+                            f"provider {provider_name!r} not configured (missing env key?)"
+                            if provider_name not in PINNED_ONLY_PROVIDER_NAMES
+                            else f"provider {provider_name!r} is pinned-only; pass it with "
+                            "--provider on `somm generate`, not in a bench spec"
+                        ),
                     }
                 )
                 continue
@@ -2222,11 +2246,16 @@ def _print_fleet_section(db_path: Path, *, since_days: int = 7) -> None:
         )
     for norm, spellings in fleet["provider_spellings"].items():
         print(f"provider spelling: {', '.join(spellings)} are the same provider ({norm})")
-    if fleet["unaliased"]:
-        shown = ", ".join(f"{p}/{m}" for p, m in fleet["unaliased"][:6])
-        more = len(fleet["unaliased"]) - 6
+    # A route that is already canonical by rule (minimax/MiniMax-M3) has no
+    # alias row and never will: `somm alias seed` writes only rows that
+    # change something. Warn only about routes the seed can fix or that are
+    # genuinely unresolved, not about every unaliased identity.
+    unaliased = [(p, m) for p, m in fleet["unaliased"] if needs_alias(p, m)]
+    if unaliased:
+        shown = ", ".join(f"{p}/{m}" for p, m in unaliased[:6])
+        more = len(unaliased) - 6
         print(
-            f"model aliases: {len(fleet['unaliased'])} route(s) with no canonical id "
+            f"model aliases: {len(unaliased)} route(s) with no canonical id "
             f"({shown}{', …' if more > 0 else ''}); run `somm alias seed`"
         )
 

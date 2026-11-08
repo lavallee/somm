@@ -16,7 +16,12 @@ from pathlib import Path
 import pytest
 from somm import SommLLM, hooks
 from somm.providers.base import ProviderHealth, SommRequest, SommResponse
-from somm.providers.registry import build_pinned_only_providers
+from somm.providers.claude_cli import ClaudeCLIProvider
+from somm.providers.registry import (
+    build_pinned_only_providers,
+    cli_binary_lookup,
+    pinned_only_unavailable_reason,
+)
 from somm_core.config import Config, load
 from somm_core.parse import anthropic_prompt_tokens
 
@@ -60,7 +65,7 @@ def _no_entrypoint_providers(monkeypatch):
 
 @pytest.fixture
 def cli_on_path(monkeypatch):
-    monkeypatch.setattr("somm.providers.registry.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda name: f"/usr/bin/{name}")
 
 
 # -- registry ------------------------------------------------------------------
@@ -76,9 +81,96 @@ def test_pinned_only_build_skips_names_already_in_the_chain(cli_on_path):
     assert set(built) == {"codex-cli"}
 
 
-def test_pinned_only_build_is_empty_without_binaries(monkeypatch):
-    monkeypatch.setattr("somm.providers.registry.shutil.which", lambda _name: None)
+@pytest.fixture
+def no_cli_anywhere(monkeypatch):
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: None)
+    monkeypatch.setattr("somm.providers._cli_bin.WELL_KNOWN_BIN_DIRS", ())
+
+
+def test_pinned_only_build_is_empty_without_binaries(no_cli_anywhere):
     assert build_pinned_only_providers(Config()) == {}
+
+
+# -- binary resolution ---------------------------------------------------------
+
+
+def _fake_binary(dir_: Path, name: str) -> Path:
+    dir_.mkdir(parents=True, exist_ok=True)
+    path = dir_ / name
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_binary_explicit_setting_wins_over_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: "/usr/bin/claude")
+    mine = _fake_binary(tmp_path / "bin", "claude")
+    cfg = Config()
+    cfg.claude_cli_bin = str(mine)
+    lookup = cli_binary_lookup("claude-cli", cfg)
+    assert lookup.found and lookup.path == str(mine)
+    assert build_pinned_only_providers(cfg)["claude-cli"].binary == str(mine)
+
+
+def test_binary_explicit_setting_that_is_wrong_is_named_not_silently_replaced(tmp_path, monkeypatch):
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: "/usr/bin/claude")
+    cfg = Config()
+    cfg.claude_cli_bin = str(tmp_path / "nope" / "claude")
+    lookup = cli_binary_lookup("claude-cli", cfg)
+    assert not lookup.found
+    assert "SOMM_CLAUDE_BIN=" in lookup.detail and "not an executable file" in lookup.detail
+
+
+def test_binary_found_on_path(monkeypatch):
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda name: f"/usr/bin/{name}")
+    lookup = cli_binary_lookup("codex-cli", Config())
+    assert lookup.path == "/usr/bin/codex"
+
+
+def test_binary_found_in_well_known_dir_when_path_lacks_it(tmp_path, monkeypatch):
+    # The production case: a systemd user unit whose PATH has no ~/.local/bin.
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: None)
+    monkeypatch.setattr("somm.providers._cli_bin.WELL_KNOWN_BIN_DIRS", (str(tmp_path / "local" / "bin"),))
+    installed = _fake_binary(tmp_path / "local" / "bin", "claude")
+    lookup = cli_binary_lookup("claude-cli", Config())
+    assert lookup.path == str(installed)
+    provider = build_pinned_only_providers(Config())["claude-cli"]
+    assert provider.binary == str(installed)
+    assert provider.health().available and provider.health().detail == str(installed)
+
+
+def test_binary_miss_says_what_was_searched_and_how_to_fix(tmp_path, monkeypatch):
+    monkeypatch.setattr("somm.providers._cli_bin.shutil.which", lambda _name: None)
+    monkeypatch.setattr("somm.providers._cli_bin.WELL_KNOWN_BIN_DIRS", ("~/.local/bin", "~/.npm-global/bin"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lookup = cli_binary_lookup("claude-cli", Config())
+    assert not lookup.found
+    assert lookup.detail == (
+        "claude CLI not found: not on PATH, not in ~/.local/bin, ~/.npm-global/bin; "
+        "set SOMM_CLAUDE_BIN=/path/to/claude"
+    )
+    assert pinned_only_unavailable_reason("claude-cli", Config()) == lookup.detail
+    assert pinned_only_unavailable_reason("openrouter", Config()) is None
+    # The provider's own health() tells the same story.
+    health = ClaudeCLIProvider().health()
+    assert not health.available and health.detail == lookup.detail
+
+
+def test_pin_error_names_the_search_and_the_setting(tmp_path, no_cli_anywhere):
+    llm = SommLLM(providers=[FakeProvider()], config=_tmp_config(tmp_path))
+    with pytest.raises(ValueError) as exc_info:
+        llm._pick_provider("codex-cli")
+    msg = str(exc_info.value)
+    assert msg.startswith("provider 'codex-cli' not configured: codex CLI not found: not on PATH")
+    assert msg.endswith("set SOMM_CODEX_BIN=/path/to/codex")
+
+
+def test_bin_env_vars_reach_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOMM_CLAUDE_BIN", "/opt/claude/bin/claude")
+    monkeypatch.setenv("SOMM_CODEX_BIN", "  ")
+    cfg = load(cwd=tmp_path)
+    assert cfg.claude_cli_bin == "/opt/claude/bin/claude"
+    assert cfg.codex_cli_bin is None
 
 
 def test_registry_passes_claude_cli_config_through(cli_on_path):

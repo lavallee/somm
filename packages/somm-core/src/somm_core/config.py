@@ -59,6 +59,11 @@ class Config:
     # project can tune it without a release.
     claude_cli_model: str | None = None
     claude_cli_extra_args: list[str] | None = None
+    # Explicit paths to the seat binaries (SOMM_CLAUDE_BIN / SOMM_CODEX_BIN).
+    # None means: look on PATH, then in the well-known user bin dirs. Set it
+    # when somm runs under a service manager whose PATH lacks ~/.local/bin.
+    claude_cli_bin: str | None = None
+    codex_cli_bin: str | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-6-luna"
     openai_base_url: str = "https://api.openai.com/v1"
@@ -139,7 +144,7 @@ def load(
         somm_cfg = data.get("tool", {}).get("somm", {})
         for key in (
             "project", "mode", "ollama_url", "ollama_model", "key_profile",
-            "claude_cli_model", "claude_cli_extra_args",
+            "claude_cli_model", "claude_cli_extra_args", "claude_cli_bin", "codex_cli_bin",
         ):
             if key in somm_cfg:
                 setattr(cfg, key, somm_cfg[key])
@@ -183,6 +188,10 @@ def load(
         ]
     if "SOMM_CLAUDE_CLI_MODEL" in os.environ:
         cfg.claude_cli_model = os.environ["SOMM_CLAUDE_CLI_MODEL"].strip() or None
+    if "SOMM_CLAUDE_BIN" in os.environ:
+        cfg.claude_cli_bin = os.environ["SOMM_CLAUDE_BIN"].strip() or None
+    if "SOMM_CODEX_BIN" in os.environ:
+        cfg.codex_cli_bin = os.environ["SOMM_CODEX_BIN"].strip() or None
     if "SOMM_CLAUDE_CLI_ARGS" in os.environ:
         # Shell-split so an empty flag value survives: `--tools ''` must reach
         # the CLI as two argv entries, the second an empty string. A plain

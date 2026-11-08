@@ -11,6 +11,13 @@ signal in the response body).
 - Shared org-level limits being consumed by other apps using the same
   key.
 
+Not every 429 is a rate limit. MiniMax answers an exhausted Token Plan
+with 429 and code `2056`, and OpenAI with 429 `insufficient_quota`;
+somm classifies those as
+[`SOMM_PROVIDER_INSUFFICIENT_CREDIT`](./SOMM_PROVIDER_INSUFFICIENT_CREDIT.md)
+with its longer cooldown, so a caller that sees this error can treat it
+as a genuine burst.
+
 **Behavior in the router.** `SOMM_PROVIDER_RATE_LIMIT` is **transient**.
 The router cools the provider for `retry_after_s` (the provider's
 `Retry-After` header when present, otherwise a default of 120s) and

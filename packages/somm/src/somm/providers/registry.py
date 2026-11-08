@@ -14,7 +14,6 @@ The spec factory is called as ``factory(config, tracker)`` and should return a
 from __future__ import annotations
 
 import logging
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
@@ -23,6 +22,7 @@ from typing import Any
 
 from somm_core.config import Config
 
+from somm.providers._cli_bin import BinaryLookup, resolve_cli_binary
 from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import SommProvider
 from somm.providers.claude_cli import ClaudeCLIProvider
@@ -64,10 +64,40 @@ def _ollama(config: Config, tracker: Any) -> SommProvider | None:
     )
 
 
+# How each seat executor finds its binary: (binary name, Config attribute
+# holding the explicit override, env var named in the miss message).
+_CLI_BINARIES: dict[str, tuple[str, str, str]] = {
+    "claude-cli": ("claude", "claude_cli_bin", "SOMM_CLAUDE_BIN"),
+    "codex-cli": ("codex", "codex_cli_bin", "SOMM_CODEX_BIN"),
+}
+
+
+def cli_binary_lookup(provider_name: str, config: Config) -> BinaryLookup:
+    """Resolve a seat executor's binary: explicit setting, PATH, well-known dirs."""
+    binary, attr, env_var = _CLI_BINARIES[provider_name]
+    return resolve_cli_binary(binary, explicit=getattr(config, attr, None), env_var=env_var)
+
+
+def pinned_only_unavailable_reason(provider_name: str, config: Config) -> str | None:
+    """Why a pinned-only executor is absent, or None for any other name.
+
+    The pin error used to say only "not configured"; under a systemd unit
+    whose PATH lacks ``~/.local/bin`` that read as "not installed" when the
+    CLI was installed and signed in. The reason names what was searched and
+    the setting that points at the binary.
+    """
+    if provider_name not in _CLI_BINARIES:
+        return None
+    lookup = cli_binary_lookup(provider_name, config)
+    return None if lookup.found else lookup.detail
+
+
 def _claude_cli(config: Config, tracker: Any) -> SommProvider | None:
-    if not shutil.which("claude"):
+    lookup = cli_binary_lookup("claude-cli", config)
+    if not lookup.found:
         return None
     return ClaudeCLIProvider(
+        binary=lookup.path,
         default_model=config.claude_cli_model,
         timeout=max(config.http_timeout, 600.0),
         extra_args=config.claude_cli_extra_args,
@@ -75,9 +105,10 @@ def _claude_cli(config: Config, tracker: Any) -> SommProvider | None:
 
 
 def _codex_cli(config: Config, tracker: Any) -> SommProvider | None:
-    if not shutil.which("codex"):
+    lookup = cli_binary_lookup("codex-cli", config)
+    if not lookup.found:
         return None
-    return CodexCLIProvider(timeout=max(config.http_timeout, 600.0))
+    return CodexCLIProvider(binary=lookup.path, timeout=max(config.http_timeout, 600.0))
 
 
 def _openrouter(config: Config, tracker: Any) -> SommProvider | None:
@@ -250,9 +281,10 @@ def build_pinned_only_providers(
     member always wins over a pinned-only copy — one provider instance per
     name, and the configured one is the one that answers.
 
-    A factory returning ``None`` (binary not on PATH) is simply absent from
+    A factory returning ``None`` (binary not found) is simply absent from
     the result: an unavailable executor should read as "not configured" at
-    the pin, not fail at build time for every caller.
+    the pin, with ``pinned_only_unavailable_reason`` saying where somm
+    looked, not fail at build time for every caller.
     """
     skip = set(exclude or ())
     built: dict[str, SommProvider] = {}

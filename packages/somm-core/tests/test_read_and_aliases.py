@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from somm_core.aliases import canonicalize, seed_model_aliases
+from somm_core.aliases import canonicalize, needs_alias, seed_model_aliases
 from somm_core.models import Call, Outcome
 from somm_core.read import fleet_summary, search_calls, spend_today
 from somm_core.repository import Repository
@@ -94,6 +94,19 @@ def test_canonicalize_rules():
     assert canonicalize("claude-cli", "sonnet") is None
     assert canonicalize("openrouter", "*all_cooled") is None
     assert canonicalize("minimax", "") is None
+
+
+def test_needs_alias_skips_routes_that_are_already_canonical():
+    # minimax/MiniMax-M3 has no alias row and `somm alias seed` never writes
+    # one, so the doctor must not nag about it on a fresh install.
+    assert needs_alias("minimax", "MiniMax-M3") is False
+    assert needs_alias("minimax", "MiniMax-M2") is False
+    assert needs_alias("ollama", "qwen3:8b") is False
+    assert needs_alias("openrouter", "*all_cooled") is False
+    # A rule can fix these, or they are moving nicknames: still worth a line.
+    assert needs_alias("claude-cli", "claude-opus-5[1m]") is True
+    assert needs_alias("claude_cli", "claude-opus-4-7") is True
+    assert needs_alias("claude-cli", "sonnet") is True
 
 
 def test_seed_model_aliases_writes_rule_rows_and_respects_manual(tmp_path):

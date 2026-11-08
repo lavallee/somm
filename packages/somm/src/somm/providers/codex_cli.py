@@ -12,13 +12,13 @@ the installed codex when its seat is live before leaning on it.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tempfile
 import time
 from collections.abc import Iterator
 
 from somm.errors import SommBadRequest, SommEmptyResponse, SommTimeout, SommUpstream5xx
+from somm.providers._cli_bin import resolve_cli_binary
 from somm.providers.base import (
     ProviderHealth,
     SommChunk,
@@ -90,8 +90,14 @@ class CodexCLIProvider:
         yield SommChunk(text=self.generate(request).text, done=True)
 
     def health(self) -> ProviderHealth:
-        path = shutil.which(self.binary)
-        return ProviderHealth(available=bool(path), detail=path or f"{self.binary} not on PATH")
+        # ``binary`` is normally the path the registry resolved; a bare name
+        # (direct construction) is looked up the same way the registry does.
+        if os.sep in self.binary:
+            ok = os.path.isfile(self.binary) and os.access(self.binary, os.X_OK)
+            detail = self.binary if ok else f"{self.binary} is not an executable file"
+            return ProviderHealth(available=ok, detail=detail)
+        lookup = resolve_cli_binary(self.binary, explicit=None, env_var="SOMM_CODEX_BIN")
+        return ProviderHealth(available=lookup.found, detail=lookup.detail)
 
     def models(self) -> list[SommModel]:
         return [SommModel(name=self.default_model)] if self.default_model else []

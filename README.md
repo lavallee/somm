@@ -487,6 +487,10 @@ somm status [--project P] [--since N] [--global] [--json]
 somm cache-advice [--json]                         # prefix-cache reuse opportunities
 somm bench latency|throughput <prompt> [--json]    # instrumented serving probes
 somm generate <prompt> [--workload W] [--json]      # one-shot LLM call through somm
+    # --json prints one object: ok, text, provider, model, tokens_*, latency_ms, cost_usd,
+    # call_id, outcome; on failure also error_kind, error_message (the reason, <=400 chars)
+    # and error_detail (the ledger's bounded operator string). Exit 1 on a failed call.
+    # Usage errors go to stderr as {"ok": false, "error": {type, message, exit_code}}.
 somm tail [--workload NAME] [--poll-interval S]    # live call stream
 somm compare <prompt> --models p/m,p/m             # side-by-side N-model comparison
 somm frontier --workload NAME [--since N]          # adequacy frontier per (provider, model)
@@ -748,6 +752,7 @@ provider is opt-in via its own env var.
 | `SOMM_INPROCESS_WORKERS` | `0` | `1` runs the intelligence-loop scheduler inside a long-lived process; short-lived ones use `somm loop install` |
 | `SOMM_WAIT_ON_EXHAUSTED` | — | default seconds to wait when every routed provider is cooling, instead of failing fast |
 | `SOMM_CLAUDE_CLI_MODEL` / `SOMM_CLAUDE_CLI_ARGS` | — | seat model and extra flags (shell-split) for the `claude-cli` provider |
+| `SOMM_CLAUDE_BIN` / `SOMM_CODEX_BIN` | — | explicit path to the `claude` / `codex` binary; otherwise PATH, then `~/.local/bin`, `~/.npm-global/bin`, `~/.volta/bin`, `/usr/local/bin`, `/opt/homebrew/bin` |
 | `SOMM_PLANS_PATH` | `~/.somm/plans.toml` | billing-plan declarations |
 | `SOMM_REGISTRY_PATH` | `~/.somm/registry.json` | fleet registry of project ledgers (`SOMM_REGISTRY_ALLOW_TMP=1` lets tests register under a temp dir) |
 | `SOMM_DB_DIR` | `./.somm` | where this project's ledger lives |
@@ -784,7 +789,12 @@ claude_cli_extra_args = ["--tools", "", "--no-session-persistence"]
 ```
 
 or `SOMM_CLAUDE_CLI_MODEL` / `SOMM_CLAUDE_CLI_ARGS` (shell-split, so
-`--tools ''` survives as an empty argument). A seat call records the cost
+`--tools ''` survives as an empty argument). somm looks for the binary on
+PATH and then in the usual per-user bin dirs, so a systemd or launchd unit
+with a bare PATH still finds `~/.local/bin/claude`; `claude_cli_bin` /
+`codex_cli_bin` (or `SOMM_CLAUDE_BIN` / `SOMM_CODEX_BIN`) pin it outright.
+When a pin fails with `not configured`, the message lists what was
+searched. A seat call records the cost
 the CLI reported rather than a computed estimate, and counts the whole
 prompt it was billed for — cache reads and cache writes included, which
 Anthropic reports separately from `input_tokens`.
