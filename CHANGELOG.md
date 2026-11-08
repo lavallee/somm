@@ -7,6 +7,45 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.19.4] — 2026-11-08
+
+### Fixed
+
+- **`provider 'claude-cli' not configured` with the CLI installed and signed
+  in.** The seat executors were configured iff `shutil.which` found the
+  binary on the process PATH, and a systemd user unit's PATH has no
+  `~/.local/bin` (Frampton on Chiba, somm 0.19.3). `claude-cli` and
+  `codex-cli` now resolve their binary in order: `SOMM_CLAUDE_BIN` /
+  `SOMM_CODEX_BIN` (or `claude_cli_bin` / `codex_cli_bin` under
+  `[tool.somm]`), PATH, then `~/.local/bin`, `~/.npm-global/bin`,
+  `~/.volta/bin`, `/usr/local/bin`, `/opt/homebrew/bin`. A miss says so in
+  the pin error and in `health()`: `claude CLI not found: not on PATH, not
+  in ~/.local/bin, …; set SOMM_CLAUDE_BIN=/path/to/claude`. Both stay
+  pinned-only and never join the routing chain.
+- **A used-up MiniMax Token Plan read as a rate limit.** MiniMax answers
+  plan exhaustion with HTTP 429 `rate_limit_error` and `"Token Plan usage
+  limit reached: Upgrade your Token Plan or purchase Credits for more
+  usage. (2056)"`. somm raised `SommRateLimited` with a two-minute cooldown,
+  so callers treated it as a burst and retried into the wall. A body with
+  code `2056`, or with usage-limit / purchase-credits wording, is now
+  `SommInsufficientCredit` under any status, with the hour-long cooldown
+  from #76 and MiniMax's own message. Genuine 429s stay `SommRateLimited`.
+- **`somm generate --json` failures named the error kind but not the
+  reason.** The `ok: false` envelope now carries `error_message` (the
+  readable reason, at most 400 characters) beside `error_kind`,
+  `error_detail`, `provider` and `model`, so a caller no longer has to query
+  the calls table. The stderr `{"ok": false, "error": {...}}` object for
+  usage errors is unchanged. `somm bench` no longer suggests a missing env
+  key when the spec names a pinned-only seat.
+- **`somm doctor` nagged about aliases it could never seed.** A route that
+  is already canonical by rule (`minimax/MiniMax-M3`, `minimax/MiniMax-M2`)
+  has no alias row and `somm alias seed` writes none, so a fresh install
+  warned "2 route(s) with no canonical id" forever. The doctor now lists
+  only routes a rule can resolve or moving nicknames. There is no MiniMax id
+  list to extend: aliases are derived by rule, not seeded from data. Note
+  that MiniMax reports `MiniMax-M2` as "no longer available (2069)" as of
+  2026-11-08; `MiniMax-M3` is the default.
+
 ## [0.19.3] — 2026-10-29
 
 ### Fixed

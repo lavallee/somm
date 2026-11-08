@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -2233,7 +2233,7 @@ wheels = [
 
 [[package]]
 name = "somm"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "packages/somm" }
 dependencies = [
     { name = "httpx" },
@@ -2279,12 +2279,12 @@ provides-extras = ["litellm", "tokenizers", "otel", "pydantic", "jsonschema", "p
 
 [[package]]
 name = "somm-core"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "packages/somm-core" }
 
 [[package]]
 name = "somm-langchain"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "packages/somm-langchain" }
 dependencies = [
     { name = "langchain-core" },
@@ -2301,7 +2301,7 @@ requires-dist = [
 
 [[package]]
 name = "somm-mcp"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "packages/somm-mcp" }
 dependencies = [
     { name = "mcp" },
@@ -2318,7 +2318,7 @@ requires-dist = [
 
 [[package]]
 name = "somm-service"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "packages/somm-service" }
 dependencies = [
     { name = "litellm" },
@@ -2339,12 +2339,12 @@ requires-dist = [
 
 [[package]]
 name = "somm-skill"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "packages/somm-skill" }
 
 [[package]]
 name = "somm-workspace"
-version = "0.19.3"
+version = "0.19.4"
 source = { virtual = "." }
 
 [package.dev-dependencies]
