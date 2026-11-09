@@ -31,7 +31,74 @@ from somm.providers.base import (
 )
 
 
+def _raw_items(message: dict) -> list[dict]:
+    return [detail["item"] for detail in message.get("reasoning_details") or []
+            if isinstance(detail, dict) and detail.get("type") in {"somm.native_assistant", "openai.responses.item"}
+            and isinstance(detail.get("item"), dict)
+            and detail["item"].get("type") in {"message", "function_call", "reasoning"}]
+
+
+def _arguments(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _replay_changed(messages: list[dict]) -> bool:
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        raw = _raw_items(message)
+        if not raw:
+            continue
+        original = [(v.get("call_id"), v.get("name"), _arguments(v.get("arguments")))
+                    for v in raw if v.get("type") == "function_call"]
+        normalized = [(v.get("id"), (v.get("function") or {}).get("name"),
+                       _arguments((v.get("function") or {}).get("arguments")))
+                      for v in message.get("tool_calls") or []]
+        if original != normalized:
+            return True
+    return False
+
+
+def _validate_tool_results(items: list[dict]) -> None:
+    pending, seen = set(), set()
+    for item in items:
+        kind, call_id = item.get("type"), item.get("call_id")
+        if kind == "function_call":
+            if not isinstance(call_id, str) or not call_id or call_id in seen:
+                raise SommBadRequest("Invalid or duplicate tool call ID in conversation history")
+            pending.add(call_id)
+            seen.add(call_id)
+        elif kind == "function_call_output":
+            if call_id not in pending:
+                raise SommBadRequest("Tool result has no matching pending call in conversation history")
+            pending.remove(call_id)
+    if pending:
+        raise SommBadRequest("Conversation history is missing completed tool results")
+
+
+def prepare_response_input(messages: list[dict]) -> tuple[list[dict], dict | None]:
+    # Harnesses can split a batched function into normalized child calls. Reusing
+    # its original opaque response then leaves the child results orphaned. A
+    # fresh same-model request keeps the visible transcript and completed effects;
+    # it never executes tools or invents missing results.
+    fresh = _replay_changed(messages)
+    items = _response_input(messages, fresh=fresh)
+    _validate_tool_results(items)
+    recovery = {"kind": "normalized_tool_replay", "provider_retries": 0,
+                "tool_results_preserved": sum(v.get("type") == "function_call_output" for v in items)} if fresh else None
+    return items, recovery
+
+
 def response_input(messages: list[dict]) -> list[dict]:
+    return prepare_response_input(messages)[0]
+
+
+def _response_input(messages: list[dict], *, fresh: bool = False) -> list[dict]:
     out = []
     for message in messages:
         role = message.get("role")
@@ -49,17 +116,22 @@ def response_input(messages: list[dict]) -> list[dict]:
                       if isinstance(detail, dict) and detail.get("type") in {"somm.native_assistant", "openai.responses.item"}
                       and isinstance(detail.get("item"), dict)
                       and detail["item"].get("type") in {"message", "function_call", "reasoning"}]
-            if replay:
+            if replay and not fresh:
                 out.extend(replay)
                 continue
             for detail in message.get("reasoning_details") or []:
-                if isinstance(detail, dict) and detail.get("type") == "openai.responses.reasoning":
+                if not fresh and isinstance(detail, dict) and detail.get("type") == "openai.responses.reasoning":
                     item = detail.get("item")
                     if isinstance(item, dict) and item.get("type") == "reasoning":
                         out.append(item)
         content = message.get("content")
         if isinstance(content, str) and content:
-            out.append({"role": role, "content": content})
+            item = {"role": role, "content": content}
+            if role == "assistant" and fresh:
+                phases = [v.get("phase") for v in replay if v.get("type") == "message" and v.get("phase")]
+                if phases:
+                    item["phase"] = phases[-1]
+            out.append(item)
         elif isinstance(content, list):
             blocks = []
             for block in content:
@@ -113,6 +185,30 @@ def chat_completion(response: dict) -> dict:
                       "completion_tokens_details": usage.get("output_tokens_details", {})}}
 
 
+def response_error(event: dict, *, request_id: str | None = None) -> Exception:
+    error = (event.get("response") or {}).get("error") or event.get("error") or event
+    if not isinstance(error, dict):
+        error = {}
+    code = error.get("code")
+    kind = error.get("type")
+    label = code or kind or event.get("type") or "inference_failed"
+    message = f"ChatGPT inference failed: {label}"
+    if kind == "invalid_request_error":
+        exc = SommBadRequest(message)
+    elif kind in {"authentication_error", "permission_error"}:
+        exc = SommAuthError(message)
+    elif kind == "rate_limit_error" or code in {"subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"}:
+        exc = SommRateLimited(message)
+    else:
+        exc = SommUpstream5xx(message)
+    # Keep structured diagnostics separate from prompt-free operator messages.
+    exc.provider_code = code
+    exc.provider_type = kind
+    exc.provider_param = error.get("param")
+    exc.provider_request_id = request_id
+    return exc
+
+
 class ChatGPTProvider:
     name = "chatgpt"
 
@@ -121,7 +217,8 @@ class ChatGPTProvider:
         self.timeout = timeout
 
     def complete_chat(self, body: dict) -> dict:
-        payload = {"model": body["model"], "input": response_input(body["messages"]),
+        items, recovery = prepare_response_input(body["messages"])
+        payload = {"model": body["model"], "input": items,
                    "store": False, "stream": True, "include": ["reasoning.encrypted_content"]}
         # SIWC preview rejects max_output_tokens; the subscription route has
         # no provider-side equivalent for the Chat Completions output hint.
@@ -174,11 +271,12 @@ class ChatGPTProvider:
                             result = event["response"]
                             if result.get("status") != "completed" or not result.get("model"):
                                 raise SommUpstream5xx("ChatGPT did not complete inference")
-                            return chat_completion(result)
+                            completion = chat_completion(result)
+                            if recovery:
+                                completion["somm_recovery"] = recovery
+                            return completion
                         if event.get("type") in {"response.failed", "response.incomplete", "error"}:
-                            error = (event.get("response") or {}).get("error") or event.get("error") or {}
-                            code = error.get("code", "inference_failed") if isinstance(error, dict) else "inference_failed"
-                            raise SommUpstream5xx(f"ChatGPT inference failed: {code}")
+                            raise response_error(event, request_id=response.headers.get("x-request-id"))
         except httpx.TimeoutException as exc:
             raise SommTimeout("ChatGPT Responses timed out") from exc
         except httpx.HTTPError as exc:

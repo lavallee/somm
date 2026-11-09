@@ -1602,6 +1602,10 @@ class SommLLM:
             reported=cost_usd_out is not None,
             source=reported_cost_source or short_circuited,
         )
+        if raw_out and raw_out.get("somm_recovery"):
+            routing_metadata = json.loads(routing_json) if routing_json else {}
+            routing_metadata["recovery"] = raw_out["somm_recovery"]
+            routing_json = json.dumps(routing_metadata)
         call = Call(
             routing_json=routing_json,
             id=call_id,
