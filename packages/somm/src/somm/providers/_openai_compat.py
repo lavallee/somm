@@ -410,6 +410,8 @@ def _translate_messages_to_openai(messages: list[dict]) -> list[dict]:
             # somm-neutral assistant message by the somm_langchain adapter.
             if msg.get("reasoning_content"):
                 assistant_msg["reasoning_content"] = msg["reasoning_content"]
+            if msg.get("reasoning_details"):
+                assistant_msg["reasoning_details"] = msg["reasoning_details"]
             out.append(assistant_msg)
             continue
 

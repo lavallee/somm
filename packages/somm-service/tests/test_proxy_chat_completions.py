@@ -349,3 +349,105 @@ def test_reasoning_context_on_sdk_message_is_preserved(tmp_path):
     message = result.json()["choices"][0]["message"]
     assert message["reasoning_content"] == "opaque-provider-context"
     assert message["reasoning"] == {"signature": "synthetic"}
+
+
+def test_adaptive_conservation_defers_research_without_any_provider_call(tmp_path, monkeypatch):
+    import time
+
+    from somm.adaptive import _QUOTA
+    from somm_core.adaptive import WeeklyQuota
+
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    workload = repo.register_workload(name="adaptive", project=cfg.project)
+    repo.set_workload_policy(workload.id, {"adaptive": {
+        "fast": {"provider": "chatgpt", "model": "small"},
+        "strong": {"provider": "chatgpt", "model": "large"},
+        "fallback": {"provider": "minimax", "model": "MiniMax-M3"},
+        "fast_patterns": [r"add .+ to groceries"],
+    }})
+    monkeypatch.setattr(_QUOTA, "read", lambda: WeeklyQuota(90, int(time.time()) + 1000, time.time()))
+    app = create_app(cfg)
+    with TestClient(app) as client, patch("somm_service.proxy.litellm.completion") as infer:
+        response = client.post("/v1/chat/completions", json={"model": "somm/auto",
+            "messages": [{"role": "user", "content": "Write a biography of Alex"}]},
+            headers=_auth_headers(app, **{"x-somm-workload": "adaptive"}))
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "SOMM_WORK_DEFERRED"
+    assert response.json()["error"]["routing"]["target"] is None
+    infer.assert_not_called()
+    with repo._open() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
+
+
+def test_adaptive_simple_fallback_records_served_model_and_reason(tmp_path, monkeypatch):
+    import json
+    import time
+
+    from somm.adaptive import _QUOTA
+    from somm_core.adaptive import WeeklyQuota
+    from somm_core.read import search_calls
+
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    workload = repo.register_workload(name="adaptive", project=cfg.project)
+    repo.set_workload_policy(workload.id, {"adaptive": {
+        "fast": {"provider": "chatgpt", "model": "small"},
+        "strong": {"provider": "chatgpt", "model": "large"},
+        "fallback": {"provider": "minimax", "model": "MiniMax-M3"},
+        "fast_patterns": [r"add .+ to groceries"],
+    }})
+    monkeypatch.setattr(_QUOTA, "read", lambda: WeeklyQuota(90, int(time.time()) + 1000, time.time()))
+    app = create_app(cfg)
+    with TestClient(app) as client, patch("somm_service.proxy.litellm.completion",
+                                         return_value=_fake_chat_response(model="served-m3")) as infer:
+        response = client.post("/v1/chat/completions", json={"model": "somm/auto",
+            "messages": [{"role": "user", "content": "Add milk to groceries"}]},
+            headers=_auth_headers(app, **{"x-somm-workload": "adaptive"}))
+    assert response.status_code == 200
+    assert response.json()["model"] == "served-m3"
+    assert infer.call_args.kwargs["model"] == "minimax/MiniMax-M3"
+    calls = search_calls(cfg.db_path, cfg.project)
+    assert calls[0]["model"] == "served-m3" and calls[0]["provider"] == "minimax"
+    assert json.loads(calls[0]["routing_json"])["reason"] == "weekly_quota_conservation"
+
+
+def test_subscription_proxy_bypasses_api_dollar_cap_without_losing_provenance(tmp_path):
+    from somm.providers.chatgpt import chat_completion
+    from somm_core.read import search_calls
+    cfg = _cfg(tmp_path, fail_closed=True)
+    repo = Repository(cfg.db_path)
+    repo.register_workload(name="seat", project=cfg.project, budget_cap_usd_daily=0)
+    app = create_app(cfg)
+    answer = chat_completion({"id": "r1", "model": "served-model", "output": []})
+    with TestClient(app) as client, patch("somm.providers.chatgpt.ChatGPTProvider.complete_chat", return_value=answer):
+        response = client.post("/v1/chat/completions", json={"model": "chatgpt/requested-model",
+            "messages": [{"role": "user", "content": "hi"}]},
+            headers=_auth_headers(app, **{"x-somm-workload": "seat"}))
+    assert response.status_code == 200
+    call = repo.get_call(search_calls(cfg.db_path, cfg.project)[0]["id"])
+    assert call.model == "served-model" and call.cost_kind == "included"
+    assert call.cost_usd == 0 and call.cost_source == "chatgpt-subscription"
+
+
+def test_routing_preview_requires_auth_and_does_not_run_inference(tmp_path, monkeypatch):
+    import time
+
+    from somm.adaptive import _QUOTA
+    from somm_core.adaptive import WeeklyQuota
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="preview", project=cfg.project)
+    repo.set_workload_policy(wl.id, {"adaptive": {
+        "fast": {"provider": "chatgpt", "model": "small"},
+        "strong": {"provider": "chatgpt", "model": "large"},
+        "fallback": {"provider": "minimax", "model": "MiniMax-M3"}}})
+    monkeypatch.setattr(_QUOTA, "read", lambda: WeeklyQuota(90, int(time.time())+1000, time.time()))
+    app = create_app(cfg)
+    with TestClient(app) as client, patch("somm_service.proxy.litellm.completion") as infer:
+        body = {"messages": [{"role": "user", "content": "Write a biography"}]}
+        assert client.post("/api/routing/decide", json=body).status_code == 403
+        response = client.post("/api/routing/decide", json=body,
+            headers=_auth_headers(app, **{"x-somm-workload": "preview"}))
+        assert response.status_code == 200 and response.json()["deferred"] is True
+        infer.assert_not_called()

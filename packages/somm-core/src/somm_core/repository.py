@@ -34,7 +34,7 @@ from somm_core.parse import stable_hash
 from somm_core.parse import workload_id as _workload_id
 from somm_core.schema import ensure_schema
 
-_POLICY_KEYS = {"fallback", "retry", "timeout_s", "auto_heal"}
+_POLICY_KEYS = {"fallback", "retry", "timeout_s", "auto_heal", "adaptive"}
 _RETRY_KEYS = {"max", "backoff_s", "deadline_s"}
 
 
@@ -425,6 +425,13 @@ def _validate_workload_policy(policy: dict | None) -> dict | None:
         raise ValueError(f"workload policy has unknown key(s): {', '.join(sorted(unknown))}")
 
     out: dict = {}
+    if "adaptive" in policy:
+        from dataclasses import asdict
+
+        from somm_core.adaptive import AdaptivePolicy
+
+        adaptive = AdaptivePolicy.parse(policy["adaptive"])
+        out["adaptive"] = {**asdict(adaptive), "fast_patterns": list(adaptive.fast_patterns)}
     if "fallback" in policy:
         fallback = policy["fallback"]
         if not isinstance(fallback, list):
@@ -1767,10 +1774,10 @@ class Repository:
                     cache_tokens_out, citations_json, cost_basis, cost_kind,
                     cost_accuracy, cost_source, pricing_version, observation_role,
                     source_call_id, eval_result_id, provider_request_id, billing_id,
-                    origin, budget_eligible, call_site, reasoning_tokens, client_version
+                    origin, budget_eligible, call_site, reasoning_tokens, client_version, routing_json
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -1816,6 +1823,7 @@ class Repository:
                     call.call_site,
                     call.reasoning_tokens,
                     call.client_version,
+                    call.routing_json,
                 ),
             )
 
@@ -1838,10 +1846,10 @@ class Repository:
                         cache_tokens_out, citations_json, cost_basis, cost_kind,
                         cost_accuracy, cost_source, pricing_version, observation_role,
                         source_call_id, eval_result_id, provider_request_id, billing_id,
-                        origin, budget_eligible, call_site, reasoning_tokens, client_version
+                        origin, budget_eligible, call_site, reasoning_tokens, client_version, routing_json
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     [
@@ -1888,6 +1896,7 @@ class Repository:
                             c.call_site,
                             c.reasoning_tokens,
                             c.client_version,
+                            c.routing_json,
                         )
                         for c in calls
                     ],
@@ -1908,7 +1917,7 @@ class Repository:
                 "citations_json, cost_basis, cost_kind, cost_accuracy, cost_source, "
                 "pricing_version, observation_role, source_call_id, eval_result_id, "
                 "provider_request_id, billing_id, origin, budget_eligible, "
-                "call_site, reasoning_tokens, client_version "
+                "call_site, reasoning_tokens, client_version, routing_json "
                 "FROM calls WHERE id = ?",
                 (call_id,),
             ).fetchone()
@@ -1957,6 +1966,7 @@ class Repository:
             call_site=row[39],
             reasoning_tokens=row[40],
             client_version=row[41],
+            routing_json=row[42],
         )
 
     def prune_calls(self, *, older_than_days: int, dry_run: bool = False) -> dict:

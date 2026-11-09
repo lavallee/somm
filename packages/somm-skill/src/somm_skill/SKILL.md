@@ -333,3 +333,22 @@ test harness with its own LLM stub), don't force it. But:
 External systems that want to observe somm without coupling can attach via
 `somm.hooks` (a correlation-id provider stamps your trace/request id on every
 telemetry row; call observers receive an event per call).
+
+
+## Adaptive subscription routing (0.20)
+
+Opt in with `model="somm/auto"` and a workload `policy.adaptive` containing
+`fast`, `strong`, `fallback` targets plus application-specific `fast_patterns`.
+Unknown/biographical/research work selects strong; tool results and short confirmations
+do not demote the task. At 90% weekly ChatGPT usage (or unknown/stale usage), only simple
+work uses the non-ChatGPT fallback; strong work raises `SommDeferred` or returns proxy
+HTTP 429 `SOMM_WORK_DEFERRED`. The caller must retain/resume it; Somm does not enqueue.
+Explicit model pins remain explicit. Inspect `routing_json` and actual served models.
+
+Use `somm chatgpt login`, `status`, `models`, `quota`; install `somm[chatgpt]` first.
+Somm owns its OAuth file (`SOMM_CHATGPT_AUTH_FILE`), public Responses inference and
+rotating refresh. Never borrow another app's credential file or use private endpoints.
+Weekly metadata comes separately from supported Codex account RPC (10080-minute window,
+not an assumed primary/secondary position). Only weekly percentage gates subscription
+routing; API dollar caps still apply to fallback calls. Model catalog visibility is
+not a successful inference test. See `docs/adaptive-routing.md` for the full contract.

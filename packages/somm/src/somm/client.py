@@ -1395,12 +1395,29 @@ class SommLLM:
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
 
+        routing_json = None
+        if model == "somm/auto" and short_circuit is None:
+            if provider is not None:
+                raise ValueError("somm/auto chooses its provider; omit the provider pin")
+            from somm.adaptive import decide_workload
+
+            decision = decide_workload(wl, messages or [{"role": "user", "content": prompt_text}])
+            routing_json = json.dumps(decision.as_dict())
+            provider, model = decision.target.provider, decision.target.model
+            req.model = model
+            req.reasoning_effort = decision.target.reasoning_effort
+            if provider != "chatgpt" and req.messages:
+                from somm.adaptive import fallback_messages
+
+                req.messages = fallback_messages(req.messages)
+            allow_fallback_resolved = False
+
         # Fail-closed budget gate: refuse before any provider call once the
         # workload's daily cap is reached (inert unless budget_fail_closed).
         # Runs AFTER pre_call so a short-circuit (e.g. a cache hit) — which
         # spends nothing — can still serve a capped workload; a real provider
         # call is still refused.
-        if short_circuit is None:
+        if short_circuit is None and provider != "chatgpt":
             self._enforce_budget(wl)
 
         call_id = str(uuid.uuid4())
@@ -1586,6 +1603,7 @@ class SommLLM:
             source=reported_cost_source or short_circuited,
         )
         call = Call(
+            routing_json=routing_json,
             id=call_id,
             ts=ts,
             project=self.config.project,
@@ -2098,6 +2116,12 @@ class SommLLM:
             for piece in llm.stream("tell a story", workload="story"):
                 print(piece, end="", flush=True)
         """
+        if model == "somm/auto":
+            yield self.generate(prompt, system=system, workload=workload, max_tokens=max_tokens,
+                                temperature=temperature, model=model, provider=provider, wait=wait,
+                                session_id=session_id, parent_call_id=parent_call_id).text
+            return
+
         from somm.providers.base import SommRequest
 
         wl = self._require_workload(workload)

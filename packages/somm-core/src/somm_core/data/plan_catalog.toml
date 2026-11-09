@@ -1,3 +1,8 @@
+# Review 2026-11-09: re-fetched both stale vendor source URLs. MiniMax now
+# describes M Plan qualitatively and does not verify historical Token Plan
+# quotas. OpenAI says weekly limits vary; Pro has no five-hour limit and
+# API prices do not estimate included work. Preserve historical estimates
+# as stale; use current provider weekly metadata for adaptive routing.
 # somm plan catalog — known commercial metered plans and their limits.
 #
 # Plan limits are vendor marketing copy, not an API: as of mid-2026 no

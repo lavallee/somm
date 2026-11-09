@@ -111,6 +111,16 @@ def _codex_cli(config: Config, tracker: Any) -> SommProvider | None:
     return CodexCLIProvider(binary=lookup.path, timeout=max(config.http_timeout, 600.0))
 
 
+def _chatgpt(config: Config, tracker: Any) -> SommProvider | None:
+    from somm.chatgpt_auth import PERMISSION, ChatGPTAuth, read_json
+    from somm.providers.chatgpt import ChatGPTProvider
+
+    auth = ChatGPTAuth()
+    if PERMISSION not in read_json(auth.path).get("scopes", []):
+        return None
+    return ChatGPTProvider(auth=auth, timeout=config.http_timeout)
+
+
 def _openrouter(config: Config, tracker: Any) -> SommProvider | None:
     if not config.openrouter_api_key:
         return None
@@ -187,6 +197,7 @@ BUILTIN_PROVIDER_SPECS: list[ProviderSpec] = [
     ProviderSpec("ollama", _ollama, 90),
     ProviderSpec("claude-cli", _claude_cli, None),
     ProviderSpec("codex-cli", _codex_cli, None),
+    ProviderSpec("chatgpt", _chatgpt, None),
     ProviderSpec("openrouter", _openrouter, 20),
     ProviderSpec("minimax", _minimax, 10),
     ProviderSpec("deepseek", _deepseek, 30),
@@ -266,7 +277,7 @@ def load_entrypoint_provider_specs() -> list[ProviderSpec]:
 # motivated this: a caller pins ``provider="claude-cli"`` precisely to move a
 # workload OFF the metered chain, so putting them IN the chain would defeat
 # the point — yet leaving them unbuilt made the pin raise "not configured".
-PINNED_ONLY_PROVIDER_NAMES: frozenset[str] = frozenset({"claude-cli", "codex-cli"})
+PINNED_ONLY_PROVIDER_NAMES: frozenset[str] = frozenset({"claude-cli", "codex-cli", "chatgpt"})
 
 
 def build_pinned_only_providers(
