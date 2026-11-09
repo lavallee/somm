@@ -46,7 +46,7 @@ def response_input(messages: list[dict]) -> list[dict]:
             role = "developer"
         if role == "assistant":
             replay = [detail["item"] for detail in message.get("reasoning_details") or []
-                      if isinstance(detail, dict) and detail.get("type") == "openai.responses.item"
+                      if isinstance(detail, dict) and detail.get("type") in {"somm.native_assistant", "openai.responses.item"}
                       and isinstance(detail.get("item"), dict)
                       and detail["item"].get("type") in {"message", "function_call", "reasoning"}]
             if replay:
@@ -97,7 +97,7 @@ def chat_completion(response: dict) -> dict:
     message = {"role": "assistant", "content": "".join(content)}
     if calls:
         message["tool_calls"] = calls
-    replay = [{"type": "openai.responses.item", "item": item}
+    replay = [{"type": "somm.native_assistant", "item": item}
               for item in response.get("output", [])
               if item.get("type") in {"message", "function_call", "reasoning"}]
     if replay:
