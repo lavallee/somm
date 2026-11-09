@@ -155,6 +155,8 @@ def test_chat_completions_route_budget_gate_blocks_before_dispatch(tmp_path):
 
     assert r.status_code == 429
     assert r.json()["error"]["type"] == "rate_limit_error"
+    assert r.json()["error"]["retryable"] is False
+    assert r.headers["x-should-retry"] == "false"
     mock_comp.assert_not_called()
 
     with repo._open() as conn:
@@ -374,6 +376,8 @@ def test_adaptive_conservation_defers_research_without_any_provider_call(tmp_pat
             headers=_auth_headers(app, **{"x-somm-workload": "adaptive"}))
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "SOMM_WORK_DEFERRED"
+    assert response.json()["error"]["retryable"] is False
+    assert response.headers["x-should-retry"] == "false"
     assert response.json()["error"]["routing"]["target"] is None
     infer.assert_not_called()
     with repo._open() as connection:
@@ -451,3 +455,117 @@ def test_routing_preview_requires_auth_and_does_not_run_inference(tmp_path, monk
             headers=_auth_headers(app, **{"x-somm-workload": "preview"}))
         assert response.status_code == 200 and response.json()["deferred"] is True
         infer.assert_not_called()
+
+
+@pytest.mark.parametrize('kind,status,retryable', [
+    ('bad_request', 400, False), ('auth', 401, False), ('policy', 403, False),
+    ('rate_limit', 429, True), ('timeout', 504, True), ('upstream', 502, True),
+])
+def test_typed_provider_failures_preserve_recovery_contract_without_fallback(tmp_path, kind, status, retryable):
+    from somm.errors import (
+        SommAuthError,
+        SommBadRequest,
+        SommRateLimited,
+        SommTimeout,
+        SommUpstream5xx,
+    )
+    errors = {
+        'bad_request': SommBadRequest('Tool result has no matching call'),
+        'auth': SommAuthError('Authorization expired'),
+        'policy': SommAuthError('Plan permission denied'),
+        'rate_limit': SommRateLimited('Try later', retry_after_s=3.2),
+        'timeout': SommTimeout('Request timed out'),
+        'upstream': SommUpstream5xx('Provider unavailable'),
+    }
+    error = errors[kind]
+    error.provider_code = 'synthetic_provider_code'
+    error.provider_type = 'invalid_request_error' if not retryable else 'server_error'
+    error.provider_param = 'input' if kind == 'bad_request' else None
+    error.provider_request_id = 'req_synthetic'
+    if kind == 'policy':
+        error.status_code = 403
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    repo.register_workload(name='recoverable', project=cfg.project)
+    app = create_app(cfg)
+    with TestClient(app) as client, patch('somm.providers.chatgpt.ChatGPTProvider.complete_chat', side_effect=error) as infer, patch('somm_service.proxy.litellm.completion') as fallback:
+        response = client.post('/v1/chat/completions', json={
+            'model': 'chatgpt/pinned-strong', 'messages': [{'role':'user','content':'A synthetic task'}]},
+            headers=_auth_headers(app, **{'x-somm-workload':'recoverable'}))
+    assert response.status_code == status
+    body = response.json()['error']
+    assert body['code'] == error.code and body['retryable'] is retryable
+    assert body['provider_code'] == 'synthetic_provider_code'
+    assert body['provider_request_id'] == 'req_synthetic'
+    assert body['provider'] == 'chatgpt' and body['model'] == 'pinned-strong'
+    assert body['call_id'] == response.headers['x-somm-call-id']
+    assert response.headers['x-should-retry'] == str(retryable).lower()
+    if kind == 'rate_limit':
+        assert response.headers['retry-after'] == '4'
+        assert body['retry_after_s'] == 3.2
+    if kind == 'bad_request':
+        assert body['param'] == 'input'
+    assert infer.call_count == 1
+    fallback.assert_not_called()
+    with repo._open() as conn:
+        row = conn.execute('SELECT id, provider, model, outcome FROM calls').fetchone()
+    assert row[:3] == (body['call_id'], 'chatgpt', 'pinned-strong')
+    assert row[3] == ('timeout' if kind == 'timeout' else 'upstream_error')
+
+
+@pytest.mark.parametrize('adaptive', [False, True])
+def test_provider_recovery_metadata_is_recorded_for_pins_and_adaptive_calls(tmp_path, monkeypatch, adaptive):
+    import json
+    import time
+
+    from somm.adaptive import _QUOTA
+    from somm.providers.chatgpt import chat_completion
+    from somm_core.adaptive import WeeklyQuota
+    from somm_core.read import search_calls
+
+    cfg = _cfg(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name='replayed', project=cfg.project)
+    if adaptive:
+        repo.set_workload_policy(wl.id, {'adaptive': {
+            'fast': {'provider': 'chatgpt', 'model': 'small'},
+            'strong': {'provider': 'chatgpt', 'model': 'large'},
+            'fallback': {'provider': 'minimax', 'model': 'MiniMax-M3'}}})
+        monkeypatch.setattr(_QUOTA, 'read', lambda: WeeklyQuota(20, int(time.time())+1000, time.time()))
+    marker = {'kind': 'normalized_tool_replay', 'attempts': 0, 'rewritten_tool_calls': 5}
+    answer = chat_completion({'id':'r1', 'model':'served-model', 'output':[]})
+    answer['somm_recovery'] = marker
+    app = create_app(cfg)
+    with TestClient(app) as client, patch('somm.providers.chatgpt.ChatGPTProvider.complete_chat', return_value=answer) as infer:
+        response = client.post('/v1/chat/completions', json={
+            'model': 'somm/auto' if adaptive else 'chatgpt/pinned-model',
+            'messages':[{'role':'user','content':'Hello'}]},
+            headers=_auth_headers(app, **{'x-somm-workload':'replayed'}))
+    assert response.status_code == 200 and infer.call_count == 1
+    assert response.json()['somm_recovery'] == marker
+    call = search_calls(cfg.db_path, cfg.project)[0]
+    assert call['provider'] == 'chatgpt' and call['model'] == 'served-model'
+    route = json.loads(call['routing_json'])
+    assert route['recovery'] == marker
+    if adaptive:
+        assert route['tier'] == 'fast' and route['target']['model'] == 'small'
+    else:
+        assert set(route) == {'recovery'}
+
+
+def test_budget_refusal_does_not_trigger_openai_sdk_transport_retries():
+    import httpx
+    import openai
+    from somm.errors import SommBudgetExceeded
+    from somm_service.proxy import _openai_provider_error
+
+    response = _openai_provider_error(SommBudgetExceeded('Daily cap reached'))
+    attempts = []
+    def refuse(request):
+        attempts.append(request)
+        return httpx.Response(response.status_code, content=response.body, headers=response.headers)
+    with openai.OpenAI(api_key='synthetic', base_url='http://somm.test/v1', max_retries=2,
+                       http_client=httpx.Client(transport=httpx.MockTransport(refuse))) as client:
+        with pytest.raises(openai.RateLimitError):
+            client.chat.completions.create(model='pinned-strong', messages=[{'role':'user','content':'Synthetic request'}])
+    assert len(attempts) == 1

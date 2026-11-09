@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 import uuid
 from collections.abc import Iterator
@@ -33,7 +34,15 @@ from typing import Any
 
 import litellm
 from somm.client import enforce_workload_budget
-from somm.errors import SommBudgetExceeded
+from somm.errors import (
+    SommAuthError,
+    SommBadRequest,
+    SommBudgetExceeded,
+    SommError,
+    SommRateLimited,
+    SommTimeout,
+    describe_error,
+)
 from somm_core import Outcome, cost_for_call
 from somm_core.models import Call
 from somm_core.parse import stable_hash
@@ -384,6 +393,62 @@ def _openai_error(
         },
         status_code=status,
     )
+
+
+def _openai_provider_error(
+    error: Exception,
+    *,
+    call_id: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    routing: dict | None = None,
+) -> JSONResponse:
+    """Keep typed provider failures actionable instead of making every error a 502.
+
+    This endpoint does not retry or choose another model. A runner may resume the
+    same request after a transient failure; fatal errors need corrected input or
+    authorization. Completed tool results remain the caller's history.
+    """
+    if isinstance(error, SommError):
+        detail = describe_error(error)
+        detail["message"] = detail["message"][:512]
+    else:
+        detail = {"code": "SOMM_PROXY_UPSTREAM_ERROR", "message": str(error)[:512],
+                  "retryable": True}
+    status, error_type = 502, "api_error"
+    if isinstance(error, SommBadRequest):
+        status, error_type = 400, "invalid_request_error"
+    elif isinstance(error, SommAuthError):
+        status, error_type = 401, "authentication_error"
+    elif isinstance(error, (SommRateLimited, SommBudgetExceeded)):
+        status, error_type = 429, "rate_limit_error"
+    elif isinstance(error, SommTimeout):
+        status, error_type = 504, "timeout_error"
+    elif not detail["retryable"]:
+        status, error_type = 400, "invalid_request_error"
+    # Adapters can preserve a more specific upstream status without requiring
+    # callers to parse text (e.g. policy denial 403 versus expired identity 401).
+    upstream_status = getattr(error, "status_code", None)
+    if isinstance(upstream_status, int) and 400 <= upstream_status <= 599:
+        status = upstream_status
+    payload = {"type": error_type, "param": None, **detail}
+    for key, value in (("call_id", call_id), ("provider", provider), ("model", model),
+                       ("routing", routing)):
+        if value is not None:
+            payload[key] = value
+    for field in ("provider_code", "provider_type", "provider_param", "provider_request_id"):
+        value = getattr(error, field, None)
+        if isinstance(value, str) and value:
+            payload[field] = value[:256]
+    if payload.get("provider_param"):
+        payload["param"] = payload["provider_param"]
+    headers = {"x-should-retry": "true" if detail["retryable"] else "false"}
+    if call_id:
+        headers["x-somm-call-id"] = call_id
+    retry_after = detail.get("retry_after_s")
+    if isinstance(retry_after, (float, int)) and math.isfinite(retry_after) and retry_after >= 0:
+        headers["Retry-After"] = str(math.ceil(retry_after))
+    return JSONResponse({"error": payload}, status_code=status, headers=headers)
 
 
 def _resolve_workload(repo, request: Request, project: str, cfg) -> Any:
@@ -816,7 +881,8 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
             decision = await run_in_threadpool(decide_workload, workload, body["messages"])
         except SommDeferred as exc:
             return JSONResponse({"error": {"type": "work_deferred", "code": exc.code,
-                                 "message": str(exc), "routing": exc.decision}}, status_code=429)
+                                 "message": str(exc), "routing": exc.decision, "retryable": False}},
+                                status_code=429, headers={"x-should-retry": "false"})
         except ValueError as exc:
             return _openai_error(error_type="invalid_request_error", message=str(exc), status=400)
         routing = decision.as_dict()
@@ -842,11 +908,7 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
                 default_cap_usd_daily=cfg.budget_default_cap_usd_daily,
             )
         except SommBudgetExceeded as exc:
-            return _openai_error(
-                error_type="rate_limit_error",
-                message=str(exc),
-                status=429,
-            )
+            return _openai_provider_error(exc)
 
     call_id = str(uuid.uuid4())
     ts = datetime.now(UTC)
@@ -856,6 +918,7 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
     error_detail: str | None = None
     tokens_in = tokens_out = 0
     response_body: dict[str, Any] | None = None
+    provider_error: Exception | None = None
     try:
         if provider == "chatgpt":
             from somm.providers.chatgpt import ChatGPTProvider
@@ -877,17 +940,21 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
             model_only = response_body["model"]
             if model_only.startswith(provider + "/"):
                 model_only = model_only[len(provider) + 1:]
+        if provider == "chatgpt" and response_body.get("somm_recovery"):
+            routing = {**(routing or {}), "recovery": response_body["somm_recovery"]}
         usage = response_body["usage"]
         tokens_in = int(usage.get("prompt_tokens") or 0)
         tokens_out = int(usage.get("completion_tokens") or 0)
     except TimeoutError as exc:
+        provider_error = SommTimeout(f"provider call exceeded {cfg.http_timeout:.0f}s")
         outcome = Outcome.TIMEOUT
         error_kind = type(exc).__name__
         error_detail = f"{type(exc).__name__}: provider call exceeded {cfg.http_timeout:.0f}s"[
             :512
         ]
     except Exception as exc:
-        outcome = Outcome.UPSTREAM_ERROR
+        provider_error = exc
+        outcome = Outcome.TIMEOUT if isinstance(exc, SommTimeout) else Outcome.UPSTREAM_ERROR
         error_kind = type(exc).__name__
         error_detail = f"{type(exc).__name__}: {exc}"[:512]
 
@@ -931,10 +998,9 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
     repo.write_call(call)
 
     if response_body is None:
-        return _openai_error(
-            error_type="api_error",
-            message=error_detail or "upstream provider call failed",
-            status=502,
+        return _openai_provider_error(
+            provider_error or RuntimeError("upstream provider call failed"),
+            call_id=call_id, provider=provider, model=model_only, routing=routing,
         )
     return JSONResponse(response_body)
 
