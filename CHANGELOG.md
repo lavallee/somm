@@ -8,6 +8,9 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ## [Unreleased]
 
 ### Fixed
+- Chat Completions forwards explicit `reasoning_effort` and `thinking` controls to
+  the provider instead of silently selecting its default reasoning mode.
+
 - The Chat Completions proxy preserves provider reasoning context alongside tool calls,
   so an agent can replay the next tool turn without losing required continuation fields.
 

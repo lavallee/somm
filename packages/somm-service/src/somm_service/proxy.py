@@ -150,8 +150,10 @@ def _openai_to_litellm_params(body: dict) -> dict[str, Any]:
         "frequency_penalty",
         "seed",
         "user",
+        "reasoning_effort",
+        "thinking",
     ):
-        if key in body:
+        if key in body and body[key] is not None:
             params[key] = body[key]
     return params
 
