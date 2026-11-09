@@ -388,3 +388,13 @@ def classify_body_error(err: object, *, provider: str, model: str) -> None:
             raise SommAuthError(f"{provider} body-auth on {model}: {msg}")
         raise SommTransientError(f"{provider} body-error on {model}: {msg}", cooldown_s=60.0, model=model)
     raise SommTransientError(f"{provider} body-error on {model}: {err}", cooldown_s=60.0, model=model)
+
+
+class SommDeferred(SommError):
+    """No inference was attempted. The application owns resumption/queueing."""
+
+    code = "SOMM_WORK_DEFERRED"
+
+    def __init__(self, decision: dict):
+        self.decision = decision
+        super().__init__("Stronger-model work deferred to conserve weekly ChatGPT usage")

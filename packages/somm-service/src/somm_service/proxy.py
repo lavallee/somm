@@ -792,20 +792,6 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
         )
 
     try:
-        enforce_workload_budget(
-            repo,
-            workload,
-            fail_closed=cfg.budget_fail_closed,
-            default_cap_usd_daily=cfg.budget_default_cap_usd_daily,
-        )
-    except SommBudgetExceeded as exc:
-        return _openai_error(
-            error_type="rate_limit_error",
-            message=str(exc),
-            status=429,
-        )
-
-    try:
         params = _openai_to_litellm_params(body)
     except ValueError as exc:
         return _openai_error(
@@ -821,6 +807,47 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
         default_provider="openai",
     )
 
+    routing = None
+    if requested_model == "somm/auto":
+        from somm.adaptive import decide_workload
+        from somm.errors import SommDeferred
+
+        try:
+            decision = await run_in_threadpool(decide_workload, workload, body["messages"])
+        except SommDeferred as exc:
+            return JSONResponse({"error": {"type": "work_deferred", "code": exc.code,
+                                 "message": str(exc), "routing": exc.decision}}, status_code=429)
+        except ValueError as exc:
+            return _openai_error(error_type="invalid_request_error", message=str(exc), status=400)
+        routing = decision.as_dict()
+        provider, model_only = decision.target.provider, decision.target.model
+        params["model"] = provider + "/" + model_only
+        params.pop("thinking", None)
+        params.pop("reasoning_effort", None)
+        if decision.target.reasoning_effort:
+            params["reasoning_effort"] = decision.target.reasoning_effort
+        if provider != "chatgpt":
+            from somm.adaptive import fallback_messages
+
+            params["messages"] = fallback_messages(params["messages"])
+        if provider == "minimax":
+            params["thinking"] = {"type": "disabled"}
+
+    if provider != "chatgpt":
+        try:
+            enforce_workload_budget(
+                repo,
+                workload,
+                fail_closed=cfg.budget_fail_closed,
+                default_cap_usd_daily=cfg.budget_default_cap_usd_daily,
+            )
+        except SommBudgetExceeded as exc:
+            return _openai_error(
+                error_type="rate_limit_error",
+                message=str(exc),
+                status=429,
+            )
+
     call_id = str(uuid.uuid4())
     ts = datetime.now(UTC)
     t0 = time.monotonic()
@@ -830,11 +857,26 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
     tokens_in = tokens_out = 0
     response_body: dict[str, Any] | None = None
     try:
-        resp = await asyncio.wait_for(
-            run_in_threadpool(litellm.completion, **params),
-            timeout=cfg.http_timeout,
-        )
-        response_body = _litellm_to_openai_response(resp, requested_model=requested_model)
+        if provider == "chatgpt":
+            from somm.providers.chatgpt import ChatGPTProvider
+
+            chat_body = {**params, "model": model_only}
+            response_body = await asyncio.wait_for(
+                run_in_threadpool(ChatGPTProvider(timeout=cfg.http_timeout).complete_chat, chat_body),
+                timeout=cfg.http_timeout,
+            )
+        else:
+            resp = await asyncio.wait_for(
+                run_in_threadpool(litellm.completion, **params), timeout=cfg.http_timeout,
+            )
+            served_model = getattr(resp, "model", None) or model_only
+            response_body = _litellm_to_openai_response(
+                resp, requested_model=served_model if routing else requested_model,
+            )
+        if routing or provider == "chatgpt":
+            model_only = response_body["model"]
+            if model_only.startswith(provider + "/"):
+                model_only = model_only[len(provider) + 1:]
         usage = response_body["usage"]
         tokens_in = int(usage.get("prompt_tokens") or 0)
         tokens_out = int(usage.get("completion_tokens") or 0)
@@ -851,13 +893,21 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
 
     latency_ms = int((time.monotonic() - t0) * 1000)
 
-    cost_usd = cost_for_call(repo, provider, model_only, tokens_in, tokens_out)
+    from somm_core.cost import cost_provenance
+
+    cost_usd = 0.0 if provider == "chatgpt" else cost_for_call(repo, provider, model_only, tokens_in, tokens_out)
+    basis, kind, accuracy, source, version = cost_provenance(
+        repo, provider, model_only, reported=False, source=None,
+    )
     response_text_for_hash = ""
     if response_body is not None:
         for choice in response_body.get("choices", []):
             message = choice.get("message") or {}
             response_text_for_hash += str(message.get("content") or "")
     call = Call(
+        routing_json=json.dumps(routing) if routing else None,
+        cost_basis=basis, cost_kind=kind, cost_accuracy=accuracy,
+        cost_source=source, pricing_version=version,
         id=call_id,
         ts=ts,
         project=project,
@@ -887,3 +937,27 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
             status=502,
         )
     return JSONResponse(response_body)
+
+
+async def routing_decision_endpoint(request: Request) -> Response:
+    """Inspect the same workload route without running inference or storing input."""
+    from somm.adaptive import decide_workload
+    from somm.errors import SommDeferred
+
+    cfg, repo = request.app.state.config, request.app.state.repo
+    try:
+        body = await read_bounded_json(request, max_bytes=cfg.service_proxy_max_body_bytes)
+        if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
+            raise ValueError("messages must be a list")
+        project = request.headers.get("x-somm-project") or cfg.project
+        workload = _resolve_workload(repo, request, project, cfg)
+        decision = await run_in_threadpool(decide_workload, workload, body["messages"])
+        return JSONResponse(decision.as_dict())
+    except SommDeferred as exc:
+        return JSONResponse(exc.decision)
+    except PayloadTooLarge:
+        return _openai_error(error_type="invalid_request_error", message="request too large", status=413)
+    except ProxyWorkloadError as exc:
+        return _openai_error(error_type="invalid_request_error", message=str(exc), status=403)
+    except ValueError as exc:
+        return _openai_error(error_type="invalid_request_error", message=str(exc), status=400)

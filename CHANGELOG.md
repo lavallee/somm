@@ -5,6 +5,31 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.20.0] — 2026-11-09
+
+### Added
+- Opt-in adaptive workload routing through `somm/auto` for library and Chat Completions
+  callers, with conservative simple/strong tiers, continuation/tool-result handling,
+  fresh weekly subscription metadata, and explicit strong-work deferral at 90%.
+- Somm-owned Sign in with ChatGPT connection, public Responses tool/reasoning replay,
+  private rotating refresh, and `somm chatgpt login|status|models|quota` commands.
+- Routing decision telemetry beside the actual served model (schema 26). Included
+  ChatGPT calls bypass API dollar caps; API fallbacks retain their budget gate.
+
+### Fixed
+- Preserve encrypted reasoning replay when translating neutral assistant tool turns.
+- Release checklist and CI now install all optional test dependencies and identify the
+  four live Ollama checks accurately. Pricing bundle refreshed; stale historical plan
+  estimates remain explicitly unverified after checking current vendor sources.
+
+### Upgrade notes
+- Adaptive routing is opt-in; existing explicit model/provider pins are unchanged.
+- Install `somm[chatgpt]` and authorize Somm separately from the Codex account session
+  used for weekly quota metadata. Never copy another application's credentials.
+- `SOMM_WORK_DEFERRED` means no inference ran. Applications must retain/resume the
+  request and tell the person; Somm does not provide a durable task queue.
+- See [adaptive routing](docs/adaptive-routing.md) for policy, scope, and limitations.
+
 ## [Unreleased]
 
 ### Fixed

@@ -42,10 +42,11 @@ independent.
    ```bash
    uv run pytest -q
    ```
-   One skip is expected (`opentelemetry` not installed). Any other
-   skip or failure blocks release. This line said "two skips (no local
-   ollama)" through 0.15.0 and had been wrong for some time — a stale
-   expectation in a checklist trains people to wave past the real thing.
+   Install the full test environment first with
+   `uv sync --all-packages --all-extras --group dev`. Four live Ollama
+   integration skips are expected when no local Ollama is running (async,
+   embedding, smoke, streaming). Any additional skip or failure blocks
+   release; optional telemetry dependencies must be installed.
 
 2. **Bump every version string in lockstep.**
    ```bash

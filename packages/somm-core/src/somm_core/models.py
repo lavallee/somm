@@ -287,6 +287,7 @@ class Call:
     # reports them; and the somm version that wrote the row.
     reasoning_tokens: int | None = None
     client_version: str | None = None
+    routing_json: str | None = None  # Requested alias, selected tier/reason and quota snapshot; no prompt text.
 
 
 @dataclass(slots=True)

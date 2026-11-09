@@ -99,6 +99,8 @@ def cost_provenance(
     ``included``: zero metered price, not zero economic cost. Anything else is
     computed from ``model_intel`` and says which pricing row it used.
     """
+    if provider == "chatgpt":
+        return "unknown", "included", "unknown", "chatgpt-subscription", None
     if reported:
         return "reported", "unknown", "unknown", source, None
     if provider == "ollama":

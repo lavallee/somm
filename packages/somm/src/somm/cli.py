@@ -2914,6 +2914,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="somm", description="somm — self-hosted LLM telemetry")
     p.add_argument("--version", action="version", version=f"somm {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
+    from somm.cli_chatgpt import add_parser as add_chatgpt_parser
+
+    add_chatgpt_parser(sub)
 
     ps = sub.add_parser("status", help="show call roll-up for the current project")
     ps.add_argument("--project", default=None)

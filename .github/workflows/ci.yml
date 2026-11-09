@@ -26,7 +26,7 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - name: Sync workspace (all packages + dev group)
-        run: uv sync --all-packages --frozen
+        run: uv sync --all-packages --all-extras --group dev --frozen
       - name: Check release version gate
         run: uv run python scripts/check_release_gate.py
       # Uses the repo's existing [tool.ruff] config (pyproject.toml). Some

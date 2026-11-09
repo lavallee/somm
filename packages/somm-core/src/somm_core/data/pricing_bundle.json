@@ -1,5 +1,5 @@
 {
- "generated_on": "2026-10-29",
+ "generated_on": "2026-11-09",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "license": "MIT (LiteLLM); see source",
  "models": [
@@ -738,7 +738,17 @@
    "model": "gemini-omni-1.1-flash",
    "price_in_per_1m": 1.5,
    "price_out_per_1m": 9.0,
-   "context_window": 1048576,
+   "context_window": 131072,
+   "capabilities": {
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
+   "model": "gemini-omni-1.2-flash",
+   "price_in_per_1m": 1.5,
+   "price_out_per_1m": 9.0,
+   "context_window": 131072,
    "capabilities": {
     "vision": true
    }
@@ -955,17 +965,6 @@
    }
   },
   {
-   "provider": "minimax",
-   "model": "MiniMax-M3.1-Flash",
-   "price_in_per_1m": 0.15,
-   "price_out_per_1m": 0.6,
-   "context_window": 1000000,
-   "capabilities": {
-    "tools": true,
-    "vision": true
-   }
-  },
-  {
    "provider": "openai",
    "model": "chat-latest",
    "price_in_per_1m": 5.0,
@@ -1021,7 +1020,7 @@
    "model": "daybreak-red-latest",
    "price_in_per_1m": 12.5,
    "price_out_per_1m": 75.0,
-   "context_window": 400000,
+   "context_window": 272000,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1889,7 +1888,7 @@
    "model": "gpt-5.6-cyber",
    "price_in_per_1m": 12.5,
    "price_out_per_1m": 75.0,
-   "context_window": 400000,
+   "context_window": 272000,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1941,9 +1940,42 @@
   },
   {
    "provider": "openai",
+   "model": "gpt-6-astra-law",
+   "price_in_per_1m": 10.0,
+   "price_out_per_1m": 50.0,
+   "context_window": 922000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6-cyber",
+   "price_in_per_1m": 20.0,
+   "price_out_per_1m": 100.0,
+   "context_window": 922000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
    "model": "gpt-6-luna",
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.5,
+   "context_window": 922000,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6-rosalind",
+   "price_in_per_1m": 15.0,
+   "price_out_per_1m": 75.0,
    "context_window": 922000,
    "capabilities": {
     "tools": true,
@@ -2059,7 +2091,7 @@
    "model": "gpt-daybreak-red-latest",
    "price_in_per_1m": 12.5,
    "price_out_per_1m": 75.0,
-   "context_window": 400000,
+   "context_window": 272000,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2534,6 +2566,13 @@
   },
   {
    "provider": "perplexity",
+   "model": "google/gemini-4-argon",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": null
+  },
+  {
+   "provider": "perplexity",
    "model": "llama-2-70b-chat",
    "price_in_per_1m": 0.7,
    "price_out_per_1m": 2.8,
@@ -2805,6 +2844,13 @@
    "capabilities": {
     "tools": true
    }
+  },
+  {
+   "provider": "perplexity",
+   "model": "perplexity/nemotron-3.5-super-120b-a12b",
+   "price_in_per_1m": 0.2,
+   "price_out_per_1m": 0.5,
+   "context_window": null
   },
   {
    "provider": "perplexity",

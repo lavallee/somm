@@ -64,6 +64,7 @@ from somm_service.proxy import (
     _openai_error,
     chat_completions_endpoint,
     messages_endpoint,
+    routing_decision_endpoint,
 )
 
 _CSP = "default-src 'none'; style-src 'unsafe-inline'"
@@ -234,7 +235,7 @@ class LocalSecurityMiddleware:
         )
         protected_admin = method == "POST" and path.startswith("/api/recommendations/")
         protected_messages = method == "POST" and path == "/v1/messages"
-        protected_chat = method == "POST" and path == "/v1/chat/completions"
+        protected_chat = method == "POST" and path in {"/v1/chat/completions", "/api/routing/decide"}
         protected_otlp = method == "POST" and path in (
             "/api/otlp/v1/traces",
             "/v1/traces",
@@ -1455,6 +1456,7 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/v1/traces", _api_otlp_traces, methods=["POST"]),
             Route("/v1/messages", messages_endpoint, methods=["POST"]),
             Route("/v1/chat/completions", chat_completions_endpoint, methods=["POST"]),
+            Route("/api/routing/decide", routing_decision_endpoint, methods=["POST"]),
         ],
     )
     app.add_middleware(
