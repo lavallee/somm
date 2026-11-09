@@ -295,3 +295,48 @@ def test_chat_completions_route_rejects_oversized_body_before_dispatch(tmp_path)
 
     assert r.status_code == 413
     mock_comp.assert_not_called()
+
+
+def test_reasoning_tool_context_survives_a_round_trip(tmp_path):
+    """A proxy must retain the provider context the next tool turn needs."""
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+    tool_call = {"id": "synthetic-call", "type": "function", "function": {
+        "name": "household_read", "arguments": '{"domain":"groceries"}'}}
+    assistant = {"role": "assistant", "content": "", "tool_calls": [tool_call],
+                 "reasoning_content": "opaque-provider-context",
+                 "reasoning_details": [{"type": "reasoning.encrypted", "data": "synthetic-token"}]}
+    first = _fake_chat_response(finish="tool_calls")
+    first.choices[0].message = assistant
+    with patch("somm_service.proxy.litellm.completion", return_value=first):
+        response = client.post("/v1/chat/completions", json={"model": "minimax/MiniMax-M3",
+            "messages": [{"role": "user", "content": "Read groceries"}]},
+            headers=_auth_headers(app))
+    assert response.status_code == 200
+    replay = response.json()["choices"][0]["message"]
+    assert replay == assistant
+    messages = [{"role": "user", "content": "Read groceries"}, replay,
+                {"role": "tool", "tool_call_id": "synthetic-call", "content": "Milk"}]
+    with patch("somm_service.proxy.litellm.completion", return_value=_fake_chat_response()) as call:
+        second = client.post("/v1/chat/completions", json={
+            "model": "minimax/MiniMax-M3", "messages": messages}, headers=_auth_headers(app))
+    assert second.status_code == 200
+    assert call.call_args.kwargs["messages"] == messages
+
+
+def test_reasoning_context_on_sdk_message_is_preserved(tmp_path):
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    client = TestClient(app)
+    response = _fake_chat_response()
+    response.choices[0].message = SimpleNamespace(role="assistant", content="Done",
+        reasoning_content="opaque-provider-context", reasoning={"signature": "synthetic"},
+        tool_calls=None)
+    with patch("somm_service.proxy.litellm.completion", return_value=response):
+        result = client.post("/v1/chat/completions", json={
+            "model": "minimax/MiniMax-M3", "messages": [{"role": "user", "content": "Hello"}]},
+            headers=_auth_headers(app))
+    message = result.json()["choices"][0]["message"]
+    assert message["reasoning_content"] == "opaque-provider-context"
+    assert message["reasoning"] == {"signature": "synthetic"}
