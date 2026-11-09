@@ -314,6 +314,13 @@ def _litellm_to_openai_response(
             tool_calls = getattr(message, "tool_calls", None)
         if tool_calls:
             msg["tool_calls"] = _jsonable(tool_calls)
+        # Reasoning providers use these fields to resume after a tool result.
+        # Dropping them turns an otherwise valid agent conversation into a lossy
+        # replay (or a provider rejection). Keep them on the wire, not in samples.
+        for key in ("reasoning_content", "reasoning", "reasoning_details"):
+            value = message.get(key) if isinstance(message, dict) else getattr(message, key, None)
+            if value is not None:
+                msg[key] = _jsonable(value)
         response_choices.append(
             {
                 "index": idx,

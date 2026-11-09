@@ -7,6 +7,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Fixed
+- The Chat Completions proxy preserves provider reasoning context alongside tool calls,
+  so an agent can replay the next tool turn without losing required continuation fields.
+
 ## [0.19.4] — 2026-11-08
 
 ### Fixed
