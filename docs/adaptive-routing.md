@@ -130,3 +130,28 @@ Primary sources reviewed 2026-11-09:
   [OpenRouter Auto](https://openrouter.ai/docs/guides/routing/routers/auto-router).
 - [RouteLLM](https://arxiv.org/abs/2406.18665),
   [FrugalGPT](https://arxiv.org/abs/2305.05176).
+
+## Failure and recovery contract
+
+The Chat Completions proxy preserves typed provider failures instead of converting
+all of them into HTTP 502. Invalid input returns 400, authentication failures 401
+(or a preserved upstream denial such as 403), rate limits 429, transport timeouts
+504, and transient upstream failures 502. `error.code` is Somm's canonical code;
+`error.retryable` and optional `error.retry_after_s` are the runner contract.
+`x-should-retry` mirrors retryability for compatible SDKs. A 429 deferral or API
+budget refusal explicitly says `retryable: false`; waiting and sending the identical
+request repeatedly will not repair it.
+
+A failed inference response identifies its `call_id`, provider, selected model,
+and adaptive route when present. The same ID appears in `x-somm-call-id` and the
+ledger. Safe machine fields (`provider_code`, `provider_type`, `provider_param`,
+`provider_request_id`) survive translation when the adapter supplies them. Clients
+should use these fields rather than parsing provider prose.
+
+This HTTP boundary neither retries inference nor chooses another model. Resume a
+transient failure with the original conversation, including completed tool results;
+do not repeat household mutations to reconstruct context. An unrecoverable input or
+authorization error needs correction before another attempt. Provider-side replay
+normalization may repair a known transcript mismatch without another inference call;
+its `somm_recovery` marker is retained in `routing_json.recovery` for explicit pins
+as well as adaptive calls, with counts rather than prompt/tool-result contents.
