@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from somm_core.config import Config
 from somm_core.pricing import write_intel
 from somm_core.repository import Repository
@@ -48,7 +49,8 @@ def _auth_headers(app, **extra: str) -> dict[str, str]:
     return {"authorization": f"Bearer {app.state.service_token.value}", **extra}
 
 
-def test_chat_completions_route_dispatches_litellm_and_returns_openai_shape(tmp_path):
+@pytest.mark.parametrize("reasoning_effort", ["low", None])
+def test_chat_completions_route_dispatches_litellm_and_returns_openai_shape(tmp_path, reasoning_effort):
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
     repo.register_workload(name="chat_wl", project=cfg.project)
@@ -73,7 +75,7 @@ def test_chat_completions_route_dispatches_litellm_and_returns_openai_shape(tmp_
                 "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "hello"}],
                 "max_tokens": 32,
-                "reasoning_effort": "low",
+                "reasoning_effort": reasoning_effort,
                 "thinking": {"type": "adaptive"},
             },
             headers=_auth_headers(app, **{"x-somm-workload": "chat_wl"}),
@@ -94,7 +96,10 @@ def test_chat_completions_route_dispatches_litellm_and_returns_openai_shape(tmp_
     assert kwargs["model"] == "gpt-4o-mini"
     assert kwargs["messages"] == [{"role": "user", "content": "hello"}]
     assert kwargs["max_tokens"] == 32
-    assert kwargs["reasoning_effort"] == "low"
+    if reasoning_effort is None:
+        assert "reasoning_effort" not in kwargs
+    else:
+        assert kwargs["reasoning_effort"] == reasoning_effort
     assert kwargs["thinking"] == {"type": "adaptive"}
     assert kwargs["timeout"] == cfg.http_timeout
 
