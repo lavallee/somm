@@ -42,7 +42,16 @@ def response_input(messages: list[dict]) -> list[dict]:
             continue
         if role not in {"system", "developer", "user", "assistant"}:
             raise SommBadRequest("Unsupported conversation role for ChatGPT Responses")
+        if role == "system":
+            role = "developer"
         if role == "assistant":
+            replay = [detail["item"] for detail in message.get("reasoning_details") or []
+                      if isinstance(detail, dict) and detail.get("type") == "openai.responses.item"
+                      and isinstance(detail.get("item"), dict)
+                      and detail["item"].get("type") in {"message", "function_call", "reasoning"}]
+            if replay:
+                out.extend(replay)
+                continue
             for detail in message.get("reasoning_details") or []:
                 if isinstance(detail, dict) and detail.get("type") == "openai.responses.reasoning":
                     item = detail.get("item")
@@ -74,7 +83,7 @@ def response_input(messages: list[dict]) -> list[dict]:
 
 
 def chat_completion(response: dict) -> dict:
-    content, calls, reasoning = [], [], []
+    content, calls = [], []
     for item in response.get("output", []):
         if item.get("type") == "message":
             for block in item.get("content", []):
@@ -85,13 +94,14 @@ def chat_completion(response: dict) -> dict:
         elif item.get("type") == "function_call":
             calls.append({"id": item["call_id"], "type": "function",
                           "function": {"name": item["name"], "arguments": item["arguments"]}})
-        elif item.get("type") == "reasoning":
-            reasoning.append({"type": "openai.responses.reasoning", "item": item})
     message = {"role": "assistant", "content": "".join(content)}
     if calls:
         message["tool_calls"] = calls
-    if reasoning:
-        message["reasoning_details"] = reasoning
+    replay = [{"type": "openai.responses.item", "item": item}
+              for item in response.get("output", [])
+              if item.get("type") in {"message", "function_call", "reasoning"}]
+    if replay:
+        message["reasoning_details"] = replay
     usage = response.get("usage") or {}
     return {"id": response["id"], "object": "chat.completion", "created": response.get("created_at", 0),
             "model": response["model"],
@@ -113,8 +123,8 @@ class ChatGPTProvider:
     def complete_chat(self, body: dict) -> dict:
         payload = {"model": body["model"], "input": response_input(body["messages"]),
                    "store": False, "stream": True, "include": ["reasoning.encrypted_content"]}
-        if body.get("max_tokens") or body.get("max_completion_tokens"):
-            payload["max_output_tokens"] = body.get("max_completion_tokens") or body["max_tokens"]
+        # SIWC preview rejects max_output_tokens; the subscription route has
+        # no provider-side equivalent for the Chat Completions output hint.
         if body.get("reasoning_effort"):
             payload["reasoning"] = {"effort": body["reasoning_effort"]}
         tools = []
@@ -127,7 +137,7 @@ class ChatGPTProvider:
                           "parameters": function.get("parameters", {"type": "object", "properties": {}}),
                           "strict": False})
         if tools:
-            payload["tools"] = tools
+            payload["input"].insert(0, {"type": "additional_tools", "role": "developer", "tools": tools})
         choice = body.get("tool_choice")
         if isinstance(choice, dict):
             choice = {"type": "function", "name": choice["function"]["name"]}

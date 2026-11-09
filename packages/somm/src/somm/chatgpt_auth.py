@@ -8,10 +8,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import secrets
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
@@ -87,6 +89,15 @@ class ChatGPTAuth:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         return FileLock(str(self.path) + ".lock", timeout=30, mode=0o600)
 
+    def _host_id(self) -> str:
+        # Call only while holding this connection's lock. A copied credential
+        # record must not overwrite the destination host's installation ID.
+        host = read_json(self.host_file)
+        if not host.get("ext_agent_host_id"):
+            host = {"ext_agent_host_id": "urn:uuid:" + str(uuid4())}
+            private_json(self.host_file, host)
+        return host["ext_agent_host_id"]
+
     def begin(self, redirect_uri: str) -> tuple[str, dict]:
         redirect = urlsplit(redirect_uri)
         if (redirect.scheme != "http" or redirect.hostname != "127.0.0.1"
@@ -95,10 +106,7 @@ class ChatGPTAuth:
             raise ChatGPTAuthError("ChatGPT sign-in requires an HTTP loopback /auth/callback")
         with self._lock():
             saved = read_json(self.path)
-            host = read_json(self.host_file)
-            if not host.get("ext_agent_host_id"):
-                host = {"ext_agent_host_id": "urn:uuid:" + str(uuid4())}
-                private_json(self.host_file, host)
+            host = {"ext_agent_host_id": self._host_id()}
             registration = read_json(self.registration)
             client_id = saved.get("client_id") or registration.get("client_id") or "dynamic_agent_client"
             pending = {"client_id": client_id, "state": secrets.token_urlsafe(32),
@@ -112,8 +120,6 @@ class ChatGPTAuth:
                      "code_challenge_method": "S256", "code_challenge": challenge}
             if client_id == "dynamic_agent_client":
                 query["agent_name_hint"] = "Somm"
-            elif saved.get("id_token"):
-                query["id_token_hint"] = saved["id_token"]
             return ISSUER + "/api/accounts/authorize?" + urlencode(query), pending
 
     def finish(self, pending: dict, callback: dict) -> dict:
@@ -166,10 +172,21 @@ class ChatGPTAuth:
         refresh = tokens.get("refresh_token")
         if not isinstance(refresh, str) or not refresh:
             raise ChatGPTAuthError("ChatGPT did not return a rotating refresh token")
+        earliest = tokens.get("earliest_refresh_at")
+        if isinstance(earliest, str):
+            try:
+                parsed = datetime.fromisoformat(earliest.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    raise ValueError("missing timezone")
+                earliest = parsed.timestamp()
+            except ValueError as exc:
+                raise ChatGPTAuthError("Invalid ChatGPT refresh schedule") from exc
+        if earliest is not None and (isinstance(earliest, bool) or not isinstance(earliest, (int, float)) or not math.isfinite(earliest)):
+            raise ChatGPTAuthError("Invalid ChatGPT refresh schedule")
         return {**previous, "access_token": tokens["access_token"], "refresh_token": refresh,
                 "id_token": tokens.get("id_token") or previous.get("id_token"),
                 "scopes": scopes, "expires_at": time.time() + expiry,
-                "earliest_refresh_at": tokens.get("earliest_refresh_at"), "saved_at": time.time()}
+                "earliest_refresh_at": earliest, "saved_at": time.time()}
 
     def access_token(self) -> str:
         with self._lock():
@@ -188,8 +205,7 @@ class ChatGPTAuth:
                 raise ChatGPTAuthError("Incomplete ChatGPT connection; run somm chatgpt login")
             tokens = self._token_request({"grant_type": "refresh_token", "client_id": record["client_id"],
                                           "refresh_token": record["refresh_token"], "resource": RESOURCE,
-                                          "ext_agent_host_id": read_json(self.host_file).get("ext_agent_host_id")
-                                          or record["ext_agent_host_id"]})
+                                          "ext_agent_host_id": self._host_id()})
             if tokens.get("id_token"):
                 claims = validate_identity(tokens["id_token"], record["client_id"])
                 if claims["sub"] != record["subject"]:
