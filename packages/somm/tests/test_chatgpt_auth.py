@@ -72,3 +72,22 @@ def test_identity_mismatch_cannot_activate_account(tmp_path, monkeypatch):
     with pytest.raises(ChatGPTAuthError, match="identity"):
         auth.finish(pending, {"state": pending["state"], "client_id": "issued", "code": "fake"})
     assert read_json(auth.path)["access_token"] == "old"
+
+
+def test_returning_authorization_url_does_not_expose_retained_id_token(tmp_path):
+    auth = ChatGPTAuth(tmp_path / 'auth.json')
+    private_json(auth.path, {**record(), 'id_token':'sensitive-id-token'})
+    url, _ = auth.begin('http://127.0.0.1:1456/auth/callback')
+    assert 'sensitive-id-token' not in url and 'id_token_hint' not in url
+
+
+def test_refresh_schedule_is_respected_for_iso_timestamp(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+    auth = ChatGPTAuth(tmp_path / 'auth.json')
+    value = ChatGPTAuth._record({'access_token':'new', 'refresh_token':'rotated', 'expires_in':3600,
+        'earliest_refresh_at':datetime.fromtimestamp(time.time()+600, UTC).isoformat()}, record())
+    value['expires_at'] = time.time()-1
+    private_json(auth.path, value)
+    monkeypatch.setattr(auth, '_token_request', lambda _: pytest.fail('must not refresh early'))
+    with pytest.raises(ChatGPTAuthError, match='not yet allowed'):
+        auth.access_token()

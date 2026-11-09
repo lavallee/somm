@@ -55,3 +55,29 @@ def test_rate_limit_is_not_a_completed_answer(monkeypatch):
     provider = transport(monkeypatch, "", 429)
     with pytest.raises(SommRateLimited):
         provider.complete_chat({"model": "x", "messages": []})
+
+
+def test_siwc_preview_uses_developer_and_additional_tools_without_output_cap(monkeypatch):
+    original = httpx.Client
+    def handler(request):
+        body = json.loads(request.content)
+        assert 'max_output_tokens' not in body and 'tools' not in body
+        assert body['input'][0]['type'] == 'additional_tools'
+        assert body['input'][0]['role'] == 'developer'
+        assert body['input'][0]['tools'][0]['name'] == 'lookup'
+        assert body['input'][1] == {'role': 'developer', 'content': 'Be accurate'}
+        value = {'type': 'response.completed', 'response': {'status':'completed','model':'served','id':'r1','output':[]}}
+        return httpx.Response(200, text='data: '+json.dumps(value)+'\n\n')
+    monkeypatch.setattr('somm.providers.chatgpt.httpx.Client', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    provider = ChatGPTProvider(auth=Mock(access_token=Mock(return_value='synthetic')))
+    provider.complete_chat({'model':'x','messages':[{'role':'system','content':'Be accurate'}],
+                            'max_tokens':4096,'tools':[{'type':'function','function':{'name':'lookup'}}]})
+
+
+def test_replay_preserves_message_phase_and_original_item_order():
+    from somm.providers.chatgpt import chat_completion
+    items = [{'type':'reasoning','id':'r1','encrypted_content':'opaque'},
+             {'type':'message','role':'assistant','phase':'commentary','content':[{'type':'output_text','text':'Looking it up'}]},
+             {'type':'function_call','id':'fc1','call_id':'c1','name':'lookup','arguments':'{}'}]
+    message = chat_completion({'id':'resp1','model':'served','output':items})['choices'][0]['message']
+    assert response_input([message]) == items

@@ -36,7 +36,7 @@ def fallback_messages(messages: list[dict]) -> list[dict]:
         copy = dict(message)
         if isinstance(copy.get("reasoning_details"), list):
             details = [d for d in copy["reasoning_details"]
-                       if not isinstance(d, dict) or d.get("type") != "openai.responses.reasoning"]
+                       if not isinstance(d, dict) or not str(d.get("type", "")).startswith("openai.responses.")]
             if details:
                 copy["reasoning_details"] = details
             else:

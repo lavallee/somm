@@ -93,6 +93,12 @@ the public Responses API, while preserving the proxy's Chat Completions wire sha
 HTTP 200 is insufficient: only `response.completed` completes a call. Interrupted,
 failed, incomplete, unauthorized, and rate-limited streams remain failures. Proxy
 streaming is not supported; library adaptive streaming buffers one completed answer.
+The SIWC preview requires developer instructions and additional-tools input items;
+the adapter translates system messages and flat function declarations accordingly.
+The route rejects `max_output_tokens`, so Chat Completions `max_tokens` is an
+unsupported output hint here and is omitted; the transport timeout still applies.
+Replay preserves original message phases, function calls, and encrypted reasoning.
+See [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
 
 ## Quality and alternatives
 
@@ -113,9 +119,9 @@ for an existing Somm gateway and a ChatGPT subscription.
 Primary sources reviewed 2026-11-09:
 
 - [OpenAI Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source),
-  [sign-in](https://developers.openai.com/siwc/sign-in),
-  [models and inference](https://developers.openai.com/siwc/models-and-inference),
-  [remote hosts](https://developers.openai.com/siwc/self-hosted-vms).
+  [sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
+  [models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference),
+  [remote hosts](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms).
 - [Codex app-server account RPC](https://learn.chatgpt.com/docs/app-server),
   [subscription pricing and limits](https://developers.openai.com/codex/pricing).
 - [Model selection](https://developers.openai.com/api/docs/guides/model-selection).
