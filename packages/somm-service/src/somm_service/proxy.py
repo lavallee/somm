@@ -150,6 +150,8 @@ def _openai_to_litellm_params(body: dict) -> dict[str, Any]:
         "frequency_penalty",
         "seed",
         "user",
+        "reasoning_effort",
+        "thinking",
     ):
         if key in body:
             params[key] = body[key]

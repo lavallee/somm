@@ -73,6 +73,8 @@ def test_chat_completions_route_dispatches_litellm_and_returns_openai_shape(tmp_
                 "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "hello"}],
                 "max_tokens": 32,
+                "reasoning_effort": "low",
+                "thinking": {"type": "adaptive"},
             },
             headers=_auth_headers(app, **{"x-somm-workload": "chat_wl"}),
         )
@@ -92,6 +94,8 @@ def test_chat_completions_route_dispatches_litellm_and_returns_openai_shape(tmp_
     assert kwargs["model"] == "gpt-4o-mini"
     assert kwargs["messages"] == [{"role": "user", "content": "hello"}]
     assert kwargs["max_tokens"] == 32
+    assert kwargs["reasoning_effort"] == "low"
+    assert kwargs["thinking"] == {"type": "adaptive"}
     assert kwargs["timeout"] == cfg.http_timeout
 
     with repo._open() as conn:
