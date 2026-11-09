@@ -65,14 +65,13 @@ def _replay_changed(messages: list[dict]) -> bool:
 
 
 def _validate_tool_results(items: list[dict]) -> None:
-    pending, seen = set(), set()
+    pending = set()
     for item in items:
         kind, call_id = item.get("type"), item.get("call_id")
         if kind == "function_call":
-            if not isinstance(call_id, str) or not call_id or call_id in seen:
+            if not isinstance(call_id, str) or not call_id or call_id in pending:
                 raise SommBadRequest("Invalid or duplicate tool call ID in conversation history")
             pending.add(call_id)
-            seen.add(call_id)
         elif kind == "function_call_output":
             if call_id not in pending:
                 raise SommBadRequest("Tool result has no matching pending call in conversation history")
@@ -185,7 +184,7 @@ def chat_completion(response: dict) -> dict:
                       "completion_tokens_details": usage.get("output_tokens_details", {})}}
 
 
-def response_error(event: dict, *, request_id: str | None = None) -> Exception:
+def response_error(event: dict, *, request_id: str | None = None, status_code: int | None = None, retry_after: str | None = None) -> Exception:
     error = (event.get("response") or {}).get("error") or event.get("error") or event
     if not isinstance(error, dict):
         error = {}
@@ -193,12 +192,20 @@ def response_error(event: dict, *, request_id: str | None = None) -> Exception:
     kind = error.get("type")
     label = code or kind or event.get("type") or "inference_failed"
     message = f"ChatGPT inference failed: {label}"
-    if kind == "invalid_request_error":
+    if kind == "invalid_request_error" or (status_code is not None and 400 <= status_code < 500 and status_code not in {401, 403, 408, 409, 429}):
         exc = SommBadRequest(message)
-    elif kind in {"authentication_error", "permission_error"}:
+    elif kind in {"authentication_error", "permission_error"} or status_code in {401, 403}:
         exc = SommAuthError(message)
-    elif kind == "rate_limit_error" or code in {"subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"}:
+    elif kind == "rate_limit_error" or status_code == 429 or code in {"subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"}:
         exc = SommRateLimited(message)
+        try:
+            delay = float(retry_after)
+            if 0 <= delay <= 86400:
+                exc.retry_after_s = exc.cooldown_s = delay
+        except (ValueError, TypeError):
+            pass
+    elif status_code == 408:
+        exc = SommTimeout(message)
     else:
         exc = SommUpstream5xx(message)
     # Keep structured diagnostics separate from prompt-free operator messages.
@@ -206,6 +213,8 @@ def response_error(event: dict, *, request_id: str | None = None) -> Exception:
     exc.provider_type = kind
     exc.provider_param = error.get("param")
     exc.provider_request_id = request_id
+    if status_code is not None:
+        exc.status_code = status_code
     return exc
 
 
@@ -254,12 +263,16 @@ class ChatGPTProvider:
                 "POST", RESOURCE + "/responses", json=payload,
                 headers={"Authorization": "Bearer " + token, "User-Agent": "somm"},
             ) as response:
-                if response.status_code in (401, 403):
-                    raise SommAuthError("ChatGPT subscription authorization is unavailable; sign in to Somm again")
-                if response.status_code == 429:
-                    raise SommRateLimited("ChatGPT subscription is rate limited")
                 if not response.is_success:
-                    raise SommUpstream5xx(f"ChatGPT Responses returned HTTP {response.status_code}")
+                    response.read()
+                    try:
+                        error_body = response.json()
+                    except ValueError:
+                        error_body = {}
+                    raise response_error({"type": "error", "error": error_body.get("error", error_body) if isinstance(error_body, dict) else {}},
+                                         request_id=response.headers.get("x-request-id"),
+                                         status_code=response.status_code,
+                                         retry_after=response.headers.get("retry-after"))
                 data_lines = []
                 for line in chain(response.iter_lines(), [""]):
                     if line.startswith("data:"):

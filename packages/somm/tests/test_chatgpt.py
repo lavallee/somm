@@ -145,3 +145,24 @@ def test_repaired_request_keeps_model_and_reports_recovery(monkeypatch):
     result=ChatGPTProvider(auth=Mock(access_token=Mock(return_value='synthetic'))).complete_chat({'model':'strong-model','messages':expanded_batch()})
     assert result['model']=='strong-model'
     assert result['somm_recovery']['tool_results_preserved']==3
+
+
+def test_completed_tool_id_can_be_reused_in_a_later_turn():
+    messages=[]
+    for value in ('first','second'):
+        messages.extend([{'role':'assistant','content':'','tool_calls':[{'id':'legacy-call-1','function':{'name':'lookup','arguments':'{}'}}]},
+                         {'role':'tool','tool_call_id':'legacy-call-1','content':value}])
+    assert [v['output'] for v in response_input(messages) if v.get('type')=='function_call_output']==['first','second']
+
+
+def test_http_bad_request_retains_type_and_request_id_without_retries(monkeypatch):
+    from somm.errors import SommBadRequest
+    original=httpx.Client
+    def handler(request):
+        return httpx.Response(400,json={'error':{'type':'invalid_request_error','code':'unsupported_parameter','param':'input'}},headers={'x-request-id':'req-synthetic'})
+    monkeypatch.setattr('somm.providers.chatgpt.httpx.Client',lambda **kw: original(transport=httpx.MockTransport(handler),**kw))
+    with pytest.raises(SommBadRequest) as error:
+        ChatGPTProvider(auth=Mock(access_token=Mock(return_value='synthetic'))).complete_chat({'model':'x','messages':[]})
+    assert error.value.status_code==400
+    assert error.value.provider_code=='unsupported_parameter'
+    assert error.value.provider_request_id=='req-synthetic'
