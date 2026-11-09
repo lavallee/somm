@@ -5,6 +5,19 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.20.1] — 2026-11-09
+
+### Fixed
+- Recover normalized tool batches on the same ChatGPT model: when a harness expands
+  one raw call into child calls, rebuild the request from the visible transcript and
+  existing completed results. Stale opaque reasoning is omitted; tools are never
+  re-executed and unresolved/missing results fail explicitly.
+- Preserve Responses error types even when `code` is null. Invalid requests and
+  authorization failures no longer masquerade as retryable upstream outages.
+- Preserve proxy status, retryability, retry timing and safe upstream machine fields.
+  Budget/deferral responses explicitly disable SDK retries. Failed calls include
+  provenance; repaired calls record prompt-free recovery metadata.
+
 ## [0.20.0] — 2026-11-09
 
 ### Added

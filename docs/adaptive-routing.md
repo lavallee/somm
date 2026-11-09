@@ -155,3 +155,21 @@ authorization error needs correction before another attempt. Provider-side repla
 normalization may repair a known transcript mismatch without another inference call;
 its `somm_recovery` marker is retained in `routing_json.recovery` for explicit pins
 as well as adaptive calls, with counts rather than prompt/tool-result contents.
+
+
+## Normalized tool replay recovery (0.20.1)
+
+Some harnesses expand one model batch into multiple tool calls and completed results.
+Somm compares normalized call IDs, names and semantic arguments with its opaque replay
+items before inference. If they differ, it rebuilds the same-model request from the
+visible conversation, preserving every completed result and message phase while
+omitting stale opaque reasoning for that request. It neither executes a tool nor
+creates a replacement result. Unmatched, duplicate pending, or missing results stop
+with a fatal bad-request error rather than a provider-outage retry loop.
+
+The successful response's `somm_recovery` marker and call `routing_json.recovery`
+record the repair kind and preserved-result count, without prompt content. The model
+and weekly conservation policy remain unchanged. A response with `code:null` still
+uses its structured error type; malformed input is distinct from transient provider
+unavailability. This recovery resumes the existing tool-result context; application
+workflow custody remains with the calling harness.

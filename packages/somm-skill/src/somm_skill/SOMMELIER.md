@@ -215,3 +215,14 @@ Weekly metadata comes separately from supported Codex account RPC (10080-minute 
 not an assumed primary/secondary position). Only weekly percentage gates subscription
 routing; API dollar caps still apply to fallback calls. Model catalog visibility is
 not a successful inference test. See `docs/adaptive-routing.md` for the full contract.
+
+
+### Recovery and retries (0.20.1)
+
+ChatGPT replay repairs expanded/normalized tool batches before inference using the
+same model and completed results. Inspect `routing_json.recovery`; never rerun a tool
+merely to rebuild LLM context. Missing/orphan results require caller repair, not guessed
+success. HTTP proxy errors preserve canonical code, retryable, retry timing, and call/
+provider/model provenance. Honor `x-should-retry:false` for fatal, deferred and budget
+refusals; retry only transient failures with the supplied delay. Do not downgrade a
+strong-model task or bypass weekly conservation as a recovery strategy.
