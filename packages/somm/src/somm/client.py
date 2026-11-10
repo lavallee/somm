@@ -1388,7 +1388,9 @@ class SommLLM:
         except Exception:
             return None
 
-    def _maybe_capture_sample(self, wl, call_id: str, prompt, messages, text: str, outcome) -> None:
+    def _maybe_capture_sample(
+        self, wl, call_id: str, prompt, messages, text: str, outcome, request=None
+    ) -> None:
         """Capture prompt/response bodies for online-eval grading.
 
         A workload's shadow config is the documented opt-in for body
@@ -1396,6 +1398,11 @@ class SommLLM:
         config says. Rate-gated deterministically by call_id (the shadow
         worker grades exactly what was captured, so sample_rate applies
         here, once). Never raises — capture must not break the call path.
+
+        With ``request`` (the SommRequest as sent), the parameters a replay
+        needs go in ``samples.request_json``; a sample whose parameters
+        exceed the body cap is not captured at all, since a replay without
+        them would grade a different request.
         """
         import json as _json
 
@@ -1420,9 +1427,23 @@ class SommLLM:
                 body = prompt
             else:
                 body = _json.dumps(prompt)
-            if len(body) > self._SAMPLE_BODY_CAP or len(text) > self._SAMPLE_BODY_CAP:
+            params = None
+            if request is not None:
+                params = _json.dumps(
+                    {
+                        "system": request.system,
+                        "tools": request.tools,
+                        "tool_choice": request.tool_choice,
+                        "response_format": request.response_format,
+                        "reasoning_effort": request.reasoning_effort,
+                        "temperature": request.temperature,
+                        "max_tokens": request.max_tokens,
+                    },
+                    default=str,
+                )
+            if any(len(s) > self._SAMPLE_BODY_CAP for s in (body, text, params or "")):
                 return
-            self.repo.write_sample(call_id, body, text)
+            self.repo.write_sample(call_id, body, text, params)
         except Exception:
             pass
 
@@ -2376,7 +2397,7 @@ class SommLLM:
         )
         result._on_mark = MarkHook(self._mark_persister(call))
         self._maybe_capture_sample(
-            plan.wl, call_id, plan.prompt_text, plan.messages, text, outcome
+            plan.wl, call_id, plan.prompt_text, plan.messages, text, outcome, plan.req
         )
 
         # Fire on_fallback when a pinned call got rescued by the chain AND
