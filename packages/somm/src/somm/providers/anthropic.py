@@ -300,6 +300,7 @@ class AnthropicProvider:
                             yield SommChunk(text="", reasoning=delta.get("thinking", ""))
                         elif dtype == "signature_delta":
                             block["signature"] = block.get("signature", "") + delta.get("signature", "")
+                            yield SommChunk(text="", reasoning_signature=delta.get("signature", ""))
                         elif dtype == "input_json_delta":
                             fragment = delta.get("partial_json", "")
                             block["partial_json"] = block.get("partial_json", "") + fragment

@@ -1,8 +1,9 @@
 """What ``SommLLM.stream(..., events=True)`` yields.
 
 A stream called without ``events`` yields ``str`` text chunks, as it always
-has. With ``events=True`` it yields these instead, in arrival order, and
-ends with exactly one :class:`StreamDone` once the call is recorded:
+has. With ``events=True`` it yields these instead: one :class:`StreamStart`
+once a route has answered, the deltas in arrival order, and exactly one
+:class:`StreamDone` once the call is recorded:
 
     for ev in llm.stream("...", workload="chat", events=True):
         if isinstance(ev, TextDelta):
@@ -23,6 +24,16 @@ from somm.providers.base import ToolCallDelta
 
 
 @dataclass(frozen=True, slots=True)
+class StreamStart:
+    """First event, once a route has answered: the call id the row will
+    carry and the provider and model serving the stream."""
+
+    call_id: str
+    provider: str
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
 class TextDelta:
     """Visible answer text (``<think>`` blocks already removed)."""
 
@@ -31,9 +42,12 @@ class TextDelta:
 
 @dataclass(frozen=True, slots=True)
 class ReasoningDelta:
-    """Chain-of-thought text, from adapters whose wire format streams it."""
+    """Chain-of-thought text, from adapters whose wire format streams it.
+    ``signature`` is the provider's seal on the reasoning block, when it
+    sends one (Anthropic), needed to replay the block on a later turn."""
 
     text: str
+    signature: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +63,8 @@ class StreamDone:
     usage: str
 
 
-StreamEvent = TextDelta | ReasoningDelta | ToolCallDelta | StreamDone
+StreamEvent = StreamStart | TextDelta | ReasoningDelta | ToolCallDelta | StreamDone
 
-__all__ = ["ReasoningDelta", "StreamDone", "StreamEvent", "TextDelta", "ToolCallDelta"]
+__all__ = [
+    "ReasoningDelta", "StreamDone", "StreamEvent", "StreamStart", "TextDelta", "ToolCallDelta",
+]

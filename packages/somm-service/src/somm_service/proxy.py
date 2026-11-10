@@ -7,7 +7,8 @@ Three wire formats, one dispatch path:
   POST /v1/responses         OpenAI Responses (common subset)
 
 Each route translates its request into one ``SommLLM.agenerate(messages=...)``
-call and translates the result back, streamed or not. Routing, pins,
+call (``SommLLM.astream(..., events=True)`` when the request streams) and
+translates the result back. Routing, pins,
 cooldowns, workload policy and ``somm/auto``, the data boundary, the budget
 gate, cost, telemetry and the error taxonomy are the client's; nothing here
 re-implements them. Fields that clients send routinely but the client cannot
@@ -25,10 +26,13 @@ The model string selects the route:
 Headers: X-Somm-Workload names a pre-registered workload (absent: the
 catch-all ``proxy_default``); X-Somm-Project writes under another project.
 
-Streaming is buffered: the client's ``stream()`` takes no ``messages`` or
-``tools`` and yields only text, so a streamed request runs the same
-``agenerate`` call and replays the finished answer as the wire's own event
-sequence (text, tool calls and usage included).
+Streaming forwards the client's events as they arrive, rendered as the
+wire's own event sequence (text, tool calls, signed thinking on the Anthropic
+route, reasoning on Chat Completions, usage at the end). Nothing is sent
+until the route has produced its first answer event, so a failure before it
+is a normal error response; a failure after it is the wire's in-stream error
+event. Input tokens are known only when the stream ends: the Anthropic route
+reports them on ``message_delta`` (``message_start`` says 0).
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ import types
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from somm.client import _failure_error
 from somm.errors import (
     SommAuthError,
     SommBadRequest,
@@ -57,6 +62,7 @@ from somm.errors import (
     SommTimeout,
     describe_error,
 )
+from somm.events import ReasoningDelta, StreamDone, StreamStart, TextDelta, ToolCallDelta
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -355,35 +361,6 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
-def _anthropic_events(body: dict) -> Iterator[str]:
-    start = {**body, "content": [], "stop_reason": None,
-             "usage": {"input_tokens": body["usage"]["input_tokens"], "output_tokens": 0}}
-    yield _sse("message_start", {"type": "message_start", "message": start})
-    for i, block in enumerate(body["content"]):
-        kind = block["type"]
-        if kind == "text":
-            opened, deltas = {"type": "text", "text": ""}, [{"type": "text_delta", "text": block["text"]}]
-        elif kind == "tool_use":
-            opened = {**block, "input": {}}
-            deltas = [{"type": "input_json_delta", "partial_json": json.dumps(block["input"])}]
-        elif kind == "thinking":
-            opened = {"type": "thinking", "thinking": ""}
-            deltas = [{"type": "thinking_delta", "thinking": block.get("thinking", "")},
-                      {"type": "signature_delta", "signature": block.get("signature", "")}]
-        else:  # redacted_thinking arrives whole
-            opened, deltas = block, []
-        yield _sse("content_block_start", {"type": "content_block_start", "index": i,
-                                           "content_block": opened})
-        for delta in deltas:
-            yield _sse("content_block_delta", {"type": "content_block_delta", "index": i,
-                                               "delta": delta})
-        yield _sse("content_block_stop", {"type": "content_block_stop", "index": i})
-    yield _sse("message_delta", {"type": "message_delta",
-                                 "delta": {"stop_reason": body["stop_reason"], "stop_sequence": None},
-                                 "usage": {"output_tokens": body["usage"]["output_tokens"]}})
-    yield _sse("message_stop", {"type": "message_stop"})
-
-
 # ---------------------------------------------------------------------------
 # OpenAI Chat Completions
 
@@ -504,31 +481,6 @@ def _chat_body(result, model: str) -> dict:
     if recovery:
         body["somm_recovery"] = recovery
     return body
-
-
-def _chat_events(body: dict, include_usage: bool) -> Iterator[str]:
-    head = {k: body[k] for k in ("id", "created", "model")}
-
-    def chunk(delta: dict, finish: str | None = None) -> str:
-        data = {**head, "object": "chat.completion.chunk",
-                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
-        return f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
-
-    message = body["choices"][0]["message"]
-    yield chunk({"role": "assistant", "content": ""})
-    extras = {k: message[k] for k in ("reasoning_content", "reasoning", "reasoning_details")
-              if k in message}
-    if extras:
-        yield chunk(extras)
-    if message["content"]:
-        yield chunk({"content": message["content"]})
-    if message.get("tool_calls"):
-        yield chunk({"tool_calls": [{"index": i, **tc} for i, tc in enumerate(message["tool_calls"])]})
-    yield chunk({}, body["choices"][0]["finish_reason"])
-    if include_usage:
-        usage = {**head, "object": "chat.completion.chunk", "choices": [], "usage": body["usage"]}
-        yield f"data: {json.dumps(usage, separators=(',', ':'))}\n\n"
-    yield "data: [DONE]\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -652,36 +604,248 @@ def _responses_body(result, model: str) -> dict:
     }
 
 
-def _responses_events(body: dict) -> Iterator[str]:
-    seq = iter(range(1 << 30))
+# ---------------------------------------------------------------------------
+# Streaming: client events → each wire's own event sequence, as they arrive
 
-    def event(kind: str, **data) -> str:
-        return _sse(kind, {"type": kind, "sequence_number": next(seq), **data})
 
-    yield event("response.created", response={**body, "status": "in_progress", "output": []})
-    for i, item in enumerate(body["output"]):
+class _AnthropicStream:
+    """Messages SSE. Input tokens are known only at the end, so they ride on
+    ``message_delta`` (``message_start`` says 0). Reasoning is shown only as
+    signed thinking blocks, which a client must be able to replay; unsigned
+    reasoning (another provider's) is not shown, as before."""
+
+    def __init__(self, start, requested: str, body: dict) -> None:
+        self.model = start.model if requested == "somm/auto" else requested
+        self.id = f"msg_{_hex(start.call_id)}"
+        self.index = -1
+        self.open: str | None = None  # "text" | "tool" | None
+        self.tool = -1
+        self.thinking: list[str] = []
+
+    def begin(self) -> Iterator[str]:
+        message = {"id": self.id, "type": "message", "role": "assistant", "model": self.model,
+                   "content": [], "stop_reason": None, "stop_sequence": None,
+                   "usage": {"input_tokens": 0, "output_tokens": 0}}
+        yield _sse("message_start", {"type": "message_start", "message": message})
+
+    def _block(self, kind: str, content_block: dict) -> Iterator[str]:
+        yield from self._close()
+        self.index += 1
+        self.open = kind
+        yield _sse("content_block_start", {"type": "content_block_start", "index": self.index,
+                                           "content_block": content_block})
+
+    def _delta(self, delta: dict) -> str:
+        return _sse("content_block_delta", {"type": "content_block_delta", "index": self.index,
+                                            "delta": delta})
+
+    def _close(self) -> Iterator[str]:
+        if self.open is not None:
+            yield _sse("content_block_stop", {"type": "content_block_stop", "index": self.index})
+        self.open = None
+
+    def feed(self, ev) -> Iterator[str]:
+        if isinstance(ev, ReasoningDelta):
+            self.thinking.append(ev.text)
+            if ev.signature:
+                yield from self._block("thinking", {"type": "thinking", "thinking": ""})
+                yield self._delta({"type": "thinking_delta", "thinking": "".join(self.thinking)})
+                yield self._delta({"type": "signature_delta", "signature": ev.signature})
+                yield from self._close()
+                self.thinking = []
+        elif isinstance(ev, TextDelta):
+            if self.open != "text":
+                yield from self._block("text", {"type": "text", "text": ""})
+            yield self._delta({"type": "text_delta", "text": ev.text})
+        elif isinstance(ev, ToolCallDelta):
+            if ev.index != self.tool:
+                self.tool = ev.index
+                yield from self._block("tool", {"type": "tool_use", "id": ev.id, "name": ev.name,
+                                                "input": {}})
+            if ev.arguments:
+                yield self._delta({"type": "input_json_delta", "partial_json": ev.arguments})
+
+    def end(self, result) -> Iterator[str]:
+        yield from self._close()
+        stop = _anthropic_body(result, self.model)["stop_reason"]
+        yield _sse("message_delta", {
+            "type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
+            "usage": {"input_tokens": result.tokens_in, "output_tokens": result.tokens_out}})
+        yield _sse("message_stop", {"type": "message_stop"})
+
+    def error(self, payload: dict) -> Iterator[str]:
+        yield _sse("error", {"type": "error", "error": {"type": payload["type"],
+                                                        "message": payload["message"]}})
+
+
+class _ChatStream:
+    """Chat Completions chunks, then the usage chunk when asked, then [DONE]."""
+
+    def __init__(self, start, requested: str, body: dict) -> None:
+        self.head = {"id": f"chatcmpl-{_hex(start.call_id)}", "created": int(time.time()),
+                     "model": start.model if requested == "somm/auto" else requested}
+        self.include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+        self.seen_tools: set[int] = set()
+
+    def _chunk(self, delta: dict, finish: str | None = None, **extra) -> str:
+        data = {**self.head, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}], **extra}
+        return f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+    def begin(self) -> Iterator[str]:
+        yield self._chunk({"role": "assistant", "content": ""})
+
+    def feed(self, ev) -> Iterator[str]:
+        if isinstance(ev, TextDelta):
+            yield self._chunk({"content": ev.text})
+        elif isinstance(ev, ReasoningDelta) and ev.text:
+            yield self._chunk({"reasoning_content": ev.text})
+        elif isinstance(ev, ToolCallDelta):
+            call: dict[str, Any] = {"index": ev.index, "function": {"arguments": ev.arguments}}
+            if ev.index not in self.seen_tools:
+                self.seen_tools.add(ev.index)
+                call.update(id=ev.id, type="function")
+                call["function"]["name"] = ev.name
+            yield self._chunk({"tool_calls": [call]})
+
+    def end(self, result) -> Iterator[str]:
+        yield self._chunk({}, _finish_reason(result))
+        if self.include_usage:
+            usage = {**self.head, "object": "chat.completion.chunk", "choices": [],
+                     "usage": {"prompt_tokens": result.tokens_in,
+                               "completion_tokens": result.tokens_out,
+                               "total_tokens": result.tokens_in + result.tokens_out}}
+            yield f"data: {json.dumps(usage, separators=(',', ':'))}\n\n"
+        yield "data: [DONE]\n\n"
+
+    def error(self, payload: dict) -> Iterator[str]:
+        yield f"data: {json.dumps({'error': payload}, separators=(',', ':'))}\n\n"
+
+
+class _ResponsesStream:
+    """Responses events: one output item per text run or function call, each
+    opened, filled by deltas and closed in order, then the whole response."""
+
+    def __init__(self, start, requested: str, body: dict) -> None:
+        self.rid = _hex(start.call_id)
+        self.model = start.model if requested == "somm/auto" else requested
+        self.seq = iter(range(1 << 30))
+        self.index = -1
+        self.item: dict | None = None
+        self.parts: list[str] = []
+
+    def _event(self, kind: str, **data) -> str:
+        return _sse(kind, {"type": kind, "sequence_number": next(self.seq), **data})
+
+    def begin(self) -> Iterator[str]:
+        yield self._event("response.created", response={
+            "id": f"resp_{self.rid}", "object": "response", "created_at": int(time.time()),
+            "status": "in_progress", "error": None, "incomplete_details": None,
+            "model": self.model, "output": []})
+
+    def _open(self, item: dict) -> Iterator[str]:
+        yield from self._close()
+        self.index += 1
+        self.item, self.parts = item, []
+        yield self._event("response.output_item.added", output_index=self.index, item=item)
         if item["type"] == "message":
-            part = item["content"][0]
-            yield event("response.output_item.added", output_index=i,
-                        item={**item, "status": "in_progress", "content": []})
-            yield event("response.content_part.added", output_index=i, item_id=item["id"],
-                        content_index=0, part={**part, "text": ""})
-            yield event("response.output_text.delta", output_index=i, item_id=item["id"],
-                        content_index=0, delta=part["text"], logprobs=[])
-            yield event("response.output_text.done", output_index=i, item_id=item["id"],
-                        content_index=0, text=part["text"], logprobs=[])
-            yield event("response.content_part.done", output_index=i, item_id=item["id"],
-                        content_index=0, part=part)
+            yield self._event("response.content_part.added", output_index=self.index,
+                              item_id=item["id"], content_index=0,
+                              part={"type": "output_text", "text": "", "annotations": []})
+
+    def _close(self) -> Iterator[str]:
+        item = self.item
+        if item is None:
+            return
+        whole = "".join(self.parts)
+        if item["type"] == "message":
+            part = {"type": "output_text", "text": whole, "annotations": []}
+            yield self._event("response.output_text.done", output_index=self.index,
+                              item_id=item["id"], content_index=0, text=whole, logprobs=[])
+            yield self._event("response.content_part.done", output_index=self.index,
+                              item_id=item["id"], content_index=0, part=part)
+            done = {**item, "status": "completed", "content": [part]}
         else:
-            yield event("response.output_item.added", output_index=i,
-                        item={**item, "status": "in_progress", "arguments": ""})
-            yield event("response.function_call_arguments.delta", output_index=i,
-                        item_id=item["id"], delta=item["arguments"])
-            yield event("response.function_call_arguments.done", output_index=i,
-                        item_id=item["id"], name=item["name"], arguments=item["arguments"])
-        yield event("response.output_item.done", output_index=i, item=item)
-    yield event("response.completed" if body["status"] == "completed" else "response.incomplete",
-                response=body)
+            yield self._event("response.function_call_arguments.done", output_index=self.index,
+                              item_id=item["id"], name=item["name"], arguments=whole)
+            done = {**item, "status": "completed", "arguments": whole}
+        yield self._event("response.output_item.done", output_index=self.index, item=done)
+        self.item = None
+
+    def feed(self, ev) -> Iterator[str]:
+        if isinstance(ev, TextDelta):
+            if self.item is None or self.item["type"] != "message":
+                yield from self._open({"id": f"msg_{self.rid}", "type": "message",
+                                       "status": "in_progress", "role": "assistant",
+                                       "content": []})
+            self.parts.append(ev.text)
+            yield self._event("response.output_text.delta", output_index=self.index,
+                              item_id=self.item["id"], content_index=0, delta=ev.text,
+                              logprobs=[])
+        elif isinstance(ev, ToolCallDelta):
+            if ev.id or ev.name or self.item is None or self.item["type"] != "function_call":
+                yield from self._open({"id": f"fc_{ev.id}", "type": "function_call",
+                                       "status": "in_progress", "call_id": ev.id,
+                                       "name": ev.name, "arguments": ""})
+            if ev.arguments:
+                self.parts.append(ev.arguments)
+                yield self._event("response.function_call_arguments.delta",
+                                  output_index=self.index, item_id=self.item["id"],
+                                  delta=ev.arguments)
+
+    def end(self, result) -> Iterator[str]:
+        yield from self._close()
+        body = _responses_body(result, self.model)
+        yield self._event("response.completed" if body["status"] == "completed"
+                          else "response.incomplete", response=body)
+
+    def error(self, payload: dict) -> Iterator[str]:
+        yield self._event("error", code=payload.get("code"), message=payload["message"],
+                          param=payload.get("param"))
+
+
+async def _first_events(events) -> list:
+    """Read the stream up to its first answer event (or its end), before any
+    byte is sent: a failure until then is an ordinary error response."""
+    first: list = []
+    async for ev in events:
+        first.append(ev)
+        if not isinstance(ev, StreamStart):
+            break
+    done = first[-1] if first else None
+    if isinstance(done, StreamDone):
+        failure = _failure_error(done.result, None, allow_empty=False)
+        # A refusal is an answer: it streams with the wire's refusal stop.
+        if failure is not None and not isinstance(failure, SommRefused):
+            raise failure
+    if not first or not isinstance(first[0], StreamStart):
+        raise SommProviderError("the stream ended before it started")
+    return first
+
+
+async def _stream_wire(wire: _Wire, events, first: list, requested: str, body: dict):
+    out = wire.stream(first[0], requested, body)
+    try:
+        for chunk in out.begin():
+            yield chunk
+        pending = first[1:]
+        while True:
+            for ev in pending:
+                if isinstance(ev, StreamDone):
+                    for chunk in out.end(ev.result):
+                        yield chunk
+                    return
+                for chunk in out.feed(ev):
+                    yield chunk
+            pending = [await anext(events)]
+    except SommError as exc:
+        for chunk in out.error(_failure(exc)[1]):
+            yield chunk
+    except Exception as exc:  # noqa: BLE001 — an unclassified provider failure
+        for chunk in out.error(_failure(SommProviderError(f"{type(exc).__name__}: {exc}"))[1]):
+            yield chunk
+    finally:
+        await events.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -693,19 +857,16 @@ class _Wire:
     default_provider: str
     parse: Callable[[dict], tuple[dict, list[str]]]
     render: Callable[[Any, str], dict]
-    events: Callable[[dict, dict], Iterator[str]]
+    stream: type
     error: Callable[..., JSONResponse]
     envelope: str  # "anthropic" | "openai"
 
 
-_ANTHROPIC = _Wire("anthropic", _anthropic_request, _anthropic_body,
-                   lambda body, _req: _anthropic_events(body), _anthropic_error, "anthropic")
-_CHAT = _Wire("openai", _chat_request, _chat_body,
-              lambda body, req: _chat_events(
-                  body, bool((req.get("stream_options") or {}).get("include_usage"))),
-              _openai_error, "openai")
-_RESPONSES = _Wire("openai", _responses_request, _responses_body,
-                   lambda body, _req: _responses_events(body), _openai_error, "openai")
+_ANTHROPIC = _Wire("anthropic", _anthropic_request, _anthropic_body, _AnthropicStream,
+                   _anthropic_error, "anthropic")
+_CHAT = _Wire("openai", _chat_request, _chat_body, _ChatStream, _openai_error, "openai")
+_RESPONSES = _Wire("openai", _responses_request, _responses_body, _ResponsesStream,
+                   _openai_error, "openai")
 
 
 def _resolve_workload(repo, request: Request, project: str, cfg) -> Any:
@@ -793,6 +954,9 @@ async def _serve(request: Request, wire: _Wire) -> Response:
         return invalid(str(exc), 403)
 
     provider, model = split_model(requested, wire.default_provider)
+    if body.get("stream"):
+        return await _serve_stream(request, wire, workload, project, provider, model, call,
+                                   ignored, requested, body)
     try:
         llm = await run_in_threadpool(_client, request.app, project)
         result = await llm.agenerate(
@@ -806,14 +970,39 @@ async def _serve(request: Request, wire: _Wire) -> Response:
     except ValueError as exc:  # an invalid workload policy
         return invalid(str(exc))
 
-    rendered = wire.render(result, requested)
     headers = {"x-somm-call-id": result.call_id, **_ignored_header(ignored)}
-    if body.get("stream"):
-        return StreamingResponse(
-            wire.events(rendered, body), media_type="text/event-stream",
-            headers={**headers, "Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-    return JSONResponse(rendered, headers=headers)
+    return JSONResponse(wire.render(result, requested), headers=headers)
+
+
+async def _serve_stream(request: Request, wire: _Wire, workload, project: str,
+                        provider: str | None, model: str, call: dict, ignored: list[str],
+                        requested: str, body: dict) -> Response:
+    """Forward the client's stream events as the wire's own, as they arrive.
+    A failure before the first answer event is a normal error response; one
+    after it is the wire's in-stream error event."""
+    events = None
+    try:
+        llm = await run_in_threadpool(_client, request.app, project)
+        events = llm.astream("", workload=workload.name, provider=provider, model=model,
+                             events=True, **call)
+        first = await _first_events(events)
+    except SommError as exc:
+        if events is not None:
+            await events.aclose()
+        return _refuse(wire, *_failure(exc), ignored)
+    except ValueError as exc:  # an invalid workload policy
+        if events is not None:
+            await events.aclose()
+        return wire.error(error_type="invalid_request_error", message=str(exc), status=400)
+    except Exception as exc:  # noqa: BLE001 — an unclassified provider failure
+        if events is not None:
+            await events.aclose()
+        return _refuse(wire, *_failure(SommProviderError(f"{type(exc).__name__}: {exc}")),
+                       ignored)
+    headers = {"x-somm-call-id": first[0].call_id, **_ignored_header(ignored),
+               "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    return StreamingResponse(_stream_wire(wire, events, first, requested, body),
+                             media_type="text/event-stream", headers=headers)
 
 
 async def messages_endpoint(request: Request) -> Response:

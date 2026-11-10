@@ -62,7 +62,7 @@ from somm.errors import (
     SommTimeout,
 )
 from somm.errors import SommStrictMode as _SommStrictMode
-from somm.events import ReasoningDelta, StreamDone, StreamEvent, TextDelta
+from somm.events import ReasoningDelta, StreamDone, StreamEvent, StreamStart, TextDelta
 from somm.prompts import fork_prompt as fork_prompt_version
 from somm.prompts import (
     get_prompt,
@@ -797,6 +797,7 @@ class _Plan:
     observation_role: str
     source_call_id: str | None
     ts: datetime = field(default_factory=lambda: datetime.now(UTC))
+    call_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass
@@ -895,8 +896,9 @@ class _StreamStart:
             return
         if chunk.model:
             self.model = chunk.model
-        if getattr(chunk, "reasoning", ""):
-            self._pending.append(ReasoningDelta(chunk.reasoning))
+        signature = getattr(chunk, "reasoning_signature", "")
+        if getattr(chunk, "reasoning", "") or signature:
+            self._pending.append(ReasoningDelta(chunk.reasoning, signature=signature))
         if chunk.text:
             self._text(self._stripper.feed(chunk.text))
         for delta in getattr(chunk, "tool_calls", None) or ():
@@ -912,6 +914,15 @@ class _StreamStart:
 
     def _finish(self, response: SommResponse | None) -> None:
         self._text(self._stripper.flush())
+        if response is not None and response.tool_calls and not self.tool_calls:
+            # An adapter that answers in one piece: its tool calls are still events.
+            for i, tc in enumerate(response.tool_calls):
+                delta = ToolCallDelta(
+                    i, id=tc.id, name=tc.name,
+                    arguments=tc.arguments_raw or json.dumps(tc.arguments),
+                )
+                self.tool_calls.append(delta)
+                self._pending.append(delta)
         self.final = response
         self.done = True
         close = getattr(self._chunks, "close", None)
@@ -2281,7 +2292,7 @@ class SommLLM:
         reasoning_tokens = extract_reasoning_tokens(raw_out)
         citations = extract_citations(raw_out)
         provider_request_id, billing_id = _provider_custody(raw_out)
-        call_id = str(uuid.uuid4())
+        call_id = plan.call_id
         result = SommResult(
             text=text,
             provider=actual_provider,
@@ -2956,6 +2967,13 @@ class SommLLM:
             att.failure = att.raise_after = att.error_detail = None
         start: _StreamStart | None = att.resp
         ttft_ms: int | None = None
+        if events and att.failure is None:
+            sc = plan.short_circuit
+            yield StreamStart(
+                call_id=plan.call_id,
+                provider=sc.provider if sc is not None else att.provider,
+                model=sc.model if sc is not None else (start.model if start else att.model),
+            )
         try:
             if plan.short_circuit is not None:
                 pending = [TextDelta(plan.short_circuit.text)] if plan.short_circuit.text else []

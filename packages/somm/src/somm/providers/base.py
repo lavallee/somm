@@ -137,8 +137,10 @@ class SommChunk:
     # The model that served the stream, on the final chunk, as
     # SommResponse.model does for generate. "" when the adapter does not say.
     model: str = ""
-    # Chain-of-thought delta, for adapters whose wire format streams it.
+    # Chain-of-thought delta, for adapters whose wire format streams it, and
+    # the provider's signature closing a reasoning block (Anthropic).
     reasoning: str = ""
+    reasoning_signature: str = ""
     # Tool-call fragments carried by this chunk.
     tool_calls: list[ToolCallDelta] = field(default_factory=list)
     # On the final chunk: the whole answer as generate would have returned

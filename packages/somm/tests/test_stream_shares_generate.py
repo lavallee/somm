@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from somm import SommLLM
 from somm.errors import SommTransientError
-from somm.events import ReasoningDelta, StreamDone, TextDelta, ToolCallDelta
+from somm.events import ReasoningDelta, StreamDone, StreamStart, TextDelta, ToolCallDelta
 from somm.providers.base import ProviderHealth, SommChunk, SommResponse, ToolCall
 from somm_core.config import Config
 
@@ -150,7 +150,9 @@ def test_no_fallback_once_a_chunk_reached_the_caller(tmp_path):
     with pytest.raises(SommTransientError) as info:
         for ev in llm.stream("hi", workload="w", events=True):
             seen.append(ev)
-    assert seen == [TextDelta("one ")]
+    assert isinstance(seen[0], StreamStart) and seen[0].provider == "flaky"
+    assert seen[1:] == [TextDelta("one ")]
+    assert seen[0].call_id == _rows(llm)[-1]["id"]
     assert not spare.requests
     row = _rows(llm)[-1]
     assert (row["provider"], row["outcome"]) == ("flaky", "upstream_error")
@@ -176,7 +178,7 @@ def test_reasoning_is_a_first_chunk_for_an_events_stream(tmp_path):
     with pytest.raises(SommTransientError):
         for ev in llm.stream("hi", workload="w", events=True):
             seen.append(ev)
-    assert seen == [ReasoningDelta("hmm")]
+    assert seen[1:] == [ReasoningDelta("hmm")]
     assert not spare.requests
 
 
@@ -191,7 +193,8 @@ def test_events_carry_tool_calls_and_the_recorded_result(tmp_path):
     llm = _llm(tmp_path, a)
     got = list(llm.stream("hi", workload="w", events=True,
                           tools=[{"name": "lookup", "parameters": {}}]))
-    assert got[:2] == deltas
+    assert got[0] == StreamStart(call_id=got[-1].result.call_id, provider="a", model="a-m")
+    assert got[1:3] == deltas
     done = got[-1]
     assert isinstance(done, StreamDone) and done.usage == "provider"
     r = done.result
@@ -251,5 +254,14 @@ def test_async_stream_takes_the_new_arguments(tmp_path):
             "", workload="w", messages=[{"role": "user", "content": "m"}], events=True)]
 
     got = asyncio.run(run())
-    assert got[0] == TextDelta("x") and isinstance(got[-1], StreamDone)
+    assert got[1] == TextDelta("x") and isinstance(got[-1], StreamDone)
     assert a.requests[0].messages == [{"role": "user", "content": "m"}]
+
+
+def test_one_piece_answers_still_stream_their_tool_calls(tmp_path):
+    final = SommResponse(text="", model="a-m", tokens_in=3, tokens_out=2, latency_ms=1,
+                         tool_calls=[ToolCall(id="c9", name="f", arguments={"a": 1})])
+    llm = _llm(tmp_path, Streamer("a", [], final=final))
+    got = [ev for ev in llm.stream("hi", workload="w", events=True)
+           if isinstance(ev, ToolCallDelta)]
+    assert got == [ToolCallDelta(0, id="c9", name="f", arguments='{"a": 1}')]
