@@ -45,6 +45,6 @@ def test_frontier_json_empty_window(tmp_path, capsys, monkeypatch):
 def test_compare_json_reports_unconfigured_provider(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     rc = main(["compare", "hi", "--models", "nonesuch/m", "--project", "jp", "--json"])
-    assert rc == 0
+    assert rc == 1  # no model answered
     rows = json.loads(capsys.readouterr().out)
     assert rows[0]["provider"] == "nonesuch" and "not configured" in rows[0]["error"]

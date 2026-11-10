@@ -17,7 +17,8 @@ def _cmd_alias(args: argparse.Namespace) -> int:
     db_path = cfg.global_db_path if getattr(args, "global_view", False) else cfg.db_path
     if not db_path.exists():
         print(f"no ledger at {db_path}")
-        return 0
+        # seed/set are writes that did not happen; a read of no aliases is fine.
+        return 1 if args.alias_cmd in ("seed", "set") else 0
     repo = Repository(db_path)
     if args.alias_cmd == "seed":
         n = seed_model_aliases(repo)

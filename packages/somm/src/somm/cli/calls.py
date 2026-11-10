@@ -453,9 +453,12 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         "summary": summary,
         "runs": rows,
     }
+    # Exit 1 when not one measured call succeeded: the report is still printed,
+    # but a benchmark of nothing is not a success.
+    rc = 0 if any(r["outcome"] == Outcome.OK.value for r in rows) else 1
     if args.json:
         print(json.dumps(payload, indent=2))
-        return 0
+        return rc
 
     lat = summary["latency_ms"]
     ttft = summary["ttft_ms"]
@@ -480,7 +483,7 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         f"cost=${summary['cost_usd']:.4f}"
         + (f" (+{summary['unpriced_calls']} unpriced)" if summary["unpriced_calls"] else "")
     )
-    return 0
+    return rc
 
 
 def _stats_global(repo, since_days: int) -> list[dict]:
@@ -569,11 +572,14 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         llm.close()
     _mark_cost_known(getattr(llm, "repo", None), results)
 
+    # Exit 1 when no model produced an answer (every entry is an error or a
+    # refusal); one good answer among failures is still a comparison.
+    rc = 0 if any("error" not in r for r in results) else 1
     if args.json:
         print(json.dumps(results, indent=2, default=str))
-        return 0
+        return rc
     _print_comparison(results, truncate=args.truncate)
-    return 0
+    return rc
 
 
 _parse_model_specs = parse_model_specs
