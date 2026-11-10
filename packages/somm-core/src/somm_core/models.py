@@ -321,6 +321,7 @@ class Decision:
     agent: str | None = None
     superseded_by: str | None = None
     outcome_note: str | None = None
+    recalled_from: str | None = None  # id of the prior decision this one followed
 
 
 @dataclass(frozen=True, slots=True)

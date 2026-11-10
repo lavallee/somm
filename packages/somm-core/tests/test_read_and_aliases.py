@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
 from somm_core.aliases import canonicalize, needs_alias, seed_model_aliases
-from somm_core.models import Call, Outcome
-from somm_core.read import fleet_summary, search_calls, spend_today
+from somm_core.models import Call, Decision, Outcome
+from somm_core.read import fleet_summary, north_star, search_calls, spend_today
 from somm_core.repository import Repository
 
 
@@ -167,3 +168,86 @@ def test_fleet_summary_reports_loop_state_per_ledger(tmp_path):
     assert state["shadow_configured_workloads"] == 1
     assert state["last_worker_success"] == "2026-09-19 10:00:00"
     assert state["recommendations_open"] == 0
+
+
+def _decision(*, workload_id=None, recalled_from=None) -> Decision:
+    return Decision(
+        id=str(uuid.uuid4()), ts=datetime.now(UTC), project="p", question="q",
+        question_hash="h", candidates=[], rationale="r", chosen_provider="ollama",
+        chosen_model="m", workload_id=workload_id, recalled_from=recalled_from,
+    )
+
+
+def test_north_star_on_an_empty_ledger_says_why_nothing_is_measurable(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    repo.write_call(_call("p", "ollama", "m"))  # no routing_json at all
+
+    ns = north_star(repo.db_path)
+
+    assert not any(v["measurable"] for v in ns.values())
+    assert ns["decisions_recalled"]["reason"] == "no decisions recorded"
+    assert "none of 1 production calls" in ns["evidence_routed"]["reason"]
+    assert ns["evidence_routed"]["unmarked"] == 1
+
+
+def test_north_star_counts_recalls_routes_and_recommendations(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    live = repo.register_workload(name="live", project="p")
+    residue = repo.register_workload(name="fixture", project="p")
+    route = lambda source: json.dumps({"route_source": source})  # noqa: E731
+    repo.write_call(_call("p", "ollama", "m", workload_id=live.id, routing_json=route("policy")))
+    repo.write_call(_call("p", "ollama", "m", routing_json=route("learned_override")))
+    repo.write_call(_call("p", "ollama", "m", routing_json=route("pin")))
+    repo.write_call(_call("p", "ollama", "m", routing_json=route("default")))
+    repo.write_call(_call("p", "ollama", "m"))  # predates the marker: unknown, not a pin
+    repo.write_call(_call("p", "ollama", "m", routing_json=route("policy"),
+                          observation_role="shadow_gold"))  # grading, not production
+
+    first = _decision()
+    repo.record_decision(first)
+    repo.record_decision(_decision(workload_id=live.id, recalled_from=first.id))
+    for _ in range(3):  # residue: bound to a workload that never made a call here
+        repo.record_decision(_decision(workload_id=residue.id, recalled_from=first.id))
+
+    with repo._open() as conn:
+        for created, applied, dismissed in [
+            ("-30 days", "-25 days", None),  # applied in 5 days
+            ("-30 days", None, "-1 days"),   # dismissed after 29 days: too late
+            ("-20 days", None, None),        # open past the window
+            ("-2 days", None, "-1 days"),    # young but decided: counts
+            ("-2 days", None, None),         # young and open: pending
+        ]:
+            conn.execute(
+                "INSERT INTO recommendations (workload_id, action, evidence_json, created_at, "
+                "applied_at, dismissed_at) VALUES (?, 'switch_model', '{}', datetime('now', ?), "
+                "datetime('now', ?), datetime('now', ?))",
+                (live.id, created, applied, dismissed),
+            )
+
+    ns = north_star(repo.db_path)
+
+    assert ns["decisions_recalled"] == {
+        "measurable": True, "recalled": 1, "decisions": 2, "excluded": 3
+    }
+    routed = ns["evidence_routed"]
+    assert (routed["evidence"], routed["marked"], routed["unmarked"]) == (2, 4, 1)
+    assert routed["by_source"] == {"policy": 1, "learned_override": 1, "pin": 1, "default": 1}
+    recs = ns["recommendations_applied"]
+    assert (recs["acted"], recs["eligible"], recs["pending"], recs["applied"]) == (2, 4, 1, 1)
+
+
+def test_north_star_degrades_on_a_ledger_without_the_new_columns(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE decisions (id TEXT, workload_id TEXT)")
+        conn.execute("CREATE TABLE calls (id TEXT, ts TEXT, workload_id TEXT)")
+        conn.execute("CREATE TABLE recommendations (id INTEGER, created_at TEXT, "
+                     "applied_at TEXT, dismissed_at TEXT)")
+
+    ns = north_star(db)
+
+    assert "predates recall tracking" in ns["decisions_recalled"]["reason"]
+    assert ns["evidence_routed"]["measurable"] is False
+    assert ns["recommendations_applied"]["eligible"] == 0

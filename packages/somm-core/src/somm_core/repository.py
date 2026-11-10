@@ -2424,8 +2424,8 @@ class Repository:
                     id, ts, project, workload_id, workload_name,
                     question, question_hash, constraints_json, candidates_json,
                     chosen_provider, chosen_model, rationale, agent,
-                    superseded_by, outcome_note
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    superseded_by, outcome_note, recalled_from
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     decision.id,
@@ -2443,6 +2443,7 @@ class Repository:
                     decision.agent,
                     decision.superseded_by,
                     decision.outcome_note,
+                    decision.recalled_from,
                 ),
             )
 
@@ -2481,7 +2482,7 @@ class Repository:
             "SELECT id, ts, project, workload_id, workload_name, question, "
             "       question_hash, constraints_json, candidates_json, "
             "       chosen_provider, chosen_model, rationale, agent, "
-            "       superseded_by, outcome_note "
+            "       superseded_by, outcome_note, recalled_from "
             f"FROM decisions {where} ORDER BY ts DESC LIMIT ?"
         )
         params.append(limit)
@@ -2495,7 +2496,7 @@ class Repository:
                 "SELECT id, ts, project, workload_id, workload_name, question, "
                 "       question_hash, constraints_json, candidates_json, "
                 "       chosen_provider, chosen_model, rationale, agent, "
-                "       superseded_by, outcome_note FROM decisions WHERE id = ?",
+                "       superseded_by, outcome_note, recalled_from FROM decisions WHERE id = ?",
                 (decision_id,),
             ).fetchone()
         return _row_to_decision(row) if row else None
@@ -2751,4 +2752,5 @@ def _row_to_decision(row) -> Decision:
         agent=row[12],
         superseded_by=row[13],
         outcome_note=row[14],
+        recalled_from=row[15],
     )
