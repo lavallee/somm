@@ -26,8 +26,7 @@ Cause: refused routes: openai/gpt-x (subscribed), deepseek/deepseek-chat (unvett
   does not override a boundary, and `allow_fallback=True` does not rescue it.
 - `SommLLM.enable_shadow()` on a PRIVATE workload (always refused), or with a
   gold route outside the workload's boundary.
-- A proxy request whose target model is outside the workload's boundary, or
-  outside a tighter `X-Somm-Data-Boundary` header.
+- A proxy request whose target model is outside the workload's boundary.
 - A harness attempt (`somm.harnesses.run/start`) for a bounded workload whose
   coding agent runs at a looser tier.
 - MCP `somm_replay` of a PRIVATE workload's call.

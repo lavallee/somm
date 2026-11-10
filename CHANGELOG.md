@@ -5,7 +5,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
-## [Unreleased]
+## [0.22.0] — 2026-11-09
 
 ### Added
 - **OpenRouter tiers from evidence.** Under a data boundary of `zdr` or
@@ -24,6 +24,16 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   promoted.
 - `somm boundary routes openrouter/<model-id>` lists each upstream endpoint with its
   headquarters, ZDR-list membership, safety retention, and whether it qualifies.
+
+### Removed
+- **The `X-Somm-Data-Boundary` proxy header**, added in 0.21.0. Nothing set it; a
+  workload's boundary covers the case. Also removed three helpers with no callers
+  (`DataTier.admits`, `stricter`, `parse_optional_tier`).
+
+### Changed
+- **An unreadable `boundary.toml` now says so on stderr** when it is loaded, not
+  only in `somm doctor`. Until it parses, its promotions are ignored and the default
+  boundary is `local`.
 
 ## [0.21.0] — 2026-11-09
 

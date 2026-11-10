@@ -31,8 +31,7 @@ Rules the classifier follows:
 - **Every shipped default says why.** Each entry in
   `packages/somm-core/src/somm_core/data/boundary_defaults.toml` has a
   `basis`; an entry that states a vendor fact also has the `source` it was
-  read from, a short `quote`, `last_verified` and `confidence`. Only
-  `confidence = "high"` entries promote a route above `unvetted`.
+  read from, a short `quote`, `last_verified` and `confidence`.
 - **Assumed tiers.** The seats (`claude-cli`, `codex-cli`, `chatgpt`) ship
   as `subscribed`, but whether a consumer seat trains on your data depends on
   an account setting somm cannot see. `somm boundary routes` and
@@ -58,8 +57,7 @@ Resolution order for a call, first hit wins:
 4. `unvetted`, the fleet default. It admits every route, which is how somm
    behaved before 0.21.
 
-A per-call `data_boundary=` (and the proxy's `X-Somm-Data-Boundary` header)
-may only tighten the result. A looser value is ignored.
+A per-call `data_boundary=` may only tighten the result. A looser value is ignored.
 
 ```bash
 somm workload create triage --data-boundary subscribed   # `add` works too

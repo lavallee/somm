@@ -202,7 +202,3 @@ def check_route(
     if not admit(route, boundary.tier):
         raise refuse(workload=workload, boundary=boundary, refused=[route], context=context)
     return route
-
-
-def parse_optional_tier(value: str | None) -> DataTier | None:
-    return None if value in (None, "") else parse_tier(value)

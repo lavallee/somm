@@ -40,6 +40,7 @@ from __future__ import annotations
 import fnmatch
 import ipaddress
 import os
+import sys
 import threading
 import tomllib
 from dataclasses import dataclass, field
@@ -62,10 +63,8 @@ class DataTier(StrEnum):
     def rank(self) -> int:
         return _RANK[self]
 
-    def admits(self, route_tier: DataTier | str) -> bool:
-        """True when a route of ``route_tier`` may carry data bounded by self."""
-        return parse_tier(route_tier).rank <= self.rank
-
+    # A StrEnum compares as text by default, where "zdr" sorts after
+    # "subscribed"; these keep ``<`` meaning "stricter than".
     def __lt__(self, other: object) -> bool:
         return self.rank < _as_tier(other).rank
 
@@ -109,12 +108,6 @@ def parse_tier(value: DataTier | str) -> DataTier:
         raise ValueError(
             f"unknown data tier {value!r}; use one of {', '.join(TIER_NAMES)}"
         ) from None
-
-
-def stricter(a: DataTier | str, b: DataTier | str) -> DataTier:
-    """The stricter (lower-ranked) of two tiers."""
-    ta, tb = parse_tier(a), parse_tier(b)
-    return ta if ta.rank <= tb.rank else tb
 
 
 def admit(route: RouteTier | DataTier | str, boundary: DataTier | str) -> bool:
@@ -491,6 +484,14 @@ def load_policy(path: Path | None = None) -> BoundaryPolicy:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 — reported, and fails closed
             policy.owner_error = f"{type(exc).__name__}: {exc}"[:200]
+            # Say so where the operator will see it: until the file parses,
+            # every bounded workload is held to `local`.
+            print(
+                f"somm: {path} could not be read ({policy.owner_error}); "
+                "its promotions are ignored and the default boundary is local "
+                "until it is fixed",
+                file=sys.stderr,
+            )
             policy.zdr_headquarters = ()
         else:
             policy.owner_rules = _parse_rules(data, "owner")
@@ -769,5 +770,4 @@ __all__ = [
     "parse_tier",
     "refusal_message",
     "resolve_boundary",
-    "stricter",
 ]
