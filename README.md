@@ -677,9 +677,11 @@ JSON-mode command failures use a stable stderr envelope:
 {"ok": false, "error": {"type": "ValueError", "message": "...", "exit_code": 2}}
 ```
 
-Exit codes are stable for JSON-mode automation: `0` success, `1`
-unexpected runtime failure, `2` usage/value error, `66` missing input
-file, and `77` permission error.
+Exit codes are stable: `0` success, `1` the command ran and failed (or a
+prerequisite such as the ledger is missing), `2` usage error or a named
+thing that does not exist, and, in JSON mode, `66` missing input file and
+`77` permission error. See [`docs/cli.md`](./docs/cli.md) for the full
+contract, `--project` placement and which commands take `--json`.
 
 ### Stable local read API and OTLP ingest
 

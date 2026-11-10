@@ -82,9 +82,28 @@ from somm.cli.evals import _dataset_judge, _load_eval_judge_config  # noqa: F401
 from somm.cli.workload import WORKLOAD_EXAMPLES  # noqa: F401
 from somm.providers.ollama import OllamaProvider  # noqa: F401
 
+EXIT_CODES_EPILOG = """\
+exit codes:
+  0   success
+  1   the command ran and the outcome was a failure: a failed call, a bench or
+      compare with no successful call, a failing eval or campaign gate, a data-boundary
+      violation, an unhealthy `doctor`, a loop worker error, or a missing prerequisite
+      (ledger, receipts directory, harness)
+  2   bad usage, or something you named does not exist (workload, prompt version,
+      recommendation, project)
+  With --json, an unhandled error is printed to stderr as {"ok": false, "error": {...}}
+  and exits 2 (bad value), 66 (file not found), 77 (permission denied) or 1.
+  Details: docs/cli.md
+"""
+
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="somm", description="somm — self-hosted LLM telemetry")
+    p = argparse.ArgumentParser(
+        prog="somm",
+        description="somm — self-hosted LLM telemetry",
+        epilog=EXIT_CODES_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--version", action="version", version=f"somm {VERSION}")
     p.add_argument(
         "--project",

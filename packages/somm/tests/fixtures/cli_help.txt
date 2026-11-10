@@ -46,6 +46,18 @@ options:
   --project PROJECT     project name; also accepted after any command (default: $SOMM_PROJECT,
                         else this directory's project)
 
+exit codes:
+  0   success
+  1   the command ran and the outcome was a failure: a failed call, a bench or
+      compare with no successful call, a failing eval or campaign gate, a data-boundary
+      violation, an unhealthy `doctor`, a loop worker error, or a missing prerequisite
+      (ledger, receipts directory, harness)
+  2   bad usage, or something you named does not exist (workload, prompt version,
+      recommendation, project)
+  With --json, an unhandled error is printed to stderr as {"ok": false, "error": {...}}
+  and exits 2 (bad value), 66 (file not found), 77 (permission denied) or 1.
+  Details: docs/cli.md
+
 ===== somm chatgpt =====
 usage: somm chatgpt [-h] {login,status,models,quota} ...
 
