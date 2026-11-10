@@ -11,6 +11,7 @@ Commands:
   somm doctor          health check (config, ollama, db, intel, workers, loop, fleet)
   somm serve           run the web admin + HTTP API (requires somm-service)
   somm spend           today's LLM spend vs daily budget cap per workload
+  somm gpu spend       rented-GPU spend read from gipper receipts, by day and workload
   somm backfill-costs  recompute cost_usd for calls missing pricing
   somm plans           metered-plan quota usage + pacing
   somm drain-spool     replay spooled telemetry into the DB
@@ -2441,6 +2442,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"ollama:   {'ok' if ok_ollama else 'UNAVAILABLE'}  ({h.detail})")
     ok_overall = ok_overall and ok_ollama
 
+    from somm import gpu_spend
+
+    try:
+        gpu = gpu_spend.gpu_spend(days=30)  # None (silent) when no gipper receipts directory exists
+    except Exception:  # noqa: BLE001 - a doctor must not crash on a report
+        gpu = None
+    if gpu is not None:
+        print(f"gipper:   {gpu['jobs']} rented-GPU job(s) in the last 30d, ${gpu['total_usd']:.2f}  (somm gpu spend)")
+
     if not repo_exists:
         print("db missing — skipping intel/workers/cooldowns checks")
         return 0 if ok_overall else 1
@@ -3304,6 +3314,18 @@ def _cmd_backfill_costs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_gpu_spend(args: argparse.Namespace) -> int:
+    from somm import gpu_spend
+
+    cfg = load_config(project=args.project)
+    r = gpu_spend.gpu_spend(args.path, args.since, cfg.db_path, cfg.project)
+    if r is None:
+        print(f"no gipper receipts directory at {gpu_spend.receipts_dir(args.path)}", file=sys.stderr)
+        return 1
+    print(json.dumps(r, indent=2) if args.json else gpu_spend.format_report(r))
+    return 0
+
+
 def _cmd_spend(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
     use_json = getattr(args, "json", False)
@@ -3910,6 +3932,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit a JSON array instead of the aligned table",
     )
     pspend.set_defaults(func=_cmd_spend)
+
+    pgpu = sub.add_parser("gpu", help="rented-GPU spend read from gipper receipts (read-only)")
+    pgpu_sub = pgpu.add_subparsers(dest="gpu_cmd", required=True)
+    pgs = pgpu_sub.add_parser("spend", help="GPU spend by day and workload; failed jobs; ledger match")
+    pgs.add_argument("--project", default=None)
+    pgs.add_argument("--since", type=int, default=30, help="window in days (default 30)")
+    pgs.add_argument("--path", default=None, help="receipts directory (default: $SOMM_GIPPER_RECEIPTS, "
+                     "else $GIPPER_DATA/receipts, else ~/.local/share/gipper/receipts)")
+    pgs.add_argument("--json", action="store_true", default=False)
+    pgs.set_defaults(func=_cmd_gpu_spend)
 
     pbf = sub.add_parser(
         "backfill-costs",
