@@ -877,6 +877,85 @@ def across_ledgers(
 # Decision calibration — decide rows (calls.kind = 'decide') against verdicts.
 
 VERDICT_FIELD = "verdict"
+# The grader's call id, recorded beside the verdicts it wrote (one per row).
+VERDICT_BY_FIELD = "verdict_by"
+
+
+def verdict_field(question: str | None = None) -> str:
+    """The ``call_updates.field`` for a verdict.
+
+    ``verdict`` for a one-question decide row; ``verdict:<question>`` for one
+    question of a several-question row (``decide_many``), so a verdict names
+    the question it is about.
+    """
+    return VERDICT_FIELD if question is None else f"{VERDICT_FIELD}:{question}"
+
+
+def _decision_answers(conn, project: str, workload: str, since_days, model) -> list[dict]:
+    """One dict per answered question on a workload's successful decide rows.
+
+    Keys: ``call_id``, ``question`` (None on a one-question row), ``label``,
+    ``p``, ``abstained``, ``truth`` (the latest verdict, or None), plus the
+    row's ``cost_usd`` and ``cost_known``. A several-question row (label NULL,
+    ``result_json`` with ``questions``) yields one dict per question.
+    """
+    cols = _columns(conn, "calls")
+    if not {"kind", "label", "p_top", "result_json"} <= cols:
+        return []
+    clauses = [
+        "c.project = ?",
+        "c.kind = 'decide'",
+        "c.outcome = 'ok'",
+        "(w.name = ? OR c.workload_id = ?)",
+    ]
+    params: list[object] = [project, workload, workload]
+    if since_days is not None:
+        clauses.append("c.ts >= datetime('now', ?)")
+        params.append(f"-{int(since_days)} days")
+    if model:
+        clauses.append("c.model = ?")
+        params.append(model)
+    where = " AND ".join(clauses)
+    rows = conn.execute(
+        f"""
+        SELECT c.id, c.label, c.p_top, c.abstained, c.result_json, c.cost_usd, c.cost_source
+        FROM calls c LEFT JOIN workloads w ON w.id = c.workload_id
+        WHERE {where}
+        """,
+        params,
+    ).fetchall()
+    truths: dict[tuple[str, str], str] = {}
+    for call_id, fld, value in conn.execute(
+        f"""
+        SELECT u.call_id, u.field, u.value FROM call_updates u
+        WHERE u.call_id IN (SELECT c.id FROM calls c LEFT JOIN workloads w
+                             ON w.id = c.workload_id WHERE {where})
+          AND (u.field = ? OR u.field LIKE ?)
+        ORDER BY u.id
+        """,
+        [*params, VERDICT_FIELD, VERDICT_FIELD + ":%"],
+    ):
+        truths[(call_id, fld)] = value  # latest wins
+    out: list[dict] = []
+    for call_id, label, p, abstained, result_json, cost, cost_source in rows:
+        base = {"call_id": call_id, "cost_usd": float(cost or 0.0),
+                "cost_known": cost_is_known(cost_source)}
+        if label is not None:
+            out.append({**base, "question": None, "label": label, "p": p,
+                        "abstained": bool(abstained),
+                        "truth": truths.get((call_id, VERDICT_FIELD))})
+            continue
+        try:
+            questions = json.loads(result_json or "{}").get("questions") or {}
+        except (ValueError, AttributeError):
+            questions = {}
+        for name, ans in questions.items():
+            if not isinstance(ans, dict) or ans.get("label") is None:
+                continue
+            out.append({**base, "question": name, "label": ans["label"], "p": ans.get("p"),
+                        "abstained": bool(ans.get("abstained")),
+                        "truth": truths.get((call_id, verdict_field(name)))})
+    return out
 
 
 def decision_calibration(
@@ -887,6 +966,7 @@ def decision_calibration(
     since_days: int | None = None,
     model: str | None = None,
     bins: int = 10,
+    question: str | None = None,
 ) -> dict:
     """Brier score and ECE for one workload's decisions that have a verdict.
 
@@ -896,46 +976,130 @@ def decision_calibration(
     wins. Abstained rows are included: calibration is the model's, not the
     threshold's. ``workload`` matches the registered name or the workload id.
 
+    ``question`` selects one named question of several-question rows
+    (``decide_many``), whose verdicts are field ``verdict:<question>``.
+    Without it, only one-question rows (``decide``) are counted.
+
     Returns ``somm_core.calibration.calibration`` (``n``, ``brier``, ``ece``,
-    ``accuracy``, ``bins``) plus ``workload``, ``model``, ``decisions`` (all
-    successful decide rows in scope) and ``unverified`` (those without a
-    verdict). A ledger older than migration 0030 has no decide rows.
+    ``accuracy``, ``bins``) plus ``workload``, ``model``, ``question``,
+    ``decisions`` (successful decisions in scope) and ``unverified`` (those
+    without a verdict). A ledger older than migration 0030 has no decide rows.
     """
     from somm_core.calibration import calibration
 
     with _ledger(conn_or_path) as conn:
-        cols = _columns(conn, "calls")
-        pairs: list[tuple[float, bool]] = []
-        total = 0
-        if {"kind", "label", "p_top"} <= cols:
-            clauses = [
-                "c.project = ?",
-                "c.kind = 'decide'",
-                "c.outcome = 'ok'",
-                "(w.name = ? OR c.workload_id = ?)",
-            ]
-            params: list[object] = [project, workload, workload]
-            if since_days is not None:
-                clauses.append("c.ts >= datetime('now', ?)")
-                params.append(f"-{int(since_days)} days")
-            if model:
-                clauses.append("c.model = ?")
-                params.append(model)
-            rows = conn.execute(
-                f"""
-                SELECT c.label, c.p_top,
-                       (SELECT u.value FROM call_updates u
-                         WHERE u.call_id = c.id AND u.field = ?
-                         ORDER BY u.id DESC LIMIT 1) AS truth
-                FROM calls c LEFT JOIN workloads w ON w.id = c.workload_id
-                WHERE {" AND ".join(clauses)}
-                """,
-                [VERDICT_FIELD, *params],
-            ).fetchall()
-            total = len(rows)
-            pairs = [
-                (p, truth == label) for label, p, truth in rows if truth is not None and p is not None
-            ]
+        answers = [a for a in _decision_answers(conn, project, workload, since_days, model)
+                   if a["question"] == question]
+    pairs = [(a["p"], a["truth"] == a["label"]) for a in answers
+             if a["truth"] is not None and a["p"] is not None]
     out = calibration(pairs, bins=bins)
-    out.update(workload=workload, model=model, decisions=total, unverified=total - out["n"])
+    out.update(workload=workload, model=model, question=question, decisions=len(answers),
+               unverified=len(answers) - out["n"])
     return out
+
+
+def decision_economics(
+    conn_or_path,
+    project: str,
+    workload: str,
+    *,
+    since_days: int | None = 30,
+) -> dict:
+    """What a decision model in front of an LLM costs and how often it agrees.
+
+    Over one workload's successful decide rows in the window:
+
+    - ``decide_calls`` (requests, one input each), ``questions`` answered,
+      ``abstained`` and ``abstained_share`` (per question);
+    - ``verified`` (questions with a verdict, from you or the LLM grader) and
+      ``agreement`` (share of those whose label matched the verdict);
+    - ``decide_cost``: ``mean_usd`` per request over rows whose cost is known
+      (``"unknown"`` when none is), with ``known`` and ``unknown`` counts.
+
+    And the LLM calls tied to those rows: ``escalations`` (rows whose
+    ``parent_call_id`` is a decide row: the LLM call that rescued it) and
+    ``grader`` (``shadow_judge`` rows whose ``source_call_id`` is a decide
+    row: the LLM asked the same question), each ``{calls, mean_usd, known,
+    unknown}``.
+
+    ``per_1000_inputs``: ``with_decide_usd`` = 1000 x (decide mean + the
+    escalation rate x escalation mean); ``llm_only_usd`` = 1000 x the mean
+    cost of an LLM answering the same input (the grader's mean; the
+    escalations' when there is no grader, noted in ``llm_only_basis``; that
+    figure comes from the hard inputs only, so treat it as rough). Either is
+    ``"unknown"`` when a cost it needs is unknown or absent.
+    """
+    with _ledger(conn_or_path) as conn:
+        answers = _decision_answers(conn, project, workload, since_days, None)
+        calls_cols = _columns(conn, "calls")
+        rows: dict[str, tuple[float, bool]] = {}
+        for a in answers:
+            rows[a["call_id"]] = (a["cost_usd"], a["cost_known"])
+        linked: dict[str, list[tuple[float, bool]]] = {"escalations": [], "grader": []}
+        if rows and {"parent_call_id", "observation_role", "source_call_id"} <= calls_cols:
+            ids = list(rows)
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                marks = ",".join("?" * len(chunk))
+                for parent, source, role, cost, cost_source in conn.execute(
+                    f"""
+                    SELECT parent_call_id, source_call_id, observation_role, cost_usd, cost_source
+                    FROM calls
+                    WHERE COALESCE(kind, '') != 'decide' AND outcome = 'ok'
+                      AND (parent_call_id IN ({marks}) OR source_call_id IN ({marks}))
+                    """,
+                    [*chunk, *chunk],
+                ):
+                    entry = (float(cost or 0.0), cost_is_known(cost_source))
+                    if role == "shadow_judge" and source in rows:
+                        linked["grader"].append(entry)
+                    elif parent in rows and (role or "production") == "production":
+                        linked["escalations"].append(entry)
+
+    def _mean(entries: list[tuple[float, bool]]) -> dict:
+        known = [c for c, k in entries if k]
+        return {
+            "calls": len(entries),
+            "mean_usd": (sum(known) / len(known)) if known else "unknown",
+            "known": len(known),
+            "unknown": len(entries) - len(known),
+        }
+
+    decide_cost = _mean(list(rows.values()))
+    decide_cost.pop("calls")
+    esc, grader = _mean(linked["escalations"]), _mean(linked["grader"])
+    n_calls, n_q = len(rows), len(answers)
+    verified = [a for a in answers if a["truth"] is not None]
+    abstained = sum(1 for a in answers if a["abstained"])
+
+    with_decide: float | str = "unknown"
+    if n_calls and decide_cost["mean_usd"] != "unknown":
+        rate = esc["calls"] / n_calls
+        if rate == 0:
+            with_decide = 1000 * decide_cost["mean_usd"]
+        elif esc["mean_usd"] != "unknown":
+            with_decide = 1000 * (decide_cost["mean_usd"] + rate * esc["mean_usd"])
+    basis, llm_mean = None, "unknown"
+    if grader["mean_usd"] != "unknown":
+        basis, llm_mean = "grader", grader["mean_usd"]
+    elif esc["mean_usd"] != "unknown":
+        basis, llm_mean = "escalations", esc["mean_usd"]
+    return {
+        "workload": workload,
+        "since_days": since_days,
+        "decide_calls": n_calls,
+        "questions": n_q,
+        "abstained": abstained,
+        "abstained_share": (abstained / n_q) if n_q else None,
+        "verified": len(verified),
+        "agreement": (sum(1 for a in verified if a["truth"] == a["label"]) / len(verified))
+        if verified else None,
+        "decide_cost": decide_cost,
+        "escalations": esc,
+        "grader": grader,
+        "per_1000_inputs": {
+            "with_decide_usd": with_decide,
+            "llm_only_usd": 1000 * llm_mean if llm_mean != "unknown" else "unknown",
+            "llm_only_basis": basis,
+        },
+    }

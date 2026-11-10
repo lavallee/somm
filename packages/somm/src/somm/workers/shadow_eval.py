@@ -308,13 +308,20 @@ class ShadowEvalWorker:
         # applied ONCE, at capture time in the library (0.7.0+). Historical
         # candidates that predate body capture are simply never considered
         # rather than churned into "samples not captured" results.
+        # Text calls only: a decide row's sample is graded by
+        # somm.decide.grade_decisions, and a grading call (shadow_gold /
+        # shadow_judge, e.g. that grader's) is never itself graded.
         with self.repo._open() as conn:
             rows = conn.execute(
-                "SELECT call_id, ts, project, workload_id, provider, model, "
-                "prompt_hash, response_hash, workload_name, privacy_class, "
-                "shadow_config_json FROM shadow_candidates sc "
+                "SELECT sc.call_id, sc.ts, sc.project, sc.workload_id, sc.provider, sc.model, "
+                "sc.prompt_hash, sc.response_hash, sc.workload_name, sc.privacy_class, "
+                "sc.shadow_config_json FROM shadow_candidates sc "
+                "JOIN calls c ON c.id = sc.call_id "
                 "WHERE EXISTS (SELECT 1 FROM samples s WHERE s.call_id = sc.call_id) "
-                "ORDER BY ts DESC LIMIT 500"
+                "AND c.kind IS NULL "
+                "AND COALESCE(c.observation_role, 'production') "
+                "NOT IN ('shadow_gold', 'shadow_judge') "
+                "ORDER BY sc.ts DESC LIMIT 500"
             ).fetchall()
         return [
             {
