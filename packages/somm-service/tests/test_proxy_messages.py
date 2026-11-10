@@ -653,7 +653,7 @@ def test_messages_route_slow_provider_does_not_block_status_api(tmp_path):
     cfg.http_timeout = 5.0
     Repository(cfg.db_path).register_workload(name="proxy_wl", project=cfg.project)
     app = create_app(cfg)
-    client = TestClient(app, base_url="http://localhost")
+    client = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
     entered = threading.Event()
 
     def slow_completion(**kwargs):

@@ -208,6 +208,27 @@ def _host_is_loopback(host: str) -> bool:
         return False
 
 
+_FORWARDING_HEADERS = (
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+    "cf-connecting-ip",
+)
+
+
+def _peer_is_loopback(scope) -> bool:
+    """True when the ASGI connection's peer address is a loopback IP."""
+    client = (scope or {}).get("client")
+    if not client:
+        return False
+    try:
+        return ipaddress.ip_address(str(client[0])).is_loopback
+    except ValueError:
+        return False
+
+
 def _origin_matches_host(origin: str, host: str) -> bool:
     try:
         parsed = urlsplit(origin)
@@ -248,7 +269,11 @@ class LocalSecurityMiddleware:
             or protected_chat
             or protected_otlp
         ):
-            if not self._is_authorized(headers):
+            # The header-only path exists for the bundled dashboard: reads and
+            # the recommendation buttons. Routes that spend money or write
+            # telemetry always need the bearer token.
+            allow_local = protected_read or protected_admin
+            if not self._is_authorized(headers, scope=scope, allow_local=allow_local):
                 response = self._forbidden(
                     "anthropic" if protected_messages else "openai" if protected_chat else None
                 )
@@ -289,12 +314,21 @@ class LocalSecurityMiddleware:
 
         await self.app(scope, receive, send_with_security_headers)
 
-    def _is_authorized(self, headers: Headers) -> bool:
+    def _is_authorized(self, headers: Headers, *, scope=None, allow_local: bool = True) -> bool:
         auth = headers.get("authorization", "")
         if secrets.compare_digest(auth, f"Bearer {self._token}"):
             return True
 
-        if headers.get(_LOCAL_HEADER) != "1":
+        if not allow_local or headers.get(_LOCAL_HEADER) != "1":
+            return False
+
+        # Every header below is chosen by the client, so on their own they
+        # prove nothing: a remote caller of a service bound to 0.0.0.0 could
+        # send `Host: 127.0.0.1` with the rest. The connection's own peer
+        # address is the one thing a client cannot forge, so the header path
+        # is honored only from a loopback peer, and never through a reverse
+        # proxy or tunnel (where every request arrives from loopback).
+        if not _peer_is_loopback(scope) or any(h in headers for h in _FORWARDING_HEADERS):
             return False
 
         # The header-only path is the local dashboard's; only honor it when
@@ -320,8 +354,9 @@ class LocalSecurityMiddleware:
     @staticmethod
     def _forbidden(error_shape: str | None) -> JSONResponse:
         message = (
-            "authentication required: send Authorization: Bearer <token>, or for "
-            "same-origin dashboard requests send X-Somm-Local: 1"
+            "authentication required: send Authorization: Bearer <token>. The "
+            "bundled dashboard may instead send X-Somm-Local: 1 on same-origin "
+            "read and recommendation requests from a loopback connection"
         )
         if error_shape == "anthropic":
             return _anthropic_error(
