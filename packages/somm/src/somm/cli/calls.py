@@ -15,7 +15,7 @@ from somm_core.read import search_calls
 from somm_core.repository import Repository
 
 from somm.cli import _common
-from somm.providers.registry import PINNED_ONLY_PROVIDER_NAMES
+from somm.compare import compare_models, parse_model_specs
 
 
 def _fmt_stat_int(value: object) -> str:
@@ -556,75 +556,14 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
     llm = SommLLM(project=args.project or "compare")
     try:
-        results = []
-        for provider_name, model in specs:
-            # Ensure this provider is in the chain
-            if provider_name not in {p.name for p in llm.providers}:
-                results.append(
-                    {
-                        "provider": provider_name,
-                        "model": model,
-                        "error": (
-                            f"provider {provider_name!r} not configured (missing env key?)"
-                            if provider_name not in PINNED_ONLY_PROVIDER_NAMES
-                            else f"provider {provider_name!r} is pinned-only; pass it with "
-                            "--provider on `somm generate`, not in a bench spec"
-                        ),
-                    }
-                )
-                continue
-            from somm.boundary import admit, provider_tier
-
-            boundary = llm._resolve_boundary(
-                llm.repo.workload_by_name(args.workload, llm.config.project), None
-            )
-            provider_obj = next(p for p in llm.providers if p.name == provider_name)
-            route = provider_tier(
-                provider_obj, model or None,
-                boundary=None if boundary.is_default else boundary.tier,
-            )
-            if not boundary.is_default and not admit(route, boundary.tier):
-                results.append(
-                    {
-                        "provider": provider_name,
-                        "model": model,
-                        "error": (
-                            f"REFUSED: route tier {route.tier.value} is outside data boundary "
-                            f"{boundary.tier.value} (from {boundary.source})"
-                        ),
-                    }
-                )
-                continue
-            try:
-                r = llm.generate(
-                    prompt=args.prompt,
-                    workload=args.workload,
-                    max_tokens=args.max_tokens,
-                    temperature=args.temperature,
-                    model=model,
-                    provider=provider_name,
-                )
-                results.append(
-                    {
-                        "provider": provider_name,
-                        "model": model,
-                        "text": r.text,
-                        "tokens_in": r.tokens_in,
-                        "tokens_out": r.tokens_out,
-                        "latency_ms": r.latency_ms,
-                        "cost_usd": r.cost_usd,
-                        "outcome": r.outcome.value,
-                        "call_id": r.call_id,
-                    }
-                )
-            except Exception as e:
-                results.append(
-                    {
-                        "provider": provider_name,
-                        "model": model,
-                        "error": f"{type(e).__name__}: {e}",
-                    }
-                )
+        results = compare_models(
+            llm,
+            specs,
+            prompt=args.prompt,
+            workload=args.workload,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+        )
     finally:
         llm.close()
     _mark_cost_known(getattr(llm, "repo", None), results)
@@ -633,25 +572,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_model_specs(raw: list[str] | None) -> list[tuple[str, str]]:
-    """Parse --models. Accepts 'provider/model' or 'provider:model'. Comma-
-    separated or repeated --models flag."""
-    if not raw:
-        return []
-    specs: list[tuple[str, str]] = []
-    for item in raw:
-        for token in item.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            if "/" in token:
-                p, _, m = token.partition("/")
-            elif ":" in token:
-                p, _, m = token.partition(":")
-            else:
-                p, m = token, ""
-            specs.append((p, m))
-    return specs
+_parse_model_specs = parse_model_specs
 
 
 def _print_comparison(results: list[dict], truncate: int = 240) -> None:
