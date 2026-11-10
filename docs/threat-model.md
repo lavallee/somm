@@ -8,7 +8,8 @@ configured a provider key or local provider endpoint.
 ## Assets
 
 - Provider API keys and CLI credentials.
-- Prompt and response bodies when sample capture is enabled.
+- Prompt and response bodies, and the request parameters sent with them
+  (system prompt, tool definitions), when sample capture is enabled.
 - Local telemetry databases under `.somm/` and `~/.somm/`.
 - Model decisions mirrored to the global local store.
 - Workload policies, budgets, and recommendation actions.

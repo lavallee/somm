@@ -29,6 +29,8 @@ def _boundary_base_urls(cfg) -> dict[str, str]:
     urls = {"ollama": cfg.ollama_url}
     if getattr(cfg, "openai_base_url", None):
         urls["openai"] = cfg.openai_base_url
+    for endpoint in getattr(cfg, "openai_endpoints", None) or []:
+        urls.setdefault(endpoint["name"], endpoint["base_url"])
     return urls
 
 
@@ -162,7 +164,7 @@ def _cmd_boundary_routes(args: argparse.Namespace) -> int:
 
 
 def _cmd_boundary_audit(args: argparse.Namespace) -> int:
-    from somm_core.boundary import audit
+    from somm_core.boundary_audit import audit
 
     cfg = _common.load_config(project=args.project)
     try:

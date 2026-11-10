@@ -1109,12 +1109,20 @@ class Repository:
 
     # Shadow-eval config ------------------------------------------------------
 
-    def write_sample(self, call_id: str, prompt_body: str, response_body: str) -> None:
+    def write_sample(
+        self,
+        call_id: str,
+        prompt_body: str,
+        response_body: str,
+        request_json: str | None = None,
+    ) -> None:
         """Store one call's bodies for online-eval grading.
 
         Only ever written for workloads that opted into shadow eval (the
         documented consent for body storage) — see SommLLM's capture
         hook. INSERT OR IGNORE: a call is sampled at most once.
+        ``request_json`` is the request parameters a replay needs (see
+        migration 0031); None leaves the column NULL.
 
         FK enforcement is disabled for this one connection: the calls row
         is written by the ASYNC WriterQueue and usually hasn't landed yet
@@ -1126,9 +1134,9 @@ class Repository:
             conn.execute("PRAGMA foreign_keys = OFF")
             try:
                 conn.execute(
-                    "INSERT OR IGNORE INTO samples (call_id, prompt_body, response_body) "
-                    "VALUES (?, ?, ?)",
-                    (call_id, prompt_body, response_body),
+                    "INSERT OR IGNORE INTO samples "
+                    "(call_id, prompt_body, response_body, request_json) VALUES (?, ?, ?, ?)",
+                    (call_id, prompt_body, response_body, request_json),
                 )
             finally:
                 if foreign_keys:

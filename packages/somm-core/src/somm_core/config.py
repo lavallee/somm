@@ -79,6 +79,9 @@ class Config:
     perplexity_model: str = "sonar"  # search-grounded; only used when pinned
     http_timeout: float = 180.0  # seconds; every HTTP provider (CLI seats use max(this, 600))
     provider_order: list[str] | None = None  # e.g. ["minimax", "openrouter", "ollama"]
+    # Extra named OpenAI-compatible endpoints (SOMM_OPENAI_ENDPOINTS), each
+    # {"name", "base_url", "model", "key_env"}; see parse_openai_endpoints.
+    openai_endpoints: list[dict[str, str]] = field(default_factory=list)
     # Local-only replication of calls/workloads into ~/.somm/global.sqlite so
     # cross-project features (sommelier, fleet rollups) have data. The raw
     # dataclass default is False (programmatic Config() stays inert, e.g. in
@@ -281,6 +284,8 @@ def load(
     if "SOMM_HTTP_TIMEOUT" in os.environ:
         with contextlib.suppress(ValueError):
             cfg.http_timeout = float(os.environ["SOMM_HTTP_TIMEOUT"])
+    if "SOMM_OPENAI_ENDPOINTS" in os.environ:
+        cfg.openai_endpoints = parse_openai_endpoints(os.environ["SOMM_OPENAI_ENDPOINTS"])
 
     if project is not None:
         if prefer_registry and not explicit_db_dir and project != cfg.project:
@@ -313,6 +318,46 @@ def load(
     cfg.spool_dir = cfg.db_dir / "spool"
 
     return cfg
+
+
+_ENDPOINT_NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+
+
+def parse_openai_endpoints(raw: str) -> list[dict[str, str]]:
+    """Parse ``SOMM_OPENAI_ENDPOINTS``: comma-separated entries, each
+    ``name=BASE_URL`` followed by optional space-separated ``model=NAME`` and
+    ``key_env=ENV_VAR``::
+
+        box=http://10.0.0.5:8000/v1 model=qwen3-32b key_env=BOX_API_KEY
+
+    A name is lowercase letters, digits, ``.``, ``_`` and ``-``. An entry
+    that does not parse is skipped with a warning on stderr; a later entry
+    with the same name is skipped too.
+    """
+    out: list[dict[str, str]] = []
+    for entry in raw.split(","):
+        tokens = entry.split()
+        if not tokens:
+            continue
+        name, _, url = tokens[0].partition("=")
+        fields = dict(t.partition("=")[::2] for t in tokens[1:])
+        unknown = set(fields) - {"model", "key_env"}
+        if (
+            not _ENDPOINT_NAME.match(name)
+            or "://" not in url
+            or unknown
+            or any(e["name"] == name for e in out)
+        ):
+            # Name only: a URL can carry credentials.
+            print(f"[somm] SOMM_OPENAI_ENDPOINTS: skipping entry {name!r}", file=sys.stderr)
+            continue
+        out.append({
+            "name": name,
+            "base_url": url,
+            "model": fields.get("model", ""),
+            "key_env": fields.get("key_env", ""),
+        })
+    return out
 
 
 def _discover_project_root(cwd: Path) -> Path:

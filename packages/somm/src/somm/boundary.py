@@ -11,10 +11,14 @@ eval, judges, the proxy, MCP compare, harnesses) goes through
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
+from somm_core import Outcome
 from somm_core.boundary import (
+    REFUSAL_ERROR_KIND,
     DataTier,
     ResolvedBoundary,
     RouteTier,
@@ -25,6 +29,9 @@ from somm_core.boundary import (
     refusal_message,
     resolve_boundary,
 )
+from somm_core.models import Call
+from somm_core.parse import stable_hash
+from somm_core.version import VERSION
 
 from somm.errors import SommPrivacyViolation
 
@@ -41,6 +48,7 @@ __all__ = [
     "parse_tier",
     "provider_routes",
     "provider_tier",
+    "refusal_call",
     "refuse",
     "resolve_boundary",
     "served_tier",
@@ -73,9 +81,9 @@ def provider_routes(
     An explicit model is one route. With no model, a provider that walks its
     own roster (OpenRouter) has one route per roster model, because a
     ``:free`` model and a paid one can sit in different tiers; any other
-    provider uses its default model. ``roster=False`` (streams, which do
-    not walk a roster) classifies the provider's default model only.
-    ``boundary`` lets live evidence promote a route (:func:`evidence_route`).
+    provider uses its default model (``roster=False`` forces that). Streams
+    walk the roster like ``generate``. ``boundary`` lets live evidence
+    promote a route (:func:`evidence_route`).
     """
     if model:
         return [evidence_route(provider, model, boundary)[0]]
@@ -139,12 +147,15 @@ def provider_tier(
 def admissible_providers(
     providers: list[Any], model: str | None, boundary: DataTier | str, *, roster: bool = True
 ) -> tuple[list[Any], list[RouteTier]]:
-    """Split a chain into (admissible providers, refused routes)."""
+    """Split a chain into (admissible providers, refused routes).
+
+    Live evidence may promote a route (an OpenRouter model pinned to its ZDR
+    upstreams); ``generate`` and streams both pin, so both are promoted alike.
+    ``roster=False`` classifies each provider's default model only."""
     ok: list[Any] = []
     refused: list[RouteTier] = []
     for provider in providers:
-        # Streams do not pin upstreams, so evidence never promotes one.
-        route = provider_tier(provider, model, roster=roster, boundary=boundary if roster else None)
+        route = provider_tier(provider, model, roster=roster, boundary=boundary)
         if admit(route, boundary):
             ok.append(provider)
         else:
@@ -185,6 +196,53 @@ def refuse(
             for r in refused
         ],
     )
+
+
+def refusal_call(
+    exc: SommPrivacyViolation,
+    *,
+    project: str,
+    workload_id: str,
+    model: str | None,
+    prompt_hash: str,
+    **fields: Any,
+) -> Call:
+    """The ledger row for demand a boundary turned away (client and harnesses).
+
+    outcome is ``unknown`` (an existing value: consumers that switch on
+    outcome must not meet a new one), error_kind ``SommPrivacyViolation``,
+    and error_detail starts ``refused: data_boundary``. No provider was
+    contacted, so provider is empty, cost is zero, data_tier is NULL, and the
+    row is not budget-eligible. ``fields`` sets any other Call field.
+    """
+    refused = ", ".join(f"{r['provider']}/{r['model'] or '-'}={r['tier']}" for r in exc.refused)
+    row: dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "ts": datetime.now(UTC),
+        "project": project,
+        "workload_id": workload_id,
+        "prompt_id": None,
+        "provider": "",
+        "model": model or "",
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "latency_ms": 0,
+        "cost_usd": 0.0,
+        "outcome": Outcome.UNKNOWN,
+        "error_kind": REFUSAL_ERROR_KIND,
+        "error_detail": (
+            f"refused: data_boundary={exc.data_boundary} (from {exc.boundary_source}) "
+            f"| refused routes: {refused or 'none'}"
+        )[:512],
+        "prompt_hash": prompt_hash,
+        "response_hash": stable_hash(""),
+        "cost_accuracy": "actual",
+        "cost_source": None,
+        "budget_eligible": False,
+        "client_version": VERSION,
+    }
+    row.update(fields)
+    return Call(**row)
 
 
 def check_route(

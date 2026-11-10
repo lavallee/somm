@@ -131,7 +131,9 @@ derived rollup.
   call id. Foreign OTLP imports remain visible but are not budget eligible.
 - **`call_updates`** — late-arriving metadata on a call (outcome marks,
   audit trail).
-- **`samples`** — prompt/response bodies, *per-workload opt-in*.
+- **`samples`** — prompt/response bodies and the request parameters a
+  replay needs (`request_json`: system prompt, tools, response format,
+  reasoning effort, temperature, max tokens), *per-workload opt-in*.
   Separate table so the default path never touches prompt text.
 - **`eval_results`** — shadow-eval grades on a call. Has a
   `grading_started_at` lease for crash-safe worker recovery.

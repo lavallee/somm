@@ -182,3 +182,101 @@ def test_entrypoint_provider_name_must_match_spec(monkeypatch, caplog, no_cli):
     assert names.count("ollama") == 1  # only the real built-in ollama
     assert "acme" not in names
     assert "named 'ollama'" in caplog.text or "named \"ollama\"" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Named OpenAI-compatible endpoints from configuration (SOMM_OPENAI_ENDPOINTS)
+
+
+def test_endpoints_parse_and_bad_entries_are_skipped(capsys):
+    from somm_core.config import parse_openai_endpoints
+
+    parsed = parse_openai_endpoints(
+        "box=http://10.0.0.5:8000/v1 model=served-m key_env=BOX_KEY, "
+        "Bad Name=http://x, nourl=10.0.0.6, box=http://dup/v1, two=http://h:1/v1"
+    )
+    assert parsed == [
+        {"name": "box", "base_url": "http://10.0.0.5:8000/v1", "model": "served-m",
+         "key_env": "BOX_KEY"},
+        {"name": "two", "base_url": "http://h:1/v1", "model": "", "key_env": ""},
+    ]
+    assert "skipping" in capsys.readouterr().err
+
+
+def test_endpoints_load_from_the_environment(monkeypatch, tmp_path):
+    from somm_core.config import load
+
+    monkeypatch.setenv("SOMM_OPENAI_ENDPOINTS", "box=http://127.0.0.1:8000/v1 model=m")
+    cfg = load(cwd=tmp_path)
+    assert cfg.openai_endpoints[0]["name"] == "box"
+
+
+def _with_endpoint(url: str = "http://10.0.0.5:8000/v1", **extra) -> Config:
+    config = Config()
+    config.openai_endpoints = [
+        {"name": "box", "base_url": url, "model": "served-m", "key_env": "", **extra}
+    ]
+    return config
+
+
+def test_endpoint_is_pin_only_unless_ordered():
+    config = _with_endpoint()
+    assert "box" not in _names(build_default_providers(config))
+    full = {p.name: p for p in build_default_providers(config, full=True)}
+    assert full["box"].base_url == "http://10.0.0.5:8000/v1"
+    assert full["box"].default_model == "served-m"
+    config.provider_order = ["box", "ollama"]
+    assert _names(build_default_providers(config)) == ["box", "ollama"]
+
+
+def test_endpoint_needs_its_named_key_and_cannot_take_a_builtin_name(monkeypatch):
+    from somm.providers.registry import build_pinned_only_providers
+
+    monkeypatch.delenv("BOX_KEY", raising=False)
+    assert "box" not in build_pinned_only_providers(_with_endpoint(key_env="BOX_KEY"))
+    monkeypatch.setenv("BOX_KEY", "k")
+    assert build_pinned_only_providers(_with_endpoint(key_env="BOX_KEY"))["box"].api_key == "k"
+    config = _with_endpoint()
+    config.openai_endpoints[0]["name"] = "openai"
+    assert "openai" not in _names(build_default_providers(config, full=True))
+
+
+def test_endpoint_tier_follows_the_address():
+    from somm.boundary import provider_tier
+    from somm.providers.registry import build_pinned_only_providers
+
+    local = build_pinned_only_providers(_with_endpoint())["box"]
+    remote = build_pinned_only_providers(_with_endpoint("http://gpu.example.net/v1"))["box"]
+    assert provider_tier(local).tier.value == "local"
+    assert provider_tier(remote).tier.value == "unvetted"
+
+
+def test_a_pinned_endpoint_call_is_recorded_unpriced_and_listed_in_health(
+    tmp_path, monkeypatch
+):
+    from somm.client import SommLLM
+    from somm.providers._openai_compat import OpenAICompatProvider
+
+    def fake_generate(self, request):
+        return SommResponse(text="hi", model=request.model or self.default_model,
+                            tokens_in=5, tokens_out=2, latency_ms=1)
+
+    monkeypatch.setattr(OpenAICompatProvider, "generate", fake_generate)
+    config = _with_endpoint()
+    config.project = "endpoint_test"
+    config.db_dir = tmp_path / ".somm"
+    config.spool_dir = config.db_dir / "spool"
+    llm = SommLLM(config=config)
+    try:
+        result = llm.generate("ping", workload="w", provider="box")
+        health = llm.health()
+    finally:
+        llm.close()
+    assert result.text == "hi"
+    with llm.repo._open() as conn:
+        row = conn.execute(
+            "SELECT provider, model, cost_source, data_tier FROM calls WHERE id = ?",
+            (result.call_id,),
+        ).fetchone()
+    assert row == ("box", "served-m", "unknown:no-price", "local")
+    assert health["box"]["configured"] and not health["box"]["in_chain"]

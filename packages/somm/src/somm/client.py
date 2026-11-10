@@ -81,6 +81,7 @@ from somm.providers.base import (
 from somm.providers.registry import (
     BUILTIN_PROVIDER_SPECS,
     ProviderSpec,
+    endpoint_provider_specs,
     load_entrypoint_provider_specs,
 )
 from somm.routing import (
@@ -563,13 +564,17 @@ def build_default_providers(config: Config, tracker=None, full: bool = False) ->
     Third-party entry-point providers are appended after built-ins in the
     default routing chain when they declare ``default_order_rank``; ranked
     plugins are ordered by ``(rank, name)`` for deterministic routing.
+    Endpoints named in SOMM_OPENAI_ENDPOINTS have no rank: they join the
+    chain only when SOMM_PROVIDER_ORDER lists them, and are otherwise
+    reachable by pin.
     """
     logger = logging.getLogger("somm.providers")
     specs: list[ProviderSpec] = list(BUILTIN_PROVIDER_SPECS)
     builtin_names = {spec.name for spec in specs}
     seen_names = set(builtin_names)
     plugin_specs: list[ProviderSpec] = []
-    for spec in load_entrypoint_provider_specs():
+    # Configured endpoints (SOMM_OPENAI_ENDPOINTS) first, then plugins.
+    for spec in [*endpoint_provider_specs(config), *load_entrypoint_provider_specs()]:
         if spec.name in builtin_names:
             logger.warning("skipping provider spec %r: provider name is built in", spec.name)
             continue
@@ -1388,7 +1393,9 @@ class SommLLM:
         except Exception:
             return None
 
-    def _maybe_capture_sample(self, wl, call_id: str, prompt, messages, text: str, outcome) -> None:
+    def _maybe_capture_sample(
+        self, wl, call_id: str, prompt, messages, text: str, outcome, request=None
+    ) -> None:
         """Capture prompt/response bodies for online-eval grading.
 
         A workload's shadow config is the documented opt-in for body
@@ -1396,6 +1403,11 @@ class SommLLM:
         config says. Rate-gated deterministically by call_id (the shadow
         worker grades exactly what was captured, so sample_rate applies
         here, once). Never raises — capture must not break the call path.
+
+        With ``request`` (the SommRequest as sent), the parameters a replay
+        needs go in ``samples.request_json``; a sample whose parameters
+        exceed the body cap is not captured at all, since a replay without
+        them would grade a different request.
         """
         import json as _json
 
@@ -1420,9 +1432,23 @@ class SommLLM:
                 body = prompt
             else:
                 body = _json.dumps(prompt)
-            if len(body) > self._SAMPLE_BODY_CAP or len(text) > self._SAMPLE_BODY_CAP:
+            params = None
+            if request is not None:
+                params = _json.dumps(
+                    {
+                        "system": request.system,
+                        "tools": request.tools,
+                        "tool_choice": request.tool_choice,
+                        "response_format": request.response_format,
+                        "reasoning_effort": request.reasoning_effort,
+                        "temperature": request.temperature,
+                        "max_tokens": request.max_tokens,
+                    },
+                    default=str,
+                )
+            if any(len(s) > self._SAMPLE_BODY_CAP for s in (body, text, params or "")):
                 return
-            self.repo.write_sample(call_id, body, text)
+            self.repo.write_sample(call_id, body, text, params)
         except Exception:
             pass
 
@@ -1539,42 +1565,22 @@ class SommLLM:
         max_tokens: int | None = None,
         route_source: str = "default",
     ) -> None:
-        """One calls row for demand the boundary turned away.
+        """One calls row for demand the boundary turned away (see
+        :func:`somm.boundary.refusal_call`). ``routing_json`` lists every
+        refused route with reason ``boundary``."""
+        from somm.boundary import refusal_call
 
-        outcome is ``unknown`` (an existing value: consumers that switch on
-        outcome must not meet a new one), error_kind ``SommPrivacyViolation``,
-        and error_detail starts ``refused: data_boundary``. No provider was
-        contacted, so provider is empty, cost is zero, data_tier is NULL, and
-        the row is not budget-eligible. ``routing_json`` lists every refused
-        route with reason ``boundary``.
-        """
-        refused = ", ".join(f"{r['provider']}/{r['model'] or '-'}={r['tier']}" for r in exc.refused)
         skipped = [[r["provider"], r["model"] or "", "boundary"] for r in exc.refused]
         route = _route_record(mode, skipped[0][:2] if skipped else None, None, skipped, max_tokens)
-        detail = (
-            f"refused: data_boundary={exc.data_boundary} (from {exc.boundary_source}) "
-            f"| refused routes: {refused or 'none'}"
-        )[:512]
         try:
-            call = Call(
-                id=str(uuid.uuid4()),
-                ts=datetime.now(UTC),
+            call = refusal_call(
+                exc,
                 project=self.config.project,
                 workload_id=wl.id,
-                prompt_id=None,
-                provider="",
-                model=model or "",
-                tokens_in=0,
-                tokens_out=0,
-                latency_ms=0,
-                cost_usd=0.0,
-                outcome=Outcome.UNKNOWN,
-                error_kind="SommPrivacyViolation",
-                error_detail=detail,
+                model=model,
+                prompt_hash=prompt_hash,
                 max_tokens=max_tokens,
                 routing_json=json.dumps({"route_source": route_source, "route": route}),
-                prompt_hash=prompt_hash,
-                response_hash=stable_hash(""),
                 correlation_id=(
                     correlation_id if correlation_id is not None else hooks.current_correlation_id()
                 ),
@@ -1582,13 +1588,9 @@ class SommLLM:
                 parent_call_id=parent_call_id,
                 cost_basis="computed",
                 cost_kind="unknown",
-                cost_accuracy="actual",
-                cost_source=None,
                 observation_role=observation_role or "production",
                 source_call_id=source_call_id,
-                budget_eligible=False,
                 call_site=hooks.current_call_site(),
-                client_version=_CLIENT_VERSION,
             )
             self._finish_call(call, workload=workload, short_circuited=None)
         except Exception:  # noqa: BLE001 — the refusal itself must still raise
@@ -2400,7 +2402,7 @@ class SommLLM:
         )
         result._on_mark = MarkHook(self._mark_persister(call))
         self._maybe_capture_sample(
-            plan.wl, call_id, plan.prompt_text, plan.messages, text, outcome
+            plan.wl, call_id, plan.prompt_text, plan.messages, text, outcome, plan.req
         )
 
         # Fire on_fallback when a pinned call got rescued by the chain AND

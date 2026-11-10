@@ -57,46 +57,27 @@ other is rented hardware.
 ## Calling a model served on a rented box
 
 somm can call an OpenAI-compatible server (vLLM and similar) that you started on
-a rented machine. This is documentation of what exists, not a feature of this
-page; it needs no change to somm.
-
-Simplest: repoint the built-in `openai` provider. It already takes a base URL.
+a rented machine. Give it its own provider name with one environment variable:
 
 ```bash
-export SOMM_OPENAI_BASE_URL=http://BOX_HOST:8000/v1
-export OPENAI_API_KEY=the-key-you-gave-the-server
-export SOMM_OPENAI_MODEL=the-served-model-name
+export SOMM_OPENAI_ENDPOINTS="rented-box=http://BOX_HOST:8000/v1 model=the-served-model-name key_env=RENTED_BOX_KEY"
+export RENTED_BOX_KEY=the-key-you-gave-the-server
+somm generate "hello" --provider rented-box
 ```
 
-This replaces api.openai.com for that process; you cannot have both. To keep
-both, or to give the box its own provider name, register a second
-OpenAI-compatible endpoint with a small plugin package, using the
-`somm.providers` entry point ([plugins](plugins.md)). The base class is
-`OpenAICompatProvider` in `packages/somm/src/somm/providers/_openai_compat.py`
-and the contract is `ProviderSpec` in `providers/registry.py`. There is no
-configuration-only way to add a second endpoint. A sketch (not exercised against
-a live server):
+Each comma-separated entry is `name=BASE_URL`, then optional `model=` (the
+default model) and `key_env=` (the name of the variable holding the API key;
+leave it out for a server that takes no key). A name that is a built-in
+provider's is skipped, as is an entry that does not parse; somm says so on
+stderr. If `key_env` names a variable that is not set, the endpoint is not
+configured.
 
-```python
-import os
-from somm.providers._openai_compat import OpenAICompatProvider
-from somm.providers.registry import ProviderSpec
-
-class RentedBox(OpenAICompatProvider):
-    name = "rented-box"
-
-def _make(config, tracker):
-    url = os.environ.get("RENTED_BOX_URL")
-    if not url:
-        return None
-    return RentedBox(api_key=os.environ.get("RENTED_BOX_KEY", "none"), base_url=url,
-                     default_model=os.environ.get("RENTED_BOX_MODEL", ""))
-
-provider_spec = ProviderSpec(name="rented-box", factory=_make, default_order_rank=None)
-```
-
-with `[project.entry-points."somm.providers"] rented-box = "yourpkg:provider_spec"`.
-`default_order_rank=None` keeps it out of default routing; ask for it by name.
+The endpoint is reachable by pin (`provider="rented-box"`) and stays out of the
+default routing chain unless you list it in `SOMM_PROVIDER_ORDER`. It shows in
+`somm boundary routes` and `client.health()` like any provider, and it does not
+displace the built-in `openai` provider. (Repointing that provider with
+`SOMM_OPENAI_BASE_URL` still works, but then api.openai.com is gone for that
+process.)
 
 Two things to know:
 
@@ -106,7 +87,9 @@ Two things to know:
   case it is priced as that model, which is wrong for your hardware). The GPU
   rental cost lives only in gipper's receipts; `somm gpu spend` is how you see
   it.
-- **Data boundary.** Such an endpoint's tier is `unvetted` until you declare it.
+- **Data boundary.** A base URL on a loopback or private address (a box on
+  your tailnet's `100.x` range is not private) is `local`; anything else,
+  including any host reached by name, is `unvetted` until you declare it.
   Declare it by host in `~/.somm/boundary.toml`, with a note stating why you trust
   it ([data boundary](data-boundary.md#writing-boundarytoml)):
 
