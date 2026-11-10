@@ -362,6 +362,33 @@ class ToolCall:
     arguments_raw: str = ""  # populated only when arguments failed to parse as JSON
 
 
+class MarkHook:
+    """Holds the client's callback for ``SommResult.mark()``.
+
+    A result is a plain value that callers copy, pickle and turn into dicts.
+    The callback closes over the client (locks, a database connection), so a
+    bare callable in the dataclass made ``dataclasses.asdict(result)`` try to
+    deep-copy all of that. This wrapper copies and pickles as ``None``.
+    """
+
+    __slots__ = ("fn",)
+
+    def __init__(self, fn: Callable[[SommResult], None]) -> None:
+        self.fn = fn
+
+    def __call__(self, result: SommResult) -> None:
+        self.fn(result)
+
+    def __deepcopy__(self, memo: dict) -> None:
+        return None
+
+    def __copy__(self) -> None:
+        return None
+
+    def __reduce__(self):
+        return (type(None), ())
+
+
 @dataclass(slots=True)
 class SommResult:
     """Return shape of SommLLM.generate()."""
@@ -399,7 +426,9 @@ class SommResult:
     reasoning_tokens: int | None = None
     citations: list | None = None
     # Set by the client that recorded this call so mark() reaches its row.
-    _on_mark: Callable[[SommResult], None] | None = field(default=None, repr=False, compare=False)
+    # Wrapped in MarkHook so copying, pickling or ``asdict()``-ing a result
+    # never drags the client along: the copy simply has no hook.
+    _on_mark: MarkHook | None = field(default=None, repr=False, compare=False)
 
     def mark(self, outcome: Outcome) -> SommResult:
         """Post-tag a call's outcome. Returns self for chaining.

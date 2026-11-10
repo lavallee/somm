@@ -445,3 +445,31 @@ def test_openai_compat_reports_the_wire_max_tokens(monkeypatch):
     monkeypatch.setattr(httpx, "Client", _patch_client(handler))
     resp = MinimaxProvider(api_key="k").generate(SommRequest(prompt="hi", max_tokens=1024))
     assert resp.max_tokens_sent == 3072
+
+
+def test_a_result_with_a_mark_hook_still_copies_pickles_and_serialises():
+    """The hook closes over the client; a result must stay a plain value."""
+    import copy
+    import dataclasses
+    import json
+    import pickle
+    import threading
+
+    from somm_core.models import MarkHook, SommResult
+
+    lock = threading.Lock()  # stands in for the client: cannot be deep-copied or pickled
+    seen = []
+    result = SommResult(
+        text="x", provider="p", model="m", tokens_in=1, tokens_out=1, latency_ms=1,
+        cost_usd=0.0, call_id="c1", outcome=Outcome.OK,
+    )
+    result._on_mark = MarkHook(lambda r, _lock=lock: seen.append(r.outcome))
+
+    as_dict = dataclasses.asdict(result)
+    assert as_dict["_on_mark"] is None
+    json.dumps(as_dict, default=str)
+    assert copy.deepcopy(result)._on_mark is None
+    assert pickle.loads(pickle.dumps(result))._on_mark is None
+
+    result.mark(Outcome.BAD_JSON)
+    assert seen == [Outcome.BAD_JSON]

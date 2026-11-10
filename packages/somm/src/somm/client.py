@@ -28,7 +28,7 @@ from somm_core import EmbedResult, Outcome, SommResult, cost_for_call
 from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.cost import cost_provenance as _cost_provenance
-from somm_core.models import Call, Prompt
+from somm_core.models import Call, MarkHook, Prompt
 from somm_core.models import ToolCall as CoreToolCall
 from somm_core.parse import (
     ThinkStreamStripper,
@@ -2068,7 +2068,7 @@ class SommLLM:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        result._on_mark = self._mark_persister(call)
+        result._on_mark = MarkHook(self._mark_persister(call))
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
 
         # Fire on_fallback when a pinned call got rescued by the chain
