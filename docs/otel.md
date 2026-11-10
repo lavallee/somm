@@ -79,3 +79,25 @@ lasting its `duration_ms`.
 
 There are no `execute_tool` child spans: normalized harness results do not carry
 per-tool events with timing.
+
+## Sending somm's spans to somm's own service
+
+`somm-service` ingests OTLP traces at `/v1/traces` (alias `/api/otlp/v1/traces`)
+and records each span as an imported ledger row. It accepts both OTLP/HTTP
+encodings, `application/json` and `application/x-protobuf`; the exporter above
+sends protobuf. The bearer token is required either way.
+
+```bash
+pip install 'somm-service[otlp]'      # protobuf support (opentelemetry-proto)
+export SOMM_OTEL_ENDPOINT="http://localhost:7878/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer <service token>"
+```
+
+Without the `otlp` extra a protobuf request gets `415` naming the extra; JSON
+is unaffected. A protobuf request is answered with a protobuf
+`ExportTraceServiceResponse` (`partial_success.rejected_spans` is set when spans
+could not be recorded). `Content-Encoding: gzip` is not supported on either
+encoding. A span's workload is its `somm.workload` attribute, else `llm.workload`,
+else the operation name; harness `invoke_agent` spans fall back to their span
+name (`invoke_agent claude-cli`). The session is `somm.session_id`, `session.id`
+or `gen_ai.conversation.id`.
