@@ -396,7 +396,7 @@ def _call_event(
     tokens_in: int,
     tokens_out: int,
     latency_ms: int,
-    cost_usd: float,
+    cost_usd: float | None,
     temperature: float | None = None,
     max_tokens: int | None = None,
     error_kind: str | None = None,
@@ -434,7 +434,7 @@ def _call_event(
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "latency_ms": latency_ms,
-        "cost_usd": round(cost_usd, 6) if cost_usd else 0.0,
+        "cost_usd": round(cost_usd, 6) if cost_usd is not None else None,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "error_kind": error_kind,
@@ -1914,7 +1914,7 @@ class SommLLM:
             raise raise_after_record
 
         # Feature 3: warn if daily budget cap is exceeded.
-        if wl.budget_cap_usd_daily is not None and result.cost_usd > 0:
+        if wl.budget_cap_usd_daily is not None and (result.cost_usd or 0) > 0:
             today = date.today()
             budget_key = (wl.name, today)
             if budget_key not in _warned_budget_exceeded:

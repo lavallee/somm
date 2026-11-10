@@ -2,12 +2,12 @@
 
 Library calls `cost_for_call(repo, provider, model, tokens_in, tokens_out)`
 after each LLM call. If (provider, model) is in `model_intel`, returns the
-computed USD cost. If not, returns 0.0 — graceful degradation; the agent
-or user can refresh intel later.
+computed USD cost. If not, returns None: the call is recorded with an
+unknown cost, which `backfill_costs` fills once a price exists.
 
 Prices in `model_intel` are per 1M tokens: input, output, and the
 prompt-cache read and write rates where the source publishes them.
-Local / free models have price=0 and cost_usd stays 0.0.
+Local Ollama and OpenRouter `:free` routes cost 0.0 (see `free_route`).
 """
 
 from __future__ import annotations
@@ -267,6 +267,30 @@ def price_tokens(
     return round(cost, 8)
 
 
+def free_route(provider: str, model: str) -> str | None:
+    """Why a route costs nothing per token, or None when it is not free.
+
+    Local Ollama has no metered price; an OpenRouter ``:free`` variant is
+    listed at zero. These record 0.0. Anything else without a known price
+    records NULL, never 0.0.
+    """
+    if provider == "ollama":
+        return "local-included-unpriced"
+    if provider == "openrouter" and model.endswith(":free"):
+        return "openrouter:free-model"
+    return None
+
+
+def known_prices(repo: Repository, provider: str, model: str) -> Prices | None:
+    """``model_prices`` when they price anything, else None (unknown)."""
+    if not provider or not model:
+        return None
+    prices = model_prices(repo, provider, model)
+    if prices is None or (prices[0] is None and prices[1] is None):
+        return None
+    return prices
+
+
 def cost_for_call(
     repo: Repository,
     provider: str,
@@ -276,30 +300,31 @@ def cost_for_call(
     *,
     cache_read_tokens: int | None = None,
     cache_write_tokens: int | None = None,
-) -> float:
-    """Return USD cost for a single call.
+) -> float | None:
+    """USD cost for one call, or None when somm does not know the price.
 
-    Returns 0.0 if pricing data is missing for (provider, model) — the
-    call is still logged; the agent can backfill cost when intel refreshes.
-
-    If the provider is known-paid (anthropic, openai) and no pricing row
-    exists, emits a stderr warning on the first occurrence.
+    None (recorded as NULL) covers a self-hosted endpoint, an unlisted model
+    and a call with no model name; budgets and averages then skip the call
+    instead of counting it as free. A ``model_intel`` row wins (that is how
+    a local box gets a rate); without one, ``free_route`` routes return 0.0. The
+    first unknown price for a known-paid provider warns on stderr; refresh
+    intel or ``write_intel`` a price, then ``somm backfill-costs``.
     """
-    if not provider or not model:
-        return 0.0
-    prices = model_prices(repo, provider, model)
+    prices = known_prices(repo, provider, model)
     if prices is None:
+        if free_route(provider or "", model or "") is not None:
+            return 0.0
         if provider in _PAID_PROVIDERS:
             key = (provider, model)
             if key not in _warned_missing_pricing:
                 _warned_missing_pricing.add(key)
                 print(
                     f"[somm] WARNING: no pricing data for {provider}/{model} "
-                    f"— cost will be $0. Run `somm-serve admin refresh-intel` "
+                    f"— cost recorded as unknown. Run `somm-serve admin refresh-intel` "
                     f"or add pricing via write_intel().",
                     file=sys.stderr,
                 )
-        return 0.0
+        return None
     return price_tokens(prices, tokens_in, tokens_out, cache_read_tokens, cache_write_tokens)
 
 

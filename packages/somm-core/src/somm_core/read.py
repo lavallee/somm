@@ -153,9 +153,8 @@ def search_calls(
     rows = _execute(conn_or_path, sql, params)
     out = []
     for r in rows:
-        row = dict(zip(_CALL_COLUMNS, r, strict=True))
-        row["cost_usd"] = row["cost_usd"] or 0.0
-        out.append(row)
+        # cost_usd stays None when the price was unknown: None is not $0.
+        out.append(dict(zip(_CALL_COLUMNS, r, strict=True)))
     return out
 
 

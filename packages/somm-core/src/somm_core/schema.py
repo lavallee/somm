@@ -6,6 +6,7 @@ Migrations are versioned SQL files under `migrations/NNNN_<name>.sql`.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from importlib import resources
@@ -71,6 +72,45 @@ def _already_applied(version: int, conn: sqlite3.Connection) -> bool:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
         return "commission_id" not in columns
     return False
+
+
+def _relax_cost_usd_not_null(conn: sqlite3.Connection) -> None:
+    """Migration 0029: drop NOT NULL from ``calls.cost_usd`` without a rebuild.
+
+    SQLite's documented procedure for removing a NOT NULL constraint: edit
+    the stored CREATE TABLE text and bump ``schema_version`` so every open
+    connection re-reads it. Stored rows are untouched. Runs inside the
+    migration's transaction, so a failure rolls back with it.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'calls'"
+    ).fetchone()
+    if row is None:
+        return
+    relaxed = re.sub(
+        r"(\bcost_usd\s+REAL)\s+NOT\s+NULL", r"\1", row[0], count=1, flags=re.IGNORECASE
+    )
+    if relaxed == row[0]:
+        return
+    defensive = conn.getconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE)
+    if defensive:
+        conn.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, False)
+    cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
+    conn.execute("PRAGMA writable_schema = ON")
+    try:
+        conn.execute(
+            "UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = 'calls'",
+            (relaxed,),
+        )
+        conn.execute(f"PRAGMA schema_version = {int(cookie) + 1}")
+    finally:
+        conn.execute("PRAGMA writable_schema = OFF")
+        if defensive:
+            conn.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, True)
+
+
+# Migrations whose step SQL cannot express; run after the file's statements.
+_PYTHON_STEPS = {29: _relax_cost_usd_not_null}
 
 
 def _execute_pragma(conn: sqlite3.Connection, stmt: str, *, wait_s: float = 10.0) -> None:
@@ -156,6 +196,8 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
                         continue
                     for stmt in ddl:
                         conn.execute(stmt)
+                    if version in _PYTHON_STEPS:
+                        _PYTHON_STEPS[version](conn)
                     conn.execute(
                         "INSERT INTO schema_version (version) VALUES (?)",
                         (int(version),),

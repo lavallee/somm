@@ -242,7 +242,7 @@ class Call:
     tokens_in: int
     tokens_out: int
     latency_ms: int
-    cost_usd: float
+    cost_usd: float | None  # None = price unknown; 0.0 = free
     outcome: Outcome
     error_kind: str | None
     prompt_hash: str
@@ -364,7 +364,7 @@ class SommResult:
     tokens_in: int
     tokens_out: int
     latency_ms: int
-    cost_usd: float
+    cost_usd: float | None  # None = price unknown; 0.0 = free
     call_id: str
     outcome: Outcome = Outcome.OK
     error_kind: str | None = None
@@ -413,7 +413,7 @@ class EmbedResult:
     dim: int
     tokens_in: int
     latency_ms: int
-    cost_usd: float
+    cost_usd: float | None
     call_id: str
     outcome: Outcome = Outcome.OK
     error_kind: str | None = None

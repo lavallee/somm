@@ -1656,6 +1656,13 @@ def _fmt_stat_float(value: object) -> str:
     return f"{float(value):.1f}"
 
 
+def _fmt_cost(value: object) -> str:
+    """A call's cost; ``unknown`` when somm had no price (NULL, not $0)."""
+    if value is None:
+        return "unknown"
+    return f"${float(value):.4f}"
+
+
 def _fmt_stat_pct(value: object) -> str:
     if value is None:
         return "-"
@@ -1952,7 +1959,8 @@ def _bench_summary(rows: list[dict], *, wall_seconds: float) -> dict:
     total_input_tokens = sum(row["tokens_in"] for row in ok_rows)
     total_output_tokens = sum(row["tokens_out"] for row in ok_rows)
     total_tokens = total_input_tokens + total_output_tokens
-    total_cost = sum(row["cost_usd"] for row in rows)
+    total_cost = sum(row["cost_usd"] for row in rows if row["cost_usd"] is not None)
+    unpriced = sum(1 for row in rows if row["cost_usd"] is None)
     return {
         "calls": len(rows),
         "ok_calls": len(ok_rows),
@@ -1994,6 +2002,7 @@ def _bench_summary(rows: list[dict], *, wall_seconds: float) -> dict:
             "total": total_tokens,
         },
         "cost_usd": total_cost,
+        "unpriced_calls": unpriced,
     }
 
 
@@ -2080,6 +2089,7 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         f"out_tok/s={_fmt_stat_float(thr['output_tokens_per_second'])} "
         f"total_tok/s={_fmt_stat_float(thr['total_tokens_per_second'])} "
         f"cost=${summary['cost_usd']:.4f}"
+        + (f" (+{summary['unpriced_calls']} unpriced)" if summary["unpriced_calls"] else "")
     )
     return 0
 
@@ -2115,7 +2125,7 @@ def _cmd_tail(args: argparse.Namespace) -> int:
                     continue
                 seen_ids.add(r["id"])
                 ts = r["ts"][:19].replace("T", " ")
-                cost_s = f"${r['cost_usd']:.4f}"
+                cost_s = _fmt_cost(r["cost_usd"])
                 print(
                     f"{ts:<20} {r['workload'][:19]:<20} {r['provider'][:9]:<10} "
                     f"{r['model'][:21]:<22} {r['latency_ms']:>7} {r['tokens_in']:>6} "
@@ -2277,7 +2287,7 @@ def _print_comparison(results: list[dict], truncate: int = 240) -> None:
                 f"{'—':>10}  ERROR: {r['error']}"
             )
             continue
-        cost_s = f"${r['cost_usd']:.4f}"
+        cost_s = _fmt_cost(r["cost_usd"])
         text = r["text"].replace("\n", "\\n")
         if len(text) > truncate:
             text = text[:truncate] + "…"

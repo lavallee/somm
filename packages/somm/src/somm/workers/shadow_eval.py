@@ -38,6 +38,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, uuid5
 
+from somm_core.cost import UNKNOWN_COST_SOURCE
 from somm_core.cost import computed_cost_kind as _cost_kind
 from somm_core.cost import pricing_version as _pricing_version
 from somm_core.graders import (
@@ -700,9 +701,10 @@ class ShadowEvalWorker:
                 self.repo, provider, actual_model, tokens_in, tokens_out,
                 cache_read_tokens=cache_read, cache_write_tokens=cache_write,
             )
-            cost_basis = "computed"
-            cost_accuracy = "estimated"
-            cost_source = "somm:model_intel"
+            if cost_usd is None:
+                cost_basis, cost_accuracy, cost_source = "unknown", "unknown", UNKNOWN_COST_SOURCE
+            else:
+                cost_basis, cost_accuracy, cost_source = "computed", "estimated", "somm:model_intel"
         else:
             cost_usd = reported_cost
             cost_basis = "reported"

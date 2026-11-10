@@ -165,7 +165,8 @@ class AgentWorker:
                     "score": r[3] or 0,
                     "n_evals": r[4],
                     "latency_ms": r[5] or 0,
-                    "cost_usd": r[6] or 0,
+                    # None when no call in the group had a known price.
+                    "cost_usd": r[6],
                     "workload_name": r[7],
                 }
             )
@@ -213,7 +214,12 @@ class AgentWorker:
                 continue
             # Only recommend if the new model is at least as cheap OR at least
             # 20% faster (avoid "better but 5x more expensive").
-            cheaper = best["cost_usd"] <= current["cost_usd"] * 1.01
+            # An unknown cost is not a cheap one: "cheaper" needs both prices.
+            cheaper = (
+                best["cost_usd"] is not None
+                and current["cost_usd"] is not None
+                and best["cost_usd"] <= current["cost_usd"] * 1.01
+            )
             faster = best["latency_ms"] < current["latency_ms"] * 0.8
             if not (cheaper or faster):
                 continue
@@ -228,14 +234,14 @@ class AgentWorker:
                             "provider": current_provider,
                             "model": current_model,
                             "score": round(current["score"], 3),
-                            "cost_usd": round(current["cost_usd"], 6),
+                            "cost_usd": _round_cost(current["cost_usd"]),
                             "latency_ms": round(current["latency_ms"]),
                         },
                         "candidate": {
                             "provider": best["provider"],
                             "model": best["model"],
                             "score": round(best["score"], 3),
-                            "cost_usd": round(best["cost_usd"], 6),
+                            "cost_usd": _round_cost(best["cost_usd"]),
                             "latency_ms": round(best["latency_ms"]),
                         },
                         "score_delta": round(score_delta, 3),
@@ -552,11 +558,15 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
+def _round_cost(value: float | None) -> float | None:
+    return round(value, 6) if value is not None else None
+
+
 def _impact_str(current: dict, best: dict) -> str:
     parts = []
     score_delta = best["score"] - current["score"]
     parts.append(f"+{round(100 * score_delta)}% quality")
-    if current["cost_usd"] > 0:
+    if current["cost_usd"] and best["cost_usd"] is not None:
         cost_pct = 100 * (1 - best["cost_usd"] / current["cost_usd"])
         if cost_pct > 1:
             parts.append(f"-{round(cost_pct)}% cost")

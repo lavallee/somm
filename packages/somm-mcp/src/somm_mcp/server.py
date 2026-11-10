@@ -794,7 +794,11 @@ def build_server(
                 },
                 "deltas": {
                     "latency_ms": r.latency_ms - original["latency_ms"],
-                    "cost_usd": r.cost_usd - (original["cost_usd"] or 0),
+                    "cost_usd": (
+                        r.cost_usd - original["cost_usd"]
+                        if r.cost_usd is not None and original["cost_usd"] is not None
+                        else None
+                    ),
                     "tokens_out_pct": (
                         100
                         * (r.tokens_out - original["tokens_out"])
@@ -917,7 +921,7 @@ def _shadow_ranking(repo: Repository, workload_id: str, since_days: int) -> list
             "model": r[1],
             "score": round(r[2] or 0, 3),
             "latency_ms_avg": round(r[3] or 0),
-            "cost_usd_avg": round(r[4] or 0, 6),
+            "cost_usd_avg": round(r[4], 6) if r[4] is not None else None,
             "n_evals": r[5],
         }
         for r in rows
@@ -948,7 +952,7 @@ def _fetch_call_with_sample(repo: Repository, call_id: str) -> dict | None:
         "tokens_in": row[3],
         "tokens_out": row[4],
         "latency_ms": row[5],
-        "cost_usd": row[6] or 0,
+        "cost_usd": row[6],
         "outcome": row[7],
         "workload_id": row[8],
         "workload_name": row[9],

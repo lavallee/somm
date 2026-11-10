@@ -160,7 +160,8 @@ async def test_agenerate_matches_sync_telemetry_row_shape(tmp_path: Path) -> Non
     ]
     assert len(rows) == 2
     assert rows[0] == rows[1]
-    assert rows[0][1:] == ("fake", "fixed-model", 0.0, "ok", 17)
+    # The fake model has no price: cost is unknown (NULL), not $0.
+    assert rows[0][1:] == ("fake", "fixed-model", None, "ok", 17)
     assert sync_result.outcome == async_result.outcome == Outcome.OK
     assert provider.generate_thread_ids[0] == main_thread_id
     assert provider.generate_thread_ids[1] != main_thread_id

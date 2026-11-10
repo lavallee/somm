@@ -65,7 +65,6 @@ def _post_process(event: dict[str, Any]) -> None:
                 "gen_ai.usage.output_tokens": int(event.get("tokens_out") or 0),
                 "somm.call_id": event.get("call_id") or "",
                 "somm.outcome": event.get("outcome") or "",
-                "somm.cost_usd": float(event.get("cost_usd") or 0.0),
                 "somm.workload": workload,
                 "somm.project": event.get("project") or "",
                 "somm.cost_basis": event.get("cost_basis") or "unknown",
@@ -81,6 +80,10 @@ def _post_process(event: dict[str, Any]) -> None:
                 "somm.origin": event.get("origin") or "native",
                 "somm.budget_eligible": bool(event.get("budget_eligible", True)),
             }
+            # An unknown price has no attribute rather than a false 0.0;
+            # somm.cost_basis says "unknown".
+            if event.get("cost_usd") is not None:
+                attrs["somm.cost_usd"] = float(event["cost_usd"])
             for name, key in (
                 ("gen_ai.usage.cache_read.input_tokens", "cache_tokens_in"),
                 ("gen_ai.usage.cache_write.input_tokens", "cache_tokens_out"),

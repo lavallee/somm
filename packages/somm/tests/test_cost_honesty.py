@@ -142,3 +142,129 @@ def test_backfill_uses_cache_rates(tmp_path):
     assert n == 1
     assert total == pytest.approx(1.22)
     assert row["cost_usd"] == pytest.approx(1.22)
+
+
+# ---- unknown is not zero -------------------------------------------------------
+
+
+def test_self_hosted_endpoint_records_unknown_not_zero(tmp_path):
+    """A self-hosted endpoint has no price: the row says unknown, not $0."""
+    llm = SommLLM(config=_config(tmp_path), providers=[UsageProvider(name="gpu-box")])
+    try:
+        result = llm.generate("hi", workload="w", provider="gpu-box")
+        row = _row(llm, result.call_id)
+    finally:
+        llm.close()
+    assert result.cost_usd is None
+    assert row["cost_usd"] is None
+    assert (row["cost_basis"], row["cost_kind"], row["cost_accuracy"], row["cost_source"]) == (
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown:no-price",
+    )
+
+
+def test_free_routes_stay_zero_and_say_why(tmp_path):
+    llm = SommLLM(
+        config=_config(tmp_path),
+        providers=[
+            UsageProvider(name="ollama", model="qwen-local"),
+            UsageProvider(name="openrouter", model="vendor/some-model:free"),
+        ],
+    )
+    try:
+        local = llm.generate("hi", workload="w", provider="ollama")
+        free = llm.generate("hi", workload="w", provider="openrouter")
+        local_row, free_row = _row(llm, local.call_id), _row(llm, free.call_id)
+    finally:
+        llm.close()
+    assert local_row["cost_usd"] == 0.0
+    assert local_row["cost_source"] == "local-included-unpriced"
+    assert free_row["cost_usd"] == 0.0
+    assert free_row["cost_source"] == "openrouter:free-model"
+
+
+def test_budget_counts_known_costs_only(tmp_path):
+    """Unknown-cost calls do not count toward a daily cap (they are skipped,
+    not priced at $0); a priced call still trips it. No crash on NULL."""
+    cfg = _config(tmp_path)
+    cfg.budget_fail_closed = True
+    llm = SommLLM(
+        config=cfg, providers=[UsageProvider(name="gpu-box"), UsageProvider(name="anthropic")]
+    )
+    try:
+        llm.repo.register_workload(name="capped", project=cfg.project, budget_cap_usd_daily=0.5)
+        for _ in range(3):
+            assert llm.generate("hi", workload="capped", provider="gpu-box").cost_usd is None
+            llm._writer.flush(timeout=2.0)
+        write_intel(llm.repo, "anthropic", "test-model", 1.0, 1.0, None, None, "manual")
+        assert llm.generate("hi", workload="capped", provider="anthropic").cost_usd == 1.0
+        llm._writer.flush(timeout=2.0)
+        from somm.errors import SommBudgetExceeded
+
+        with pytest.raises(SommBudgetExceeded):
+            llm.generate("hi", workload="capped", provider="gpu-box")
+    finally:
+        llm.close()
+
+
+def test_frontier_mean_cost_skips_unknown(tmp_path):
+    """An unpriced model's mean cost is unknown, not $0, so it cannot look free."""
+    llm = SommLLM(config=_config(tmp_path), providers=[UsageProvider(name="gpu-box")])
+    try:
+        llm.generate("hi", workload="w", provider="gpu-box")
+        llm._writer.flush(timeout=2.0)
+        wl = llm.repo.workload_by_name("w", llm.config.project)
+        rows = llm.repo.workload_frontier(wl.id, since_days=1)
+    finally:
+        llm.close()
+    assert rows[0]["mean_cost_per_ok_call"] is None
+
+
+def test_search_calls_keeps_unknown_cost(tmp_path):
+    from somm_core.read import search_calls
+
+    llm = SommLLM(config=_config(tmp_path), providers=[UsageProvider(name="gpu-box")])
+    try:
+        llm.generate("hi", workload="w", provider="gpu-box")
+        llm._writer.flush(timeout=2.0)
+        rows = search_calls(llm.config.db_path, llm.config.project)
+    finally:
+        llm.close()
+    assert rows[0]["cost_usd"] is None
+
+
+def test_migration_0029_lets_an_existing_ledger_hold_null(tmp_path):
+    """0001 declared cost_usd NOT NULL; 0029 relaxes it in place, keeping rows,
+    and a connection opened before the migration sees the new definition."""
+    from somm_core.schema import _list_migrations, ensure_schema
+    from somm_core.version import SCHEMA_VERSION
+
+    path = tmp_path / "v28.sqlite"
+    insert = (
+        "INSERT INTO calls (id, ts, project, provider, model, cost_usd, prompt_hash, "
+        "response_hash) VALUES (?, '2026-11-01', 'p', 'x', 'y', ?, 'h', 'h')"
+    )
+    with sqlite3.connect(path) as conn:
+        for version, migration in _list_migrations():
+            if version > 28:
+                continue
+            conn.executescript(migration.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+        conn.execute(insert, ("old", 0.25))
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, ("null-before", None))
+    early = sqlite3.connect(path)
+    with sqlite3.connect(path) as conn:
+        assert ensure_schema(conn) == SCHEMA_VERSION
+        assert ensure_schema(conn) == SCHEMA_VERSION  # idempotent
+    early.execute(insert, ("null-after", None))
+    early.commit()
+    assert early.execute("SELECT id, cost_usd FROM calls ORDER BY id").fetchall() == [
+        ("null-after", None),
+        ("old", 0.25),
+    ]
+    assert early.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    early.close()
