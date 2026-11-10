@@ -101,7 +101,7 @@ def test_doctor_global_credits_calls_to_the_project_that_made_them(tmp_path, cap
     cfg.project = "small"
     cfg.db_dir = tmp_path / "small" / ".somm"
     cfg.cross_project_path = mirror.db_path
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health", lambda self: ProviderHealth(available=True, detail="ok")
     )

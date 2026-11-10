@@ -805,7 +805,7 @@ def test_doctor_has_a_boundary_section(tmp_path, monkeypatch, capsys):
 
     cfg = _cfg(tmp_path)
     Repository(cfg.db_path).register_workload(name="w", project=cfg.project, data_boundary="zdr")
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health", lambda self: ProviderHealth(available=True, detail="ok")
     )

@@ -52,7 +52,7 @@ def test_generate_exit_status(monkeypatch, capsys, outcome, as_json):
     result = SommResult(text="answer" if outcome == Outcome.OK else "", provider="fake",
                         model="fake", tokens_in=1, tokens_out=1, latency_ms=1,
                         cost_usd=0, call_id="test", outcome=outcome)
-    monkeypatch.setattr("somm.cli.load_config", lambda **kw: Config())
+    monkeypatch.setattr("somm.cli._common.load_config", lambda **kw: Config())
     monkeypatch.setattr("somm.client.SommLLM", lambda **kw: SimpleNamespace(
         generate=lambda *a, **kw: result, close=lambda: None))
     rc = main(["generate", "hello"] + (["--json"] if as_json else []))
@@ -66,7 +66,7 @@ def test_cli_text_only_forwarding(monkeypatch):
         assert kwargs["claude_cli_text_only"] is True
         assert kwargs["allow_fallback"] is False
         raise ValueError("sentinel")
-    monkeypatch.setattr("somm.cli.load_config", lambda **kw: Config())
+    monkeypatch.setattr("somm.cli._common.load_config", lambda **kw: Config())
     monkeypatch.setattr("somm.client.SommLLM", lambda **kw: SimpleNamespace(
         generate=generate, close=lambda: None))
     assert main(["generate", "hi", "--provider", "claude-cli",
