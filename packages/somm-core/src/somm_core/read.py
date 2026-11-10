@@ -78,7 +78,7 @@ def spend_today(
 
 _CALL_COLUMNS = (
     "id", "ts", "workload", "provider", "model", "tokens_in", "tokens_out",
-    "latency_ms", "cost_usd", "outcome", "error_kind", "prompt_hash", "response_hash",
+    "latency_ms", "cost_usd", "outcome", "error_kind", "error_detail", "prompt_hash", "response_hash",
     "session_id", "parent_call_id", "correlation_id", "ttft_ms", "cache_tokens_in",
     "cache_tokens_out", "reasoning_tokens", "origin", "call_site", "client_version", "routing_json",
     "data_tier", "cost_source",
