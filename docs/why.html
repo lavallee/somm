@@ -116,9 +116,11 @@
           does not give you is listed above: decisions remembered across
           projects, subscription windows as a routing input, agent attempts on
           the same ledger, rule-served work under the same name. It is also
-          two services to run. somm can sit beside one: it has an OpenTelemetry
-          exporter plugin (<code>somm[otel]</code>), though aligning it with
-          the current conventions is still ROADMAP phase 4.
+          two services to run. somm can sit beside one: its OpenTelemetry
+          exporter (<code>somm[otel]</code>) follows the GenAI semantic
+          conventions at a pinned commit since 0.24.0, and its service accepts
+          OTLP traces
+          (<a href="https://github.com/lavallee/somm/blob/main/docs/otel.md">otel.md</a>).
         </dd>
 
         <dt>"You depend on LiteLLM anyway."</dt>
@@ -155,9 +157,10 @@
 
         <dt>"Is the memory real?"</dt>
         <dd>
-          Not proven yet. Recalls are not stored, and in November nearly every
-          decision in the shared ledger had been written by a test fixture
-          (VISION.md). The design is in place; the evidence is not.
+          Not proven yet. Recalls have been stored only since 0.23.0, so there is
+          no history of them, and in November nearly every decision in the
+          shared ledger had been written by a test fixture (VISION.md,
+          CHANGELOG.md). The design is in place; the evidence is not.
         </dd>
 
         <dt>"The recommendations were wrong."</dt>

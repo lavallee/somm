@@ -40,7 +40,7 @@
       <figure class="diagram map">
         <svg viewBox="0 0 400 608" role="img" aria-labelledby="map-title map-desc" xmlns="http://www.w3.org/2000/svg">
           <title id="map-title">How somm's components fit</title>
-          <desc id="map-desc">Work enters through the client, the proxy, a harness, or a coding agent using the MCP server. Each call passes through routing: workload, data boundary, pins and policy, plan pacing, cooldowns. A provider or a workload handler serves it. Every call writes one row to the project ledger, copied to a machine-wide mirror. The loop (model intel, shadow evaluation, recommendations, the sommelier) reads those rows and writes back. The read API, the CLI and the service read the result.</desc>
+          <desc id="map-desc">Work enters through the client, the proxy, a harness, or a coding agent using the MCP server. Each call passes through routing: workload, data boundary, pins and policy, plan pacing, cooldowns. A provider, a decision model or a workload handler serves it. Every call writes one row to the project ledger, copied to a machine-wide mirror. The loop (model intel, shadow evaluation, recommendations, the sommelier) reads those rows and writes back. The read API, the CLI and the service read the result.</desc>
           <defs><marker id="mh" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 L10 5 L0 10 z"/></marker></defs>
           <text class="g" x="8" y="12">WHERE WORK COMES FROM</text>
           <a href="#client"><g class="n"><rect x="6" y="20" width="190" height="48" rx="6"/>
@@ -63,12 +63,15 @@
             <text class="s" x="200" y="216" text-anchor="middle">&#8594; plan pacing &#8594; cooldowns &#8594; next route</text></g></a>
           <path class="e" marker-end="url(#mh)" d="M200 234 L200 256"/>
           <text class="g" x="8" y="249">SERVED BY</text>
-          <a href="#client"><g class="n"><rect x="6" y="260" width="190" height="48" rx="6"/>
-            <text class="t" x="101" y="281" text-anchor="middle">Providers</text>
-            <text class="s" x="101" y="298" text-anchor="middle">APIs, local models, seats</text></g></a>
-          <a href="#handlers"><g class="n"><rect x="204" y="260" width="190" height="48" rx="6"/>
-            <text class="t" x="299" y="281" text-anchor="middle">Handlers</text>
-            <text class="s" x="299" y="298" text-anchor="middle">rules, chips: the climb</text></g></a>
+          <a href="#client"><g class="n"><rect x="6" y="260" width="124" height="48" rx="6"/>
+            <text class="t" x="68" y="281" text-anchor="middle">Providers</text>
+            <text class="s" x="68" y="298" text-anchor="middle">APIs, local, seats</text></g></a>
+          <a href="#decisions"><g class="n"><rect x="138" y="260" width="124" height="48" rx="6"/>
+            <text class="t" x="200" y="281" text-anchor="middle">Decisions</text>
+            <text class="s" x="200" y="298" text-anchor="middle">label + probability</text></g></a>
+          <a href="#handlers"><g class="n"><rect x="270" y="260" width="124" height="48" rx="6"/>
+            <text class="t" x="332" y="281" text-anchor="middle">Handlers</text>
+            <text class="s" x="332" y="298" text-anchor="middle">rules: the climb</text></g></a>
           <path class="e" marker-end="url(#mh)" d="M200 312 L200 334"/>
           <text class="g" x="8" y="327">ONE ROW PER CALL</text>
           <a href="#ledger"><g class="n core"><rect x="6" y="338" width="190" height="48" rx="6"/>
@@ -104,13 +107,13 @@
             <text class="t" x="332" y="575" text-anchor="middle">Service</text>
             <text class="s" x="332" y="592" text-anchor="middle">dashboard, API</text></g></a>
         </svg>
-        <figcaption>Select a box to jump to its section. Harness attempts are checked against the data boundary and recorded, but do not use the provider chain. The MCP server reads the ledger and the loop's output.</figcaption>
+        <figcaption>Select a box to jump to its section. Harness attempts are checked against the data boundary and recorded, but do not use the provider chain. A model on a <a href="#gpus">rented GPU</a> joins as a provider. The MCP server reads the ledger and the loop's output.</figcaption>
       </figure>
 
       <ol class="toc">
-        <li><a href="#client">Client and providers</a></li>
+        <li><a href="#client">Client, providers and streaming</a></li>
         <li><a href="#routing">Routing, cooldowns and pins</a></li>
-        <li><a href="#ledger">Ledger and mirror</a></li>
+        <li><a href="#ledger">Ledger, mirror and the ledgers on a machine</a></li>
         <li><a href="#workloads">Workloads</a></li>
         <li><a href="#boundary">Data boundary</a></li>
         <li><a href="#shadow">Shadow evaluation and judges</a></li>
@@ -121,27 +124,36 @@
         <li><a href="#proxy">The proxy</a></li>
         <li><a href="#plans">Plans and quota pacing</a></li>
         <li><a href="#harnesses">Harnesses</a></li>
+        <li><a href="#decisions">Decision calls</a></li>
         <li><a href="#handlers">Workload handlers and the climb</a></li>
+        <li><a href="#gpus">Rented GPUs</a></li>
         <li><a href="#read-api">Read API</a></li>
         <li><a href="#cli">The CLI</a></li>
       </ol>
 
       <!-- 1 -->
       <div class="comp" id="client">
-        <h3>Client and providers</h3>
+        <h3>Client, providers and streaming</h3>
         <dl>
           <dt>What it is</dt>
           <dd>
             <code>somm.llm(project="my_app")</code> returns a client with
             <code>generate</code>, <code>stream</code>, <code>embed</code>,
-            structured output, tool calling and async versions of each. Behind
-            it are eleven built-in providers: eight APIs (Anthropic, DeepSeek,
-            Gemini, MiniMax, Ollama, OpenAI, OpenRouter, Perplexity) and three
-            <a class="term" href="glossary.html#seat">seats</a>
+            <code>generate_structured</code> for JSON, tool calling,
+            <a href="#decisions"><code>decide</code></a> and async versions.
+            Pass <code>raise_on_failure=True</code> and a failure is raised as
+            a typed error carrying provider, model and call id; <code>timeout=</code>
+            bounds one call. A stream goes through the same admission, routing
+            and recording as <code>generate</code>, and
+            <code>events=True</code> yields typed
+            <a class="term" href="glossary.html#stream-event">stream events</a>.
+            Behind it are eleven built-in providers: eight APIs (Anthropic,
+            DeepSeek, Gemini, MiniMax, Ollama, OpenAI, OpenRouter, Perplexity)
+            and three <a class="term" href="glossary.html#seat">seats</a>
             (<code>claude-cli</code>, <code>codex-cli</code>,
-            <code>chatgpt</code>), plus any OpenAI-compatible server reached by
-            base URL. The library's only third-party dependency is
-            <code>httpx</code>.
+            <code>chatgpt</code>), plus OpenAI-compatible servers reached by
+            base URL or named in <code>SOMM_OPENAI_ENDPOINTS</code>. The
+            library's only third-party dependency is <code>httpx</code>.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -166,6 +178,10 @@
             October 2026"). Provider differences are real and handled once:
             image prompts failed on every OpenAI-compatible provider until
             0.19.2 translated the block shape per provider (CHANGELOG.md, #70).
+            Streams were recorded wrongly twice: an abandoned stream as
+            <code>ok</code> until 0.23.0, and one cut off before the
+            provider's end marker as <code>ok</code> until 0.25.0, which
+            records it as <code>upstream_error</code> (CHANGELOG.md).
             Provider list: <code>packages/somm/src/somm/providers/registry.py</code>.
           </dd>
         </dl>
@@ -222,7 +238,7 @@
 
       <!-- 3 -->
       <div class="comp" id="ledger">
-        <h3>Ledger and mirror</h3>
+        <h3>Ledger, mirror and the ledgers on a machine</h3>
         <dl>
           <dt>What it is</dt>
           <dd>
@@ -236,7 +252,12 @@
             workloads from every project (on by default;
             <code>SOMM_CROSS_PROJECT=0</code> turns it off). Decisions are
             always written there. Graded samples, evaluations and
-            recommendations stay in the project's own ledger.
+            recommendations stay in the project's own ledger. A registry
+            (<code>~/.somm/registry.json</code>) lists every project's
+            ledger: <code>somm ledgers</code> shows each one's size, schema,
+            last call, client versions and how far the mirror is behind;
+            <code>somm fleet status</code> gives one line per project;
+            <code>somm mirror sync</code> copies rows the mirror lacks.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -247,7 +268,8 @@
           <dt>How it connects</dt>
           <dd>
             Everything else reads it. The <a href="#read-api">read API</a> is
-            the supported way to do so; plain SQL works too.
+            the supported way to do so; plain SQL works too. Details:
+            <a href="https://github.com/lavallee/somm/blob/main/docs/ledgers.md">ledgers.md</a>.
           </dd>
           <dt>Proof</dt>
           <dd class="proof">
@@ -258,7 +280,9 @@
             tables (CHANGELOG.md, 0.17.0). In November one bad row was found to
             kill the telemetry writer for the life of the process, and a locked
             ledger could discard a paid answer and buy it again; 0.20.2 fixed
-            both (CHANGELOG.md, 0.20.2).
+            both (CHANGELOG.md, 0.20.2). Until 0.24.0, two projects declaring
+            the same workload shared one mirror row and global views credited
+            one project's calls to the other (CHANGELOG.md, 0.24.0).
           </dd>
         </dl>
       </div>
@@ -294,8 +318,7 @@
             of 29 workloads could not be matched to the code that called them,
             including every one of the busiest (VISION.md); schema 23 added the
             call site. Only 3 of 214 workloads declare an output schema, so
-            grading most of them is a similarity guess (ROADMAP.md, "Output-contract
-            adoption").
+            grading most of them is a similarity guess (ROADMAP.md, phase 3).
           </dd>
         </dl>
       </div>
@@ -315,7 +338,11 @@
             request leaves the process, and every served call records its tier.
             Unknown routes are <code>unvetted</code>; the classifier never
             guesses upward. Your own <code>~/.somm/boundary.toml</code>
-            overrides the shipped defaults.
+            overrides the shipped defaults. An OpenRouter model counts as
+            <code>zdr</code> only when OpenRouter's published zero-retention
+            list names a qualifying upstream for it, and the request is then
+            pinned to those upstreams. A workload handler may declare only
+            <code>local</code>.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -326,9 +353,12 @@
           </dd>
           <dt>How it connects</dt>
           <dd>
-            Checked by routing, pins, streams, the proxy, MCP compare, shadow
-            evaluation and harnesses. <code>somm boundary audit</code> reads
-            the ledger and reports the loosest tier that served each workload.
+            Checked by routing, pins, streams, the OpenRouter roster walk,
+            workload handlers, the proxy, MCP compare, shadow evaluation and
+            harnesses. A refusal is a ledger row and never falls through to a
+            looser route. <code>somm boundary routes</code> lists every route's
+            tier and why; <code>somm boundary audit</code> reads the ledger and
+            reports the loosest tier that served each workload.
             Details: <a href="https://github.com/lavallee/somm/blob/main/docs/data-boundary.md">data-boundary.md</a>.
           </dd>
           <dt>Proof</dt>
@@ -357,7 +387,9 @@
             <a class="term" href="glossary.html#judge">judge</a> panel scores
             answers against a rubric. Gold and judge requests are ordinary
             ledger rows, so grading shows up in your costs, and a daily budget
-            caps it.
+            caps it. The gold call replays the request as production sent it:
+            system prompt, tools, response format, temperature and
+            <code>max_tokens</code>.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -382,9 +414,11 @@
             One project's grader ran inside its web process, graded 7,281
             samples, and stopped on 2026-09-19 when that process did; nobody
             noticed for three weeks (CHANGELOG.md, 0.17.0). That is why the loop
-            became a command and a timer in 0.17. Without an output schema,
-            grading measures similarity to the gold answer, not correctness
-            (ROADMAP.md).
+            became a command and a timer in 0.17. Until 0.24.0 two workers
+            could both claim one sample and pay for its gold call twice, and
+            an unparseable judge reply scored 0.0 (CHANGELOG.md, 0.24.0).
+            Without an output schema, grading measures similarity to the gold
+            answer, not correctness (ROADMAP.md, phase 3).
           </dd>
         </dl>
       </div>
@@ -397,12 +431,15 @@
           <dd>
             A weekly worker applies four rules and writes each finding with its
             evidence: <code>switch_model</code> (another graded model scores at
-            least 10% higher at no more cost), <code>new_model_landed</code>
+            least 0.1 higher on a 0&#8211;1 scale at no more cost, with at least
+            20 grades for each model in 30 days and a 95% interval that
+            excludes zero), <code>new_model_landed</code>
             (a newer same-provider model is at least 20% cheaper),
             <code>chronic_cooldown</code> (at least 10% of a workload's calls
             to a provider fail) and <code>adaptive_param_bump</code> (a
             reasoning model keeps spending its whole output budget thinking).
-            These are rules, not a language model. The
+            These are rules, not a language model. An open recommendation
+            expires after 30 days. The
             <a class="term" href="glossary.html#inbox">inbox</a>
             (<code>somm inbox list|show|apply|dismiss</code>, or the MCP tools)
             is where you act on them.
@@ -422,7 +459,10 @@
           <dd class="proof none">
             The evidence so far is unflattering. Triage of 49 open
             recommendations in October found 40 came from one rule misreading
-            one column; 0.17.2 fixed it (CHANGELOG.md, 0.17.2). By November, 54
+            one column; 0.17.2 fixed it (CHANGELOG.md, 0.17.2). Until 0.24.0
+            five grades and any 0.1 lift were enough for a
+            <code>switch_model</code> (<code>packages/somm/src/somm/workers/agent.py</code>).
+            By November, 54
             recommendations had been created and none applied (VISION.md). No
             recommendation has yet been applied on a real fleet because the
             evidence said so; that is the graduation test for ROADMAP phase 6.
@@ -441,7 +481,10 @@
             shadow scores, plan headroom and your earlier decisions.
             <code>somm_record_decision</code> stores the choice and the reason,
             always in the machine-wide store. <code>somm_search_decisions</code>
-            finds earlier decisions from any project. The name is a metaphor:
+            finds earlier decisions from any project. When a choice follows an
+            earlier decision, the agent passes its id as
+            <code>recalled_from</code>, and that
+            <a class="term" href="glossary.html#recall">recall</a> is counted. The name is a metaphor:
             it suggests, and remembers what you liked.
           </dd>
           <dt>The problem</dt>
@@ -464,9 +507,9 @@
             had been recorded, nearly all from one session; in November,
             recalls had never been stored, and nearly every decision in the
             shared ledger had been written by a test fixture (VISION.md). 0.20.2
-            stopped the test suite writing there (CHANGELOG.md). Storing
-            recalls is ROADMAP phase 1; until then the north-star number cannot
-            be counted.
+            stopped the test suite writing there, and 0.23.0 began storing
+            recalls, which <code>somm doctor</code> now counts (CHANGELOG.md).
+            There is no history of recalls yet.
           </dd>
         </dl>
       </div>
@@ -491,6 +534,9 @@
             set of instructions (<code>SKILL.md</code>, <code>SOMMELIER.md</code>)
             that tells a coding agent to use <code>somm.llm()</code>, name its
             workloads and ask the sommelier before choosing a model.
+            <code>somm mcp install</code> registers the server with Claude Code
+            or Codex and <code>somm skill install</code> links the skill into
+            their skill directories.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -508,9 +554,10 @@
           </dd>
           <dt>Proof</dt>
           <dd class="proof none">
-            No evidence yet. The November audit found both installed in no
-            coding-agent harness (VISION.md). A <code>somm mcp install</code>
-            command is planned (ROADMAP.md, phase 4).
+            No evidence of use yet. The November audit found both installed in
+            no coding-agent harness (VISION.md); the install commands arrived
+            in 0.23.0 (CHANGELOG.md) and <code>somm doctor</code> shows their
+            state per harness.
           </dd>
         </dl>
       </div>
@@ -525,9 +572,11 @@
             is a local web app on <code>localhost:7878</code>: a dashboard of
             usage, cost and quality by project and workload, a JSON read API,
             the scheduler that runs the loop, the <a href="#proxy">proxy</a>
-            and OpenTelemetry trace ingest. It binds to loopback by default and
-            requires a bearer token for everything except the dashboard's own
-            reads and inbox actions from the same machine.
+            and OpenTelemetry trace ingest (JSON, or protobuf with the
+            <code>somm-service[otlp]</code> extra). It binds to loopback by
+            default and requires a bearer token for everything except the
+            dashboard's own reads and inbox actions from a loopback
+            connection.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -560,9 +609,15 @@
             Three HTTP routes in the service: <code>POST /v1/messages</code>
             (Anthropic Messages), <code>POST /v1/chat/completions</code>
             (OpenAI Chat Completions) and <code>POST /v1/responses</code>
-            (OpenAI Responses, the common subset), each with streaming. A header, <code>X-Somm-Workload</code>, names the
-            workload. Calls share the library's budget gate, data boundary and
-            ledger.
+            (OpenAI Responses, the common subset), each with streaming. Each
+            request becomes one call on somm's own client, so it is routed,
+            pinned, cooled, boundary-checked, budget-gated, priced and recorded
+            like a library call, and a stream is forwarded event by event as it
+            arrives. The model string picks the route (<code>somm/auto</code>,
+            <code>provider/model</code>, or a bare model on the route's default
+            provider); <code>X-Somm-Workload</code> names the workload. Fields
+            it cannot apply yet are accepted and named in an
+            <code>x-somm-ignored</code> header.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -571,7 +626,7 @@
             recorded.
           </dd>
           <dt>How it connects</dt>
-          <dd>Writes ledger rows under the named workload and project.</dd>
+          <dd>Writes ledger rows under the named workload and project; reaches only providers somm has configured.</dd>
           <dt>Proof</dt>
           <dd class="proof none">
             No usage evidence yet. Since 0.24.0 each route translates the
@@ -660,7 +715,55 @@
             0.17.0). In 0.18 a read-only request sent to an adapter that could
             not enforce it ran with full write access; 0.19.0 refuses such
             requests (CHANGELOG.md, 0.19.0). No recommendation yet uses which
-            harness a model ran in (ROADMAP.md, "Harness receipts").
+            harness a model ran in (ROADMAP.md, "Later").
+          </dd>
+        </dl>
+      </div>
+
+      <!-- decisions -->
+      <div class="comp" id="decisions">
+        <h3>Decision calls</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            <code>llm.decide(text, ask=..., labels=... | scale=...)</code> asks
+            a decision model one typed question and returns a label, its
+            probability, every label's probability and an
+            <a class="term" href="glossary.html#abstain">abstained</a> flag when
+            no label reaches <code>min_p</code>. <code>decide_many</code> asks
+            several named questions in one request. Each request is one
+            <a class="term" href="glossary.html#decision-call">decision call</a>,
+            a ledger row with <code>kind = 'decide'</code>, checked against the
+            data boundary and budget and priced like any call. The one provider
+            is TypeSafe System One.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            "Is this ticket about billing?" is a yes/no question, but asked of
+            an LLM it is a paid paragraph that code then parses, and the
+            model's "confidence" is whatever text it wrote. A decision model
+            returns a probability per label, which can be checked against the
+            right answers.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            <code>result.verdict(label)</code> records the right answer
+            (a <a class="term" href="glossary.html#verdict">verdict</a>);
+            <code>somm_core.read.decision_calibration</code> reports the Brier
+            score and calibration error per workload.
+            <code>somm.decide.grade_decisions</code> has an LLM answer the same
+            questions on sampled inputs, and
+            <code>somm_core.read.decision_economics</code> compares agreement
+            and cost per 1,000 inputs with and without the decision model.
+            Escalating an abstained answer to an LLM is the caller's next call,
+            under the same workload
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/decisions.md">decisions.md</a>).
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof none">
+            No evidence yet. The adapter is built from the vendor's
+            documentation and tested against fakes; no live call was made
+            while building it (docs/decisions.md, "Limits").
           </dd>
         </dl>
       </div>
@@ -680,7 +783,12 @@
             query. The <a class="term" href="glossary.html#climb">climb</a> is
             the practice this allows: move each part of a workload that a rule
             can decide out of the model, one evidenced step at a time, and
-            move it back if a model does better.
+            move it back if a model does better. <code>somm climb</code> is a
+            read-only report of a workload's
+            <a class="term" href="glossary.html#rung">rungs</a>, read from the
+            <a class="term" href="glossary.html#receipt">receipts</a> chipsocket
+            writes: decisions per rung, the share answered without a model, and
+            model cost per 1,000 decisions.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -696,6 +804,9 @@
             the <code>somm.workload_handlers</code> entry point. The first
             non-model kind, <code>chip</code>, is published by fab
             (<a href="https://github.com/lavallee/somm/blob/main/docs/workload-handlers.md">workload-handlers.md</a>).
+            The climb report joins a model-answered receipt to its ledger row
+            by call id when the receipt carries one, else by exact workload
+            name (<a href="https://github.com/lavallee/somm/blob/main/docs/the-climb.md">the-climb.md</a>).
           </dd>
           <dt>Proof</dt>
           <dd class="proof">
@@ -704,8 +815,50 @@
             its gateway and meter (VISION.md). The November audit adds the
             limit: rules answered more than nine in ten of one workload's
             decisions and somm saw only the rest, so most of the climb is
-            invisible to the ledger today (VISION.md). ROADMAP phase 5 counts
-            those decisions.
+            invisible to the ledger (VISION.md). <code>somm climb</code>
+            (0.25.0) reads those decisions from the receipts; it has not yet
+            been run on a published workload, and the join to the ledger needs
+            the receipt writer to pass a call id (ROADMAP.md, phase 5).
+          </dd>
+        </dl>
+      </div>
+
+      <!-- gpus -->
+      <div class="comp" id="gpus">
+        <h3>Rented GPUs</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            Two separate things. <code>somm gpu spend</code> is a read-only
+            report of what you spent renting GPUs, read from the receipt files
+            gipper (a separate GPU rental tool) writes: totals by day and
+            workload, and the failed and capped jobs with what they cost. And a
+            model you serve on a rented machine with an OpenAI-compatible
+            server joins somm as a named provider through
+            <code>SOMM_OPENAI_ENDPOINTS</code>. somm never rents, starts or
+            stops a machine.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            A batch job on a rented GPU can cost more than a month of API
+            calls, and it is not in the ledger at all. Seeing both side by side
+            is the start of deciding where a workload should run.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Where a gipper job's workload name matches a somm workload exactly,
+            the report prints the ledger's spend for that workload beside the
+            GPU spend; there is no other join. <code>somm doctor</code> prints
+            a one-line total when a receipts directory exists. A named endpoint
+            is classified by the usual
+            <a href="#boundary">data boundary</a> rules and, with no known
+            price, records an unknown cost
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/rented-gpus.md">rented-gpus.md</a>).
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof none">
+            No evidence yet. GPU cost is not attributed to individual calls
+            (ROADMAP.md, phase 5).
           </dd>
         </dl>
       </div>
@@ -717,9 +870,16 @@
           <dt>What it is</dt>
           <dd>
             <code>somm_core.read</code>: read-only functions over a ledger
-            (<code>search_calls</code>, <code>spend_today</code>,
-            <code>fleet_summary</code> and others) with a stability promise:
-            result fields are only ever added, never renamed or removed.
+            (<code>search_calls</code>, <code>get_calls</code>,
+            <code>rollup</code>, <code>provider_health</code>,
+            <code>spend_today</code>, <code>north_star</code>,
+            <code>across_ledgers</code> and the decision reads) with a
+            stability promise: result fields are only ever added, never renamed
+            or removed, and a read on an older ledger returns
+            <code>None</code> for a column it predates.
+            <code>somm_core.vocabulary.vocabulary()</code> returns the outcome,
+            tier, route-source, cost-source and meter-unit sets with a version
+            stamp.
           </dd>
           <dt>The problem</dt>
           <dd>
@@ -737,7 +897,8 @@
           <dd class="proof">
             By October 2026 seven tools in one estate each had their own rollup
             and disagreed (read-api.md). Adoption is not finished: in November
-            ten consumers still read the ledger with their own SQL (VISION.md).
+            ten consumers still read the ledger with their own SQL (VISION.md);
+            0.24.0 added the reads they were writing by hand (CHANGELOG.md).
           </dd>
         </dl>
       </div>
@@ -748,13 +909,15 @@
         <dl>
           <dt>What it is</dt>
           <dd>
-            The <code>somm</code> command, with 25 subcommands in 0.22.0
-            (<code>somm --help</code>). The ones used most:
+            The <code>somm</code> command, with 32 top-level commands in
+            0.25.0 (<code>somm --help</code>). The ones used most:
             <code>status</code>, <code>doctor</code>, <code>plans</code>,
             <code>inbox</code>, <code>loop</code>, <code>boundary</code>,
             <code>frontier</code>, <code>compare</code>, <code>generate</code>
-            and <code>serve</code>. With <code>--json</code>, output and
-            failures have a fixed shape and stable exit codes.
+            and <code>serve</code>. <code>--project</code> goes before or after
+            any subcommand. With <code>--json</code>, output and failures have
+            a fixed shape, and exit codes follow one contract
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/cli.md">cli.md</a>).
           </dd>
           <dt>The problem</dt>
           <dd>

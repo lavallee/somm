@@ -107,7 +107,9 @@ code {
   padding: 1px 5px;
   border-radius: 3px;
   border: 1px solid var(--border);
+  overflow-wrap: anywhere;   /* long paths and identifiers wrap on narrow screens */
 }
+pre code { overflow-wrap: normal; }
 
 em { font-style: italic; color: var(--fg); }
 strong { color: var(--fg); font-weight: 600; }
