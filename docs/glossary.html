@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>somm · glossary</title>
+<meta name="description" content="Every term somm uses, defined in a sentence or two.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="./">
+      <span class="mark">somm</span>
+      <span class="mark-sub">/ glossary</span>
+    </a>
+    <nav>
+      <a href="./">home</a>
+      <a href="components.html">components</a>
+      <a href="why.html">why</a>
+      <a class="gh" href="https://github.com/lavallee/somm" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="section">
+    <div class="wrap">
+      <h2>Glossary</h2>
+      <p class="section-lede">
+        The words somm uses, in alphabetical order. Where a term names a part
+        of somm, the link goes to that part on the
+        <a href="components.html">components page</a>.
+      </p>
+
+      <dl class="terms">
+        <dt id="attempt">attempt</dt>
+        <dd>One try at a piece of work: one request to one model, or one run of a coding agent through a <a href="#harness">harness</a>. A call that falls back across providers makes several attempts.</dd>
+
+        <dt id="call">call</dt>
+        <dd>One request your code makes through somm, such as one <code>generate()</code>. Every call writes exactly one row to the <a href="#ledger">ledger</a>, including calls that fail or are refused.</dd>
+
+        <dt id="chip">chip</dt>
+        <dd>A small, tested, deterministic component that can do part of a workload's job instead of a model. The first kind of <a href="#handler">handler</a> that is not a model; published by fab, not by somm.</dd>
+
+        <dt id="climb">climb</dt>
+        <dd>Moving the parts of a <a href="#workload">workload</a> that a rule can decide out of the model, one step at a time, on recorded evidence, and moving them back if a model does better. <a href="components.html#handlers">Handlers and the climb</a>.</dd>
+
+        <dt id="cooldown">cooldown</dt>
+        <dd>A timed rest for a provider and model after it fails. Stored in SQLite so every process sees it. It doubles every ten consecutive failures, to at most a day; one success clears it.</dd>
+
+        <dt id="cost-of-pass">cost of pass</dt>
+        <dd>Dollars per correct answer: a workload's cost divided by how often a <a href="#judge">judge</a> passes its answers. The number a routing decision turns on. Planned (ROADMAP.md); somm does not compute it yet.</dd>
+
+        <dt id="data-boundary">data boundary</dt>
+        <dd>How far a workload's data may travel, as one of four tiers, strictest first. A <a href="#route">route</a> looser than the boundary is refused before any request leaves the process. <a href="components.html#boundary">Data boundary</a>.
+          <ul class="plain">
+            <li><code>local</code>: the data never leaves hardware you run (Ollama or another server on loopback or a private address).</li>
+            <li><code>zdr</code>: a third party processes it under an explicit zero-retention, no-training commitment. Only you can declare it, except where OpenRouter's own list proves it for a model.</li>
+            <li><code>subscribed</code>: a US-headquartered, first-party provider you hold an account with, under its standard terms (for example the Anthropic or OpenAI API). Seats are assumed to be here.</li>
+            <li><code>unvetted</code>: everything else, including anything somm cannot classify. The default boundary, which admits every route.</li>
+          </ul>
+        </dd>
+
+        <dt id="decision">decision</dt>
+        <dd>A recorded model choice: the question, the candidates, the model chosen and the reason. Always stored in the machine-wide <a href="#mirror">mirror</a>, so every project can find it.</dd>
+
+        <dt id="fallback">fallback</dt>
+        <dd>Moving to the next provider when a call that did not name one fails. A <a href="#pin">pinned</a> call does not fall back unless you pass <code>allow_fallback=True</code>.</dd>
+
+        <dt id="frontier">frontier</dt>
+        <dd>For one workload, the graded models ranked by score and latency (<code>somm frontier</code>).</dd>
+
+        <dt id="gold-model">gold model</dt>
+        <dd>The stronger model that <a href="#shadow-evaluation">shadow evaluation</a> treats as the reference answer.</dd>
+
+        <dt id="handler">handler (workload handler)</dt>
+        <dd>A plug-in that serves a workload with something other than the provider chain: a rule, a classifier, a <a href="#chip">chip</a>. It answers or declines; a declined call goes to the models. Each handler has a <a href="#kind">kind</a>.</dd>
+
+        <dt id="harness">harness</dt>
+        <dd>The program that runs an autonomous coding agent: Claude Code, Codex, OpenCode or Pi. somm runs one <a href="#attempt">attempt</a> and normalises the result; it does not queue or retry. <a href="components.html#harnesses">Harnesses</a>.</dd>
+
+        <dt id="inbox">inbox</dt>
+        <dd>Where <a href="#recommendation">recommendations</a> wait for you to apply or dismiss them: <code>somm inbox</code>, or the MCP tools.</dd>
+
+        <dt id="judge">judge</dt>
+        <dd>A model, or a panel of models, that scores an answer against a written rubric. Its requests are ledger rows like any other.</dd>
+
+        <dt id="kind">kind</dt>
+        <dd>What serves a workload. The default kind is <code>llm</code>, the provider chain; a <a href="#handler">handler</a> adds another.</dd>
+
+        <dt id="ledger">ledger</dt>
+        <dd>The SQLite file that holds one row per call for a project, at <code>.somm/calls.sqlite</code>. You own it and can query it with plain SQL. <a href="components.html#ledger">Ledger and mirror</a>.</dd>
+
+        <dt id="loop">loop (intelligence loop)</dt>
+        <dd>Three workers that read the ledger and write back: model intel (daily), shadow evaluation (each pass) and recommendations (weekly). Run once with <code>somm loop run</code> or on a timer with <code>somm loop install</code>.</dd>
+
+        <dt id="mcp">MCP</dt>
+        <dd>Model Context Protocol, the standard way a coding agent calls outside tools. <code>somm-mcp</code> gives an agent 14 tools over the ledger and the sommelier. <a href="components.html#mcp">MCP server and skill</a>.</dd>
+
+        <dt id="mirror">mirror</dt>
+        <dd>The machine-wide copy at <code>~/.somm/global.sqlite</code>. It holds calls and workloads from every project (on by default) and all decisions. It does not hold samples, evaluations or recommendations.</dd>
+
+        <dt id="model-intel">model intel</dt>
+        <dd>somm's local catalogue of models, prices, context windows and capabilities. It starts from a bundled price snapshot and refreshes daily from models.dev, OpenRouter's catalogue and your local Ollama. It is a cache: answering never waits on the network.</dd>
+
+        <dt id="observed-ceiling">observed ceiling</dt>
+        <dd>A quota limit inferred from your own rate-limit errors: the usage in the window at the moment the provider said no.</dd>
+
+        <dt id="pacing">pacing</dt>
+        <dd>Comparing how much of a quota is used with how much of its window has passed, and trying a provider that is ahead of pace only after the others.</dd>
+
+        <dt id="pin">pin</dt>
+        <dd>Naming a provider or model on a call. A pin is exact: that model serves the call or the call fails, and the failure is recorded against the model you asked for.</dd>
+
+        <dt id="plan">plan</dt>
+        <dd>How a provider bills, declared in <code>~/.somm/plans.toml</code>. <em>PAYG</em> (pay as you go) charges per token in dollars. <em>Metered</em> gives a quota per window, such as requests per five hours, where the scarce thing is headroom, not money. <a href="components.html#plans">Plans and quota pacing</a>.</dd>
+
+        <dt id="policy">policy</dt>
+        <dd>A workload's routing rules: retries, timeout, a fallback chain, or the <code>somm/auto</code> tiers that send simple requests to a fast model and harder ones to a stronger one.</dd>
+
+        <dt id="privacy-class">privacy class</dt>
+        <dd>A per-workload label. <code>private</code> means the <code>local</code> <a href="#data-boundary">boundary</a>, and its calls are never sampled for grading.</dd>
+
+        <dt id="project">project</dt>
+        <dd>The name a client registers under, <code>somm.llm(project="my_app")</code>. One project, one ledger.</dd>
+
+        <dt id="provider">provider</dt>
+        <dd>A place a call can go: an API such as Anthropic or OpenRouter, a local server such as Ollama, or a <a href="#seat">seat</a>.</dd>
+
+        <dt id="recall">recall</dt>
+        <dd>A project finding an earlier <a href="#decision">decision</a> when it chooses a model. The count of recalls across projects is somm's north-star number. Recalls are not stored yet, so it cannot be counted (ROADMAP.md, phase 1).</dd>
+
+        <dt id="recommendation">recommendation</dt>
+        <dd>A proposal written by a rule, with the evidence it came from: switch model, a cheaper new model, a provider that keeps failing, or a larger output budget. <a href="components.html#inbox">Recommendations and the inbox</a>.</dd>
+
+        <dt id="route">route</dt>
+        <dd>One concrete destination for a request: a provider, a model and an endpoint. A <a href="#data-boundary">tier</a> belongs to a route, not a provider: the same Ollama daemon is <code>local</code> for a model on your machine and <code>unvetted</code> for a cloud-tagged one.</dd>
+
+        <dt id="sample">sample</dt>
+        <dd>A stored prompt and response. Off by default, opted into per workload, never for private workloads. Samples are what shadow evaluation grades.</dd>
+
+        <dt id="seat">seat</dt>
+        <dd>A logged-in subscription used as a provider: the <code>claude</code> or <code>codex</code> command-line tools, or a ChatGPT account. Paid per month, limited per window. Seats never join the default chain; you reach them by pinning.</dd>
+
+        <dt id="shadow-evaluation">shadow evaluation</dt>
+        <dd>Re-running a sample of real calls on a <a href="#gold-model">gold model</a> in the background and scoring how close the production answer was. <a href="components.html#shadow">Shadow evaluation and judges</a>.</dd>
+
+        <dt id="skill">skill</dt>
+        <dd>Written instructions a coding agent loads. <code>somm-skill</code> teaches it to use <code>somm.llm()</code>, name its workloads and consult the sommelier.</dd>
+
+        <dt id="sommelier">sommelier</dt>
+        <dd>The part of somm that ranks candidate models and remembers which you chose and why, across projects. <a href="components.html#sommelier">The sommelier</a>.</dd>
+
+        <dt id="workload">workload</dt>
+        <dd>A named job your code asks for, such as <code>claim_extract</code>, not a model. Cost, failures, budgets, boundaries, grades and recommendations attach to workloads. <a href="components.html#workloads">Workloads</a>.</dd>
+      </dl>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      somm · <a href="./">home</a> · <a href="components.html">components</a> ·
+      <a href="why.html">why build this</a> ·
+      <a href="https://github.com/lavallee/somm" rel="noopener">source</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
