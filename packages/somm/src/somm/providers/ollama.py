@@ -244,59 +244,58 @@ class OllamaProvider:
         text_parts: list[str] = []
         tool_calls: list[dict] = []
         try:
-            with httpx.Client(timeout=request.timeout or self.timeout) as client:
-                with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
-                    if resp.status_code == 404:
-                        raise SommModelNotFound(
-                            f"ollama model {model!r} unavailable (404). Run ollama pull {model}.",
+            with shared_client(self).stream(
+                "POST", f"{self.base_url}/api/chat", json=payload,
+                timeout=request_timeout(request.timeout or self.timeout),
+            ) as resp:
+                if resp.status_code != 200:
+                    body = resp.read().decode("utf-8", errors="replace")
+                    classify_http_status(
+                        resp.status_code, body, provider=self.name, model=model,
+                        headers=resp.headers,
+                        detail=(f"ollama model {model!r} unavailable (404). Run ollama pull {model}."
+                                if resp.status_code == 404 else None),
+                    )
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    message = data.get("message") or {}
+                    text = message.get("content") or ""
+                    thinking = message.get("thinking") or ""
+                    calls = message.get("tool_calls") or []
+                    fragments = [
+                        ToolCallDelta(
+                            len(tool_calls) + i,
+                            id=str(c.get("id", "")),
+                            name=str((c.get("function") or {}).get("name", "")),
+                            arguments=json.dumps((c.get("function") or {}).get("arguments") or {}),
+                        )
+                        for i, c in enumerate(calls)
+                    ]
+                    tool_calls.extend(calls)
+                    text_parts.append(text)
+                    if text or thinking or fragments:
+                        yield SommChunk(text=text, reasoning=thinking, tool_calls=fragments)
+                    if data.get("done"):
+                        parsed = _parse_ollama_tool_calls(tool_calls)
+                        yield SommChunk(text="", done=True, model=model, response=SommResponse(
+                            text=strip_think_block("".join(text_parts)),
                             model=model,
-                        )
-                    if resp.status_code != 200:
-                        body = resp.read().decode("utf-8", errors="replace")
-                        classify_http_status(
-                            resp.status_code, body, provider=self.name, model=model,
-                            headers=resp.headers,
-                        )
-                    for line in resp.iter_lines():
-                        if not line:
-                            continue
-                        try:
-                            data = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        message = data.get("message") or {}
-                        text = message.get("content") or ""
-                        thinking = message.get("thinking") or ""
-                        calls = message.get("tool_calls") or []
-                        fragments = [
-                            ToolCallDelta(
-                                len(tool_calls) + i,
-                                id=str(c.get("id", "")),
-                                name=str((c.get("function") or {}).get("name", "")),
-                                arguments=json.dumps((c.get("function") or {}).get("arguments") or {}),
-                            )
-                            for i, c in enumerate(calls)
-                        ]
-                        tool_calls.extend(calls)
-                        text_parts.append(text)
-                        if text or thinking or fragments:
-                            yield SommChunk(text=text, reasoning=thinking, tool_calls=fragments)
-                        if data.get("done"):
-                            parsed = _parse_ollama_tool_calls(tool_calls)
-                            yield SommChunk(text="", done=True, model=model, response=SommResponse(
-                                text=strip_think_block("".join(text_parts)),
-                                model=model,
-                                tokens_in=int(data.get("prompt_eval_count", 0) or 0),
-                                tokens_out=int(data.get("eval_count", 0) or 0),
-                                latency_ms=int((time.monotonic() - t0) * 1000),
-                                raw=data,
-                                tool_calls=parsed,
-                                stop_reason=_normalize_ollama_done_reason(
-                                    data.get("done_reason"), has_tool_calls=bool(parsed)
-                                ),
-                                max_tokens_sent=payload["options"]["num_predict"],
-                            ))
-                            return
+                            tokens_in=int(data.get("prompt_eval_count", 0) or 0),
+                            tokens_out=int(data.get("eval_count", 0) or 0),
+                            latency_ms=int((time.monotonic() - t0) * 1000),
+                            raw=data,
+                            tool_calls=parsed,
+                            stop_reason=_normalize_ollama_done_reason(
+                                data.get("done_reason"), has_tool_calls=bool(parsed)
+                            ),
+                            max_tokens_sent=payload["options"]["num_predict"],
+                        ))
+                        return
         except httpx.TimeoutException as e:
             raise SommTimeout(f"ollama stream timeout on {model}: {e}", cooldown_s=60.0,
                               model=model) from e

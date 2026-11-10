@@ -254,10 +254,10 @@ class AnthropicProvider:
         blocks: dict[int, dict] = {}
         tool_index: dict[int, int] = {}
         try:
-            with (
-                httpx.Client(timeout=request.timeout or self.timeout) as client,
-                client.stream("POST", self.API_URL, headers=self._headers(), json=payload) as resp,
-            ):
+            with shared_client(self).stream(
+                "POST", self.API_URL, headers=self._headers(), json=payload,
+                timeout=request_timeout(request.timeout or self.timeout),
+            ) as resp:
                 if resp.status_code != 200:
                     body = resp.read().decode("utf-8", errors="replace")
                     self._classify_status(

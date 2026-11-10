@@ -293,6 +293,12 @@ def _failure_error(
             f"{result.provider}/{result.model} declined to answer "
             f"(stop_reason={result.stop_reason})",
             stop_reason=result.stop_reason,
+            text=result.text,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
+            model=result.model or None,
+            provider=result.provider or None,
+            call_id=result.call_id,
         )
     elif result.outcome == Outcome.OK or (result.outcome == Outcome.EMPTY and allow_empty):
         return None
@@ -3544,9 +3550,16 @@ class SommLLM:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        """Drain the writer queue and stop the thread. Optional for short-lived processes."""
+        """Drain the writer queue, stop the thread, and close each provider's
+        HTTP connections (a closed provider reopens on its next call).
+        Optional for short-lived processes."""
         self._writer.flush()
         self._writer.stop()
+        for p in [*self.providers, *(self._pinned_only_cache or {}).values()]:
+            close = getattr(p, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):  # closing must not raise
+                    close()
 
     def __enter__(self) -> SommLLM:
         return self

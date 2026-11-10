@@ -279,15 +279,13 @@ class OpenAICompatProvider:
             if self.stream_include_usage:
                 payload["stream_options"] = {"include_usage": True}
             try:
-                with (
-                    httpx.Client(timeout=request.timeout or self.timeout) as client,
-                    client.stream(
-                        "POST",
-                        self._chat_url(),
-                        headers=self._headers(),
-                        json=payload,
-                    ) as resp,
-                ):
+                with shared_client(self).stream(
+                    "POST",
+                    self._chat_url(),
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=request_timeout(request.timeout or self.timeout),
+                ) as resp:
                     if resp.status_code != 200:
                         try:
                             text = resp.read().decode("utf-8", errors="replace")[:200]
