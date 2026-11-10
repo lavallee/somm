@@ -322,8 +322,76 @@ def _boundary_base_urls(cfg) -> dict[str, str]:
     return urls
 
 
+def _cmd_boundary_openrouter_evidence(args: argparse.Namespace, model: str) -> int:
+    """Each upstream endpoint for one OpenRouter model, judged from live evidence."""
+    from somm_core.boundary import load_policy
+
+    from somm.providers.openrouter_evidence import load_evidence, qualifying_upstreams
+
+    policy = load_policy()
+    evidence = load_evidence() or {"zdr": [], "providers": [], "fetched_at": None}
+    hq = {p.get("slug"): p.get("headquarters") for p in evidence["providers"]}
+    listed = {e["tag"]: e for e in evidence["zdr"] if e.get("model_id") == model and e.get("tag")}
+    qualifying = set(qualifying_upstreams(
+        model, evidence["zdr"], evidence["providers"], policy.zdr_headquarters
+    ))
+    tags = set(listed)
+    try:  # every endpoint, including those not on the ZDR list (public, no key)
+        import httpx
+
+        r = httpx.get(f"https://openrouter.ai/api/v1/models/{model}/endpoints", timeout=10.0)
+        r.raise_for_status()
+        tags |= {e["tag"] for e in r.json()["data"]["endpoints"] if e.get("tag")}
+        all_listed = True
+    except Exception:  # noqa: BLE001 — show what the ZDR list alone says
+        all_listed = False
+    rows = []
+    for tag in sorted(tags):
+        slug = tag.split("/")[0]
+        entry = listed.get(tag)
+        rows.append({
+            "endpoint": tag,
+            "headquarters": hq.get(slug),
+            "on_zdr_list": entry is not None,
+            "safety_retention": entry.get("safety_retention") if entry else None,
+            "qualifies": tag in qualifying,
+        })
+    fetched = evidence["fetched_at"]
+    fetched_text = (
+        datetime.fromtimestamp(fetched, UTC).strftime("%Y-%m-%d %H:%M UTC") if fetched else None
+    )
+    if args.json:
+        print(json.dumps({
+            "route": f"openrouter/{model}", "evidence_fetched_at": fetched_text,
+            "zdr_headquarters": list(policy.zdr_headquarters), "endpoints": rows,
+        }, indent=2))
+        return 0
+    print(f"openrouter/{model}")
+    print(f"evidence fetched: {fetched_text or 'never (no evidence: nothing is promoted)'}"
+          f"   allowed headquarters: {', '.join(policy.zdr_headquarters) or '(none)'}")
+    if not all_listed:
+        print("(model endpoint list unreachable; showing ZDR-listed endpoints only)")
+    print()
+    print(f"{'endpoint':<32} {'hq':<6} {'zdr list':<9} {'safety ret.':<12} qualifies")
+
+    def yn(v):
+        return "-" if v is None else ("yes" if v else "no")
+
+    for r in rows:
+        print(f"{r['endpoint'][:31]:<32} {(r['headquarters'] or '?'):<6} "
+              f"{yn(r['on_zdr_list']):<9} {yn(r['safety_retention']):<12} {yn(r['qualifies'])}")
+    print()
+    print("under a zdr or subscribed boundary: "
+          + (f"admitted as zdr, pinned to {len(qualifying)} endpoint(s)" if qualifying
+             else "refused (no qualifying endpoint)"))
+    return 0
+
+
 def _cmd_boundary_routes(args: argparse.Namespace) -> int:
     from somm_core.boundary import boundary_path, load_policy
+
+    if (args.route or "").startswith("openrouter/"):
+        return _cmd_boundary_openrouter_evidence(args, args.route.split("/", 1)[1])
 
     from somm.boundary import provider_routes
     from somm.client import build_default_providers
@@ -2121,7 +2189,10 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                 llm.repo.workload_by_name(args.workload, llm.config.project), None
             )
             provider_obj = next(p for p in llm.providers if p.name == provider_name)
-            route = provider_tier(provider_obj, model or None)
+            route = provider_tier(
+                provider_obj, model or None,
+                boundary=None if boundary.is_default else boundary.tier,
+            )
             if not boundary.is_default and not admit(route, boundary.tier):
                 results.append(
                     {
@@ -3339,6 +3410,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pbd_sub = pbd.add_subparsers(dest="boundary_cmd", required=True)
     pbr = pbd_sub.add_parser("routes", help="every configured route with its tier and basis")
+    pbr.add_argument(
+        "route", nargs="?", default=None,
+        help="openrouter/<model-id>: each upstream endpoint, judged from live ZDR evidence",
+    )
     pbr.add_argument("--project", default=None)
     pbr.add_argument("--json", action="store_true")
     pbr.set_defaults(func=_cmd_boundary_routes)

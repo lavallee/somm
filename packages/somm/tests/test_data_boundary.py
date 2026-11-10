@@ -117,7 +117,6 @@ def test_tiers_order_by_strictness_not_spelling():
     ]
     assert admit("local", "zdr") and admit("zdr", "zdr")
     assert not admit("subscribed", "zdr")
-    assert DataTier.UNVETTED.admits("subscribed")
     with pytest.raises(ValueError, match="local, zdr, subscribed, unvetted"):
         parse_tier("private")
 

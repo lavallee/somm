@@ -99,7 +99,7 @@ def test_local_target_is_admitted_and_tier_recorded(tmp_path):
     assert _rows(repo)[-1][-1] == "local"
 
 
-def test_header_may_only_tighten_and_default_is_unchanged(tmp_path):
+def test_default_boundary_leaves_the_proxy_unchanged(tmp_path):
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
     repo.register_workload(name="open", project=cfg.project)
@@ -109,10 +109,6 @@ def test_header_may_only_tighten_and_default_is_unchanged(tmp_path):
     with patch("somm_service.proxy.litellm.completion", return_value=_anthropic_resp()) as c:
         ok = client.post("/v1/chat/completions", json=msg,
                          headers=_headers(app, **{"x-somm-workload": "open"}))
-        tightened = client.post(
-            "/v1/chat/completions", json=msg,
-            headers=_headers(app, **{"x-somm-workload": "open", "x-somm-data-boundary": "zdr"}),
-        )
-    assert ok.status_code == 200 and tightened.status_code == 403
+    assert ok.status_code == 200
     assert c.call_count == 1
     assert _rows(repo)[0][-1] == "subscribed"

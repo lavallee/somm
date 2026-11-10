@@ -13,7 +13,7 @@ Strictest first. A workload with boundary `B` may use a route of tier `T` when
 | Tier | Meaning | Shipped examples |
 |---|---|---|
 | `local` | The data never leaves hardware you run | Ollama, or any OpenAI-compatible server, on loopback (`127.0.0.1`, `::1`, `localhost`) or a private address (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`) |
-| `zdr` | A third party processes it under an explicit zero-retention, no-training commitment | Nothing. A ZDR agreement belongs to an account, and can exclude models, so only you can declare it |
+| `zdr` | A third party processes it under an explicit zero-retention, no-training commitment | No static rule. An OpenRouter model can earn it from OpenRouter's own ZDR list (see [below](#openrouter-tiers-from-evidence)); otherwise only you can declare it, since a ZDR agreement belongs to an account and can exclude models |
 | `subscribed` | A US-headquartered, first-party provider you hold an account with, under its standard terms | Anthropic API, OpenAI API (on their own hosts); Claude Code, Codex and ChatGPT seats (*assumed*, see below) |
 | `unvetted` | Unknown provenance, non-US jurisdiction, free tiers, or declared training use | Everything else: OpenRouter, Gemini (until you declare a paid key), Perplexity (pending your approval), DeepSeek, MiniMax, Ollama `:cloud` / `-cloud` models, Ollama on a remote host, plugin providers, coding agents that can use any provider |
 
@@ -31,8 +31,7 @@ Rules the classifier follows:
 - **Every shipped default says why.** Each entry in
   `packages/somm-core/src/somm_core/data/boundary_defaults.toml` has a
   `basis`; an entry that states a vendor fact also has the `source` it was
-  read from, a short `quote`, `last_verified` and `confidence`. Only
-  `confidence = "high"` entries promote a route above `unvetted`.
+  read from, a short `quote`, `last_verified` and `confidence`.
 - **Assumed tiers.** The seats (`claude-cli`, `codex-cli`, `chatgpt`) ship
   as `subscribed`, but whether a consumer seat trains on your data depends on
   an account setting somm cannot see. `somm boundary routes` and
@@ -58,8 +57,7 @@ Resolution order for a call, first hit wins:
 4. `unvetted`, the fleet default. It admits every route, which is how somm
    behaved before 0.21.
 
-A per-call `data_boundary=` (and the proxy's `X-Somm-Data-Boundary` header)
-may only tighten the result. A looser value is ignored.
+A per-call `data_boundary=` may only tighten the result. A looser value is ignored.
 
 ```bash
 somm workload create triage --data-boundary subscribed   # `add` works too
@@ -136,6 +134,50 @@ Workload handlers are matched as `handler:<kind>`. A handler class may also
 declare its own tier with a `data_tier` attribute; undeclared is `unvetted`,
 so a bounded workload does not consult it (the boundary-checked provider chain
 answers instead).
+
+## OpenRouter: tiers from evidence
+
+Every OpenRouter route is `unvetted` by static rule, and that stays the floor.
+When a call's boundary is `zdr` or `subscribed`, somm also reads OpenRouter's
+own evidence and may admit a model as `zdr`:
+
+- `GET /api/v1/endpoints/zdr` lists each endpoint OpenRouter routes under zero
+  data retention, per model id and upstream endpoint (`deepinfra/fp8`).
+- `GET /api/v1/providers` gives each upstream's headquarters.
+
+An endpoint qualifies when it is on the ZDR list for exactly that model id,
+its upstream has no endpoint for the model marked `safety_retention` (kept for
+abuse review, so not strict zero retention), and the upstream's headquarters is
+known and allowed. A `:free` model is its own id with its own endpoints, so it
+is judged separately (on 2026-11-09 only two `:free` ids were on the list at
+all). The allowed list is `["US"]` by default; one setting replaces it (an
+unreadable file, or a value that is not a list of strings, allows none):
+
+```toml
+[defaults]
+zdr_headquarters = ["US", "CA"]
+```
+
+With qualifying endpoints, the request is pinned to exactly them:
+`"provider": {"only": [...], "allow_fallbacks": false, "zdr": true,
+"data_collection": "deny"}`. The call records `data_tier = 'zdr'`, and
+`routing_json.upstream` keeps the pin and the upstream that served when the
+response names it. With none, the route is refused like any other; a roster
+walk moves to its next model. With fallbacks off, a pinned request fails
+(and the roster or chain moves on) when none of its endpoints can serve it,
+rather than reaching one that retains. The tier is `zdr` only when the pin is on the
+wire, so streams (which are not pinned) and the proxy (which goes through
+litellm) are not promoted.
+
+Under the default boundary nothing here runs: requests are unchanged and the
+lists are never fetched. Otherwise they are fetched on first need, at most
+daily, and kept as `openrouter-evidence.json` beside `boundary.toml`. A failed
+fetch keeps the last good copy; with no copy nothing is promoted.
+
+```bash
+somm boundary routes openrouter/google/gemma-4-31b-it   # each endpoint, judged
+somm boundary routes openrouter/google/gemma-4-31b-it --json
+```
 
 ## What happens at a refusal
 
@@ -232,5 +274,5 @@ Not guaranteed:
   is not covered. Hooks see the prompt before any boundary check.
 - A hostname is never resolved to decide `local`: a box reached by name is
   `unvetted` until you declare it.
-- OpenRouter routes are not made `zdr` by somm today; a gateway constraint
-  that enforces zero retention on the wire is a planned follow-up.
+- An OpenRouter `zdr` tier rests on OpenRouter's published list and its
+  routing honouring `provider.only`; somm checks neither beyond reading them.

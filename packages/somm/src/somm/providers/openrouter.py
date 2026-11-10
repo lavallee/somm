@@ -16,6 +16,13 @@ OpenRouter:
   than an estimate.
 - **Attribution headers.** ``HTTP-Referer`` and ``X-Title``, which OpenRouter
   recommends.
+- **Tiers from evidence.** Under a boundary stricter than ``unvetted``, a
+  model whose static tier is refused can still be admitted as ``zdr`` when
+  OpenRouter's own ZDR list names qualifying upstreams (see
+  :mod:`somm.providers.openrouter_evidence`). The request is then pinned to
+  exactly those endpoints with fallbacks off, and the response is marked so
+  the call records ``data_tier = 'zdr'``. Under the default boundary nothing
+  here runs and the request is unchanged.
 
 When every roster model is cooling or failed, the adapter raises a
 provider-level ``SommTransientError`` (``model=""``) and the router falls
@@ -44,6 +51,9 @@ if TYPE_CHECKING:
 # Pruned 2026-10 — openrouter/elephant-alpha (withdrawn April 2026),
 # google/gemma-3-27b-it:free and meta-llama/llama-3.3-70b-instruct:free (no
 # successful call since July) had together failed 100,000 times in one ledger.
+# SommRequest.metadata key carrying the upstream endpoints to pin one attempt to.
+_PIN_KEY = "openrouter_only"
+
 DEFAULT_FREE_ROSTER: list[str] = [
     "google/gemma-4-31b-it:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
@@ -81,7 +91,31 @@ class OpenRouterProvider(OpenAICompatProvider):
         # speak the same wire format. The base records `usage.cost` as a
         # reported cost.
         payload["usage"] = {"include": True}
+        only = (request.metadata or {}).get(_PIN_KEY)
+        if only:
+            # `zdr` and `data_collection` are belt and braces: `only` alone
+            # already names strict-ZDR endpoints, and no fallback may widen it.
+            payload["provider"] = {
+                "only": list(only),
+                "allow_fallbacks": False,
+                "zdr": True,
+                "data_collection": "deny",
+            }
         return payload
+
+    def zdr_only(self, model: str) -> list[str]:
+        """Endpoint tags that carry ``model`` under strict zero retention, by
+        OpenRouter's live ZDR list and the owner's ``zdr_headquarters``."""
+        from somm_core.boundary import load_policy
+
+        from somm.providers.openrouter_evidence import load_evidence, qualifying_upstreams
+
+        evidence = load_evidence()
+        if not evidence:
+            return []
+        return qualifying_upstreams(
+            model, evidence["zdr"], evidence["providers"], load_policy().zdr_headquarters
+        )
 
     def generate(self, request: SommRequest) -> SommResponse:
         # Explicit model: a pin is a pin — no roster, no substitution.
@@ -92,9 +126,15 @@ class OpenRouterProvider(OpenAICompatProvider):
         if request.data_boundary:
             # A :free model and a paid one can sit in different tiers, so the
             # boundary is checked per roster model, before any is tried.
-            from somm.boundary import ResolvedBoundary, admit, classify, parse_tier, refuse
+            from somm.boundary import (
+                ResolvedBoundary,
+                admit,
+                parse_tier,
+                provider_routes,
+                refuse,
+            )
 
-            routes = [classify(self.name, m, base_url=self.base_url) for m in self.roster]
+            routes = provider_routes(self, boundary=request.data_boundary)
             roster = [r.model for r in routes if admit(r, request.data_boundary)]
             if not roster:
                 raise refuse(
@@ -137,7 +177,34 @@ class OpenRouterProvider(OpenAICompatProvider):
         # fully parsed response. Pin the model for this attempt without
         # mutating the caller's request.
         pinned = replace(request, model=model)
+        only: list[str] = []
+        if request.data_boundary:
+            from somm.boundary import ResolvedBoundary, admit, evidence_route, parse_tier, refuse
+
+            # Decided once per attempt: what goes on the wire is what is recorded.
+            route, only = evidence_route(self, model, request.data_boundary)
+            if not admit(route, request.data_boundary):
+                raise refuse(
+                    workload=(request.metadata or {}).get("somm_workload"),
+                    boundary=ResolvedBoundary(parse_tier(request.data_boundary), "request"),
+                    refused=[route],
+                    context=f"openrouter model {model!r}",
+                )
+            if only:
+                pinned = replace(pinned, metadata={**(request.metadata or {}), _PIN_KEY: only})
         resp = super().generate(pinned)
+        if only:
+            served = resp.raw.get("provider") if isinstance(resp.raw, dict) else None
+            resp.raw = {
+                **(resp.raw or {}),
+                "somm_route": {
+                    "data_tier": "zdr",
+                    "only": only,
+                    # Undocumented but present on OpenRouter responses: the
+                    # upstream's display name. Kept only when it is a string.
+                    "served_by": served if isinstance(served, str) else None,
+                },
+            }
         if self.tracker:
             # Best-effort: a locked ledger must not turn this paid answer
             # into a failure the router would retry elsewhere.

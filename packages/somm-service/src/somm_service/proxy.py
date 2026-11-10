@@ -16,7 +16,6 @@ Supported request shapes:
   Headers:
     X-Somm-Workload: <workload name>   (optional; defaults to config.project default)
     X-Somm-Project:  <project name>    (optional; defaults to config.project)
-    X-Somm-Data-Boundary: <tier>       (optional; may only tighten the workload's)
 
 On a route outside the workload's data boundary: 403 with SOMM_PRIVACY_VIOLATION,
 a refusal row in the ledger, and litellm is never invoked.
@@ -514,11 +513,7 @@ def _boundary_refusal(
     """
     from somm.boundary import check_route, resolve_boundary
 
-    header = request.headers.get("x-somm-data-boundary")
-    try:
-        boundary = resolve_boundary(workload, per_call=header, project=project)
-    except ValueError:
-        boundary = resolve_boundary(workload, per_call="local", project=project)
+    boundary = resolve_boundary(workload, project=project)
     if boundary.is_default:
         return None
     try:

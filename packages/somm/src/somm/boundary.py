@@ -11,6 +11,7 @@ eval, judges, the proxy, MCP compare, harnesses) goes through
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from somm_core.boundary import (
@@ -36,6 +37,7 @@ __all__ = [
     "check_route",
     "admit",
     "classify",
+    "evidence_route",
     "parse_tier",
     "provider_routes",
     "provider_tier",
@@ -60,7 +62,11 @@ def base_url_of(provider: Any) -> str | None:
 
 
 def provider_routes(
-    provider: Any, model: str | None = None, *, roster: bool = True
+    provider: Any,
+    model: str | None = None,
+    *,
+    roster: bool = True,
+    boundary: DataTier | str | None = None,
 ) -> list[RouteTier]:
     """The routes a provider could take for ``model``.
 
@@ -69,27 +75,64 @@ def provider_routes(
     ``:free`` model and a paid one can sit in different tiers; any other
     provider uses its default model. ``roster=False`` (streams, which do
     not walk a roster) classifies the provider's default model only.
+    ``boundary`` lets live evidence promote a route (:func:`evidence_route`).
     """
-    name = getattr(provider, "name", "") or ""
-    base_url = base_url_of(provider)
-    policy = load_policy()
     if model:
-        return [policy.classify(name, model, base_url=base_url)]
+        return [evidence_route(provider, model, boundary)[0]]
     explicit = getattr(provider, "default_model", None)
     inner = _inner(provider)
     members = getattr(inner, "roster", None)
     if roster and not explicit and isinstance(members, list) and members:
-        return [policy.classify(name, m, base_url=base_url) for m in members]
+        return [evidence_route(provider, m, boundary)[0] for m in members]
     default = explicit or getattr(inner, "default_model", "") or ""
-    return [policy.classify(name, default, base_url=base_url)]
+    return [evidence_route(provider, default, boundary)[0]]
+
+
+def evidence_route(
+    provider: Any, model: str, boundary: DataTier | str | None
+) -> tuple[RouteTier, list[str]]:
+    """The route ``provider`` takes for ``model`` under ``boundary``, and the
+    upstream endpoints the request must be pinned to (empty: no pin).
+
+    A provider that can pin upstreams (OpenRouter's ``zdr_only``) is admitted
+    as ``zdr`` only when its static tier is outside the boundary, the boundary
+    admits ``zdr``, and live evidence names qualifying endpoints. Under the
+    default boundary nothing is consulted, so nothing is fetched.
+    """
+    route = load_policy().classify(
+        getattr(provider, "name", "") or "", model, base_url=base_url_of(provider)
+    )
+    inner = _inner(provider)
+    if (
+        not boundary
+        or admit(route, boundary)
+        or not admit(DataTier.ZDR, boundary)
+        or not hasattr(inner, "zdr_only")
+    ):
+        return route, []
+    only = inner.zdr_only(model)
+    if not only:
+        return route, []
+    promoted = replace(
+        route,
+        tier=DataTier.ZDR,
+        basis=f"on OpenRouter's ZDR list; pinned to {', '.join(only)}",
+        origin="evidence",
+        rule="openrouter /endpoints/zdr",
+    )
+    return promoted, only
 
 
 def provider_tier(
-    provider: Any, model: str | None = None, *, roster: bool = True
+    provider: Any,
+    model: str | None = None,
+    *,
+    roster: bool = True,
+    boundary: DataTier | str | None = None,
 ) -> RouteTier:
     """The strictest route a provider offers for ``model`` (what it can be
     admitted on)."""
-    routes = provider_routes(provider, model, roster=roster)
+    routes = provider_routes(provider, model, roster=roster, boundary=boundary)
     return min(routes, key=lambda r: r.tier.rank)
 
 
@@ -100,7 +143,8 @@ def admissible_providers(
     ok: list[Any] = []
     refused: list[RouteTier] = []
     for provider in providers:
-        route = provider_tier(provider, model, roster=roster)
+        # Streams do not pin upstreams, so evidence never promotes one.
+        route = provider_tier(provider, model, roster=roster, boundary=boundary if roster else None)
         if admit(route, boundary):
             ok.append(provider)
         else:
@@ -158,7 +202,3 @@ def check_route(
     if not admit(route, boundary.tier):
         raise refuse(workload=workload, boundary=boundary, refused=[route], context=context)
     return route
-
-
-def parse_optional_tier(value: str | None) -> DataTier | None:
-    return None if value in (None, "") else parse_tier(value)
