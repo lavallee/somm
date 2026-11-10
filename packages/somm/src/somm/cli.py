@@ -44,7 +44,7 @@ from somm_core.aliases import needs_alias
 from somm_core.boundary import TIER_NAMES
 from somm_core.config import load as _load_config
 from somm_core.models import Outcome, PrivacyClass
-from somm_core.read import fleet_summary, search_calls, spend_today
+from somm_core.read import fleet_summary, north_star, search_calls, spend_today
 from somm_core.repository import Repository
 
 from somm.providers.ollama import OllamaProvider
@@ -2538,7 +2538,68 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
     _print_fleet_section(db_path)
 
+    _print_north_star(db_path, global_view=global_view)
+
     return 0 if ok_overall else 1
+
+
+def _print_north_star(db_path: Path, *, global_view: bool) -> None:
+    """VISION.md's three numbers with their denominators, or why one cannot be
+    measured. A mirror carries decisions and calls but never recommendations,
+    so `--global` totals that one over the registered project ledgers."""
+    try:
+        ns = north_star(db_path)
+        if global_view:
+            from somm_core.registry import registered_ledgers
+
+            keys = ("acted", "eligible", "pending", "applied")
+            total = dict.fromkeys(keys, 0)
+            for _project, path in registered_ledgers():
+                if Path(path).resolve() == Path(db_path).resolve() or not Path(path).exists():
+                    continue
+                rec = north_star(Path(path))["recommendations_applied"]
+                for k in keys:
+                    total[k] += rec.get(k, 0)
+            total["window_days"] = ns["recommendations_applied"]["window_days"]
+            total["measurable"] = total["eligible"] > 0
+            if not total["measurable"]:
+                total["reason"] = "no project ledger has a recommendation closed or 14 days old"
+            ns["recommendations_applied"] = total
+    except Exception as exc:  # noqa: BLE001 - a doctor must not crash on a report
+        print(f"north star: unavailable ({exc})")
+        return
+
+    def pct(n: int, d: int) -> str:
+        return f"{n / d:.1%}" if d else "—"
+
+    rec, route, recs = (
+        ns["decisions_recalled"], ns["evidence_routed"], ns["recommendations_applied"]
+    )
+    print("north star:" + ("  (recommendations totalled over project ledgers)" if global_view else ""))
+    if rec["measurable"]:
+        print(
+            f"  decisions recalled       {rec['recalled']} of {rec['decisions']} decisions"
+            f"  ({rec['excluded']} excluded: workload has no calls here)"
+        )
+    else:
+        print(f"  decisions recalled       not measurable yet: {rec['reason']}")
+    if route["measurable"]:
+        print(
+            f"  evidence-routed share    {pct(route['evidence'], route['marked'])}  "
+            f"({route['evidence']} of {route['marked']} production calls, "
+            f"{route['window_days']}d; {route['unmarked']} unknown)"
+        )
+    else:
+        print(f"  evidence-routed share    not measurable yet: {route['reason']}")
+    if recs["measurable"]:
+        print(
+            f"  recommendations applied  {pct(recs['acted'], recs['eligible'])}  "
+            f"({recs['acted']} of {recs['eligible']} applied or dismissed within "
+            f"{recs['window_days']}d; {recs['applied']} applied ever; "
+            f"{recs['pending']} younger and open)"
+        )
+    else:
+        print(f"  recommendations applied  not measurable yet: {recs['reason']}")
 
 
 def _print_loop_state(loop: dict, ledgers: list[dict], *, is_mirror: bool) -> None:

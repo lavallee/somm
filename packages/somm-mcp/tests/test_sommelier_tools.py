@@ -108,6 +108,38 @@ async def test_record_decision_mirrors_to_global(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_record_decision_keeps_a_recall_only_when_the_choice_matches(tmp_path, monkeypatch):
+    cfg = _tmp_cfg(tmp_path)
+    monkeypatch.setenv("SOMM_GLOBAL_PATH", str(cfg.cross_project_path))
+    repo = Repository(cfg.db_path)
+
+    from somm_mcp.server import build_server
+
+    server = build_server(config=cfg)
+    pick = {"chosen_provider": "openrouter", "chosen_model": "google/gemma-3-27b-it:free"}
+    base = {"question": "vision pick", "rationale": "r", "candidates": []}
+    first = await _call(server, "somm_record_decision", **base, **pick)
+
+    followed = await _call(
+        server, "somm_record_decision", **base, **pick, recalled_from=first["decision_id"]
+    )
+    assert followed["recalled_from"] == first["decision_id"]
+    assert "recall_ignored" not in followed
+    assert repo.get_decision(followed["decision_id"]).recalled_from == first["decision_id"]
+
+    departed = await _call(
+        server, "somm_record_decision", **base, chosen_provider="ollama", chosen_model="qwen3:8b",
+        recalled_from=first["decision_id"],
+    )
+    assert departed["recalled_from"] is None
+    assert "not ollama/qwen3:8b" in departed["recall_ignored"]
+
+    unknown = await _call(server, "somm_record_decision", **base, **pick, recalled_from="nope")
+    assert unknown["recalled_from"] is None
+    assert unknown["recall_ignored"] == "no prior decision with that id"
+
+
+@pytest.mark.asyncio
 async def test_search_decisions_global_scope(tmp_path, monkeypatch):
     cfg = _tmp_cfg(tmp_path)
     monkeypatch.setenv("SOMM_GLOBAL_PATH", str(cfg.cross_project_path))

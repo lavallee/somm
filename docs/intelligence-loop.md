@@ -106,3 +106,30 @@ registered for X. The MCP tools `somm_recommend`, `somm_inbox`,
 from inside a coding agent. Graded samples also feed `somm frontier`, the
 sommelier's ranking, and `somm eval promote-call`, which turns a graded
 production call into a durable CI fixture.
+
+## Measuring it
+
+VISION.md names three numbers. `somm doctor` prints them for its ledger, and
+`somm doctor --global` for the mirror, with recommendations totalled over the
+registered project ledgers (the mirror never carries them). Each line gives
+its denominator, or `not measurable yet:` and the reason.
+`somm_core.read.north_star(db_path)` returns the same numbers as a dict.
+
+- **Decisions recalled.** A recall is a recorded decision that cites a prior
+  decision and chooses the same provider and model that decision chose. The
+  caller cites it by passing a prior decision's `id`, from `somm_advise`'s
+  `prior_decisions`, as `recalled_from` to `somm_record_decision`; somm keeps
+  it in `decisions.recalled_from` only when that decision exists and the
+  choice matches, so listing or searching decisions never counts. Decisions
+  recorded before this column existed read as fresh choices.
+- **Evidence-routed share.** Of production calls in the last 30 days whose
+  `routing_json` records a `route_source`, the share that is `recommendation`,
+  `policy` or `learned_override` rather than `pin` or `default`. A call
+  without the marker is reported as unknown and is never counted as a pin.
+- **Recommendations applied.** Of recommendations whose fate is known (closed,
+  or open for fourteen days), the share applied or dismissed within fourteen
+  days of being created.
+
+A decision bound to a workload id that has no calls in the same ledger is
+test residue, a fixture that wrote through to a real ledger, and is counted
+apart from the rest. Decisions with no workload count normally.

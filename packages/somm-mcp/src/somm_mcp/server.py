@@ -252,7 +252,9 @@ def build_server(
         Returns the top-N ranked candidates from model_intel with reasoning,
         plus any prior cross-project decisions whose question hashes match.
         The agent uses this to surface options + rationale to the user,
-        then records the chosen outcome via `somm_record_decision`.
+        then records the chosen outcome via `somm_record_decision`. When the
+        user follows one of the returned `prior_decisions`, pass its `id` as
+        `recalled_from` there: that is how somm counts a decision recalled.
 
         Args:
             question: natural-language question (stored verbatim on any
@@ -319,6 +321,7 @@ def build_server(
         workload: str | None = None,
         constraints: dict | None = None,
         agent: str | None = None,
+        recalled_from: str | None = None,
     ) -> dict:
         """Record the outcome of a sommelier conversation.
 
@@ -340,12 +343,26 @@ def build_server(
             constraints: the constraint dict from somm_advise (stored for
               audit / dedup).
             agent: the caller identifier (e.g. "claude-code-myproject").
+            recalled_from: the `id` of a prior decision (from somm_advise's
+              `prior_decisions`) this one follows. Kept only when that decision
+              exists and chose the same provider and model; otherwise the
+              decision is recorded as a fresh choice and the reason returned.
         """
-        from somm.sommelier import build_decision
+        from somm.sommelier import build_decision, recall_mismatch
 
         wl = None
         if workload:
             wl = repo.workload_by_name(workload, cfg.project)
+
+        recall_note = None
+        if recalled_from:
+            prior = repo.get_decision(recalled_from)
+            if prior is None:
+                g = _global_repo(cfg)
+                prior = g.get_decision(recalled_from) if g is not None else None
+            recall_note = recall_mismatch(prior, chosen_provider, chosen_model)
+            if recall_note is not None:
+                recalled_from = None
 
         decision = build_decision(
             question=question,
@@ -358,6 +375,7 @@ def build_server(
             workload_id=wl.id if wl else None,
             constraints=constraints,
             agent=agent,
+            recalled_from=recalled_from,
         )
 
         # Primary write
@@ -376,7 +394,7 @@ def build_server(
                 "mirrored": False,
                 "mirror_error": str(e),
             }
-        return {
+        out = {
             "decision_id": decision.id,
             "question_hash": decision.question_hash,
             "mirrored": mirrored,
@@ -384,7 +402,11 @@ def build_server(
                 "provider": decision.chosen_provider,
                 "model": decision.chosen_model,
             },
+            "recalled_from": decision.recalled_from,
         }
+        if recall_note is not None:
+            out["recall_ignored"] = recall_note
+        return out
 
     # ------------------------------------------------------------------
     # somm_search_decisions
@@ -1006,6 +1028,7 @@ def _decision_as_dict(d) -> dict:
         "agent": d.agent,
         "superseded_by": d.superseded_by,
         "outcome_note": d.outcome_note,
+        "recalled_from": d.recalled_from,
     }
 
 
