@@ -17,7 +17,7 @@ from somm_core.boundary import REFUSAL_ERROR_KIND, TIER_NAMES
 from somm_core.cost import UNKNOWN_COST_SOURCE
 from somm_core.models import Outcome
 from somm_core.plans import VALID_MODES, VALID_UNITS
-from somm_core.read import ROUTE_SOURCES
+from somm_core.read import ROUTE_SOURCES, VERDICT_BY_FIELD, VERDICT_FIELD
 from somm_core.version import SCHEMA_VERSION, VERSION
 
 VOCABULARY_VERSION = 1
@@ -50,6 +50,15 @@ def vocabulary() -> dict:
         # structured, embed); "decide" is a decision-model call (0030) whose
         # label, p_top, abstained and result_json columns are set.
         "call_kinds": ["decide"],
+        # call_updates.field: open (callers append their own). somm writes
+        # "outcome" (result.mark), "verdict" (the right label of a decide
+        # row), "verdict:<question>" (of one question on a decide_many row)
+        # and "verdict_by" (the grader call that wrote a row's verdicts).
+        "call_update_fields": {
+            "open": True,
+            "known": ["outcome", VERDICT_FIELD, VERDICT_BY_FIELD],
+            "patterns": [VERDICT_FIELD + ":<question>"],
+        },
         # calls.data_tier, strictest first: closed.
         "data_tiers": list(TIER_NAMES),
         # routing_json.route_source -> True when somm's evidence chose the route.

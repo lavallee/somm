@@ -14,6 +14,11 @@ and never joins the routing chain. Wire shape, from the vendor's API page
 
 Status codes (https://docs.typesafe.ai/api/errors.md): 400, 413, 415 and 422
 are the caller's request; 401 a bad key; 429 rate limit; 529 overloaded.
+
+Several questions ride in one request and their answers come back under the
+same names (system-one.md). Long context is off by default and is turned on
+per request with the header ``TypeSafe-Danger-Zone-Long-Context: true``
+(https://docs.typesafe.ai/models.md, "Long context", read 2026-11-10).
 """
 
 from __future__ import annotations
@@ -60,16 +65,39 @@ class TypeSafeProvider:
 
     def decide(self, state: Any, question: dict, model: str | None = None) -> DecisionResponse:
         """Ask one question about ``state``; return its answer and usage."""
+        resp = self.decide_many(state, {"q": question}, model=model)
+        try:
+            resp.answer = resp.answer["q"]
+        except (KeyError, TypeError) as e:
+            raise SommTransientError(
+                f"typesafe malformed response on {resp.model}: {e}", model=resp.model
+            ) from e
+        return resp
+
+    def decide_many(
+        self,
+        state: Any,
+        questions: dict[str, dict],
+        model: str | None = None,
+        *,
+        timeout: float | None = None,
+        long_context: bool = False,
+    ) -> DecisionResponse:
+        """Ask several named questions about ``state`` in one request.
+
+        The response's ``answer`` is the whole ``answers`` mapping, keyed by
+        the names sent. ``timeout`` overrides the adapter's for this request;
+        ``long_context`` sends the documented long-context header.
+        """
         model = model or self.default_model
-        body = {"model": model, "state": state, "questions": {"q": question}}
+        body = {"model": model, "state": state, "questions": questions}
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        if long_context:
+            headers["TypeSafe-Danger-Zone-Long-Context"] = "true"
         t0 = time.monotonic()
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp = client.post(
-                    self.url,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=body,
-                )
+            with httpx.Client(timeout=self.timeout if timeout is None else timeout) as client:
+                resp = client.post(self.url, headers=headers, json=body)
         except httpx.TimeoutException as e:
             raise SommTimeout(f"typesafe timeout on {model}: {e}", model=model) from e
         except httpx.RequestError as e:
@@ -82,7 +110,9 @@ class TypeSafeProvider:
         )
         try:
             data = resp.json()
-            answer = data["answers"]["q"]
+            answer = data["answers"]
+            if not isinstance(answer, dict):
+                raise TypeError("answers is not an object")
             usage = data.get("usage") or {}
         except (ValueError, KeyError, TypeError) as e:
             raise SommTransientError(f"typesafe malformed response on {model}: {e}", model=model) from e

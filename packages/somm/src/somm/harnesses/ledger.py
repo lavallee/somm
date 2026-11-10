@@ -207,7 +207,7 @@ def check_boundary(
     """
     from somm_core.boundary import admit, resolve_boundary
 
-    from somm.boundary import refuse
+    from somm.boundary import refusal_call, refuse
 
     wl = None
     if workload is not None:
@@ -227,31 +227,13 @@ def check_boundary(
     if wl is not None and repo is not None:
         try:
             repo.write_call(
-                Call(
-                    id=str(uuid.uuid4()),
-                    ts=datetime.now(UTC),
+                refusal_call(
+                    exc,
                     project=project or "",
                     workload_id=wl.id,
-                    prompt_id=None,
-                    provider="",
-                    model=(request.model if request is not None else None) or "",
-                    tokens_in=0,
-                    tokens_out=0,
-                    latency_ms=0,
-                    cost_usd=0.0,
-                    outcome=Outcome.UNKNOWN,
-                    error_kind="SommPrivacyViolation",
-                    error_detail=(
-                        f"refused: data_boundary={boundary.tier.value} (from {boundary.source}) "
-                        f"| refused routes: {route.route}={route.tier.value}"
-                    )[:512],
+                    model=request.model if request is not None else None,
                     prompt_hash=stable_hash(request.prompt) if request is not None else "",
-                    response_hash=stable_hash(""),
-                    cost_accuracy="actual",
-                    cost_source=None,
-                    budget_eligible=False,
                     origin="harness",
-                    client_version=VERSION,
                 )
             )
         except Exception:  # noqa: BLE001 — the refusal itself must still raise

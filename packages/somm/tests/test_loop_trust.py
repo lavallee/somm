@@ -507,3 +507,31 @@ def test_concurrent_agent_runs_write_one_recommendation(tmp_path):
     [rec] = worker._rec_switch_model()
     assert worker._write(rec) is True
     assert worker._write(rec) is False  # the open one blocks a twin, in one statement
+
+
+def test_replay_uses_the_captured_request(tmp_path):
+    """A sample captured with its request is replayed as that request."""
+    import json as _json
+
+    from somm.workers.shadow_eval import ShadowEvalWorker
+    from somm_core.repository import Repository
+
+    repo = Repository(tmp_path / "calls.sqlite")
+    with repo._open() as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")  # the sample's call row is not needed here
+        conn.execute(
+            "INSERT INTO samples (call_id, prompt_body, response_body, request_json) "
+            "VALUES ('c1', 'p', 'r', ?)",
+            (_json.dumps({"system": "be brief", "reasoning_effort": "low", "max_tokens": 77,
+                          "tools": [{"name": "t"}], "temperature": None}),),
+        )
+        conn.commit()
+    worker = ShadowEvalWorker.__new__(ShadowEvalWorker)
+    worker.repo = repo
+    params = worker._production_params("c1")
+    assert params["system"] == "be brief"
+    assert params["reasoning_effort"] == "low"
+    assert params["tools"] == [{"name": "t"}]
+    assert params["max_tokens"] == 77
+    assert params["temperature"] == 0.0  # not captured: the old default stands
+    assert worker._production_params("missing") == {"temperature": 0.0, "max_tokens": 1024}

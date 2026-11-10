@@ -36,8 +36,14 @@
       </p>
 
       <dl class="terms">
+        <dt id="abstain">abstain</dt>
+        <dd>What a <a href="#decision-call">decision call</a> does when no label reaches the <code>min_p</code> you set: it still returns the probabilities but sets <code>abstained</code>, so your code can escalate, typically to an LLM call under the same workload.</dd>
+
         <dt id="attempt">attempt</dt>
-        <dd>One try at a piece of work: one request to one model, or one run of a coding agent through a <a href="#harness">harness</a>. A call that falls back across providers makes several attempts.</dd>
+        <dd>One try at a piece of work: one request to one model, or one run of a coding agent through a <a href="#harness">harness</a>. A call that falls back across providers makes several attempts. A <em>harness attempt</em> is recorded, with <code>record=True</code>, as its own <a href="#ledger">ledger</a> row beside API calls.</dd>
+
+        <dt id="calibration">calibration</dt>
+        <dd>How well a decision model's probabilities match how often it is right: of the answers it gave with probability 0.9, about nine in ten should be correct. <code>somm_core.read.decision_calibration</code> measures it against your <a href="#verdict">verdicts</a> (Brier score and expected calibration error).</dd>
 
         <dt id="call">call</dt>
         <dd>One request your code makes through somm, such as one <code>generate()</code>. Every call writes exactly one row to the <a href="#ledger">ledger</a>, including calls that fail or are refused.</dd>
@@ -52,20 +58,23 @@
         <dd>A timed rest for a provider and model after it fails. Stored in SQLite so every process sees it. It doubles every ten consecutive failures, to at most a day; one success clears it.</dd>
 
         <dt id="cost-of-pass">cost of pass</dt>
-        <dd>Dollars per correct answer: a workload's cost divided by how often a <a href="#judge">judge</a> passes its answers. The number a routing decision turns on. Planned (ROADMAP.md); somm does not compute it yet.</dd>
+        <dd>Dollars per correct answer: a model's cost divided by how often its graded answers pass. The number a routing decision turns on. Since 0.24.0 <code>switch_model</code> evidence records it for each model compared; <code>somm frontier</code> does not rank by it yet (ROADMAP.md, phase 5).</dd>
 
         <dt id="data-boundary">data boundary</dt>
         <dd>How far a workload's data may travel, as one of four tiers, strictest first. A <a href="#route">route</a> looser than the boundary is refused before any request leaves the process. <a href="components.html#boundary">Data boundary</a>.
           <ul class="plain">
             <li><code>local</code>: the data never leaves hardware you run (Ollama or another server on loopback or a private address).</li>
-            <li><code>zdr</code>: a third party processes it under an explicit zero-retention, no-training commitment. Only you can declare it, except where OpenRouter's own list proves it for a model.</li>
+            <li><code>zdr</code>: a third party processes it under an explicit zero-retention, no-training commitment. Only you can declare it, except where OpenRouter's published zero-retention list names qualifying upstreams for a model; the request is then pinned to those upstreams.</li>
             <li><code>subscribed</code>: a US-headquartered, first-party provider you hold an account with, under its standard terms (for example the Anthropic or OpenAI API). Seats are assumed to be here.</li>
             <li><code>unvetted</code>: everything else, including anything somm cannot classify. The default boundary, which admits every route.</li>
           </ul>
         </dd>
 
         <dt id="decision">decision</dt>
-        <dd>A recorded model choice: the question, the candidates, the model chosen and the reason. Always stored in the machine-wide <a href="#mirror">mirror</a>, so every project can find it.</dd>
+        <dd>A recorded model choice: the question, the candidates, the model chosen and the reason. Always stored in the machine-wide <a href="#mirror">mirror</a>, so every project can find it. Not the same as a <a href="#decision-call">decision call</a>.</dd>
+
+        <dt id="decision-call">decision call</dt>
+        <dd>A call to a decision model through <code>llm.decide()</code> or <code>decide_many()</code>: a typed question about some text, answered with a label and a probability for every label instead of text. Recorded as a ledger row with <code>kind = 'decide'</code>. <a href="components.html#decisions">Decision calls</a>.</dd>
 
         <dt id="fallback">fallback</dt>
         <dd>Moving to the next provider when a call that did not name one fails. A <a href="#pin">pinned</a> call does not fall back unless you pass <code>allow_fallback=True</code>.</dd>
@@ -77,7 +86,7 @@
         <dd>The stronger model that <a href="#shadow-evaluation">shadow evaluation</a> treats as the reference answer.</dd>
 
         <dt id="handler">handler (workload handler)</dt>
-        <dd>A plug-in that serves a workload with something other than the provider chain: a rule, a classifier, a <a href="#chip">chip</a>. It answers or declines; a declined call goes to the models. Each handler has a <a href="#kind">kind</a>.</dd>
+        <dd>A plug-in that serves a workload with something other than the provider chain: a rule, a classifier, a <a href="#chip">chip</a>. It answers or declines; a declined call goes to the models. Each handler has a <a href="#kind">kind</a>. A handler may declare the <code>local</code> tier; any other is treated as <code>unvetted</code>.</dd>
 
         <dt id="harness">harness</dt>
         <dd>The program that runs an autonomous coding agent: Claude Code, Codex, OpenCode or Pi. somm runs one <a href="#attempt">attempt</a> and normalises the result; it does not queue or retry. <a href="components.html#harnesses">Harnesses</a>.</dd>
@@ -89,19 +98,22 @@
         <dd>A model, or a panel of models, that scores an answer against a written rubric. Its requests are ledger rows like any other.</dd>
 
         <dt id="kind">kind</dt>
-        <dd>What serves a workload. The default kind is <code>llm</code>, the provider chain; a <a href="#handler">handler</a> adds another.</dd>
+        <dd>What serves a workload. The default kind is <code>llm</code>, the provider chain; a <a href="#handler">handler</a> adds another. Separately, a ledger row's <code>kind</code> column marks a <a href="#decision-call">decision call</a> as <code>decide</code>; it is empty for an ordinary call.</dd>
 
         <dt id="ledger">ledger</dt>
         <dd>The SQLite file that holds one row per call for a project, at <code>.somm/calls.sqlite</code>. You own it and can query it with plain SQL. <a href="components.html#ledger">Ledger and mirror</a>.</dd>
 
         <dt id="loop">loop (intelligence loop)</dt>
-        <dd>Three workers that read the ledger and write back: model intel (daily), shadow evaluation (each pass) and recommendations (weekly). Run once with <code>somm loop run</code> or on a timer with <code>somm loop install</code>.</dd>
+        <dd>Three workers that read the ledger and write back: model intel (daily), shadow evaluation (each pass) and recommendations (weekly). Run once with <code>somm loop run</code> or on a timer with <code>somm loop install</code>. A recommendation needs enough grades and a significant difference, and expires after 30 days.</dd>
 
         <dt id="mcp">MCP</dt>
         <dd>Model Context Protocol, the standard way a coding agent calls outside tools. <code>somm-mcp</code> gives an agent 14 tools over the ledger and the sommelier. <a href="components.html#mcp">MCP server and skill</a>.</dd>
 
         <dt id="mirror">mirror</dt>
         <dd>The machine-wide copy at <code>~/.somm/global.sqlite</code>. It holds calls and workloads from every project (on by default) and all decisions. It does not hold samples, evaluations or recommendations.</dd>
+
+        <dt id="mirror-sync">mirror sync</dt>
+        <dd><code>somm mirror sync</code>: copy the call rows a registered project ledger has and the <a href="#mirror">mirror</a> lacks, in batches; safe to rerun. <code>somm ledgers</code> shows how far behind the mirror is.</dd>
 
         <dt id="model-intel">model intel</dt>
         <dd>somm's local catalogue of models, prices, context windows and capabilities. It starts from a bundled price snapshot and refreshes daily from models.dev, OpenRouter's catalogue and your local Ollama. It is a cache: answering never waits on the network.</dd>
@@ -131,7 +143,10 @@
         <dd>A place a call can go: an API such as Anthropic or OpenRouter, a local server such as Ollama, or a <a href="#seat">seat</a>.</dd>
 
         <dt id="recall">recall</dt>
-        <dd>A project finding an earlier <a href="#decision">decision</a> when it chooses a model. The count of recalls across projects is somm's north-star number. Recalls are not stored yet, so it cannot be counted (ROADMAP.md, phase 1).</dd>
+        <dd>A recorded <a href="#decision">decision</a> that cites an earlier one, through <code>recalled_from</code>, and chooses the same provider and model. The count of recalls across projects is somm's north-star number. Stored since 0.23.0 and counted by <code>somm doctor</code>; there is no history yet.</dd>
+
+        <dt id="receipt">receipt</dt>
+        <dd>A line another tool writes about work it did, which somm reads but does not own: chipsocket's per-decision receipts for <code>somm climb</code>, gipper's rental receipts for <code>somm gpu spend</code>.</dd>
 
         <dt id="recommendation">recommendation</dt>
         <dd>A proposal written by a rule, with the evidence it came from: switch model, a cheaper new model, a provider that keeps failing, or a larger output budget. <a href="components.html#inbox">Recommendations and the inbox</a>.</dd>
@@ -139,8 +154,14 @@
         <dt id="route">route</dt>
         <dd>One concrete destination for a request: a provider, a model and an endpoint. A <a href="#data-boundary">tier</a> belongs to a route, not a provider: the same Ollama daemon is <code>local</code> for a model on your machine and <code>unvetted</code> for a cloud-tagged one.</dd>
 
+        <dt id="route-source">route source</dt>
+        <dd>What chose a call's route, recorded on every row: <code>recommendation</code>, <code>policy</code> (a workload policy), <code>learned_override</code>, <code>pin</code> (the caller named it) or <code>default</code> (the provider order). The share decided by evidence rather than a pin or the default is one of the three north-star numbers.</dd>
+
+        <dt id="rung">rung</dt>
+        <dd>One step of a <a href="#climb">climb</a>: what answered a decision, such as a rule, a cache, a baseline or a model. <code>somm climb</code> counts decisions per rung.</dd>
+
         <dt id="sample">sample</dt>
-        <dd>A stored prompt and response. Off by default, opted into per workload, never for private workloads. Samples are what shadow evaluation grades.</dd>
+        <dd>A stored prompt and response, with the request parameters sent (system prompt, tools, response format, temperature, <code>max_tokens</code>). Off by default, opted into per workload, never for private workloads. Samples are what shadow evaluation grades.</dd>
 
         <dt id="seat">seat</dt>
         <dd>A logged-in subscription used as a provider: the <code>claude</code> or <code>codex</code> command-line tools, or a ChatGPT account. Paid per month, limited per window. Seats never join the default chain; you reach them by pinning.</dd>
@@ -153,6 +174,15 @@
 
         <dt id="sommelier">sommelier</dt>
         <dd>The part of somm that ranks candidate models and remembers which you chose and why, across projects. <a href="components.html#sommelier">The sommelier</a>.</dd>
+
+        <dt id="stream-event">stream event</dt>
+        <dd>One typed item from <code>stream(events=True)</code>: <code>StreamStart</code> (call id, provider, model), then <code>TextDelta</code>, <code>ToolCallDelta</code> and <code>ReasoningDelta</code> as they arrive, and a final <code>StreamDone</code> carrying the recorded result.</dd>
+
+        <dt id="unknown-cost">unknown cost</dt>
+        <dd>A call somm has no price for, such as a self-hosted endpoint or an unlisted model. It is stored as <code>cost_usd = 0.0</code> with <code>cost_source = "unknown:no-price"</code>, and averages, comparisons and budget caps leave it out instead of counting it as free.</dd>
+
+        <dt id="verdict">verdict</dt>
+        <dd>The right answer to a <a href="#decision-call">decision call</a>, recorded once you know it with <code>result.verdict(label)</code>. Verdicts are the labels <a href="#calibration">calibration</a> is measured against.</dd>
 
         <dt id="workload">workload</dt>
         <dd>A named job your code asks for, such as <code>claim_extract</code>, not a model. Cost, failures, budgets, boundaries, grades and recommendations attach to workloads. <a href="components.html#workloads">Workloads</a>.</dd>

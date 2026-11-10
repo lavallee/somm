@@ -1439,7 +1439,7 @@ wheels = [
 
 [[package]]
 name = "somm"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "packages/somm" }
 dependencies = [
     { name = "httpx" },
@@ -1487,12 +1487,12 @@ provides-extras = ["chatgpt", "tokenizers", "otel", "pydantic", "jsonschema", "p
 
 [[package]]
 name = "somm-core"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "packages/somm-core" }
 
 [[package]]
 name = "somm-langchain"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "packages/somm-langchain" }
 dependencies = [
     { name = "langchain-core" },
@@ -1509,7 +1509,7 @@ requires-dist = [
 
 [[package]]
 name = "somm-mcp"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "packages/somm-mcp" }
 dependencies = [
     { name = "mcp" },
@@ -1526,7 +1526,7 @@ requires-dist = [
 
 [[package]]
 name = "somm-service"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "packages/somm-service" }
 dependencies = [
     { name = "somm" },
@@ -1535,22 +1535,29 @@ dependencies = [
     { name = "uvicorn" },
 ]
 
+[package.optional-dependencies]
+otlp = [
+    { name = "opentelemetry-proto" },
+]
+
 [package.metadata]
 requires-dist = [
+    { name = "opentelemetry-proto", marker = "extra == 'otlp'", specifier = ">=1.20" },
     { name = "somm", editable = "packages/somm" },
     { name = "somm-core", editable = "packages/somm-core" },
     { name = "starlette", specifier = ">=0.40" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
+provides-extras = ["otlp"]
 
 [[package]]
 name = "somm-skill"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "packages/somm-skill" }
 
 [[package]]
 name = "somm-workspace"
-version = "0.25.0"
+version = "0.26.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]

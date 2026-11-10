@@ -8,7 +8,8 @@ configured a provider key or local provider endpoint.
 ## Assets
 
 - Provider API keys and CLI credentials.
-- Prompt and response bodies when sample capture is enabled.
+- Prompt and response bodies, and the request parameters sent with them
+  (system prompt, tool definitions), when sample capture is enabled.
 - Local telemetry databases under `.somm/` and `~/.somm/`.
 - Model decisions mirrored to the global local store.
 - Workload policies, budgets, and recommendation actions.
@@ -18,14 +19,16 @@ configured a provider key or local provider endpoint.
 - **Library hot path**: user code imports `somm` and calls providers. Hook and
   plugin failures must never expose secrets or break an otherwise successful
   call.
-- **Web service**: `somm serve` binds to localhost by default. Dashboard/read
-  APIs, mutating routes, and LLM proxy routes require the service bearer token
-  or the same-origin local dashboard header path, unless read APIs are
-  explicitly opened with `SOMM_SERVICE_PUBLIC_READ=1`.
+- **Web service**: `somm serve` binds to localhost by default. The LLM proxy
+  routes, `/api/routing/decide` and OTLP ingest always require the service
+  bearer token. Dashboard reads and recommendation actions accept the token or
+  the bundled dashboard's local header path; read APIs can be opened
+  deliberately with `SOMM_SERVICE_PUBLIC_READ=1`.
 - **MCP stdio**: `somm-mcp` talks to a local coding agent over stdio. MCP tool
   results wrap stored prompt/response bodies in untrusted-content envelopes.
-- **OTLP ingest**: `/api/otlp/v1/traces` and `/v1/traces` accept JSON spans from
-  local/polyglot apps. They are write endpoints and require the service token.
+- **OTLP ingest**: `/api/otlp/v1/traces` and `/v1/traces` accept spans from
+  local/polyglot apps as JSON, or as protobuf with the `somm-service[otlp]`
+  extra. They are write endpoints and require the service token.
 - **Provider egress**: configured providers receive prompts and tool schemas.
   Each route is classified into a data tier (`local`, `zdr`, `subscribed`,
   `unvetted`); a workload's data boundary limits which routes it may reach
@@ -47,9 +50,12 @@ configured a provider key or local provider endpoint.
 ## Mitigations
 
 - Web admin binds `127.0.0.1` by default and warns on non-localhost bind.
-- Dashboard/read APIs and mutating service routes require bearer-token auth;
-  dashboard-only header auth is accepted only for loopback hosts with
-  same-origin evidence.
+- Service routes require bearer-token auth. The dashboard's header path
+  (`X-Somm-Local: 1`) is accepted only on dashboard reads and recommendation
+  actions, only from a loopback peer address with a loopback `Host` and
+  same-origin evidence, and never when a forwarding header is present (a
+  reverse proxy or tunnel makes every request arrive from loopback). The
+  headers are chosen by the client; the peer address is not.
 - Public `/health` reports liveness without local filesystem paths. Richer
   status, calls, sessions, recommendation, and version data use the read API
   auth boundary by default.

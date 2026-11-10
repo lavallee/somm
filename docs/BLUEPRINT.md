@@ -56,12 +56,14 @@ mistake from a leak. Every defense should fail closed independently.
 When porting, don't consolidate the guards — that's a lock you can't
 rekey.
 
-### 3. Write-once, amend-never telemetry
+### 3. Append-only amendments
 
-The `calls` table is immutable after insert. Late-arriving metadata
-(outcome tags from `result.mark()`, judge scores) goes in
-`call_updates`, not back into `calls`. This makes audit trivial and
-guards against "the row I saw yesterday isn't the row today."
+A `calls` row is written once. Late-arriving metadata (outcome tags from
+`result.mark()`, judge scores) is appended to `call_updates`; an outcome
+mark also updates the stored row's outcome, so readers see the truth
+without a join, and `call_updates` keeps the history of every change.
+This keeps audit trivial and guards against "the row I saw yesterday
+changed and nothing says why."
 
 *Why it's load-bearing:* the intelligence loop (shadow eval → agent
 recommendations) depends on a stable view of history. A row that
@@ -118,20 +120,23 @@ fungible; they'll start catching `Exception`.
 
 ## The data model
 
-Ten tables, all in one SQLite file. Everything else is a view or a
+The core tables, all in one SQLite file. Everything else is a view or a
 derived rollup.
 
 ### Events (immutable)
 
-- **`calls`** — one row per `generate()`. The only mandatory write
-  path. Fields: ids, timing, cost plus basis/kind/accuracy provenance,
+- **`calls`** — one row per call: `generate()`, `stream()`, a workload
+  handler, a recorded harness attempt, and `decide()` (marked
+  `kind = 'decide'`). The only mandatory write path. Fields: ids, timing, cost plus basis/kind/accuracy provenance,
   outcome, hashes. Gold/judge requests are also calls, distinguished by
   `observation_role` and linked through `source_call_id`/`eval_result_id`.
   Provider request/billing ids are custody fields, separate from the gateway
   call id. Foreign OTLP imports remain visible but are not budget eligible.
 - **`call_updates`** — late-arriving metadata on a call (outcome marks,
   audit trail).
-- **`samples`** — prompt/response bodies, *per-workload opt-in*.
+- **`samples`** — prompt/response bodies and the request parameters a
+  replay needs (`request_json`: system prompt, tools, response format,
+  reasoning effort, temperature, max tokens), *per-workload opt-in*.
   Separate table so the default path never touches prompt text.
 - **`eval_results`** — shadow-eval grades on a call. Has a
   `grading_started_at` lease for crash-safe worker recovery.
@@ -263,8 +268,10 @@ evidence in project B.
 
 When a call returns, cost is computed from `model_intel`, not from
 provider response metadata (which is inconsistent across providers
-and sometimes missing). If intel is missing, cost is `$0` and a
-warning fires once. The agent worker refreshes intel on a cadence.
+and sometimes missing). If intel has no price, the row keeps
+`cost_usd = 0.0` but records `cost_source = "unknown:no-price"`, so
+averages, budgets and recommendations leave it out instead of counting
+it as free; `somm backfill-costs` fills it in once a price exists.
 The row labels that amount `computed` and `estimated`; imported telemetry or a
 hook-supplied amount is labeled `reported` so retrospective consumers do not
 confuse the ledger observation with a provider invoice.
@@ -318,7 +325,9 @@ Explicit non-goals. If you're tempted to add these, read twice.
   author them. The substrate is blind to whether a prompt is "good."
 - **Auto-apply recommendations.** The agent emits, the user applies.
   An auto-applying recommendation engine is how you ship a regression
-  at 3am.
+  at 3am. (The one exception is opt-in: a workload with `auto_heal`
+  gets a raised `max_tokens` floor when a reasoning model keeps
+  spending its whole budget thinking.)
 
 ---
 

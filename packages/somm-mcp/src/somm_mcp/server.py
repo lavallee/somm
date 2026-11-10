@@ -36,7 +36,7 @@ import json
 from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
-from somm.errors import SommPrivacyViolation
+from somm.compare import parse_model_specs
 from somm.prompts import register_prompt
 from somm_core.config import Config
 from somm_core.config import load as load_config
@@ -614,7 +614,7 @@ def build_server(
         """
         if not provider_map:
             return {"error": "no providers configured; compare needs a provider chain"}
-        specs = _parse_models(models)
+        specs = parse_model_specs(models)
         if not specs:
             return {"error": "no models supplied; example: ['minimax/MiniMax-M3']"}
         max_models = (
@@ -649,82 +649,19 @@ def build_server(
                 "limit": max_allowed_tokens,
                 "allow_expensive": allow_expensive,
             }
-        # Use the library to get cost + telemetry + strict-mode check in one shot.
+        # One implementation with the CLI: pins only, boundary-checked first.
         from somm.client import SommLLM
+        from somm.compare import compare_models
 
         llm = SommLLM(config=cfg, providers=list(provider_map.values()))
         try:
-            out: list[dict] = []
-            for provider_name, model in specs:
-                if provider_name not in provider_map:
-                    out.append(
-                        {
-                            "provider": provider_name,
-                            "model": model,
-                            "error": f"provider {provider_name!r} not in chain "
-                            f"({list(provider_map)})",
-                        }
-                    )
-                    continue
-                try:
-                    from somm.boundary import admit, provider_tier
-
-                    wl = repo.workload_by_name(workload, cfg.project)
-                    boundary = llm._resolve_boundary(wl, None)
-                    route = provider_tier(
-                        provider_map[provider_name], model or None,
-                        boundary=None if boundary.is_default else boundary.tier,
-                    )
-                    if not boundary.is_default and not admit(route, boundary.tier):
-                        out.append(
-                            {
-                                "provider": provider_name,
-                                "model": model,
-                                "refused": True,
-                                "tier": route.tier.value,
-                                "data_boundary": boundary.tier.value,
-                                "error": (
-                                    f"SOMM_PRIVACY_VIOLATION: route tier {route.tier.value} is "
-                                    f"outside data boundary {boundary.tier.value} "
-                                    f"(from {boundary.source})"
-                                ),
-                            }
-                        )
-                        continue
-                    r = llm.generate(
-                        prompt=prompt,
-                        workload=workload,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        model=model,
-                        provider=provider_name,
-                        # A side-by-side that answers from a substituted
-                        # model is not a comparison. Explicit for the reader,
-                        # though it is also the library default.
-                        allow_fallback=False,
-                    )
-                    out.append(
-                        {
-                            "provider": provider_name,
-                            "model": model,
-                            "text": _untrusted_recorded_content(r.text),
-                            "tokens_in": r.tokens_in,
-                            "tokens_out": r.tokens_out,
-                            "latency_ms": r.latency_ms,
-                            "cost_usd": r.cost_usd,
-                            "outcome": r.outcome.value,
-                            "call_id": r.call_id,
-                        }
-                    )
-                except Exception as e:
-                    entry = {
-                        "provider": provider_name,
-                        "model": model,
-                        "error": f"{type(e).__name__}: {e}",
-                    }
-                    if isinstance(e, SommPrivacyViolation):
-                        entry["refused"] = True
-                    out.append(entry)
+            out = compare_models(
+                llm, specs, prompt=prompt, workload=workload,
+                max_tokens=max_tokens, temperature=temperature,
+            )
+            for entry in out:
+                if "text" in entry:
+                    entry["text"] = _untrusted_recorded_content(entry["text"])
             return {"prompt_hash": stable_hash(prompt), "results": out}
         finally:
             llm.close()
@@ -1031,21 +968,3 @@ def _decision_as_dict(d) -> dict:
         "outcome_note": d.outcome_note,
         "recalled_from": d.recalled_from,
     }
-
-
-def _parse_models(raw: list[str]) -> list[tuple[str, str]]:
-    specs: list[tuple[str, str]] = []
-    for item in raw:
-        for token in item.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            if "/" in token:
-                p, _, m = token.partition("/")
-            elif ":" in token:
-                p, _, m = token.partition(":")
-            else:
-                p, m = token, ""
-            if p:
-                specs.append((p, m))
-    return specs

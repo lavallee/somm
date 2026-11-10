@@ -67,6 +67,20 @@ and `budget_usd_daily` are the ceilings. Each gold or judge request is an
 ordinary `calls` row linked back through `source_call_id`, so the cost of
 grading is visible in `somm status` like any other spend.
 
+Capture stores the request as sent (system prompt, tools, `tool_choice`,
+response format, reasoning effort, temperature, `max_tokens`) in
+`samples.request_json`, and the gold call replays it, so the gold model
+answers the same request production did. Samples captured before schema 31
+have no request and replay the messages alone. Decision calls and LLM grading
+calls are never shadow-graded.
+
+Grading fails safe. Claiming a sample is one atomic statement, so two workers
+never pay for the same gold call. A judge reply that cannot be parsed gets no
+score (not 0.0), and the loop warns when most of a workload's judge replies
+were unusable. A gold route that is not configured, is outside the data
+boundary, or fails three times in a row leaves its samples eligible, marks the
+workload's shadow config broken, and is retried a day later.
+
 ## Knowing whether it is alive
 
 `somm doctor` prints the loop's state for its own ledger and for every
@@ -92,10 +106,13 @@ once per workload while it is open.
 
 | action | fires when | evidence |
 |---|---|---|
-| `switch_model` | the workload has been shadow-graded on two or more models in the window and one scores at least 10% higher at no more cost (or much lower latency) | per-model score, cost, latency, eval count |
-| `new_model_landed` | a same-provider model whose `model_intel.first_seen` is inside the window and later than the current model's is at least 20% cheaper; proposed once per workload, dismissed is remembered | current and candidate price, context window, first and last seen |
+| `switch_model` | two models each have at least 20 grades against the same gold model in the last 30 days, one scores at least 0.1 higher (scores run 0 to 1) at no more cost (or much lower latency), and the 95% interval on the difference excludes zero | n per arm, the interval, the window, per-model score, cost, latency and cost per passing answer |
+| `new_model_landed` | a same-provider model whose `model_intel.first_seen` is inside the window and later than the current model's is at least 20% cheaper; proposed once per workload, dismissed is remembered. A catalog fact, not a quality finding | current and candidate price, context window, first and last seen |
 | `chronic_cooldown` | at least 10% (`chronic_failure_rate`) of the workload's production calls to a provider in the window failed to deliver: upstream error, exhausted chain, timeout, rate limit | call and failure counts, rate, the provider's entries currently cooling |
 | `adaptive_param_bump` | a reasoning model keeps returning empty after spending its output budget thinking | the failure signature and the proposed `max_tokens` floor |
+
+An open recommendation expires 30 days after it was created and is closed as
+expired, not applied: evidence from last month is not this month's answer.
 
 `somm inbox list` shows them with the date each was created; `somm inbox show
 <id>` prints one with its evidence; `somm inbox apply <id>` applies one and

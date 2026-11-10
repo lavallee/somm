@@ -254,7 +254,8 @@ def _failure(exc: SommError) -> tuple[int, dict, dict]:
 def _refusal(exc: SommRefused, wire: _Wire) -> Any:
     """A refusal is an answer, not a failed request: the wire reports it in
     its own shape (Anthropic ``stop_reason: refusal``, Chat Completions
-    ``finish_reason: content_filter``) with whatever text and usage the
+    ``finish_reason: content_filter``, Responses a ``refusal`` content part
+    in a completed response) with whatever text and usage the
     client attached to the error."""
     return types.SimpleNamespace(
         call_id=exc.call_id or "", text=exc.text or "", tool_calls=[], raw=None,
@@ -578,10 +579,21 @@ def _responses_content(content: Any, role: str) -> Any:
     return out
 
 
+def _is_refusal(result) -> bool:
+    """A refusal (somm's SommRefused stop reasons) is an answer whose message
+    holds a ``refusal`` content part, not ``output_text``; the response is
+    still ``completed``. https://developers.openai.com/api/reference/resources/responses"""
+    return result.stop_reason in ("refusal", "content_filter") and not result.tool_calls
+
+
 def _responses_body(result, model: str) -> dict:
     rid = _hex(result.call_id)
     output: list[dict] = []
-    if result.text:
+    if _is_refusal(result):
+        output.append({"id": f"msg_{rid}", "type": "message", "status": "completed",
+                       "role": "assistant",
+                       "content": [{"type": "refusal", "refusal": result.text or ""}]})
+    elif result.text:
         output.append({"id": f"msg_{rid}", "type": "message", "status": "completed",
                        "role": "assistant",
                        "content": [{"type": "output_text", "text": result.text, "annotations": []}]})
@@ -733,6 +745,7 @@ class _ResponsesStream:
         self.index = -1
         self.item: dict | None = None
         self.parts: list[str] = []
+        self.done: list[dict] = []  # each output item as its output_item.done said
 
     def _event(self, kind: str, **data) -> str:
         return _sse(kind, {"type": kind, "sequence_number": next(self.seq), **data})
@@ -753,6 +766,26 @@ class _ResponsesStream:
                               item_id=item["id"], content_index=0,
                               part={"type": "output_text", "text": "", "annotations": []})
 
+    def _refusal(self, text: str) -> Iterator[str]:
+        """A message whose one content part is a refusal, opened, filled and
+        closed: content_part.added, refusal.delta, refusal.done,
+        content_part.done (the Responses streaming-events reference)."""
+        self.index += 1
+        item = {"id": f"msg_{self.rid}", "type": "message", "status": "in_progress",
+                "role": "assistant", "content": []}
+        where = {"output_index": self.index, "item_id": item["id"], "content_index": 0}
+        part = {"type": "refusal", "refusal": text}
+        yield self._event("response.output_item.added", output_index=self.index, item=item)
+        yield self._event("response.content_part.added", **where,
+                          part={"type": "refusal", "refusal": ""})
+        if text:
+            yield self._event("response.refusal.delta", **where, delta=text)
+        yield self._event("response.refusal.done", **where, refusal=text)
+        yield self._event("response.content_part.done", **where, part=part)
+        done = {**item, "status": "completed", "content": [part]}
+        self.done.append(done)
+        yield self._event("response.output_item.done", output_index=self.index, item=done)
+
     def _close(self) -> Iterator[str]:
         item = self.item
         if item is None:
@@ -769,6 +802,7 @@ class _ResponsesStream:
             yield self._event("response.function_call_arguments.done", output_index=self.index,
                               item_id=item["id"], name=item["name"], arguments=whole)
             done = {**item, "status": "completed", "arguments": whole}
+        self.done.append(done)
         yield self._event("response.output_item.done", output_index=self.index, item=done)
         self.item = None
 
@@ -795,7 +829,12 @@ class _ResponsesStream:
 
     def end(self, result) -> Iterator[str]:
         yield from self._close()
+        # A refusal is known only at the end. With nothing streamed yet it is
+        # sent as a refusal part; text already sent as output_text stays so.
+        if _is_refusal(result) and not any(i["type"] == "message" for i in self.done):
+            yield from self._refusal(result.text or "")
         body = _responses_body(result, self.model)
+        body["output"] = self.done  # the final response says what the events said
         yield self._event("response.completed" if body["status"] == "completed"
                           else "response.incomplete", response=body)
 

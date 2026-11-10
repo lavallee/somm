@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from somm.client import SommLLM
-from somm.providers.base import ProviderHealth, SommResponse
+from somm.providers.base import ProviderHealth, SommChunk, SommResponse
 from somm_core.config import Config
 
 
@@ -17,8 +18,9 @@ class FakeProvider:
             text="the answer", model="fake-m", tokens_in=3, tokens_out=2, latency_ms=1
         )
 
-    def stream(self, request):  # pragma: no cover
-        yield
+    def stream(self, request):
+        yield SommChunk(text="the answer")
+        yield SommChunk(text="", done=True)
 
     def health(self):
         return ProviderHealth(available=True)
@@ -127,3 +129,44 @@ def test_rate_partitions_deterministically(tmp_path):
         llm.generate(prompt="hi", workload="graded")
     n = len(_samples(llm))
     assert 10 < n < 50  # ~50% with slack; 0 or 60 would mean the gate is broken
+
+def _request_json(llm) -> list:
+    with llm.repo._open() as conn:
+        return [r[0] for r in conn.execute("SELECT request_json FROM samples").fetchall()]
+
+
+_PARAM_KEYS = {
+    "system", "tools", "tool_choice", "response_format", "reasoning_effort",
+    "temperature", "max_tokens",
+}
+
+
+def test_capture_records_the_request_parameters_a_replay_needs(tmp_path):
+    llm = _llm(tmp_path)
+    _enable_shadow(llm, "graded", rate=1.0)
+    tools = [{"name": "lookup", "description": "d", "input_schema": {"type": "object"}}]
+    llm.generate(
+        prompt="hi", system="be brief", workload="graded", tools=tools,
+        tool_choice="auto", temperature=0.4, max_tokens=99,
+    )
+    (raw,) = _request_json(llm)
+    params = json.loads(raw)
+    assert set(params) == _PARAM_KEYS
+    assert params["system"] == "be brief"
+    assert params["tools"][0]["name"] == "lookup" and params["tool_choice"] == "auto"
+    assert (params["temperature"], params["max_tokens"]) == (0.4, 99)
+
+
+def test_streams_capture_the_request_parameters_too(tmp_path):
+    llm = _llm(tmp_path)
+    _enable_shadow(llm, "graded", rate=1.0)
+    assert "".join(llm.stream("hi", system="s", workload="graded")) == "the answer"
+    (raw,) = _request_json(llm)
+    assert json.loads(raw)["system"] == "s"
+
+
+def test_a_sample_written_without_parameters_reads_back_null(tmp_path):
+    llm = _llm(tmp_path)
+    llm.repo.write_sample("old-call", "p", "r")  # the pre-0031 call shape
+    assert _request_json(llm) == [None]
+    assert _samples(llm) == [("old-call", "p", "r")]

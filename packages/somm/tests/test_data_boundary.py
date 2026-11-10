@@ -212,10 +212,19 @@ def test_nothing_ships_as_zdr_and_vendor_facts_are_sourced():
     assert gemini and gemini[0].tier is DataTier.UNVETTED
 
 
-def test_unknown_handler_is_unvetted_and_declared_handler_is_honoured():
+def test_a_handler_may_declare_only_local():
     assert classify("triage", kind="handler").tier is DataTier.UNVETTED
     assert classify("triage", kind="handler", declared_tier="local").tier is DataTier.LOCAL
     assert classify("triage", kind="handler", declared_tier="bogus").tier is DataTier.UNVETTED
+    # A looser claim is no evidence: only the owner's file can promote it.
+    for claim in ("zdr", "subscribed"):
+        assert classify("triage", kind="handler", declared_tier=claim).tier is DataTier.UNVETTED
+
+
+def test_audit_has_its_own_module_and_keeps_the_old_name():
+    from somm_core import boundary, boundary_audit
+
+    assert boundary.audit is boundary_audit.audit
 
 
 # ---------------------------------------------------------------------------

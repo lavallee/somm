@@ -114,9 +114,9 @@ class WorkloadHandler(Protocol):
 
 
 def handler_tier(handler: WorkloadHandler):
-    """A handler's data tier: its declared ``data_tier`` attribute (``local``,
-    ``zdr``, ``subscribed`` or ``unvetted``), unless the owner's boundary.toml
-    names ``handler:<kind>``. Undeclared is ``unvetted``."""
+    """A handler's data tier: ``local`` when it declares ``data_tier = "local"``,
+    unless the owner's boundary.toml names ``handler:<kind>``. Any other
+    declaration, or none, is ``unvetted``."""
     from somm_core.boundary import classify
 
     return classify(
@@ -143,10 +143,10 @@ def register(handler: WorkloadHandler, *, replace: bool = False) -> None:
     two packages silently fighting over one kind is the kind of ambiguity that
     is much easier to prevent than to debug.
 
-    A handler may declare ``data_tier`` (``local`` | ``zdr`` | ``subscribed``
-    | ``unvetted``): where the data it is handed goes. Undeclared is
-    ``unvetted``, so a workload with a data boundary never consults it until
-    it says (or the owner's boundary.toml says, as ``handler:<kind>``).
+    A handler may declare ``data_tier = "local"``: the data it is handed stays
+    on your hardware. Anything else is ``unvetted``, so a workload with a data
+    boundary never consults it unless the owner's boundary.toml declares it,
+    as ``handler:<kind>``.
     """
     kind = getattr(handler, "kind", "")
     if not kind or not isinstance(kind, str):
