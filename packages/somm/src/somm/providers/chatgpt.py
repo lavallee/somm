@@ -332,7 +332,7 @@ class ChatGPTProvider:
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
         resp = self.generate(request)
-        yield SommChunk(resp.text, done=True, model=resp.model)
+        yield SommChunk(resp.text, done=True, model=resp.model, response=resp)
 
     def health(self) -> ProviderHealth:
         from somm.chatgpt_auth import PERMISSION, read_json

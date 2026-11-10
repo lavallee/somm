@@ -193,7 +193,7 @@ class ClaudeCLIProvider:
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
         # No partial streaming via the JSON one-shot; deliver the whole result once.
         resp = self.generate(request)
-        yield SommChunk(text=resp.text, done=True, model=resp.model)
+        yield SommChunk(text=resp.text, done=True, model=resp.model, response=resp)
 
     def health(self) -> ProviderHealth:
         # ``binary`` is normally the path the registry resolved; a bare name
