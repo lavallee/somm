@@ -36,6 +36,27 @@ from somm.providers.base import (
 )
 
 DEFAULT_MODEL = "claude-haiku-5-5"  # same inexpensive default as the anthropic provider
+_warned_default = False
+
+
+def _warn_default_model_once() -> None:
+    """Say, once per process, that the seat is running the fallback model.
+
+    Before 0.23 a call with no model ran whatever the CLI was configured for,
+    often the most capable model. Falling back to a small one is cheaper but
+    is a quality change a caller should hear about, not discover.
+    """
+    global _warned_default
+    if _warned_default:
+        return
+    _warned_default = True
+    import sys
+
+    print(
+        f"somm: claude-cli call with no model; using {DEFAULT_MODEL}. "
+        "Pass model= or set SOMM_CLAUDE_CLI_MODEL to choose another.",
+        file=sys.stderr,
+    )
 _LEAN_ARGS = ["--tools", "", "--strict-mcp-config", "--setting-sources", ""]
 _NO_PERSIST = "--no-session-persistence"  # absent from old CLIs; see generate()
 
@@ -74,6 +95,8 @@ class ClaudeCLIProvider:
 
     def generate(self, request: SommRequest) -> SommResponse:
         model = request.model or self.default_model
+        if not request.model and self.default_model == DEFAULT_MODEL:
+            _warn_default_model_once()
         cmd = [self.binary, "-p", "--output-format", "json", "--model", model]
         if request.claude_cli_text_only:
             if self.extra_args:
