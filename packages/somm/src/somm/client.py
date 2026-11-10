@@ -51,10 +51,8 @@ from somm_core.version import VERSION as _CLIENT_VERSION
 from somm import hooks
 from somm._redaction import scrub_text
 from somm.errors import (
-    SommAuthError,
     SommEmptyResponse,
     SommError,
-    SommFatalError,
     SommProviderError,
     SommProviderNotConfigured,
     SommProvidersExhausted,
@@ -62,9 +60,9 @@ from somm.errors import (
     SommRefused,
     SommStructuredError,
     SommTimeout,
-    SommTransientError,
 )
 from somm.errors import SommStrictMode as _SommStrictMode
+from somm.events import ReasoningDelta, StreamDone, StreamEvent, TextDelta
 from somm.prompts import fork_prompt as fork_prompt_version
 from somm.prompts import (
     get_prompt,
@@ -77,6 +75,8 @@ from somm.providers.base import (
     SommEmbedRequest,
     SommProvider,
     SommRequest,
+    SommResponse,
+    ToolCallDelta,
 )
 from somm.providers.registry import (
     BUILTIN_PROVIDER_SPECS,
@@ -84,13 +84,9 @@ from somm.providers.registry import (
     load_entrypoint_provider_specs,
 )
 from somm.routing import (
-    AUTH_COOLDOWN_S,
     ProviderHealthTracker,
     Router,
-    _auth_chain_error,
-    _classify_unknown,
     _parse_ts,
-    _record_health,
     reasoning_ate_budget,
 )
 from somm.slots import parallel_slots as _parallel_slots
@@ -121,7 +117,7 @@ _WAIT_UNSET: Any = object()
 _STRUCTURED_TEMPERATURE_JITTER = 0.05
 
 
-def _next_stream_item(iterator: Iterator[str]) -> tuple[bool, str | None]:
+def _next_stream_item(iterator: Iterator) -> tuple[bool, Any]:
     """Advance a sync stream without leaking StopIteration through a Future."""
     try:
         return False, next(iterator)
@@ -817,6 +813,160 @@ def _generate_attempt(provider, request):
     return provider.generate(request)
 
 
+class _StreamStart:
+    """A provider stream opened and read up to its first output.
+
+    The dispatcher's attempt for a stream: :class:`_StreamOpener` opens one
+    and reads it until there is something to give the caller (visible text,
+    a tool-call fragment, or — for an ``events`` stream — reasoning) or the
+    stream ends. Until then nothing has reached the caller, so a failure is
+    an ordinary failed attempt the router may route past. After that the
+    caller drains :meth:`events`, and a failure can only be raised.
+
+    The router reads ``text``, ``tool_calls`` and ``started`` to tell an
+    empty answer from a real one, and ``model`` / ``tokens_out`` /
+    ``reasoning_tokens`` / ``raw`` to say why an empty one was empty.
+    """
+
+    def __init__(self, provider, request: SommRequest, *, events: bool) -> None:
+        self.provider = provider
+        self.request = request
+        self.model = request.model or getattr(provider, "default_model", "") or ""
+        self._events = events
+        self._chunks = iter(provider.stream(request))
+        self._stripper = ThinkStreamStripper()
+        self._pending: list = []
+        self.collected: list[str] = []
+        self.tool_calls: list[ToolCallDelta] = []
+        self.final: SommResponse | None = None
+        self.done = False
+        self.usage = "estimate"
+
+    # What the router reads.
+    @property
+    def text(self) -> str:
+        return "".join(self.collected)
+
+    @property
+    def started(self) -> bool:
+        return not self.done and any(self._shown(e) for e in self._pending)
+
+    @property
+    def tokens_out(self) -> int:
+        return self.final.tokens_out if self.final else 0
+
+    @property
+    def reasoning_tokens(self) -> int | None:
+        return self.final.reasoning_tokens if self.final else None
+
+    @property
+    def raw(self) -> dict | None:
+        return self.final.raw if self.final else None
+
+    def prime(self) -> _StreamStart:
+        while not self.done and not any(self._shown(e) for e in self._pending):
+            self._read()
+        return self
+
+    def _shown(self, event) -> bool:
+        return self._events or not isinstance(event, ReasoningDelta)
+
+    def events(self) -> Iterator:
+        while True:
+            while self._pending:
+                yield self._pending.pop(0)
+            if self.done:
+                return
+            self._read()
+
+    def _read(self) -> None:
+        chunk = next(self._chunks, None)
+        if chunk is None:
+            # Ended without a final chunk. Built-in adapters whose wire format
+            # has a completion marker raise when it is missing; a plugin
+            # provider may simply stop, so that still counts as the end.
+            self._finish(None)
+            return
+        if chunk.model:
+            self.model = chunk.model
+        if getattr(chunk, "reasoning", ""):
+            self._pending.append(ReasoningDelta(chunk.reasoning))
+        if chunk.text:
+            self._text(self._stripper.feed(chunk.text))
+        for delta in getattr(chunk, "tool_calls", None) or ():
+            self.tool_calls.append(delta)
+            self._pending.append(delta)
+        if chunk.done:
+            self._finish(getattr(chunk, "response", None))
+
+    def _text(self, visible: str) -> None:
+        if visible:
+            self.collected.append(visible)
+            self._pending.append(TextDelta(visible))
+
+    def _finish(self, response: SommResponse | None) -> None:
+        self._text(self._stripper.flush())
+        self.final = response
+        self.done = True
+        close = getattr(self._chunks, "close", None)
+        if close is not None:
+            close()
+
+    def response(self, plan: _Plan, t0: float) -> SommResponse:
+        """The answer as generate would have returned it, from the provider's
+        final chunk when it sent one, with the text the caller was given."""
+        text = self.text
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        final = self.final
+        if final is not None and (final.tokens_in or final.tokens_out):
+            self.usage = "provider"
+            return replace(
+                final, text=text, latency_ms=latency_ms, model=final.model or self.model
+            )
+        p, model = self.provider, self.model
+        if plan.req.messages is not None:
+            tokens_in = sum(
+                p.estimate_tokens(m.get("content") or "", model) for m in plan.req.messages
+            )
+        else:
+            tokens_in = p.estimate_tokens(plan.req.prompt, model)
+        tokens_in += p.estimate_tokens(plan.req.system, model) if plan.req.system else 0
+        return SommResponse(
+            text=text,
+            model=(final.model if final else "") or model,
+            tokens_in=tokens_in,
+            tokens_out=p.estimate_tokens(text, model) if text else 0,
+            latency_ms=latency_ms,
+            raw=final.raw if final else None,
+            tool_calls=final.tool_calls if final else [],
+            stop_reason=final.stop_reason if final else "",
+            reasoning_content=final.reasoning_content if final else "",
+            cost_usd=final.cost_usd if final else None,
+            max_tokens_sent=final.max_tokens_sent if final else None,
+        )
+
+
+class _StreamOpener:
+    """The attempt a stream hands :meth:`SommLLM._dispatch`. Remembers the
+    last stream that ended empty, which is a stream's answer when the chain
+    has nothing better."""
+
+    def __init__(self, events: bool) -> None:
+        self.events = events
+        self.empty: _StreamStart | None = None
+
+    def __call__(self, provider, request: SommRequest) -> _StreamStart:
+        start = _StreamStart(provider, request, events=self.events).prime()
+        if start.done and not start.text.strip() and not start.tool_calls:
+            self.empty = start
+        return start
+
+
+def _stream_extra(start: _StreamStart | None) -> dict:
+    """What a stream adds to ``routing_json``: where its token counts came from."""
+    return {"stream": {"usage": start.usage if start is not None else "provider"}}
+
+
 def _format_error_detail(exc: Exception, provider: str, model: str | None) -> str:
     """Build a bounded, operator-friendly description of an LLM call failure.
 
@@ -855,19 +1005,6 @@ def _pinned_error_detail(exc: Exception, provider: str, model: str | None) -> st
     hint = f" | pinned call ({pin} passed by the caller): no fallback (allow_fallback=True to route past it)"
     detail = _format_error_detail(exc, provider, model)
     return detail[: 512 - len(hint)] + hint
-
-
-def _stream_failure_cooldown(exc: Exception) -> float | None:
-    """Cooldown for a stream attempt that failed before any text, or None
-    when the failure is fatal and should not fall back. Mirrors the router."""
-    if isinstance(exc, SommAuthError):
-        return AUTH_COOLDOWN_S
-    if isinstance(exc, SommFatalError):
-        return None
-    if isinstance(exc, SommTransientError):
-        return exc.cooldown_s
-    cooldown_s, transient = _classify_unknown(exc)
-    return cooldown_s if transient else None
 
 
 def _routed_past_info(router_result, model: str | None) -> dict | None:
@@ -1295,12 +1432,6 @@ class SommLLM:
         from somm.boundary import resolve_boundary
 
         return resolve_boundary(wl, per_call=per_call, project=self.config.project)
-
-    def _boundary_chain(self, providers: list, model: str | None, boundary, *, stream: bool):
-        from somm.boundary import admissible_providers
-
-        ok, _ = admissible_providers(providers, model, boundary.tier, roster=not stream)
-        return ok
 
     def _served_tier(self, provider_name: str, model: str | None) -> str | None:
         """calls.data_tier for the route that served (or was attempted)."""
@@ -2751,426 +2882,115 @@ class SommLLM:
         parent_call_id: str | None = None,
         data_boundary: str | None = None,
         timeout: float | None = None,
-    ) -> Iterator[str]:
-        """Stream text deltas from the LLM. Yields user-visible text chunks
-        (with `<think>` blocks stripped across chunk boundaries).
+        *,
+        events: bool = False,
+        messages: list[dict] | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
+        capabilities_required: list[str] | None = None,
+        allow_empty: bool = False,
+        allow_fallback: bool | None = None,
+        correlation_id: str | None = None,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
+        claude_cli_text_only: bool = False,
+    ) -> Iterator[str] | Iterator[StreamEvent]:
+        """Stream the answer as it arrives. Yields user-visible text chunks
+        (``<think>`` blocks stripped across chunk boundaries); with
+        ``events=True``, yields :mod:`somm.events` instead — ``TextDelta``,
+        ``ToolCallDelta``, ``ReasoningDelta`` — and finally one
+        ``StreamDone`` carrying the recorded ``SommResult``.
 
-        A stream raises its failures (a typed ``SommError``); ``timeout``
-        overrides the adapter's configured timeout for this call.
+        A stream is the same call as :meth:`generate`: same workload policy,
+        pins, ``somm/auto``, capability and boundary admission, budget gate,
+        cooldowns and route record, and the same arguments where they make
+        sense for a stream. One rule is its own: an attempt that fails before
+        anything reached the caller falls through to the next candidate
+        exactly as generate does; once a chunk has been yielded it cannot be
+        taken back, so a later failure is recorded and raised. A pinned
+        ``provider`` is sticky, as in generate.
 
-        Telemetry is written after the stream completes. An unpinned stream
-        falls back along the chain until the first visible text reaches the
-        caller: a provider that fails transiently, rejects its key, or
-        streams nothing is cooled and the next one is tried. Once text has
-        been yielded it cannot be taken back, so a failure after that point
-        raises. A pinned ``provider`` is sticky, as in :meth:`generate`.
-        ``prompt`` may be a string, multimodal prompt list, or registered
-        ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
-        that prompt version on the telemetry row.
-        Omit ``wait`` to use ``SOMM_WAIT_ON_EXHAUSTED`` when set; pass
-        ``None`` or ``0`` to fail fast when all stream candidates are cooling.
+        A stream raises its failures (a typed ``SommError``); an empty answer
+        ends the stream and is recorded ``empty``. Token counts come from the
+        provider's final usage report when it sends one, otherwise from a
+        length estimate; the row's ``routing_json["stream"]["usage"]`` says
+        which. Telemetry is written when the stream ends, is abandoned, or
+        fails.
 
         Usage:
             for piece in llm.stream("tell a story", workload="story"):
                 print(piece, end="", flush=True)
         """
-        if model == "somm/auto":
-            yield self.generate(prompt, system=system, workload=workload, max_tokens=max_tokens,
-                                temperature=temperature, model=model, provider=provider, wait=wait,
-                                session_id=session_id, parent_call_id=parent_call_id,
-                                data_boundary=data_boundary, timeout=timeout).text
-            return
-
-        from somm.providers.base import SommRequest
-
-        wl = self._require_workload(workload)
-        boundary = self._resolve_boundary(wl, data_boundary)
-        wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
-        prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
-        messages = None
-        call_prompt_id = self._resolve_prompt_id(wl.id, prompt)
-        req = SommRequest(
-            prompt=prompt_text,
-            system=system,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            model=model,
+        plan = self._plan_call(
+            prompt, system=system, workload=workload, max_tokens=max_tokens,
+            temperature=temperature, model=model, provider=provider,
+            capabilities_required=capabilities_required, allow_empty=allow_empty,
+            allow_fallback=allow_fallback, no_fallback=False, tools=tools,
+            messages=messages, tool_choice=tool_choice, response_format=response_format,
+            reasoning_effort=reasoning_effort, wait=wait, session_id=session_id,
+            parent_call_id=parent_call_id, correlation_id=correlation_id,
+            observation_role=observation_role, source_call_id=source_call_id,
+            claude_cli_text_only=claude_cli_text_only, data_boundary=data_boundary,
             timeout=timeout,
         )
-
-        short_circuit: hooks.ShortCircuit | None = None
-        short_circuited: str | None = None
-        if hooks.has_hooks(hooks.PRE_CALL):
-            original_prompt_text = prompt_text
-            ctx = hooks.PreCallContext(
-                workload=workload,
-                prompt=prompt_text,
-                system=system,
-                messages=None,
-                model=model,
-                provider=provider,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                tools=[],
-                tool_choice=None,
-                project=self.config.project,
-                data_boundary=None if boundary.is_default else boundary.tier.value,
-            )
-            short_circuit = hooks.fire_pre_call(ctx)
-            prompt_text = ctx.prompt
-            system = ctx.system
-            messages = ctx.messages
-            model = ctx.model
-            provider = ctx.provider
-            max_tokens = ctx.max_tokens
-            temperature = ctx.temperature
-            if messages is not None:
-                call_prompt_id = None
-            elif isinstance(prompt, Prompt) and prompt_text == original_prompt_text:
-                call_prompt_id = prompt.id
-            else:
-                call_prompt_id = self._resolve_prompt_id(wl.id, prompt_text)
-            req = SommRequest(
-                prompt=prompt_text,
-                system=system,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                model=model,
-                tools=ctx.tools or [],
-                messages=messages,
-                tool_choice=ctx.tool_choice,
-                timeout=timeout,
-            )
-            if short_circuit is not None:
-                short_circuited = short_circuit.source or short_circuit.provider or "hook"
-
-        # Data boundary before any provider is touched: a pinned stream
-        # outside it raises; an unpinned one only ever sees admissible
-        # candidates.
-        if short_circuit is None and not boundary.is_default:
-            self._admit_or_refuse(
-                wl,
-                workload,
-                boundary,
-                pinned=provider,
-                model=model,
-                policy=None,
-                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
-                session_id=session_id,
-                parent_call_id=parent_call_id,
-                max_tokens=max_tokens,
-            )
-            req.data_boundary = boundary.tier.value
-
-        # Budget gate after pre_call — a short-circuit spends nothing, so a
-        # capped workload may still stream from cache; a real call is refused.
-        if short_circuit is None:
-            self._enforce_budget(wl)
-
-        chosen = None
-        stream_candidates: list = []
-        if short_circuit is None and wait_on_exhausted is not None:
-            candidates = [self._pick_provider(provider)] if provider else list(self.providers)
-            if not boundary.is_default:
-                candidates = self._boundary_chain(candidates, model, boundary, stream=True)
-            self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
-        route_skipped: list = []
-        route_first: list | None = None
-        if short_circuit is None:
-            stream_candidates = self._stream_candidates(provider)
-            pool = [self._pick_provider(provider)] if provider else list(self.providers)
-            admitted = (
-                pool
-                if boundary.is_default
-                else self._boundary_chain(pool, model, boundary, stream=True)
-            )
-            for p in pool:
-                slot = model or getattr(p, "default_model", "") or ""
-                if p not in admitted:
-                    route_skipped.append([p.name, slot, "boundary"])
-                elif p not in stream_candidates:
-                    route_skipped.append([p.name, slot, "cooled"])
-            if admitted:
-                route_first = [
-                    admitted[0].name, model or getattr(admitted[0], "default_model", "") or ""
-                ]
-            stream_candidates = [p for p in stream_candidates if p in admitted]
-            chosen = stream_candidates[0] if stream_candidates else None
-        else:
-            route_first = [short_circuit.provider, short_circuit.model]
-        route_source = _route_source(policy=False, learned_override=False, pinned=bool(provider or model))
-        routed_past: list[tuple[str, Exception]] = []
-        call_id = str(uuid.uuid4())
-        ts = datetime.now(UTC)
-        stripper = ThinkStreamStripper()
-
         t0 = time.monotonic()
-        collected = []
-        outcome = Outcome.OK
-        error_kind: str | None = None
-        error_detail: str | None = None
-        tokens_in = tokens_out = 0
-        actual_model = model or ""
-        actual_provider = short_circuit.provider if short_circuit is not None else ""
-        cost_usd_out: float | None = None
+        opener = _StreamOpener(events)
+        att = self._dispatch(plan, opener)
+        if (
+            att.resp is None
+            and opener.empty is not None
+            and att.skipped
+            and att.skipped[-1][2].startswith("empty")
+        ):
+            # The chain ended on an empty answer: for a stream that answer is
+            # the result (recorded empty), as it has always been.
+            att.resp, att.provider = opener.empty, opener.empty.provider.name
+            att.failure = att.raise_after = att.error_detail = None
+        start: _StreamStart | None = att.resp
         ttft_ms: int | None = None
-        raw_out: dict | None = None
-
         try:
-            if short_circuit is not None:
-                text = short_circuit.text
-                actual_model = short_circuit.model
-                tokens_in = short_circuit.tokens_in
-                tokens_out = short_circuit.tokens_out
-                cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
-                raw_out = short_circuit.raw
-                if text:
-                    collected.append(text)
-                    ttft_ms = int((time.monotonic() - t0) * 1000)
-                    yield text
+            if plan.short_circuit is not None:
+                pending = [TextDelta(plan.short_circuit.text)] if plan.short_circuit.text else []
             else:
-                if not stream_candidates:
-                    next_ok = self._tracker.next_uncool_at([p.name for p in self.providers])
-                    wait_s = (
-                        (next_ok - datetime.now(UTC)).total_seconds() if next_ok else None
-                    )
-                    raise SommProvidersExhausted(
-                        "all stream providers cooled"
-                        + (f"; next available in {wait_s:.0f}s" if wait_s is not None else ""),
-                        next_cool_in_s=wait_s,
-                    )
-                for attempt_no, candidate in enumerate(stream_candidates):
-                    chosen = candidate
-                    has_next = attempt_no + 1 < len(stream_candidates)
-                    stripper = ThinkStreamStripper()
-                    raw_out = None
-                    actual_model = model or ""
-                    try:
-                        for chunk in candidate.stream(req):
-                            chunk_raw = getattr(chunk, "raw", None)
-                            if isinstance(chunk_raw, dict):
-                                raw_out = chunk_raw
-                            # The served model, as generate records resp.model.
-                            if getattr(chunk, "model", ""):
-                                actual_model = chunk.model
-                            if chunk.text:
-                                visible = stripper.feed(chunk.text)
-                                if visible:
-                                    collected.append(visible)
-                                    if ttft_ms is None:
-                                        ttft_ms = int((time.monotonic() - t0) * 1000)
-                                    yield visible
-                            if chunk.done:
-                                tail = stripper.flush()
-                                if tail:
-                                    collected.append(tail)
-                                    if ttft_ms is None:
-                                        ttft_ms = int((time.monotonic() - t0) * 1000)
-                                    yield tail
-                                break
-                    except Exception as exc:
-                        route_skipped.append([
-                            candidate.name,
-                            model or getattr(candidate, "default_model", "") or "",
-                            type(exc).__name__,
-                        ])
-                        # Text already reached the caller, the stream is
-                        # pinned, or this was the last candidate: nothing to
-                        # fall back to. Otherwise cool the provider and move on.
-                        if collected or provider or not has_next:
-                            if not provider and isinstance(exc, SommAuthError):
-                                routed_past.append((candidate.name, exc))
-                                if len(routed_past) > 1 and not collected:
-                                    raise _auth_chain_error(routed_past) from exc
-                            raise
-                        cooldown_s = _stream_failure_cooldown(exc)
-                        if cooldown_s is None:
-                            raise
-                        _record_health(
-                            self._tracker.mark_failure, candidate.name, cooldown_s=cooldown_s
-                        )
-                        if isinstance(exc, SommAuthError):
-                            routed_past.append((candidate.name, exc))
-                        continue
-                    if not collected and not provider and has_next:
-                        # Empty stream: like the router, move on rather than
-                        # hand the caller nothing, and cool briefly.
-                        _record_health(self._tracker.mark_failure, candidate.name, cooldown_s=15)
-                        route_skipped.append([
-                            candidate.name,
-                            model or getattr(candidate, "default_model", "") or "",
-                            "empty",
-                        ])
-                        continue
-                    if collected:
-                        # Best-effort: the text already reached the caller, so
-                        # a locked ledger here must not turn it into an error.
-                        _record_health(self._tracker.mark_ok, candidate.name)
-                    break
-                # Streaming providers don't always give token counts — estimate
-                # from length as a fallback.
-                text = "".join(collected)
-                if not actual_model:
-                    actual_model = chosen.name
-                actual_provider = chosen.name
-                tokens_in = chosen.estimate_tokens(
-                    prompt_text, actual_model
-                ) + chosen.estimate_tokens(system, actual_model)
-                tokens_out = chosen.estimate_tokens(text, actual_model)
-                if not text.strip():
-                    outcome = Outcome.EMPTY
-                    error_kind = "EmptyResponse"
-                    # Stream latency is computed in `finally`; pass what we have
-                    # so far (since we're between `try` and `finally`, t0 is set).
-                    error_detail = _format_empty_detail(
-                        provider=chosen.name,
-                        model=actual_model or chosen.name,
-                        tokens_out=tokens_out,
-                        latency_ms=int((time.monotonic() - t0) * 1000),
-                    )
-        except Exception as exc:
-            outcome = _failure_outcome(exc)
-            error_kind = type(exc).__name__
-            error_detail = _format_error_detail(
-                exc, chosen.name if chosen is not None else actual_provider, actual_model
-            )
-            text = "".join(collected)
-            raise
+                pending = start.events() if start is not None else []
+            for event in pending:
+                if ttft_ms is None:
+                    ttft_ms = int((time.monotonic() - t0) * 1000)
+                if events:
+                    yield event
+                elif isinstance(event, TextDelta):
+                    yield event.text
         except BaseException as exc:
-            # The caller stopped consuming (generator closed, task cancelled,
-            # interrupt). The answer is incomplete, so it is not OK; nothing
-            # says it was wrong either, so it is unknown.
-            outcome = Outcome.UNKNOWN
-            error_kind = "StreamAbandoned" if isinstance(exc, GeneratorExit) else type(exc).__name__
-            error_detail = (
-                f"{error_kind}: caller stopped reading after "
-                f"{sum(len(c) for c in collected)} chars"
-            )
+            # A provider failure after the first chunk, or the caller stopped
+            # reading (GeneratorExit, cancellation): record what happened.
+            att.failure = exc
+            served = start.model if start is not None else att.model
+            if isinstance(exc, Exception):
+                att.error_detail = _format_error_detail(exc, att.provider, served)
+            else:
+                kind = "StreamAbandoned" if isinstance(exc, GeneratorExit) else type(exc).__name__
+                att.error_detail = (
+                    f"{kind}: caller stopped reading after {len(start.collected) if start else 0} chars"
+                )
+            self._finish_stream(plan, att, start, t0, ttft_ms)
             raise
-        finally:
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            full_text = "".join(collected)
-            provider_name = actual_provider or (
-                chosen.name if chosen is not None else ("hook" if short_circuit is not None else "")
-            )
-            model_name = actual_model or provider_name
-            if not provider_name and route_skipped:
-                error_detail = (
-                    f"{error_detail or error_kind} | route: {_route_summary(route_skipped)}"
-                )[:512]
-            served = (
-                [
-                    provider_name,
-                    model
-                    or (getattr(chosen, "default_model", "") if chosen is not None else "")
-                    or model_name,
-                ]
-                if provider_name and (collected or outcome in (Outcome.OK, Outcome.EMPTY))
-                else None
-            )
-            stream_routing_json = json.dumps({
-                "route_source": route_source,
-                "route": _route_record(
-                    "hook" if short_circuit is not None else ("pinned" if provider else "chain"),
-                    route_first,
-                    served,
-                    route_skipped,
-                    max_tokens,
-                ),
-            })
-            cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
-            citations = extract_citations(raw_out)
-            citations_json = _citations_json(citations)
-            provider_request_id, billing_id = _provider_custody(raw_out)
-            cost_usd = (
-                cost_usd_out
-                if cost_usd_out is not None
-                else cost_for_call(
-                    self.repo,
-                    provider_name,
-                    model_name,
-                    tokens_in,
-                    tokens_out,
-                    cache_read_tokens=cache_tokens_in,
-                    cache_write_tokens=cache_tokens_out,
-                )
-            )
-            cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version = (
-                _cost_provenance(
-                    self.repo,
-                    provider_name,
-                    model_name,
-                    reported=cost_usd_out is not None,
-                    source=short_circuited,
-                )
-            )
-            call = Call(
-                id=call_id,
-                ts=ts,
-                project=self.config.project,
-                workload_id=wl.id,
-                prompt_id=call_prompt_id,
-                provider=provider_name,
-                model=model_name,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                latency_ms=latency_ms,
-                cost_usd=cost_usd,
-                outcome=outcome,
-                error_kind=error_kind,
-                error_detail=error_detail,
-                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
-                response_hash=stable_hash(full_text),
-                correlation_id=hooks.current_correlation_id(),
-                call_site=hooks.current_call_site(),
-                client_version=_CLIENT_VERSION,
-                reasoning_tokens=extract_reasoning_tokens(raw_out),
-                routing_json=stream_routing_json,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                ttft_ms=ttft_ms,
-                session_id=session_id,
-                parent_call_id=parent_call_id,
-                cache_tokens_in=cache_tokens_in,
-                cache_tokens_out=cache_tokens_out,
-                citations_json=citations_json,
-                cost_basis=cost_basis,
-                cost_kind=cost_kind,
-                cost_accuracy=cost_accuracy,
-                cost_source=cost_source,
-                pricing_version=pricing_version,
-                provider_request_id=provider_request_id,
-                billing_id=billing_id,
-                data_tier=(
-                    getattr(short_circuit, "data_tier", None)
-                    if short_circuit is not None
-                    else (self._served_tier(provider_name, model_name) if chosen else None)
-                ),
-            )
-            self._finish_call(
-                call,
-                workload=workload,
-                short_circuited=short_circuited,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            self._maybe_capture_sample(wl, call_id, prompt_text, None, full_text, outcome)
-            if routed_past and outcome == Outcome.OK and self._on_fallback is not None:
-                first_provider, first_exc = routed_past[0]
-                with contextlib.suppress(Exception):  # the hook must not break the caller
-                    self._on_fallback(
-                        {
-                            "call_id": call_id,
-                            "workload": workload,
-                            "pinned_provider": None,
-                            "pinned_model": model,
-                            "actual_provider": provider_name,
-                            "actual_model": model_name,
-                            "error_kind": type(first_exc).__name__,
-                            "error_detail": _format_error_detail(first_exc, first_provider, model),
-                            "routed_past": [name for name, _ in routed_past],
-                        }
-                    )
+        result = self._finish_stream(plan, att, start, t0, ttft_ms)
+        if att.failure is not None:
+            raise att.failure
+        if events:
+            yield StreamDone(result, usage=start.usage if start is not None else "provider")
+
+    def _finish_stream(self, plan, att, start, t0: float, ttft_ms: int | None) -> SommResult:
+        """Record a stream that ended, failed or was abandoned; a failure
+        raised to the caller names the row it was recorded on."""
+        if start is not None:
+            att.resp = start.response(plan, t0)
+        result = self._record(plan, att, ttft_ms=ttft_ms, routing_extra=_stream_extra(start))
+        if isinstance(att.failure, SommError):
+            _failure_error(result, att.failure, allow_empty=True)
+        return result
 
     async def astream(
         self,
@@ -3186,46 +3006,48 @@ class SommLLM:
         parent_call_id: str | None = None,
         data_boundary: str | None = None,
         timeout: float | None = None,
-    ) -> AsyncIterator[str]:
+        *,
+        events: bool = False,
+        messages: list[dict] | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
+        capabilities_required: list[str] | None = None,
+        allow_empty: bool = False,
+        allow_fallback: bool | None = None,
+        correlation_id: str | None = None,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
+        claude_cli_text_only: bool = False,
+    ) -> AsyncIterator[str] | AsyncIterator[StreamEvent]:
         """Asynchronously iterate over :meth:`stream` without blocking the loop.
 
-        The existing synchronous generator still owns provider selection,
-        stream filtering, and final telemetry. Each iterator step runs off the
-        event loop, and closing this async iterator closes the sync generator so
-        its telemetry ``finally`` block runs for partially consumed streams.
+        The synchronous generator owns the whole call; each step runs off the
+        event loop, and closing this iterator closes it, so a partially read
+        stream is still recorded.
         """
         import asyncio
 
         iterator = self.stream(
-            prompt,
-            system=system,
-            workload=workload,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            model=model,
-            provider=provider,
-            wait=wait,
-            session_id=session_id,
-            parent_call_id=parent_call_id,
-            data_boundary=data_boundary,
-            timeout=timeout,
+            prompt, system=system, workload=workload, max_tokens=max_tokens,
+            temperature=temperature, model=model, provider=provider, wait=wait,
+            session_id=session_id, parent_call_id=parent_call_id,
+            data_boundary=data_boundary, timeout=timeout, events=events, messages=messages,
+            tools=tools, tool_choice=tool_choice, response_format=response_format,
+            reasoning_effort=reasoning_effort, capabilities_required=capabilities_required,
+            allow_empty=allow_empty, allow_fallback=allow_fallback,
+            correlation_id=correlation_id, observation_role=observation_role,
+            source_call_id=source_call_id, claude_cli_text_only=claude_cli_text_only,
         )
         try:
             while True:
                 done, piece = await asyncio.to_thread(_next_stream_item, iterator)
                 if done:
                     break
-                assert piece is not None
                 yield piece
         finally:
             await asyncio.to_thread(iterator.close)
-
-    def _stream_candidates(self, name: str | None) -> list:
-        """Providers a stream may use, in order. A pin is the only candidate;
-        otherwise every non-cooled provider in chain order."""
-        if name:
-            return [self._pick_provider(name)]
-        return [p for p in self.providers if not self._tracker.get(p.name).is_cooling()]
 
     # ------------------------------------------------------------------
     # Structured output
@@ -3799,8 +3621,11 @@ class _PolicyProvider:
             req = replace(request, model=self._model)
         return self._provider.generate(req)
 
-    def stream(self, request):  # pragma: no cover - policy routing is generate-only
-        return self._provider.stream(request)
+    def stream(self, request: SommRequest):
+        req = request
+        if self._model is not None and not self._explicit_model:
+            req = replace(request, model=self._model)
+        return self._provider.stream(req)
 
     def health(self):
         return self._provider.health()
