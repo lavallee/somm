@@ -1,6 +1,6 @@
 """Tests for cost-tracking safety features.
 
-Feature 1: seed_known_pricing populates model_intel on first use.
+Feature 1: the bundled snapshot is the one price table.
 Feature 2: cost_for_call warns on missing pricing for paid providers.
 Feature 3: generate() warns when daily budget cap is exceeded.
 Feature 4: local unpriced calls are not represented as zero economic cost.
@@ -15,7 +15,6 @@ from tempfile import TemporaryDirectory
 
 from somm.client import _cost_provenance
 from somm_core.pricing import (
-    _KNOWN_PRICING,
     _warned_missing_pricing,
     cost_for_call,
     list_intel,
@@ -34,55 +33,50 @@ def _fresh_repo() -> Repository:
     return repo
 
 
-# ---- Feature 1: seed_known_pricing -----------------------------------------
+# ---- Feature 1: one price table ----------------------------------------------
 
 
-def test_seed_populates_empty_table():
+def test_seed_is_the_bundle():
+    """``seed_known_pricing`` no longer carries its own table: it syncs the bundle."""
     repo = _fresh_repo()
-    # Table should be empty initially
     assert list_intel(repo) == []
 
     seed_known_pricing(repo)
 
-    rows = list_intel(repo)
-    assert len(rows) == len(_KNOWN_PRICING)
+    rows = {(r["provider"], r["model"]): r for r in list_intel(repo)}
+    assert len(rows) > 200
+    assert {r["source"] for r in rows.values()} == {"litellm_bundle"}
+    assert rows[("anthropic", "claude-sonnet-5-5")]["price_in_per_1m"] == 2.00
 
-    # Several Sonnet generations are seeded (current + prior) so older pins
-    # still cost-track; each carries its own list price.
-    anthropic_sonnet = {
-        r["model"]: r for r in rows if r["provider"] == "anthropic" and "sonnet" in r["model"]
+
+def test_seed_does_not_overwrite_manual_prices():
+    repo = _fresh_repo()
+    write_intel(repo, "anthropic", "claude-sonnet-5-5", 99.0, 99.0, None, None, "manual")
+
+    seed_known_pricing(repo)
+
+    row = next(
+        r for r in list_intel(repo, provider="anthropic") if r["model"] == "claude-sonnet-5-5"
+    )
+    assert (row["price_in_per_1m"], row["source"]) == (99.0, "manual")
+
+
+def test_bundle_replaces_rows_from_the_removed_tables():
+    """Old databases hold rows from the hand-written seed and static tables,
+    which disagreed with the bundle (claude-opus-4-7 at 15/75 against 5/25).
+    The bundle owns those rows now, so the stale prices go."""
+    repo = _fresh_repo()
+    write_intel(repo, "anthropic", "claude-opus-4-7", 15.0, 75.0, None, None, "static")
+    write_intel(repo, "deepseek", "deepseek-flash", 0.15, 0.60, None, None, "somm_seed")
+
+    seed_known_pricing(repo)
+
+    prices = {
+        r["model"]: (r["price_in_per_1m"], r["price_out_per_1m"], r["source"])
+        for r in list_intel(repo)
     }
-    assert len(anthropic_sonnet) >= 2
-    assert anthropic_sonnet["claude-sonnet-5-5"]["price_in_per_1m"] == 2.00
-    assert anthropic_sonnet["claude-sonnet-5-5"]["price_out_per_1m"] == 10.00
-    assert anthropic_sonnet["claude-sonnet-4-6"]["price_in_per_1m"] == 3.00
-    for row in anthropic_sonnet.values():
-        assert row["source"] == "somm_seed"
-
-
-def test_seed_does_not_overwrite_existing():
-    repo = _fresh_repo()
-    # Manually set a price
-    write_intel(repo, "anthropic", "custom-model", 99.0, 99.0, None, None, "manual")
-
-    seed_known_pricing(repo)
-
-    rows = list_intel(repo)
-    # Should still have just the one manually-set row, not seeded
-    assert len(rows) == 1
-    assert rows[0]["model"] == "custom-model"
-    assert rows[0]["price_in_per_1m"] == 99.0
-
-
-def test_seed_includes_free_providers():
-    repo = _fresh_repo()
-    seed_known_pricing(repo)
-
-    rows = list_intel(repo)
-    ollama_rows = [r for r in rows if r["provider"] == "ollama"]
-    assert len(ollama_rows) >= 1
-    assert ollama_rows[0]["price_in_per_1m"] == 0.0
-    assert ollama_rows[0]["price_out_per_1m"] == 0.0
+    assert prices["claude-opus-4-7"] == (5.0, 25.0, "litellm_bundle")
+    assert prices["deepseek-flash"] == (0.3, 1.2, "litellm_bundle")
 
 
 def test_local_price_provenance_is_included_and_unpriced():
@@ -147,7 +141,7 @@ def test_no_warn_when_pricing_exists():
     buf = io.StringIO()
     with redirect_stderr(buf):
         cost = cost_for_call(
-            repo, "anthropic", "claude-sonnet-4-20250514", 1_000_000, 0
+            repo, "anthropic", "claude-sonnet-4-6", 1_000_000, 0
         )
 
     assert cost == 3.00
@@ -161,11 +155,9 @@ def test_seeded_pricing_computes_cost():
     repo = _fresh_repo()
     seed_known_pricing(repo)
 
-    # 1M input tokens of claude-opus-4 = $15.00
-    cost = cost_for_call(
-        repo, "anthropic", "claude-opus-4-20250514", 1_000_000, 0
-    )
-    assert cost == 15.0
+    # 1M input tokens of claude-opus-4-7 = $5.00 (the bundle's list price)
+    cost = cost_for_call(repo, "anthropic", "claude-opus-4-7", 1_000_000, 0)
+    assert cost == 5.0
 
     # 1M output tokens of gpt-4o-mini = $0.60
     cost = cost_for_call(repo, "openai", "gpt-4o-mini", 0, 1_000_000)

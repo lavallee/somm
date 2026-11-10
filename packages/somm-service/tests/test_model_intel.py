@@ -8,10 +8,7 @@ import httpx
 from somm_core import cost_for_call, list_intel, write_intel
 from somm_core.config import Config
 from somm_core.repository import Repository
-from somm_service.workers.model_intel import (
-    STATIC_PRICING,
-    ModelIntelWorker,
-)
+from somm_service.workers.model_intel import ModelIntelWorker
 
 
 def _tmp_repo(tmp_path: Path) -> Repository:
@@ -78,8 +75,8 @@ def test_cost_for_call_zero_for_local(tmp_path):
 # ModelIntelWorker — static + mocked http
 
 
-def test_run_once_populates_static_pricing(tmp_path, monkeypatch):
-    """When every network source fails, static still lands."""
+def test_run_once_offline_writes_no_hand_written_prices(tmp_path, monkeypatch):
+    """Offline, the worker writes nothing: the bundle is the only floor."""
     repo = _tmp_repo(tmp_path)
     worker = ModelIntelWorker(repo)
 
@@ -99,15 +96,13 @@ def test_run_once_populates_static_pricing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", _FailClient)
     summary = worker.run_once()
-    assert summary["static"] == len(STATIC_PRICING)
+    assert "static" not in summary
     assert summary["openrouter"] == 0
     assert summary["ollama"] == 0
     assert summary["models_dev"] == 0
     assert len(summary["errors"]) == 3  # models_dev, openrouter, ollama
 
-    # Static entries landed
-    rows = list_intel(repo, provider="anthropic")
-    assert any(r["model"] == "claude-haiku-4-5-20251001" for r in rows)
+    assert list_intel(repo) == []
 
 
 def test_openrouter_scrape(tmp_path, monkeypatch):

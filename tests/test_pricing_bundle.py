@@ -46,7 +46,6 @@ def test_bundle_file_ships_and_parses():
 
 def test_sync_fills_previously_unpriced_providers():
     repo, _tmp = _fresh_repo()
-    seed_known_pricing(repo)  # old seed has no gemini/deepseek rows
     written = sync_bundled_pricing(repo)
     assert written > 200
     for provider, model in [

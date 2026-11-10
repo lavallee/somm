@@ -49,70 +49,17 @@ def _clear_price_cache(db_path: Path | str | None = None) -> None:
             _price_cache.pop(key, None)
 
 
-# Hardcoded pricing for major providers, used by seed_known_pricing().
-# Format: (provider, model, price_in_per_1m, price_out_per_1m, capabilities)
-#
-# `capabilities` is a dict merged into model_intel.capabilities_json, or None.
-# The named frontier rows below all support tool calling, so they declare
-# {"tools": True} — this makes capability-filtered tool workloads
-# (capabilities_required=["tools"]) route to them positively rather than
-# relying on name-hint inference. Wildcard rows (model="*") carry no caps:
-# capability lookup is exact-match, so a wildcard never matches a real
-# (provider, model) pair anyway.
-#
-# Prior-generation Anthropic model IDs are kept alongside current ones so
-# projects still pinning older snapshots continue to cost-track correctly.
-# Run `somm-serve admin refresh-intel` to pull live pricing.
-_TOOLS: dict[str, bool] = {"tools": True}
-_KNOWN_PRICING: list[tuple[str, str, float, float, dict | None]] = [
-    # Current lineup (Oct 2026), per models.dev and provider pricing pages
-    ("anthropic", "claude-haiku-5-5", 0.10, 0.50, _TOOLS),
-    ("anthropic", "claude-sonnet-5-5", 2.00, 10.00, _TOOLS),
-    ("anthropic", "claude-opus-5-5", 4.00, 20.00, _TOOLS),
-    ("anthropic", "claude-fable-5-1", 10.00, 50.00, _TOOLS),
-    ("openai", "gpt-6-luna", 0.10, 0.50, _TOOLS),
-    ("openai", "gpt-6.1-sol", 2.00, 10.00, _TOOLS),
-    ("deepseek", "deepseek-flash", 0.15, 0.60, _TOOLS),
-    ("gemini", "gemini-3.8-flash", 0.75, 3.75, _TOOLS),
-    ("minimax", "MiniMax-M3", 0.30, 1.20, _TOOLS),
-    # Prior Anthropic (Claude 4.5–4.7 family), kept so older pins cost-track
-    ("anthropic", "claude-haiku-4-5-20251001", 0.80, 4.00, _TOOLS),
-    ("anthropic", "claude-sonnet-4-6", 3.00, 15.00, _TOOLS),
-    ("anthropic", "claude-opus-4-7", 15.00, 75.00, _TOOLS),
-    # Prior Anthropic snapshots
-    ("anthropic", "claude-sonnet-4-20250514", 3.00, 15.00, _TOOLS),
-    ("anthropic", "claude-opus-4-20250514", 15.00, 75.00, _TOOLS),
-    ("openai", "gpt-4o-mini", 0.15, 0.60, _TOOLS),
-    ("openai", "gpt-4o", 2.50, 10.00, _TOOLS),
-    ("ollama", "*", 0.0, 0.0, None),
-    ("openrouter", "*:free", 0.0, 0.0, None),
-    ("minimax", "*", 0.0, 0.0, None),
-]
+# The bundled snapshot (data/pricing_bundle.json) is somm's one price table.
+# Earlier releases also carried two hand-written tables (a seed here and a
+# "static" one in the model-intel worker) that drifted from the bundle and
+# from each other. Rows those tables wrote into existing databases are owned
+# by somm, so the bundle now overwrites them.
+_SOMM_OWNED_SOURCES = ("somm_seed", "static", "litellm_bundle")
 
 
 def seed_known_pricing(repo: Repository) -> None:
-    """Populate model_intel with hardcoded pricing if the table is empty.
-
-    Only seeds when the table has zero rows — never overwrites manually
-    set prices. Called from SommLLM.__init__ on first use.
-    """
-    _clear_price_cache(repo.db_path)
-    with repo._open() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM model_intel").fetchone()[0]
-    if count > 0:
-        return
-
-    for provider, model, price_in, price_out, capabilities in _KNOWN_PRICING:
-        write_intel(
-            repo,
-            provider=provider,
-            model=model,
-            price_in_per_1m=price_in,
-            price_out_per_1m=price_out,
-            context_window=None,
-            capabilities=capabilities,
-            source="somm_seed",
-        )
+    """Deprecated alias of :func:`sync_bundled_pricing`, kept for callers."""
+    sync_bundled_pricing(repo)
 
 
 def sync_bundled_pricing(repo: Repository) -> int:
@@ -125,8 +72,8 @@ def sync_bundled_pricing(repo: Repository) -> int:
 
     Rules:
     - Rows missing from `model_intel` are inserted (source="litellm_bundle").
-    - Rows whose source is "somm_seed" or "litellm_bundle" are updated —
-      the bundle is fresher than either.
+    - Rows whose source is "somm_seed", "static" or "litellm_bundle" are
+      updated: those came from somm's own tables, and the bundle replaces them.
     - Rows from any other source (manual edits, live refreshes, workers)
       are never touched.
     - A crc32 of the bundle is stored in SQLite's `PRAGMA user_version`;
@@ -147,7 +94,10 @@ def sync_bundled_pricing(repo: Repository) -> int:
     except Exception:
         return 0
 
-    fingerprint = zlib.crc32(data) & 0x7FFFFFFF  # keep it positive for SQLite
+    # The sync rules are part of the fingerprint, so a database synced under
+    # older rules re-syncs once even when the bundle bytes are unchanged.
+    rules = ",".join(_SOMM_OWNED_SOURCES).encode()
+    fingerprint = zlib.crc32(rules + data) & 0x7FFFFFFF  # keep it positive for SQLite
     try:
         with repo._open() as conn:
             if conn.execute("PRAGMA user_version").fetchone()[0] == fingerprint:
@@ -162,7 +112,7 @@ def sync_bundled_pricing(repo: Repository) -> int:
         for m in bundle.get("models", []):
             key = (m["provider"], m["model"])
             source = existing.get(key, "")
-            if key in existing and source not in ("somm_seed", "litellm_bundle"):
+            if key in existing and source not in _SOMM_OWNED_SOURCES:
                 continue
             write_intel(
                 repo,

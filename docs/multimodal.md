@@ -96,7 +96,7 @@ intel-refresh worker:
 
 - **OpenRouter** publishes `modality` + `architecture.input_modalities`
   on every model; `vision` is derived automatically.
-- **Anthropic / OpenAI** static pricing seeds use name-hint inference —
+- **Anthropic / OpenAI** rows without a vision flag use name-hint inference —
   `claude-opus-4-*`, `claude-sonnet-4-*`, `claude-haiku-4-*`, `gpt-4o*`
   all carry vision.
 - **Ollama**: `llava`, `bakllava`, `llama3.2-vision` etc. inferred by
