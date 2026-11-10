@@ -578,8 +578,7 @@
             request into one call on somm's own client, so proxied calls are
             routed, cooled, boundary-checked, priced and recorded like library
             calls (<code>packages/somm-service/src/somm_service/proxy.py</code>,
-            CHANGELOG.md). A known limit: a stream replays the finished answer
-            rather than delivering tokens as they arrive.
+            CHANGELOG.md), and since 0.25.0 its streams forward tokens as they arrive.
           </dd>
         </dl>
       </div>

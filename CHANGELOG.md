@@ -5,6 +5,65 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.25.0] — 2026-11-10
+
+### Added
+- **Decisions are first-class calls.** `llm.decide(text, ask=..., labels=... |
+  scale=...)` asks TypeSafe System One one typed question and returns a label, its
+  probability, every label's probability and an `abstained` flag below `min_p`. Each
+  call writes a `calls` row with `kind = 'decide'`, `label`, `p_top`, `abstained` and
+  `result_json` (schema 30), passes the data boundary and budget gates, and is priced
+  from the bundled table. Verdicts recorded with `result.verdict()` feed
+  `somm_core.read.decision_calibration`, which reports the Brier score and expected
+  calibration error per workload. Built from the vendor's documentation and tested
+  against fakes; not yet verified against the live API. See `docs/decisions.md`.
+- **`somm climb`**, a read-only report over chipsocket receipts: decisions by rung,
+  the model rung joined to the ledger (by call id, else exact workload name), the
+  share answered without a model, and cost per 1,000 decisions. See
+  `docs/the-climb.md`.
+- **Stream events.** `stream(events=True)` yields `somm.events` (`StreamStart`,
+  `TextDelta`, `ToolCallDelta`, `ReasoningDelta`, `StreamDone`), with real usage
+  where the provider reports it.
+- **`somm generate --image`** (repeatable); `--json` on `compare`, `frontier`,
+  `workload list` and `prompt list`; `somm.compare` as one shared compare
+  implementation.
+
+### Changed
+- **Streams are generate's call path.** `stream()`/`astream()` go through the same
+  admission, routing, fallback and recording as `generate()`: workload policy, pins
+  and `somm/auto`, capability and boundary checks, the budget gate, cooldowns and
+  the route record. They accept `messages=`, `tools=`, `tool_choice=`,
+  `response_format=`, `reasoning_effort=` and the other routing arguments. A stream
+  falls back only until its first chunk reaches the caller. Anthropic streams
+  natively, OpenRouter's unpinned stream works, and Ollama streams send `messages`.
+  A chain where every provider fails raises `SommProvidersExhausted`, as `generate`
+  does.
+- **The proxy's streaming routes forward events as they arrive** instead of
+  replaying a finished answer.
+- **Every provider error says what the provider said.** `SommError` declares
+  `status_code`, `provider_code`, `provider_type`, `provider_param`,
+  `provider_request_id` and `retry_after_s` (None when unknown), filled the same way
+  by every HTTP adapter; `describe_error` includes them. The upstream status passes
+  through the proxy, so a 403 stays 403. `Retry-After: 0` means 0, and a 429 without
+  it reads Anthropic's and OpenAI's reset headers. OpenAI billing codes and Anthropic
+  spend limits are `SommInsufficientCredit`, which `describe_error` marks not
+  retryable (the router still falls through). 408 is `SommTimeout`.
+- **A refusal through the proxy is an answer**: 200 with `stop_reason: refusal` or
+  `finish_reason: content_filter`, not a 400. `SommRefused` carries `text`,
+  `tokens_in` and `tokens_out`.
+- **Connections are reused.** Each HTTP provider keeps one client (fork-safe,
+  `close()` to release, closed by `SommLLM.close()`); timeouts are per request, with
+  connect capped at 10 s.
+- **`somm/cli.py` is a `somm.cli` package**, one module per command group; `somm`
+  and `python -m somm.cli` work as before. `--project` is accepted before or after
+  any subcommand and `SOMM_PROJECT` works everywhere. `bench`, `compare` and
+  `alias seed|set` exit 1 on failure. The exit-code contract is in `somm --help` and
+  `docs/cli.md`.
+
+### Fixed
+- **A stream cut off before the provider's end marker was recorded as ok.** It is
+  recorded as `upstream_error` and raises.
+
 ## [0.24.1] — 2026-11-10
 
 ### Fixed

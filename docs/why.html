@@ -193,7 +193,7 @@
       <h3>When to use something else</h3>
       <ul class="plain">
         <li><strong>A team</strong> that needs a shared hosted dashboard, single sign-on or annotation queues: use a tracing platform. somm is built for one person.</li>
-        <li><strong>A production gateway</strong> for many services at high request rates: use a dedicated gateway. somm's proxy has no published load numbers and replays a finished answer as a stream rather than streaming tokens as they arrive.</li>
+        <li><strong>A production gateway</strong> for many services at high request rates: use a dedicated gateway. somm's proxy has no published load numbers.</li>
         <li><strong>One project, one provider, no grading:</strong> the provider's own SDK is enough.</li>
         <li><strong>Only a searchable log of prompts</strong> in SQLite: Simon Willison's <code>llm</code> keeps one (<a href="https://simonwillison.net/tags/llm/" rel="noopener">simonwillison.net</a>).</li>
         <li><strong>A trace viewer for local use:</strong> Arize Phoenix runs locally under the Elastic License 2.0 (<a href="https://github.com/Arize-ai/phoenix" rel="noopener">GitHub</a>); somm's traces can be exported to a viewer like it.</li>
