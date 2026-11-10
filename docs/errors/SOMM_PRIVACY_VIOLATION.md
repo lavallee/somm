@@ -1,73 +1,85 @@
 # SOMM_PRIVACY_VIOLATION
 
-**Problem.** Code attempted an operation on a `privacy_class=PRIVATE`
-workload that would egress its prompt or response to an upstream
-provider (a commercial API, or any provider outside the local node).
+**Problem.** A request was refused because no route within its workload's
+data boundary remained. Nothing was sent to any provider.
+
+The message names the boundary, where it came from, and every route refused
+with its tier:
+
+```
+SOMM_PRIVACY_VIOLATION
+
+Problem: workload 'medical_extract' has data boundary 'local' (from
+privacy_class=private), and no admissible route remains for the routing chain.
+Cause: refused routes: openai/gpt-x (subscribed), deepseek/deepseek-chat (unvetted). ...
+```
+
+`describe_error(exc)` returns the same as fields: `code`, `data_boundary`,
+`boundary_source`, `refused` (each with `provider`, `model`, `tier`, `basis`,
+`origin`) and `retryable: false`. The proxy returns it as HTTP 403.
 
 **Common triggers.**
 
-- `somm_replay(call_id, with_provider=X, with_model=Y)` against a call
-  whose workload is PRIVATE.
-- `SommLLM.enable_shadow(workload, gold_provider=..., gold_model=...)`
-  on a PRIVATE workload — the shadow-eval worker would re-send the
-  prompt to a non-local gold model.
-- (Defense in depth) The router refuses to route a PRIVATE workload
-  to any provider other than local ollama.
+- A `privacy_class=PRIVATE` workload (boundary `local`) called when no local
+  route is configured or the only candidates are cloud providers.
+- A pinned call (`provider=`/`model=`) to a route outside the boundary. A pin
+  does not override a boundary, and `allow_fallback=True` does not rescue it.
+- `SommLLM.enable_shadow()` on a PRIVATE workload (always refused), or with a
+  gold route outside the workload's boundary.
+- A proxy request whose target model is outside the workload's boundary, or
+  outside a tighter `X-Somm-Data-Boundary` header.
+- A harness attempt (`somm.harnesses.run/start`) for a bounded workload whose
+  coding agent runs at a looser tier.
+- MCP `somm_replay` of a PRIVATE workload's call.
 
-**Why.** `privacy_class=PRIVATE` is somm's strongest signal that a
-workload handles sensitive content (PHI, PII, private communications,
-credentials, IP). The defense is enforced at multiple layers:
+**Why.** The boundary is the furthest a workload's data may go (see
+[docs/data-boundary.md](../data-boundary.md)). A refusal is never retried
+and never falls through to a looser route. It is recorded in the ledger as a
+call row (`outcome='unknown'`, `error_kind='SommPrivacyViolation'`,
+`error_detail` starting `refused: data_boundary=`), so `somm boundary audit`
+can show the demand a boundary turned away.
 
-1. The `shadow_candidates` view excludes private workloads.
-2. The `ShadowEvalWorker` double-checks at worker time.
-3. `SommLLM.enable_shadow()` raises before writing the config.
-4. The router refuses upstream egress at call time.
+**Fix.** Find out which route you expected to use:
 
-**Fix.**
-
-Three options, depending on intent:
-
-### A. The workload should not be PRIVATE.
-
-If the classification was conservative and the prompts are in fact
-internal-only (not personally sensitive), downgrade:
-
-```python
-from somm_core.models import PrivacyClass
-llm.register_workload(
-    name="contact_extract",
-    privacy_class=PrivacyClass.INTERNAL,  # was PRIVATE
-)
+```bash
+somm boundary routes        # every route with its tier and why
+somm workload show <name>   # stored and effective boundary
 ```
 
-(`register_workload` is idempotent on `(name + schemas)` but updates
-fields on re-call via the underlying `repo.register_workload`. You
-may need to manually `UPDATE workloads SET privacy_class = 'internal'`
-if the conflict path doesn't cover your case — see the
-`set_shadow_config` pattern.)
+Then, depending on intent:
 
-### B. You want the operation but only on local models.
+### A. Add a route within the boundary
 
-Replay / compare using `provider="ollama"` explicitly:
+For `local`, run a local model (Ollama on loopback) and make sure it is in
+the chain (`SOMM_PROVIDER_ORDER`). Ollama `:cloud` / `-cloud` models are not
+local even through a local daemon.
 
-```python
-# MCP:
-somm_replay(call_id="...", with_provider="minimax", with_model="MiniMax-M3")
+### B. The route is actually within your contract
 
-# Python:
-llm.generate(prompt, workload="secret_workload", provider="ollama")
+If your account terms put the route in a stricter tier than somm assumes (a
+paid Gemini key, a seat with training off, a ZDR agreement), declare it in
+`~/.somm/boundary.toml`:
+
+```toml
+[[route]]
+match = "gemini"
+tier = "subscribed"
+note = "billing-enabled Cloud project"
 ```
 
-The router permits ollama-only paths on PRIVATE workloads.
+### C. The workload's boundary is too tight
 
-### C. Leave as-is and respect the gate.
+```bash
+somm boundary set <workload> subscribed
+```
 
-The refused operation is exactly the one `privacy_class=PRIVATE` exists
-to prevent. If the prompt really is sensitive, the right answer is not
-to run it. Consider: do you need shadow-eval on this workload? If not,
-just accept that its quality signal will be based on structural checks
-+ your own spot reviews.
+A `privacy_class=PRIVATE` workload is always capped at `local`; change its
+privacy class if it does not handle sensitive content.
+
+### D. Leave it
+
+The refused request is exactly the one the boundary exists to prevent.
 
 **Related.**
-- [`SOMM_WORKLOAD_UNREGISTERED`](./SOMM_WORKLOAD_UNREGISTERED.md) —
-  earlier in the lifecycle; happens before privacy_class is set.
+- [docs/data-boundary.md](../data-boundary.md): tiers, boundary.toml, audit.
+- [`SOMM_WORKLOAD_UNREGISTERED`](./SOMM_WORKLOAD_UNREGISTERED.md).

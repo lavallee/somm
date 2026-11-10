@@ -19,6 +19,62 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   `/v1/chat/completions`, `/api/routing/decide` and OTLP ingest always need
   `Authorization: Bearer <token>`.
 
+### Added
+- **Data boundary.** A sliding scale of where a workload's data may go:
+  `local` < `zdr` < `subscribed` < `unvetted` (`somm_core.boundary.DataTier`).
+  Every route (provider, model, endpoint) is classified; a workload may declare
+  `data_boundary`, and routes outside it are refused before any request leaves
+  the process. See `docs/data-boundary.md`.
+  - Classifier: loopback and private-address endpoints are `local`, except
+    Ollama `:cloud` / `-cloud` models, which run on Ollama's servers;
+    anything unclassifiable is `unvetted`. Shipped defaults
+    (`somm_core/data/boundary_defaults.toml`) carry a basis and, for vendor
+    facts, `source`, `quote`, `last_verified` and `confidence`; nothing ships
+    as `zdr`. Seats (`claude-cli`, `codex-cli`, `chatgpt`) ship `subscribed`
+    but are reported as *assumed*, since their training setting is invisible
+    to somm.
+  - Owner overrides in `~/.somm/boundary.toml` (`SOMM_BOUNDARY_PATH`):
+    provider and provider/model-glob rules, endpoint host rules, a note per
+    entry, `[defaults]` and `[projects.<name>]` boundaries. `SOMM_DATA_BOUNDARY`
+    sets the project default.
+  - `data_boundary=` on `generate`, `agenerate`, `stream`, `astream` and the
+    structured wrappers (tighten only); `SommLLM.set_data_boundary()`;
+    `register_workload(data_boundary=...)`; `X-Somm-Data-Boundary` proxy header
+    (tighten only); `data_tier` on workload handlers.
+  - CLI: `somm boundary routes`, `somm boundary audit [--project] [--since]
+    [--json]` (classifies pre-0.21 rows at read time; exit 1 on a violation),
+    `somm boundary set <workload> <tier>`, `somm workload add|create
+    --data-boundary`, and a boundary section in `somm doctor`.
+  - MCP: `data_boundary` on `somm_register_workload`; workload read-outs carry
+    `data_boundary`, `effective_data_boundary`, `data_boundary_source`.
+  - Ledger: migration 0027 adds `workloads.data_boundary` and `calls.data_tier`
+    (schema 27). Served calls record their route's tier; refusals are recorded
+    as call rows with `outcome='unknown'`, `error_kind='SommPrivacyViolation'`.
+
+### Changed
+- **`privacy_class=private` now means `local`.** A private workload can only use
+  local routes, on every path. Projects whose private workloads were being
+  served by cloud providers will see `SommPrivacyViolation` instead. Workloads
+  that are not private, with no boundary and no project default, behave exactly
+  as before (the `unvetted` fleet default admits every route).
+- `SommPrivacyViolation` carries `workload`, `data_boundary`, `boundary_source`
+  and `refused`; `describe_error()` includes them. The proxy maps it to 403.
+- `harnesses.run()` takes `workload=None` (still recorded as
+  `harness_attempt`) and `data_boundary=`; `harnesses.start()` takes
+  `workload`, `project` and `data_boundary`. With any of them, or
+  `record=True`, the harness's tier is checked before launch.
+- `somm_core.read.search_calls` rows include `data_tier`.
+
+### Fixed
+- **Private workloads reached cloud providers** (audit SC1). `generate()`,
+  pinned calls, streams, the `/v1/messages` and `/v1/chat/completions` proxy
+  and MCP `somm_compare` had no privacy check, although the docs said the
+  router enforced one.
+- The shadow-eval worker's documented Python privacy guard did not exist
+  (audit I7); it now skips private workloads and counts them in
+  `private_skipped`.
+- Spool replay dropped `routing_json`.
+
 ## [0.20.2] — 2026-11-09
 
 ### Fixed

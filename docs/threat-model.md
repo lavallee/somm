@@ -27,7 +27,10 @@ configured a provider key or local provider endpoint.
 - **OTLP ingest**: `/api/otlp/v1/traces` and `/v1/traces` accept JSON spans from
   local/polyglot apps. They are write endpoints and require the service token.
 - **Provider egress**: configured providers receive prompts and tool schemas.
-  Private workloads are blocked from online evaluation egress.
+  Each route is classified into a data tier (`local`, `zdr`, `subscribed`,
+  `unvetted`); a workload's data boundary limits which routes it may reach
+  (`docs/data-boundary.md`). Private workloads are bounded to `local` and are
+  blocked from online evaluation egress.
 
 ## In-Scope Threats
 
@@ -55,7 +58,15 @@ configured a provider key or local provider endpoint.
 - Local DB directories are created `0700`; SQLite files are chmod `0600`.
 - MCP responses envelope stored user/model content as untrusted text.
 - Private workloads cannot be shadow-graded; the SQL `shadow_candidates` view
-  and worker checks both enforce this.
+  and the shadow-eval worker both enforce this, and `enable_shadow` refuses.
+- Data boundary: one `admit()` check before every egress (router, pinned calls,
+  streams, OpenRouter roster walk, workload handlers, shadow gold and judge
+  routes, the proxy routes, MCP compare, harness attempts). Unclassifiable
+  routes are `unvetted`; an unreadable `~/.somm/boundary.toml` loosens
+  nothing. Refusals are not retried, never fall through to a looser route, and
+  are recorded as ledger rows. A tier is a declaration about the owner's
+  contracts, not a proof of what the far end retains; `pre_call` hooks and
+  provider plugins run before or outside the check and are trusted code.
 - Service OTLP ingest is lenient but bounded to normal call rows; oversized
   JSON bodies and over-cap span batches are rejected before writes, attributes
   are truncated, and malformed spans are skipped rather than failing the whole

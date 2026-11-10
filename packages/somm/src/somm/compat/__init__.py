@@ -20,8 +20,8 @@ The most common migration patterns:
 
 All shims:
 - Write telemetry to the local SQLite store on every call.
-- Honor privacy_class gates (workloads marked PRIVATE never egress to
-  providers that aren't themselves local).
+- Honor the data boundary, since they call ``SommLLM.generate`` (workloads
+  marked PRIVATE never egress to routes that aren't themselves local).
 - Return objects/dicts with the LEGACY shape, so call-site code doesn't
   need changes. The somm-native fields (call_id, cost_usd, tokens_in,
   outcome) are added as extra attributes/keys when it's safe to do so.

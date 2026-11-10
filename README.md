@@ -164,8 +164,16 @@ shim that mirrors `openai.OpenAI().chat.completions.create()`.
 ### Privacy-first by default
 
 - Prompt bodies are **not** stored unless you opt in per workload.
-- `privacy_class=PRIVATE` workloads never egress. Enforced in the router,
-  the online-eval worker, AND a SQL view (defense in depth).
+- Every route has a data tier (`local` < `zdr` < `subscribed` < `unvetted`)
+  and a workload can declare a **data boundary**: routes outside it are
+  refused before any request leaves the process, on every path (router,
+  pins, streams, proxy, MCP compare, shadow eval, harnesses). See
+  [`docs/data-boundary.md`](./docs/data-boundary.md) and `somm boundary audit`.
+- `privacy_class=PRIVATE` workloads are bounded to `local` routes, are never
+  sample-captured, and are excluded from online eval by the worker and a SQL
+  view (defense in depth).
+- With no boundary set, every route stays admissible (the `unvetted` fleet
+  default), so upgrading changes nothing until you set one.
 - SQLite files are `chmod 0600`; parent dir `0700`. `somm doctor` warns
   on drift.
 - Web admin binds `localhost` only by default.
@@ -461,7 +469,7 @@ tracebacks or provider-specific messages.
 | `somm_inbox` | list open/applied/dismissed recommendations |
 | `somm_apply_recommendation` | apply a recommendation and record a decision |
 | `somm_dismiss_recommendation` | dismiss a recommendation |
-| `somm_register_workload` | commit a workload with privacy class + required capabilities |
+| `somm_register_workload` | commit a workload with privacy class, data boundary + required capabilities |
 | `somm_register_prompt` | commit prompt versions (minor/major/explicit) |
 | `somm_compare` | run a prompt through N models side-by-side |
 | `somm_replay` | replay a stored call against a different model |
@@ -497,6 +505,9 @@ somm frontier --workload NAME [--since N]          # adequacy frontier per (prov
 somm loop run|install|status|uninstall             # the intelligence loop, one pass or a timer
 somm spend [--json]                                # today's spend vs daily budget cap
 somm plans [--json] [--project-only]               # metered-plan quota usage + pacing (fleet-wide)
+somm boundary routes [--json]                      # every route's data tier and why
+somm boundary audit [--since 30d] [--json]         # worst tier that served each workload vs its boundary
+somm boundary set <workload> <tier>                # local | zdr | subscribed | unvetted | none
 somm backfill-costs [--since N] [--dry-run]        # recompute $0 calls that now have pricing
 somm drain-spool                                   # replay spooled telemetry into the DB
 somm prune --older-than DAYS [--dry-run] [--vacuum] # retention: delete old calls + their samples/evals
