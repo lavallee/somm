@@ -40,6 +40,7 @@ from somm.errors import SommPrivacyViolation
 from somm.prompts import register_prompt
 from somm_core.config import Config
 from somm_core.config import load as load_config
+from somm_core.cost import known_cost_sql
 from somm_core.models import PrivacyClass
 from somm_core.parse import stable_hash
 from somm_core.read import search_calls
@@ -916,11 +917,11 @@ def _shadow_ranking(repo: Repository, workload_id: str, since_days: int) -> list
     """Top-5 (provider, model) for this workload by shadow-eval score."""
     with repo._open() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT c.provider, c.model,
                    AVG(COALESCE(er.structural_score, er.embedding_score)) AS score,
                    AVG(c.latency_ms) AS latency_ms,
-                   AVG(c.cost_usd)   AS cost_usd,
+                   AVG(CASE WHEN {known_cost_sql("c.")} THEN c.cost_usd END) AS cost_usd,
                    COUNT(er.id)      AS n_evals
             FROM eval_results er
             JOIN calls c ON c.id = er.call_id
@@ -939,7 +940,7 @@ def _shadow_ranking(repo: Repository, workload_id: str, since_days: int) -> list
             "model": r[1],
             "score": round(r[2] or 0, 3),
             "latency_ms_avg": round(r[3] or 0),
-            "cost_usd_avg": round(r[4] or 0, 6),
+            "cost_usd_avg": round(r[4], 6) if r[4] is not None else None,
             "n_evals": r[5],
         }
         for r in rows

@@ -1,11 +1,14 @@
-"""Model-intel worker — scrapes OpenRouter, probes ollama, seeds static pricing.
+"""Model-intel worker — scrapes models.dev and OpenRouter, probes ollama.
 
 Sources:
   - OpenRouter /api/v1/models — authoritative pricing + context windows.
     Public endpoint (no API key required for listing).
   - ollama /api/tags — locally-installed models; price=0.
-  - Static pricing table — anthropic/openai/minimax (no reliable public
-    pricing API). Hand-curated starter; refresh on each somm release.
+  - models.dev — first-party provider prices, including cache rates.
+
+The offline floor is the wheel's bundled snapshot, synced by
+`somm_core.pricing.sync_bundled_pricing`; this worker only layers live
+sources on top of it.
 
 Writes to `model_intel` via `somm_core.pricing.write_intel`. Failures on
 any source don't poison the cache — last-good entries remain valid.
@@ -29,89 +32,6 @@ if TYPE_CHECKING:
 _log = logging.getLogger("somm.workers.model_intel")
 
 
-# Static pricing (per 1M tokens, USD): the offline floor beneath the bundled
-# LiteLLM snapshot and the live models.dev / OpenRouter sources. Keep this
-# short and refresh on each somm release. Source: provider pricing pages and
-# models.dev as of Oct 2026. Older rows stay so pinned snapshots cost-track.
-STATIC_PRICING: dict[tuple[str, str], dict] = {
-    ("anthropic", "claude-haiku-5-5"): {
-        "price_in_per_1m": 0.10,
-        "price_out_per_1m": 0.50,
-        "context_window": 1_000_000,
-    },
-    ("anthropic", "claude-sonnet-5-5"): {
-        "price_in_per_1m": 2.0,
-        "price_out_per_1m": 10.0,
-        "context_window": 1_000_000,
-    },
-    ("anthropic", "claude-opus-5-5"): {
-        "price_in_per_1m": 4.0,
-        "price_out_per_1m": 20.0,
-        "context_window": 1_000_000,
-    },
-    ("anthropic", "claude-fable-5-1"): {
-        "price_in_per_1m": 10.0,
-        "price_out_per_1m": 50.0,
-        "context_window": 1_000_000,
-    },
-    ("openai", "gpt-6-luna"): {
-        "price_in_per_1m": 0.10,
-        "price_out_per_1m": 0.50,
-        "context_window": 1_050_000,
-    },
-    ("openai", "gpt-6.1-sol"): {
-        "price_in_per_1m": 2.0,
-        "price_out_per_1m": 10.0,
-        "context_window": 1_050_000,
-    },
-    ("deepseek", "deepseek-flash"): {
-        "price_in_per_1m": 0.15,
-        "price_out_per_1m": 0.60,
-        "context_window": 1_000_000,
-    },
-    ("gemini", "gemini-3.8-flash"): {
-        "price_in_per_1m": 0.75,
-        "price_out_per_1m": 3.75,
-        "context_window": 1_048_576,
-    },
-    ("minimax", "MiniMax-M3"): {
-        "price_in_per_1m": 0.30,
-        "price_out_per_1m": 1.20,
-        "context_window": 1_000_000,
-    },
-    ("anthropic", "claude-haiku-4-5-20251001"): {
-        "price_in_per_1m": 1.0,
-        "price_out_per_1m": 5.0,
-        "context_window": 200_000,
-    },
-    ("anthropic", "claude-sonnet-4-6"): {
-        "price_in_per_1m": 3.0,
-        "price_out_per_1m": 15.0,
-        "context_window": 200_000,
-    },
-    ("anthropic", "claude-opus-4-7"): {
-        "price_in_per_1m": 15.0,
-        "price_out_per_1m": 75.0,
-        "context_window": 200_000,
-    },
-    ("openai", "gpt-4o-mini"): {
-        "price_in_per_1m": 0.15,
-        "price_out_per_1m": 0.6,
-        "context_window": 128_000,
-    },
-    ("openai", "gpt-4o"): {
-        "price_in_per_1m": 2.5,
-        "price_out_per_1m": 10.0,
-        "context_window": 128_000,
-    },
-    ("minimax", "MiniMax-M2"): {
-        "price_in_per_1m": 0.0,
-        "price_out_per_1m": 0.0,
-        "context_window": 200_000,
-    },
-}
-
-
 # models.dev provider id → somm provider name. OpenRouter rows come from
 # OpenRouter's own catalog (fresher, and the route ids match exactly), and
 # ollama-cloud ids do not match local tags, so neither is taken from here.
@@ -132,7 +52,7 @@ def _number(value: object) -> float | None:
 
 
 class ModelIntelWorker:
-    """Refreshes the `model_intel` table from models.dev + OpenRouter + ollama + static."""
+    """Refreshes the `model_intel` table from models.dev + OpenRouter + ollama."""
 
     name = "model_intel"
 
@@ -155,12 +75,10 @@ class ModelIntelWorker:
         summary = {
             "openrouter": 0,
             "ollama": 0,
-            "static": 0,
             "models_dev": 0,
             "errors": [],
         }
         for fn, key in (
-            (self._refresh_static, "static"),
             (self._refresh_models_dev, "models_dev"),
             (self._refresh_openrouter, "openrouter"),
             (self._refresh_ollama, "ollama"),
@@ -183,22 +101,6 @@ class ModelIntelWorker:
         return summary
 
     # ------------------------------------------------------------------
-
-    def _refresh_static(self) -> int:
-        n = 0
-        for (provider, model), data in STATIC_PRICING.items():
-            write_intel(
-                self.repo,
-                provider=provider,
-                model=model,
-                price_in_per_1m=data["price_in_per_1m"],
-                price_out_per_1m=data["price_out_per_1m"],
-                context_window=data.get("context_window"),
-                capabilities=data.get("capabilities"),
-                source="static",
-            )
-            n += 1
-        return n
 
     def _refresh_models_dev(self) -> int:
         """models.dev — MIT-licensed catalog with cache/reasoning prices, modalities,
@@ -254,6 +156,8 @@ class ModelIntelWorker:
                     context_window=int(limit["context"]) if isinstance(limit.get("context"), int) else None,
                     capabilities=caps,
                     source="models_dev",
+                    cache_read_per_1m=_number(cost.get("cache_read")),
+                    cache_write_per_1m=_number(cost.get("cache_write")),
                 )
                 n += 1
         return n

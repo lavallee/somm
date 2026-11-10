@@ -1979,7 +1979,10 @@ class SommLLM:
             cost_usd=(
                 cost_usd_out
                 if cost_usd_out is not None
-                else cost_for_call(self.repo, actual_provider, actual_model, tokens_in, tokens_out)
+                else cost_for_call(
+                    self.repo, actual_provider, actual_model, tokens_in, tokens_out,
+                    cache_read_tokens=cache_tokens_in, cache_write_tokens=cache_tokens_out,
+                )
             ),
             call_id=call_id,
             outcome=outcome,
@@ -2713,11 +2716,15 @@ class SommLLM:
                     has_next = attempt_no + 1 < len(stream_candidates)
                     stripper = ThinkStreamStripper()
                     raw_out = None
+                    actual_model = model or ""
                     try:
                         for chunk in candidate.stream(req):
                             chunk_raw = getattr(chunk, "raw", None)
                             if isinstance(chunk_raw, dict):
                                 raw_out = chunk_raw
+                            # The served model, as generate records resp.model.
+                            if getattr(chunk, "model", ""):
+                                actual_model = chunk.model
                             if chunk.text:
                                 visible = stripper.feed(chunk.text)
                                 if visible:
@@ -2856,6 +2863,8 @@ class SommLLM:
                     model_name,
                     tokens_in,
                     tokens_out,
+                    cache_read_tokens=cache_tokens_in,
+                    cache_write_tokens=cache_tokens_out,
                 )
             )
             cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version = (

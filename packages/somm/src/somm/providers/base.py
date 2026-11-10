@@ -115,6 +115,9 @@ class SommResponse:
 class SommChunk:
     text: str
     done: bool = False
+    # The model that served the stream, on the final chunk, as
+    # SommResponse.model does for generate. "" when the adapter does not say.
+    model: str = ""
 
 
 @dataclass(slots=True)

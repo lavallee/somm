@@ -2,11 +2,12 @@
 
 Library calls `cost_for_call(repo, provider, model, tokens_in, tokens_out)`
 after each LLM call. If (provider, model) is in `model_intel`, returns the
-computed USD cost. If not, returns 0.0 — graceful degradation; the agent
-or user can refresh intel later.
+computed USD cost. If not, returns 0.0 and the call's cost_source says
+"unknown:no-price"; `backfill_costs` fills it once a price exists.
 
-Prices in `model_intel` are per 1M tokens, stored as input/output pair.
-Local / free models have price=0 and cost_usd stays 0.0.
+Prices in `model_intel` are per 1M tokens: input, output, and the
+prompt-cache read and write rates where the source publishes them.
+Local Ollama and OpenRouter `:free` routes cost 0.0 (see `free_route`).
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ _warned_missing_pricing: set[tuple[str, str]] = set()
 
 _PRICE_CACHE_TTL_SECONDS = 600.0
 _price_cache_lock = threading.Lock()
-_price_cache: dict[tuple[str, str, str], tuple[float, tuple[float, float] | None]] = {}
+_price_cache: dict[tuple[str, str, str], tuple[float, tuple | None]] = {}
 
 
 def _price_cache_key(repo: Repository, provider: str, model: str) -> tuple[str, str, str]:
@@ -49,70 +50,17 @@ def _clear_price_cache(db_path: Path | str | None = None) -> None:
             _price_cache.pop(key, None)
 
 
-# Hardcoded pricing for major providers, used by seed_known_pricing().
-# Format: (provider, model, price_in_per_1m, price_out_per_1m, capabilities)
-#
-# `capabilities` is a dict merged into model_intel.capabilities_json, or None.
-# The named frontier rows below all support tool calling, so they declare
-# {"tools": True} — this makes capability-filtered tool workloads
-# (capabilities_required=["tools"]) route to them positively rather than
-# relying on name-hint inference. Wildcard rows (model="*") carry no caps:
-# capability lookup is exact-match, so a wildcard never matches a real
-# (provider, model) pair anyway.
-#
-# Prior-generation Anthropic model IDs are kept alongside current ones so
-# projects still pinning older snapshots continue to cost-track correctly.
-# Run `somm-serve admin refresh-intel` to pull live pricing.
-_TOOLS: dict[str, bool] = {"tools": True}
-_KNOWN_PRICING: list[tuple[str, str, float, float, dict | None]] = [
-    # Current lineup (Oct 2026), per models.dev and provider pricing pages
-    ("anthropic", "claude-haiku-5-5", 0.10, 0.50, _TOOLS),
-    ("anthropic", "claude-sonnet-5-5", 2.00, 10.00, _TOOLS),
-    ("anthropic", "claude-opus-5-5", 4.00, 20.00, _TOOLS),
-    ("anthropic", "claude-fable-5-1", 10.00, 50.00, _TOOLS),
-    ("openai", "gpt-6-luna", 0.10, 0.50, _TOOLS),
-    ("openai", "gpt-6.1-sol", 2.00, 10.00, _TOOLS),
-    ("deepseek", "deepseek-flash", 0.15, 0.60, _TOOLS),
-    ("gemini", "gemini-3.8-flash", 0.75, 3.75, _TOOLS),
-    ("minimax", "MiniMax-M3", 0.30, 1.20, _TOOLS),
-    # Prior Anthropic (Claude 4.5–4.7 family), kept so older pins cost-track
-    ("anthropic", "claude-haiku-4-5-20251001", 0.80, 4.00, _TOOLS),
-    ("anthropic", "claude-sonnet-4-6", 3.00, 15.00, _TOOLS),
-    ("anthropic", "claude-opus-4-7", 15.00, 75.00, _TOOLS),
-    # Prior Anthropic snapshots
-    ("anthropic", "claude-sonnet-4-20250514", 3.00, 15.00, _TOOLS),
-    ("anthropic", "claude-opus-4-20250514", 15.00, 75.00, _TOOLS),
-    ("openai", "gpt-4o-mini", 0.15, 0.60, _TOOLS),
-    ("openai", "gpt-4o", 2.50, 10.00, _TOOLS),
-    ("ollama", "*", 0.0, 0.0, None),
-    ("openrouter", "*:free", 0.0, 0.0, None),
-    ("minimax", "*", 0.0, 0.0, None),
-]
+# The bundled snapshot (data/pricing_bundle.json) is somm's one price table.
+# Earlier releases also carried two hand-written tables (a seed here and a
+# "static" one in the model-intel worker) that drifted from the bundle and
+# from each other. Rows those tables wrote into existing databases are owned
+# by somm, so the bundle now overwrites them.
+_SOMM_OWNED_SOURCES = ("somm_seed", "static", "litellm_bundle")
 
 
 def seed_known_pricing(repo: Repository) -> None:
-    """Populate model_intel with hardcoded pricing if the table is empty.
-
-    Only seeds when the table has zero rows — never overwrites manually
-    set prices. Called from SommLLM.__init__ on first use.
-    """
-    _clear_price_cache(repo.db_path)
-    with repo._open() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM model_intel").fetchone()[0]
-    if count > 0:
-        return
-
-    for provider, model, price_in, price_out, capabilities in _KNOWN_PRICING:
-        write_intel(
-            repo,
-            provider=provider,
-            model=model,
-            price_in_per_1m=price_in,
-            price_out_per_1m=price_out,
-            context_window=None,
-            capabilities=capabilities,
-            source="somm_seed",
-        )
+    """Deprecated alias of :func:`sync_bundled_pricing`, kept for callers."""
+    sync_bundled_pricing(repo)
 
 
 def sync_bundled_pricing(repo: Repository) -> int:
@@ -125,8 +73,8 @@ def sync_bundled_pricing(repo: Repository) -> int:
 
     Rules:
     - Rows missing from `model_intel` are inserted (source="litellm_bundle").
-    - Rows whose source is "somm_seed" or "litellm_bundle" are updated —
-      the bundle is fresher than either.
+    - Rows whose source is "somm_seed", "static" or "litellm_bundle" are
+      updated: those came from somm's own tables, and the bundle replaces them.
     - Rows from any other source (manual edits, live refreshes, workers)
       are never touched.
     - A crc32 of the bundle is stored in SQLite's `PRAGMA user_version`;
@@ -147,7 +95,10 @@ def sync_bundled_pricing(repo: Repository) -> int:
     except Exception:
         return 0
 
-    fingerprint = zlib.crc32(data) & 0x7FFFFFFF  # keep it positive for SQLite
+    # The sync rules are part of the fingerprint, so a database synced under
+    # older rules re-syncs once even when the bundle bytes are unchanged.
+    rules = ",".join(_SOMM_OWNED_SOURCES).encode()
+    fingerprint = zlib.crc32(rules + data) & 0x7FFFFFFF  # keep it positive for SQLite
     try:
         with repo._open() as conn:
             if conn.execute("PRAGMA user_version").fetchone()[0] == fingerprint:
@@ -162,7 +113,7 @@ def sync_bundled_pricing(repo: Repository) -> int:
         for m in bundle.get("models", []):
             key = (m["provider"], m["model"])
             source = existing.get(key, "")
-            if key in existing and source not in ("somm_seed", "litellm_bundle"):
+            if key in existing and source not in _SOMM_OWNED_SOURCES:
                 continue
             write_intel(
                 repo,
@@ -173,6 +124,8 @@ def sync_bundled_pricing(repo: Repository) -> int:
                 context_window=m.get("context_window"),
                 capabilities=m.get("capabilities"),
                 source="litellm_bundle",
+                cache_read_per_1m=m.get("cache_read_per_1m"),
+                cache_write_per_1m=m.get("cache_write_per_1m"),
             )
             written += 1
 
@@ -181,6 +134,18 @@ def sync_bundled_pricing(repo: Repository) -> int:
         return written
     except Exception:
         return 0
+
+
+def _cost_sql(c: str) -> str:
+    """``price_tokens`` as SQL over a calls alias joined to ``model_intel mi``."""
+    read = f"MAX(COALESCE({c}.cache_tokens_in, 0), 0)"
+    write = f"MAX(COALESCE({c}.cache_tokens_out, 0), 0)"
+    return (
+        f"(MAX({c}.tokens_in - {read} - {write}, 0) * COALESCE(mi.price_in_per_1m, 0)"
+        f" + {read} * COALESCE(mi.price_cache_read_per_1m, mi.price_in_per_1m, 0)"
+        f" + {write} * COALESCE(mi.price_cache_write_per_1m, mi.price_in_per_1m, 0)"
+        f" + {c}.tokens_out * COALESCE(mi.price_out_per_1m, 0)) / 1000000.0"
+    )
 
 
 def backfill_costs(
@@ -209,8 +174,7 @@ def backfill_costs(
 
     select_sql = f"""
         SELECT COUNT(*),
-               COALESCE(SUM((c.tokens_in * mi.price_in_per_1m
-                             + c.tokens_out * mi.price_out_per_1m) / 1000000.0), 0)
+               COALESCE(SUM({_cost_sql("c")}), 0)
         FROM calls c
         JOIN model_intel mi ON mi.provider = c.provider AND mi.model = c.model
         WHERE (c.cost_usd IS NULL OR c.cost_usd = 0)
@@ -226,9 +190,7 @@ def backfill_costs(
         conn.execute(
             f"""
             UPDATE calls SET
-                cost_usd = ROUND(
-                    (calls.tokens_in * mi.price_in_per_1m
-                     + calls.tokens_out * mi.price_out_per_1m) / 1000000.0, 8),
+                cost_usd = ROUND({_cost_sql("calls")}, 8),
                 cost_basis = 'computed',
                 cost_accuracy = 'estimated',
                 cost_source = 'somm:model_intel',
@@ -247,58 +209,124 @@ def backfill_costs(
     return (n, round(total or 0.0, 6))
 
 
+# (input, output, cache read, cache write) per 1M tokens; None = not published.
+Prices = tuple[float | None, float | None, float | None, float | None]
+
+
+def model_prices(repo: Repository, provider: str, model: str) -> Prices | None:
+    """The ``model_intel`` prices for (provider, model), or None with no row.
+
+    Cached per database for ten minutes; ``write_intel`` invalidates.
+    """
+    key = _price_cache_key(repo, provider, model)
+    now = time.monotonic()
+    with _price_cache_lock:
+        cached = _price_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT price_in_per_1m, price_out_per_1m, "
+            "price_cache_read_per_1m, price_cache_write_per_1m "
+            "FROM model_intel WHERE provider = ? AND model = ?",
+            (provider, model),
+        ).fetchone()
+    prices: Prices | None = tuple(row) if row else None  # type: ignore[assignment]
+    with _price_cache_lock:
+        _price_cache[key] = (now + _PRICE_CACHE_TTL_SECONDS, prices)
+    return prices
+
+
+def price_tokens(
+    prices: Prices,
+    tokens_in: int,
+    tokens_out: int,
+    cache_read_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+) -> float:
+    """USD for one call at ``prices``.
+
+    ``tokens_in`` is the whole prompt, cache reads and writes included, as
+    every adapter records it. Cached slices are priced at their own rates;
+    a model whose source publishes no cache rate falls back to the full
+    input rate, which is what the provider charges when it does no caching
+    and never understates spend.
+    """
+    price_in, price_out, cache_read, cache_write = prices
+    price_in = price_in or 0.0
+    price_out = price_out or 0.0
+    read = max(int(cache_read_tokens or 0), 0)
+    write = max(int(cache_write_tokens or 0), 0)
+    uncached = max(int(tokens_in) - read - write, 0)
+    cost = (
+        uncached * price_in
+        + read * (price_in if cache_read is None else cache_read)
+        + write * (price_in if cache_write is None else cache_write)
+        + int(tokens_out) * price_out
+    ) / 1_000_000.0
+    return round(cost, 8)
+
+
+def free_route(provider: str, model: str) -> str | None:
+    """Why a route costs nothing per token, or None when it is not free.
+
+    Local Ollama has no metered price; an OpenRouter ``:free`` variant is
+    listed at zero. These record 0.0. Anything else without a known price
+    records 0.0 with cost_source "unknown:no-price".
+    """
+    if provider == "ollama":
+        return "local-included-unpriced"
+    if provider == "openrouter" and model.endswith(":free"):
+        return "openrouter:free-model"
+    return None
+
+
+def known_prices(repo: Repository, provider: str, model: str) -> Prices | None:
+    """``model_prices`` when they price anything, else None (unknown)."""
+    if not provider or not model:
+        return None
+    prices = model_prices(repo, provider, model)
+    if prices is None or (prices[0] is None and prices[1] is None):
+        return None
+    return prices
+
+
 def cost_for_call(
     repo: Repository,
     provider: str,
     model: str,
     tokens_in: int,
     tokens_out: int,
+    *,
+    cache_read_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
 ) -> float:
-    """Return USD cost for a single call.
+    """USD cost for one call; 0.0 when somm does not know the price.
 
-    Returns 0.0 if pricing data is missing for (provider, model) — the
-    call is still logged; the agent can backfill cost when intel refreshes.
-
-    If the provider is known-paid (anthropic, openai) and no pricing row
-    exists, emits a stderr warning on the first occurrence.
+    An unknown price (a self-hosted endpoint, an unlisted model, a call with
+    no model name) returns 0.0 like a free route, so the number alone cannot
+    tell them apart: ``cost_provenance`` stamps it ``cost_source =
+    "unknown:no-price"``, and readers use ``somm_core.cost.cost_is_known``.
+    A ``model_intel`` row wins (that is how a local box gets a rate). The
+    first unknown price for a known-paid provider warns on stderr; refresh
+    intel or ``write_intel`` a price, then ``somm backfill-costs``.
     """
-    if not provider or not model:
-        return 0.0
-    key = _price_cache_key(repo, provider, model)
-    now = time.monotonic()
-    with _price_cache_lock:
-        cached = _price_cache.get(key)
-        if cached and cached[0] > now:
-            prices = cached[1]
-            if prices is None:
-                return 0.0
-            price_in, price_out = prices
-            return round((tokens_in * price_in + tokens_out * price_out) / 1_000_000.0, 8)
-    with repo._open() as conn:
-        row = conn.execute(
-            "SELECT price_in_per_1m, price_out_per_1m "
-            "FROM model_intel WHERE provider = ? AND model = ?",
-            (provider, model),
-        ).fetchone()
-    if not row:
-        with _price_cache_lock:
-            _price_cache[key] = (now + _PRICE_CACHE_TTL_SECONDS, None)
+    prices = known_prices(repo, provider, model)
+    if prices is None:
+        if free_route(provider or "", model or "") is not None:
+            return 0.0
         if provider in _PAID_PROVIDERS:
             key = (provider, model)
             if key not in _warned_missing_pricing:
                 _warned_missing_pricing.add(key)
                 print(
                     f"[somm] WARNING: no pricing data for {provider}/{model} "
-                    f"— cost will be $0. Run `somm-serve admin refresh-intel` "
+                    f"— cost recorded as unknown. Run `somm-serve admin refresh-intel` "
                     f"or add pricing via write_intel().",
                     file=sys.stderr,
                 )
         return 0.0
-    price_in, price_out = row[0] or 0.0, row[1] or 0.0
-    with _price_cache_lock:
-        _price_cache[key] = (now + _PRICE_CACHE_TTL_SECONDS, (price_in, price_out))
-    cost = (tokens_in * price_in + tokens_out * price_out) / 1_000_000.0
-    return round(cost, 8)
+    return price_tokens(prices, tokens_in, tokens_out, cache_read_tokens, cache_write_tokens)
 
 
 def write_intel(
@@ -310,8 +338,14 @@ def write_intel(
     context_window: int | None,
     capabilities: dict | list | None,
     source: str,
+    *,
+    cache_read_per_1m: float | None = None,
+    cache_write_per_1m: float | None = None,
 ) -> None:
     """Upsert a row into `model_intel`.
+
+    The cache rates are replaced with the rest of the row: a source that
+    publishes none leaves them NULL, and cost falls back to the input rate.
 
     ``last_seen`` is refreshed on every write; ``first_seen`` is set on the
     first and kept, so "did this land after the model I use?" has an answer.
@@ -324,18 +358,31 @@ def write_intel(
             """
             INSERT INTO model_intel
                 (provider, model, price_in_per_1m, price_out_per_1m,
+                 price_cache_read_per_1m, price_cache_write_per_1m,
                  context_window, capabilities_json, source, last_seen, first_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(provider, model) DO UPDATE SET
                 price_in_per_1m = excluded.price_in_per_1m,
                 price_out_per_1m = excluded.price_out_per_1m,
+                price_cache_read_per_1m = excluded.price_cache_read_per_1m,
+                price_cache_write_per_1m = excluded.price_cache_write_per_1m,
                 context_window = excluded.context_window,
                 capabilities_json = excluded.capabilities_json,
                 source = excluded.source,
                 last_seen = CURRENT_TIMESTAMP,
                 first_seen = COALESCE(model_intel.first_seen, excluded.first_seen)
             """,
-            (provider, model, price_in_per_1m, price_out_per_1m, context_window, caps_json, source),
+            (
+                provider,
+                model,
+                price_in_per_1m,
+                price_out_per_1m,
+                cache_read_per_1m,
+                cache_write_per_1m,
+                context_window,
+                caps_json,
+                source,
+            ),
         )
     _clear_price_cache(repo.db_path)
 
@@ -402,14 +449,16 @@ def list_intel(repo: Repository, provider: str | None = None) -> list[dict]:
         if provider:
             rows = conn.execute(
                 "SELECT provider, model, price_in_per_1m, price_out_per_1m, "
-                "context_window, capabilities_json, source, last_seen "
+                "context_window, capabilities_json, source, last_seen, "
+                "price_cache_read_per_1m, price_cache_write_per_1m "
                 "FROM model_intel WHERE provider = ? ORDER BY model",
                 (provider,),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT provider, model, price_in_per_1m, price_out_per_1m, "
-                "context_window, capabilities_json, source, last_seen "
+                "context_window, capabilities_json, source, last_seen, "
+                "price_cache_read_per_1m, price_cache_write_per_1m "
                 "FROM model_intel ORDER BY provider, model"
             ).fetchall()
     return [
@@ -422,6 +471,8 @@ def list_intel(repo: Repository, provider: str | None = None) -> list[dict]:
             "capabilities": json.loads(r[5]) if r[5] else None,
             "source": r[6],
             "last_seen": r[7],
+            "price_cache_read_per_1m": r[8],
+            "price_cache_write_per_1m": r[9],
         }
         for r in rows
     ]

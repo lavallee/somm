@@ -112,7 +112,7 @@ Current event keys:
 | `tokens_in` | Input token count recorded for the call. |
 | `tokens_out` | Output token count recorded for the call. |
 | `latency_ms` | End-to-end call latency in milliseconds. |
-| `cost_usd` | Rounded call cost. |
+| `cost_usd` | Rounded call cost; 0.0 with `cost_source="unknown:no-price"` when somm had no price. |
 | `temperature` | Request temperature, when applicable. |
 | `max_tokens` | Request token cap, when applicable. |
 | `error_kind` | Exception class or normalized error kind, when present. |
