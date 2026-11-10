@@ -170,6 +170,13 @@ def record_attempt(
         data_tier=harness_route(result.harness, model).tier.value,
     )
     repo.write_call(call)
+    # Lazy and failure-proof: a no-op unless the OpenTelemetry exporter is on.
+    try:
+        from somm.plugins import otel_exporter
+
+        otel_exporter.export_harness_attempt(call, result)
+    except Exception:
+        pass
     return call
 
 
