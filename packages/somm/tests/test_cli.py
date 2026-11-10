@@ -1214,3 +1214,35 @@ def test_alias_seed_and_list(tmp_path, capsys, monkeypatch):
     assert main(["alias", "set", "codex-cli", "gpt-5.6-sol", "openai/gpt-5.6"]) == 0
     assert main(["alias"]) == 0
     assert "openai/gpt-5.6" in capsys.readouterr().out
+
+
+def test_doctor_reports_unknown_cost_by_provider(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="unpriced", project=cfg.project)
+    now = datetime.now(UTC)
+
+    def call(provider, cost, ts=now):
+        repo.write_call(
+            Call(
+                id=str(uuid.uuid4()), ts=ts, project=cfg.project, workload_id=wl.id,
+                prompt_id=None, provider=provider, model="m", tokens_in=1, tokens_out=1,
+                latency_ms=1, cost_usd=cost, outcome=Outcome.OK, error_kind=None,
+                prompt_hash="a", response_hash="b",
+            )
+        )
+
+    call("gpu-box", None)
+    call("gpu-box", None)
+    call("claude-cli", None)
+    call("openai", 0.01)
+    call("gpu-box", None, ts=now - timedelta(days=31))  # outside the window
+
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr(
+        "somm.cli.OllamaProvider.health",
+        lambda self: ProviderHealth(available=True, detail="ok"),
+    )
+    main(["doctor"])
+    out = capsys.readouterr().out
+    assert "unknown cost (30d): 3 calls  (gpu-box 2, claude-cli 1)" in out

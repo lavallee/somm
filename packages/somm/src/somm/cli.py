@@ -2502,6 +2502,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             f"({sited}/{total_sited} calls in the last 24h)"
         )
 
+    # Calls whose price somm did not know (cost_usd NULL). Budgets skip them,
+    # so a large count means spend the caps cannot see.
+    unknown = _unknown_cost_by_provider(repo)
+    if not unknown:
+        print("unknown cost (30d): none")
+    else:
+        detail = ", ".join(f"{provider} {n}" for provider, n in unknown)
+        print(f"unknown cost (30d): {sum(n for _, n in unknown)} calls  ({detail})")
+
     # Undeclared output contracts. Not a health failure — a workload runs fine
     # without a declared output schema. It is an evaluation gap: without one,
     # nothing downstream can decide whether a fixture could falsify the
@@ -2652,6 +2661,18 @@ def _call_site_coverage_24h(
             (since,),
         ).fetchone()[0]
     return sited, total
+
+
+def _unknown_cost_by_provider(repo: Repository, days: int = 30) -> list[tuple[str, int]]:
+    """(provider, calls) with an unknown cost in the trailing window, most first."""
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT provider, COUNT(*) FROM calls WHERE ts >= ? AND cost_usd IS NULL "
+            "GROUP BY provider ORDER BY COUNT(*) DESC, provider",
+            (since,),
+        ).fetchall()
+    return [(str(r[0]), int(r[1])) for r in rows]
 
 
 def _workloads_without_output_schema(
