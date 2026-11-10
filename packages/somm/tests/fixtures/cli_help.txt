@@ -1,11 +1,11 @@
 ===== somm =====
 usage: somm [-h] [--version] [--project PROJECT]
-            {chatgpt,status,cache-advice,generate,bench,tail,compare,frontier,workload,boundary,prompt,eval,optimize,campaign,inbox,plugin,mcp,skill,doctor,loop,prune,ledgers,fleet,mirror,alias,serve,spend,gpu,backfill-costs,plans,drain-spool} ...
+            {chatgpt,status,cache-advice,generate,bench,tail,compare,frontier,workload,boundary,prompt,eval,optimize,campaign,inbox,plugin,mcp,skill,doctor,loop,prune,ledgers,fleet,mirror,alias,serve,spend,climb,gpu,backfill-costs,plans,drain-spool} ...
 
 somm — self-hosted LLM telemetry
 
 positional arguments:
-  {chatgpt,status,cache-advice,generate,bench,tail,compare,frontier,workload,boundary,prompt,eval,optimize,campaign,inbox,plugin,mcp,skill,doctor,loop,prune,ledgers,fleet,mirror,alias,serve,spend,gpu,backfill-costs,plans,drain-spool}
+  {chatgpt,status,cache-advice,generate,bench,tail,compare,frontier,workload,boundary,prompt,eval,optimize,campaign,inbox,plugin,mcp,skill,doctor,loop,prune,ledgers,fleet,mirror,alias,serve,spend,climb,gpu,backfill-costs,plans,drain-spool}
     chatgpt             Somm-owned ChatGPT subscription connection
     status              show call roll-up for the current project
     cache-advice        find low prefix-cache reuse opportunities
@@ -35,6 +35,7 @@ positional arguments:
     alias               canonical model identities (list, seed, set)
     serve               run the web admin + HTTP API (localhost:7878)
     spend               today's LLM spend vs daily budget cap per workload
+    climb               what a workload answers before any model (reads chipsocket receipts)
     gpu                 rented-GPU spend read from gipper receipts (read-only)
     backfill-costs      recompute cost_usd for $0 calls that now have pricing intel
     plans               metered-plan quota usage + pacing (PAYG vs metered, fleet-wide)
@@ -990,6 +991,19 @@ options:
   -h, --help         show this help message and exit
   --project PROJECT
   --json             emit a JSON array instead of the aligned table
+
+===== somm climb =====
+usage: somm climb [-h] [--workload WORKLOAD] [--since SINCE] [--project PROJECT] [--json] [path]
+
+positional arguments:
+  path                 receipts directory or file (default: $SOMM_CLIMB_RECEIPTS)
+
+options:
+  -h, --help           show this help message and exit
+  --workload WORKLOAD  only this socket id; also the exact somm workload name to join by
+  --since SINCE        window in days (default 30)
+  --project PROJECT
+  --json
 
 ===== somm gpu =====
 usage: somm gpu [-h] [--project PROJECT] {spend} ...

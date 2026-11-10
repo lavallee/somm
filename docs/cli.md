@@ -9,9 +9,9 @@ flags. This page records the conventions that hold across all of them.
 subcommand, or after the subcommand; the last one given wins:
 
 ```bash
-somm --project keel inbox list
-somm inbox --project keel list
-somm inbox list --project keel
+somm --project my_app inbox list
+somm inbox --project my_app list
+somm inbox list --project my_app
 ```
 
 Without the flag, `SOMM_PROJECT` is used, then the project of the current

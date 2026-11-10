@@ -1,4 +1,4 @@
-"""somm spend and somm gpu spend."""
+"""somm spend, somm gpu spend and somm climb."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import sys
 
 from somm_core.read import spend_today
 
+from somm import climb
 from somm.cli import _common
 
 
@@ -83,6 +84,12 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         help="emit a JSON array instead of the aligned table",
     )
     pspend.set_defaults(func=_cmd_spend)
+
+    pclimb = sub.add_parser(
+        "climb", help="what a workload answers before any model (reads chipsocket receipts)"
+    )
+    climb.add_arguments(pclimb)
+    pclimb.set_defaults(func=lambda a: climb.cmd(a, _common.load_config(project=a.project)))
 
     pgpu = sub.add_parser("gpu", help="rented-GPU spend read from gipper receipts (read-only)")
     _common.add_project(pgpu)

@@ -217,7 +217,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                    help=f"receipts directory or file (default: ${ENV_PATH})")
     p.add_argument("--workload", default=None, help="only this socket id; also the exact somm workload name to join by")
     p.add_argument("--since", type=int, default=30, help="window in days (default 30)")
-    p.add_argument("--project", default=None)
+    p.add_argument("--project", default=argparse.SUPPRESS)
     p.add_argument("--json", action="store_true", default=False)
 
 
@@ -237,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="somm climb", description=__doc__.split("\n")[0])
     add_arguments(p)
     args = p.parse_args(argv)
-    return cmd(args, load(project=args.project, prefer_registry=True))
+    return cmd(args, load(project=getattr(args, "project", None), prefer_registry=True))
 
 
 if __name__ == "__main__":
