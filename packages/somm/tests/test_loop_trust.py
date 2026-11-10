@@ -300,3 +300,35 @@ def test_loop_output_prints_shadow_warnings(tmp_path, capsys, monkeypatch):
     assert main(["loop", "run", "--only", "shadow_eval"]) == 0
     out = capsys.readouterr().out
     assert "warning: w: shadow config broken: gold_provider 'x' not configured" in out
+
+
+# ---------------------------------------------------------------------------
+# 4. Replay the real request
+
+
+def test_replay_sends_captured_messages_and_production_params(tmp_path):
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="chat", project=project)
+    _shadow(repo, wl.id)
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "summarise that"},
+    ]
+    chat = _call(repo, wl.id, project, temperature=0.7, max_tokens=300)
+    repo.write_sample(chat, json.dumps(messages), "a summary")
+    plain = _call(repo, wl.id, project)  # an older row: no params recorded
+    repo.write_sample(plain, '["not", "messages"]', "x")
+
+    gold = _Gold()
+    ShadowEvalWorker(repo, providers=[gold]).run_once()
+
+    by_prompt = {
+        json.dumps(r.messages) if r.messages else r.prompt: r for r in gold.requests
+    }
+    replay = by_prompt[json.dumps(messages)]
+    assert replay.messages == messages
+    assert (replay.temperature, replay.max_tokens) == (0.7, 300)
+    legacy = by_prompt['["not", "messages"]']
+    assert legacy.messages is None
+    assert (legacy.temperature, legacy.max_tokens) == (0.0, 1024)

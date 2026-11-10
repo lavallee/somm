@@ -511,7 +511,10 @@ class ShadowEvalWorker:
         ):
             raise RuntimeError(f"refused: gold route outside data boundary {boundary.tier.value}")
         gold_request = SommRequest(
-            prompt=prompt, model=cfg.gold_model, temperature=0.0, max_tokens=1024
+            prompt=prompt,
+            messages=_captured_messages(prompt),
+            model=cfg.gold_model,
+            **self._production_params(call_row["call_id"]),
         )
         try:
             gold = provider.generate(gold_request)
@@ -568,6 +571,24 @@ class ShadowEvalWorker:
                 *judge_notes,
             ],
         )
+
+    def _production_params(self, call_id: str) -> dict:
+        """The sampling params the production call asked for.
+
+        The replay used to hard-code temperature 0 and 1024 tokens. Rows
+        written before the client recorded params (both NULL) keep those
+        defaults. Not replayed because the capture does not keep them: the
+        system prompt, tools and tool_choice, response_format and
+        reasoning_effort."""
+        with self.repo._open() as conn:
+            row = conn.execute(
+                "SELECT temperature, max_tokens FROM calls WHERE id = ?", (call_id,)
+            ).fetchone()
+        temperature, max_tokens = row if row else (None, None)
+        return {
+            "temperature": 0.0 if temperature is None else float(temperature),
+            "max_tokens": 1024 if not max_tokens else int(max_tokens),
+        }
 
     def _fetch_bodies(self, call_id: str) -> tuple[str | None, str | None]:
         with self.repo._open() as conn:
@@ -837,6 +858,27 @@ def _deterministic_sample(calls: list[dict], rate: float, cap: int) -> list[dict
             if len(picked) >= cap:
                 break
     return picked
+
+
+def _captured_messages(prompt_body: str) -> list[dict] | None:
+    """The message list a sample was captured from, or None for a plain prompt.
+
+    The client stores a messages call as ``json.dumps(messages)``; replaying
+    that string as a prompt sent the gold model a JSON document instead of
+    the conversation."""
+    if not prompt_body.startswith("["):
+        return None
+    try:
+        parsed = json.loads(prompt_body)
+    except ValueError:
+        return None
+    if (
+        isinstance(parsed, list)
+        and parsed
+        and all(isinstance(m, dict) and "role" in m and "content" in m for m in parsed)
+    ):
+        return parsed
+    return None
 
 
 def _judge_tally(judge_reason: dict | None) -> tuple[int, int]:
