@@ -5,7 +5,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
-## [Unreleased]
+## [0.21.0] — 2026-11-09
 
 ### Security
 - **Three request headers opened every service route.** `X-Somm-Local: 1` with a
