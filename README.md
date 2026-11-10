@@ -732,9 +732,11 @@ Use `X-Somm-Workload` to bind calls to a pre-registered workload and
 `X-Somm-Project` when a service instance needs to write under a project other
 than its default. Streams are buffered: the answer is complete before the
 first event, then replayed in the wire's own event format, tool calls and usage
-included. A field the client cannot honor (sampling controls such as `top_p`,
-`stop`, `n`, server tools, `previous_response_id`, disabling `thinking`) is
-refused with a 400 that names it.
+included. Routine fields the client cannot apply yet (`stop`/`stop_sequences`,
+`top_p`, `top_k`, `parallel_tool_calls`, `truncation`, non-adaptive `thinking`)
+are accepted, not applied, and listed in an `x-somm-ignored` response header. A
+field that would change what comes back in kind (`n` > 1, logprobs, server tools,
+`previous_response_id`, reasoning input items) is refused with a 400 naming it.
 
 Polyglot apps can send OpenTelemetry JSON traces without importing the
 Python SDK:

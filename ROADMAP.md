@@ -86,8 +86,8 @@ graduates.
 
 - Done: the proxy on `SommLLM`, `/v1/responses`, streaming on chat
   completions, LiteLLM removed from `somm-service`. Left: incremental proxy
-  streams and provider machine fields on proxy errors, which need the client's
-  `stream()` to take `messages`/`tools` and a failed result to carry its error.
+  streams (the client's `stream()` takes no `messages`/`tools`) and passing
+  `stop`/`top_p`/`top_k` through, which the proxy accepts and reports as ignored.
 - The CLI as a package with one flag grammar and a documented exit-code
   contract.
 - `somm mcp install` and a distributed skill.

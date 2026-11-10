@@ -195,6 +195,20 @@ def test_chat_completions_route_respects_x_somm_project_header(tmp_path, fake_pr
     assert ledger(app, "SELECT project FROM calls") == [("custom-proj",)]
 
 
+def test_chat_completions_accepts_routine_fields_and_names_them(tmp_path, fake_provider):
+    cfg = _cfg(tmp_path)
+    fake = fake_provider("openai")
+    app = create_app(cfg, providers=[fake])
+    r = TestClient(app).post("/v1/chat/completions", json={
+        "model": "gpt-4o-mini", "messages": [{"role": "user", "content": "x"}],
+        "stop": ["END"], "top_p": 1, "parallel_tool_calls": True, "n": 1, "logprobs": False,
+        "thinking": {"type": "disabled"},
+    }, headers=_auth_headers(app))
+    assert r.status_code == 200
+    assert r.headers["x-somm-ignored"] == "logprobs,n,parallel_tool_calls,stop,top_p,thinking"
+    assert len(fake.requests) == 1
+
+
 def test_chat_completions_route_rejects_missing_model_and_unsupported_fields(tmp_path):
     cfg = _cfg(tmp_path)
     app = create_app(cfg)
@@ -205,7 +219,7 @@ def test_chat_completions_route_rejects_missing_model_and_unsupported_fields(tmp
     assert missing_model.status_code == 400
     assert missing_model.json()["error"]["type"] == "invalid_request_error"
 
-    for extra in ({"n": 2}, {"logprobs": True}, {"stop": ["x"]}, {"thinking": {"type": "disabled"}},
+    for extra in ({"n": 2}, {"logprobs": True}, {"top_logprobs": 2}, {"presence_penalty": 1},
                   {"tools": [{"type": "custom", "custom": {"name": "x"}}]}):
         r = client.post(
             "/v1/chat/completions",
@@ -420,7 +434,7 @@ def test_routing_preview_requires_auth_and_does_not_run_inference(tmp_path, monk
 
 
 @pytest.mark.parametrize('kind,status,retryable', [
-    ('bad_request', 400, False), ('auth', 401, False),
+    ('bad_request', 400, False), ('auth', 401, False), ('policy', 403, False),
     ('rate_limit', 429, True), ('timeout', 504, True), ('upstream', 502, True),
 ])
 def test_typed_provider_failures_preserve_recovery_contract_without_fallback(
@@ -436,10 +450,17 @@ def test_typed_provider_failures_preserve_recovery_contract_without_fallback(
     error = {
         'bad_request': SommBadRequest('Tool result has no matching call'),
         'auth': SommAuthError('Authorization expired'),
+        'policy': SommAuthError('Plan permission denied'),
         'rate_limit': SommRateLimited('Try later', retry_after_s=3.2),
         'timeout': SommTimeout('Request timed out'),
         'upstream': SommUpstream5xx('Provider unavailable'),
     }[kind]
+    error.provider_code = 'synthetic_provider_code'
+    error.provider_type = 'invalid_request_error' if not retryable else 'server_error'
+    error.provider_param = 'input' if kind == 'bad_request' else None
+    error.provider_request_id = 'req_synthetic'
+    if kind == 'policy':
+        error.status_code = 403
     cfg = _cfg(tmp_path)
     Repository(cfg.db_path).register_workload(name='recoverable', project=cfg.project)
     other = fake_provider('openai')  # a healthy chain member that must not be used
@@ -454,6 +475,13 @@ def test_typed_provider_failures_preserve_recovery_contract_without_fallback(
     assert body['provider'] == 'chatgpt' and body['model'] == 'pinned-strong'
     assert body['call_id'] == response.headers['x-somm-call-id']
     assert response.headers['x-should-retry'] == str(retryable).lower()
+    assert body['provider_code'] == 'synthetic_provider_code'
+    assert body['provider_request_id'] == 'req_synthetic'
+    if kind == 'rate_limit':
+        assert response.headers['retry-after'] == '4'
+        assert body['retry_after_s'] == 3.2
+    if kind == 'bad_request':
+        assert body['param'] == 'input'
     assert infer.call_count == 1
     assert other.requests == []
     rows = ledger(app, 'SELECT id, provider, model, outcome FROM calls')

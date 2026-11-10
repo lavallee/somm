@@ -69,7 +69,7 @@ def test_split_model_defaults_explicit_prefix_and_auto():
 
 
 def test_anthropic_request_basic():
-    call = _anthropic_request({
+    call, _ = _anthropic_request({
         "model": MODEL, "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 64, "temperature": 0.7,
     })
@@ -79,9 +79,9 @@ def test_anthropic_request_basic():
 
 
 def test_anthropic_request_promotes_and_flattens_system():
-    assert _anthropic_request({"model": MODEL, "system": "you are concise", "messages": []})[
+    assert _anthropic_request({"model": MODEL, "system": "you are concise", "messages": []})[0][
         "system"] == "you are concise"
-    call = _anthropic_request({
+    call, _ = _anthropic_request({
         "model": MODEL,
         "system": [{"type": "text", "text": "rule 1"}, {"type": "text", "text": "rule 2"}],
         "messages": [{"role": "user", "content": "x"}],
@@ -91,7 +91,7 @@ def test_anthropic_request_promotes_and_flattens_system():
 
 
 def test_anthropic_request_maps_tools_choice_and_effort_to_the_client():
-    call = _anthropic_request({
+    call, ignored = _anthropic_request({
         "model": MODEL, "messages": [{"role": "user", "content": "x"}],
         "tools": [{"name": "search", "description": "d", "input_schema": {"type": "object"}}],
         "tool_choice": {"type": "tool", "name": "search"},
@@ -103,16 +103,25 @@ def test_anthropic_request_maps_tools_choice_and_effort_to_the_client():
                               "parameters": {"type": "object"}}]
     assert call["tool_choice"] == {"type": "tool", "name": "search"}
     assert call["reasoning_effort"] == "low"
+    assert ignored == ["metadata"]
+
+
+def test_anthropic_request_accepts_and_names_routine_fields_it_cannot_apply():
+    call, ignored = _anthropic_request({
+        "model": MODEL, "messages": [], "stop_sequences": ["</result>"], "top_p": 0.9,
+        "top_k": 5, "thinking": {"type": "disabled"},
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+    })
+    assert call["tool_choice"] == "auto"
+    assert ignored == ["stop_sequences", "top_k", "top_p", "thinking",
+                       "tool_choice.disable_parallel_tool_use"]
 
 
 @pytest.mark.parametrize("extra", [
-    {"stop_sequences": ["</result>"]},
-    {"top_k": 5},
-    {"thinking": {"type": "disabled"}},
     {"tools": [{"type": "web_search_20250305", "name": "web_search"}]},
-    {"tool_choice": {"type": "auto", "disable_parallel_tool_use": True}},
+    {"mcp_servers": []},
 ])
-def test_anthropic_request_refuses_what_the_client_cannot_honor(extra):
+def test_anthropic_request_refuses_what_would_change_the_answer(extra):
     with pytest.raises(WireError):
         _anthropic_request({"model": MODEL, "messages": [], **extra})
 
@@ -259,19 +268,30 @@ def test_messages_route_rejects_missing_model(tmp_path):
     assert r.json()["error"]["type"] == "invalid_request_error"
 
 
-def test_messages_route_rejects_unsupported_fields_naming_them(tmp_path, fake_provider):
+def test_messages_route_names_ignored_fields_in_a_header(tmp_path, fake_provider):
     cfg = _cfg(tmp_path)
     fake = fake_provider()
     app = create_app(cfg, providers=[fake])
-    r = TestClient(app).post(
+    client = TestClient(app)
+    ok = client.post(
         "/v1/messages",
         json={"model": MODEL, "messages": [{"role": "user", "content": "x"}],
-              "stop_sequences": ["</r>"]},
+              "stop_sequences": ["</r>"], "top_p": 0.9},
         headers=_auth_headers(app),
     )
-    assert r.status_code == 400
-    assert "stop_sequences" in r.json()["error"]["message"]
-    assert fake.requests == []
+    assert ok.status_code == 200
+    assert ok.headers["x-somm-ignored"] == "stop_sequences,top_p"
+    plain = client.post("/v1/messages", json={"model": MODEL, "messages": []},
+                        headers=_auth_headers(app))
+    assert "x-somm-ignored" not in plain.headers
+    refused = client.post(
+        "/v1/messages",
+        json={"model": MODEL, "messages": [], "container": "c1"},
+        headers=_auth_headers(app),
+    )
+    assert refused.status_code == 400
+    assert "container" in refused.json()["error"]["message"]
+    assert len(fake.requests) == 2
 
 
 def test_messages_route_rejects_non_dict_body(tmp_path):

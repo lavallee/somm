@@ -10,8 +10,11 @@ Each route translates its request into one ``SommLLM.agenerate(messages=...)``
 call and translates the result back, streamed or not. Routing, pins,
 cooldowns, workload policy and ``somm/auto``, the data boundary, the budget
 gate, cost, telemetry and the error taxonomy are the client's; nothing here
-re-implements them. A wire field the client cannot honor is refused with a
-400 naming it, never dropped silently.
+re-implements them. Fields that clients send routinely but the client cannot
+pass through yet (sampling controls, stop sequences, parallel-call hints) are
+accepted, not applied, and named in an ``x-somm-ignored`` response header. A
+field whose absence would change what the caller gets back in kind (``n`` > 1,
+logprobs, server tools, stored state) is refused with a 400 naming it.
 
 The model string selects the route:
   "somm/auto"          the workload's adaptive policy picks provider and model
@@ -38,7 +41,6 @@ import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
-import somm.errors as somm_errors
 from somm.errors import (
     SommAuthError,
     SommBadRequest,
@@ -46,13 +48,12 @@ from somm.errors import (
     SommDeferred,
     SommError,
     SommPrivacyViolation,
-    SommProvidersExhausted,
+    SommProviderError,
+    SommProviderNotConfigured,
     SommRateLimited,
     SommTimeout,
-    SommTransientError,
     describe_error,
 )
-from somm_core.models import Outcome
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -65,7 +66,6 @@ _DEFAULT_WORKLOAD = "proxy_default"
 # Output cap when an OpenAI-wire request names none (Anthropic requires one).
 # The client's own default (256) would truncate ordinary chat answers.
 _DEFAULT_MAX_TOKENS = 4096
-_FAILED = {Outcome.UPSTREAM_ERROR, Outcome.TIMEOUT, Outcome.RATE_LIMIT, Outcome.EXHAUSTED}
 
 
 class ProxyWorkloadError(ValueError):
@@ -90,28 +90,25 @@ def split_model(model: str, default_provider: str) -> tuple[str | None, str]:
     return default_provider, model
 
 
-def _check_fields(body: dict, supported: set[str], ignored: set[str] = frozenset()) -> None:
-    extra = sorted(set(body) - supported - ignored)
+def _check_fields(body: dict, supported: set[str], ignorable: set[str] = frozenset(),
+                  ignored: list[str] | None = None, prefix: str = "") -> None:
+    """Refuse unknown fields; note the ignorable ones present in ``ignored``."""
+    extra = sorted(set(body) - supported - ignorable)
     if extra:
         raise WireError(
-            f"unsupported field(s) {', '.join(extra)}: the somm proxy serves "
-            f"{', '.join(sorted(supported))}"
+            f"unsupported field(s) {', '.join(prefix + k for k in extra)}: the somm proxy "
+            f"serves {', '.join(sorted(supported))}"
         )
+    if ignored is not None:
+        ignored.extend(prefix + k for k in sorted(set(body) & set(ignorable)))
 
 
-def _thinking(value: Any) -> None:
-    """``thinking`` has no client argument. Adaptive or enabled thinking is
-    what reasoning providers do by default, so it is accepted (a
-    ``budget_tokens`` is not forwarded; use reasoning effort); asking for it
-    to be disabled cannot be honored and is refused."""
-    if value is None:
-        return
-    kind = value.get("type") if isinstance(value, dict) else None
-    if kind not in ("adaptive", "enabled"):
-        raise WireError(
-            "thinking may be adaptive or enabled; somm cannot disable thinking "
-            "per request, set a reasoning effort instead"
-        )
+def _thinking(value: Any, ignored: list[str]) -> None:
+    """``thinking`` has no client argument. Adaptive thinking is what reasoning
+    providers do by default; anything else (a ``budget_tokens``, ``disabled``)
+    is not applied and is reported as ignored. Use reasoning effort instead."""
+    if value is not None and value != {"type": "adaptive"}:
+        ignored.append("thinking")
 
 
 def _text_of(content: Any) -> str:
@@ -190,56 +187,54 @@ def _hex(call_id: str) -> str:
 _STATUS: list[tuple[type, int, str]] = [
     (SommDeferred, 429, "work_deferred"),
     (SommPrivacyViolation, 403, "permission_error"),
+    (SommProviderNotConfigured, 400, "invalid_request_error"),
     (SommBadRequest, 400, "invalid_request_error"),
     (SommAuthError, 401, "authentication_error"),
     (SommRateLimited, 429, "rate_limit_error"),
     (SommBudgetExceeded, 429, "rate_limit_error"),
     (SommTimeout, 504, "timeout_error"),
 ]
-_OUTCOME_CLASS = {
-    Outcome.TIMEOUT: SommTimeout,
-    Outcome.RATE_LIMIT: SommRateLimited,
-    Outcome.EXHAUSTED: SommProvidersExhausted,
-}
 
 
-def _failure(exc: SommError | None = None, *, result=None) -> tuple[int, dict, dict]:
-    """(status, error payload, headers) for a raised SommError or a failed result.
+def _failure(exc: SommError) -> tuple[int, dict, dict]:
+    """(status, error payload, headers) for the typed error the client raised.
 
-    The client raises only its own refusals (budget, boundary, deferral,
-    exhaustion); a provider failure comes back as a result carrying the
-    error's class name and detail, so its retry_after_s, provider codes and
-    upstream status are not available here.
+    The client raises a provider failure as the adapter's own exception, so
+    whatever the adapter attached (retry timing, provider codes, the upstream
+    status) reaches the wire.
     """
-    if exc is not None:
-        cls, detail = type(exc), describe_error(exc)
-        detail["message"] = detail["message"][:512]
-    else:
-        cls = getattr(somm_errors, result.error_kind or "", None)
-        if not (isinstance(cls, type) and issubclass(cls, SommError)):
-            cls = _OUTCOME_CLASS.get(result.outcome)
-        message = (result.error_detail or result.error_kind or "upstream call failed")[:512]
-        if cls is None:
-            detail = {"code": "SOMM_PROXY_UPSTREAM_ERROR", "message": message, "retryable": True}
-        else:
-            retryable = issubclass(cls, (SommTransientError, SommProvidersExhausted))
-            detail = {"schema_version": 1, "code": cls.code, "message": message,
-                      "retryable": retryable}
+    detail = describe_error(exc)
+    detail["message"] = detail["message"][:512]
+    if type(exc) is SommProviderError:
+        # The client's wrapper for a provider failure it could not classify:
+        # an upstream fault, as 0.20.1 reported it.
+        detail.update(code="SOMM_PROXY_UPSTREAM_ERROR", retryable=True)
     status, error_type = 502, "api_error"
     for klass, code, kind in _STATUS:
-        if cls is not None and issubclass(cls, klass):
+        if isinstance(exc, klass):
             status, error_type = code, kind
             break
     else:
         if not detail["retryable"]:
             status, error_type = 400, "invalid_request_error"
+    upstream_status = getattr(exc, "status_code", None)
+    if isinstance(upstream_status, int) and 400 <= upstream_status <= 599:
+        status = upstream_status
     payload: dict[str, Any] = {"type": error_type, "param": None, **detail}
+    for field in ("call_id", "provider", "model"):
+        if getattr(exc, field, None):
+            payload[field] = getattr(exc, field)
+    for field in ("provider_code", "provider_type", "provider_param", "provider_request_id"):
+        value = getattr(exc, field, None)
+        if isinstance(value, str) and value:
+            payload[field] = value[:256]
+    if payload.get("provider_param"):
+        payload["param"] = payload["provider_param"]
     if isinstance(exc, SommDeferred):
         payload["routing"] = exc.decision
     headers = {"x-should-retry": "true" if detail["retryable"] else "false"}
-    if result is not None:
-        payload.update(call_id=result.call_id, provider=result.provider, model=result.model)
-        headers["x-somm-call-id"] = result.call_id
+    if exc.call_id:
+        headers["x-somm-call-id"] = exc.call_id
     retry_after = detail.get("retry_after_s")
     if isinstance(retry_after, (float, int)) and math.isfinite(retry_after) and retry_after >= 0:
         headers["Retry-After"] = str(math.ceil(retry_after))
@@ -263,17 +258,18 @@ def _openai_error(*, error_type: str, message: str, status: int) -> JSONResponse
 # Anthropic Messages
 
 
-def _anthropic_request(body: dict) -> dict:
+def _anthropic_request(body: dict) -> tuple[dict, list[str]]:
+    ignored: list[str] = []
     _check_fields(
         body,
         {"model", "messages", "system", "max_tokens", "temperature", "tools", "tool_choice",
          "stream", "thinking", "output_config"},
-        ignored={"metadata"},
+        {"metadata", "stop_sequences", "top_p", "top_k"}, ignored,
     )
     messages = body.get("messages")
     if not isinstance(messages, list):
         raise WireError("messages must be a list")
-    _thinking(body.get("thinking"))
+    _thinking(body.get("thinking"), ignored)
     call: dict[str, Any] = {
         "messages": messages,  # the client's neutral shape is Anthropic's own
         "system": _system_text(body.get("system")),
@@ -292,14 +288,16 @@ def _anthropic_request(body: dict) -> dict:
     choice = body.get("tool_choice")
     if choice is not None:
         kind = choice.get("type") if isinstance(choice, dict) else None
-        if kind in ("auto", "any", "none") and set(choice) == {"type"}:
+        _check_fields(choice, {"type", "name"}, {"disable_parallel_tool_use"}, ignored,
+                      "tool_choice.")
+        if kind in ("auto", "any", "none"):
             call["tool_choice"] = kind
-        elif kind == "tool" and set(choice) == {"type", "name"}:
+        elif kind == "tool" and choice.get("name"):
             call["tool_choice"] = {"type": "tool", "name": choice["name"]}
         else:
             raise WireError("tool_choice must be auto, any, none or {type: tool, name}")
     config = body.get("output_config") or {}
-    _check_fields(config, {"effort", "format"})
+    _check_fields(config, {"effort", "format"}, prefix="output_config.")
     if config.get("effort"):
         call["reasoning_effort"] = config["effort"]
     fmt = config.get("format")
@@ -308,7 +306,7 @@ def _anthropic_request(body: dict) -> dict:
             raise WireError("output_config.format must be {type: json_schema, schema}")
         call["response_format"] = {"type": "json_schema",
                                    "json_schema": {"name": "output", "schema": fmt["schema"]}}
-    return call
+    return call, ignored
 
 
 def _anthropic_body(result, model: str) -> dict:
@@ -395,18 +393,23 @@ def _openai_tool_choice(choice: Any) -> str | dict:
     raise WireError("tool_choice must be auto, none, required or a named function")
 
 
-def _chat_request(body: dict) -> dict:
+def _chat_request(body: dict) -> tuple[dict, list[str]]:
+    if body.get("n", 1) != 1:
+        raise WireError("n must be 1: the somm proxy returns one choice")
+    if body.get("logprobs") or "top_logprobs" in body:
+        raise WireError("logprobs are not available through the somm proxy")
+    ignored: list[str] = []
     _check_fields(
         body,
         {"model", "messages", "max_tokens", "max_completion_tokens", "temperature", "tools",
          "tool_choice", "response_format", "reasoning_effort", "thinking", "stream",
          "stream_options"},
-        ignored={"user"},
+        {"user", "stop", "top_p", "parallel_tool_calls", "n", "logprobs"}, ignored,
     )
     raw_messages = body.get("messages")
     if not isinstance(raw_messages, list):
         raise WireError("messages must be a list")
-    _thinking(body.get("thinking"))
+    _thinking(body.get("thinking"), ignored)
     system: list[str] = []
     messages: list[dict] = []
     for m in raw_messages:
@@ -449,7 +452,7 @@ def _chat_request(body: dict) -> dict:
         call["tools"] = _openai_tools(body["tools"])
     if "tool_choice" in body:
         call["tool_choice"] = _openai_tool_choice(body["tool_choice"])
-    return call
+    return call, ignored
 
 
 def _finish_reason(result) -> str:
@@ -514,13 +517,15 @@ def _chat_events(body: dict, include_usage: bool) -> Iterator[str]:
 # OpenAI Responses (common subset)
 
 
-def _responses_request(body: dict) -> dict:
+def _responses_request(body: dict) -> tuple[dict, list[str]]:
+    ignored: list[str] = []
     _check_fields(
         body,
         {"model", "input", "instructions", "tools", "tool_choice", "max_output_tokens",
          "temperature", "reasoning", "text", "stream"},
         # Nothing is stored server-side, so store has nothing to change.
-        ignored={"metadata", "user", "store", "prompt_cache_key"},
+        {"metadata", "user", "store", "prompt_cache_key", "top_p", "parallel_tool_calls",
+         "truncation"}, ignored,
     )
     raw = body.get("input")
     items = [{"role": "user", "content": raw}] if isinstance(raw, str) else raw
@@ -562,7 +567,7 @@ def _responses_request(body: dict) -> dict:
     if body.get("temperature") is not None:
         call["temperature"] = body["temperature"]
     reasoning = body.get("reasoning") or {}
-    _check_fields(reasoning, {"effort"})
+    _check_fields(reasoning, {"effort"}, {"summary"}, ignored, "reasoning.")
     if reasoning.get("effort"):
         call["reasoning_effort"] = reasoning["effort"]
     tools = []
@@ -576,7 +581,7 @@ def _responses_request(body: dict) -> dict:
     if "tool_choice" in body:
         call["tool_choice"] = _openai_tool_choice(body["tool_choice"])
     text = body.get("text") or {}
-    _check_fields(text, {"format"})
+    _check_fields(text, {"format"}, {"verbosity"}, ignored, "text.")
     fmt = text.get("format")
     if fmt and fmt.get("type") == "json_schema":
         call["response_format"] = {"type": "json_schema", "json_schema": {
@@ -585,7 +590,7 @@ def _responses_request(body: dict) -> dict:
         call["response_format"] = {"type": "json_object"}
     elif fmt and fmt.get("type") != "text":
         raise WireError("text.format must be text, json_schema or json_object")
-    return call
+    return call, ignored
 
 
 def _responses_content(content: Any, role: str) -> Any:
@@ -668,7 +673,7 @@ def _responses_events(body: dict) -> Iterator[str]:
 @dataclasses.dataclass(frozen=True)
 class _Wire:
     default_provider: str
-    parse: Callable[[dict], dict]
+    parse: Callable[[dict], tuple[dict, list[str]]]
     render: Callable[[Any, str], dict]
     events: Callable[[dict, dict], Iterator[str]]
     error: Callable[..., JSONResponse]
@@ -723,7 +728,13 @@ def _client(app, project: str):
 _CLIENTS_LOCK = threading.Lock()
 
 
-def _refuse(wire: _Wire, status: int, payload: dict, headers: dict) -> JSONResponse:
+def _ignored_header(ignored: list[str]) -> dict:
+    return {"x-somm-ignored": ",".join(ignored)} if ignored else {}
+
+
+def _refuse(wire: _Wire, status: int, payload: dict, headers: dict,
+            ignored: list[str] = ()) -> JSONResponse:
+    headers = {**headers, **_ignored_header(list(ignored))}
     if wire.envelope == "openai":
         return JSONResponse({"error": payload}, status_code=status, headers=headers)
     extra = {k: v for k, v in payload.items() if k not in ("type", "message", "param")}
@@ -751,7 +762,7 @@ async def _serve(request: Request, wire: _Wire) -> Response:
     if not isinstance(requested, str) or not requested:
         return invalid("model is required")
     try:
-        call = wire.parse(body)
+        call, ignored = wire.parse(body)
     except WireError as exc:
         return invalid(str(exc))
     except (AttributeError, KeyError, TypeError) as exc:
@@ -767,17 +778,16 @@ async def _serve(request: Request, wire: _Wire) -> Response:
     try:
         llm = await run_in_threadpool(_client, request.app, project)
         result = await llm.agenerate(
-            "", workload=workload.name, provider=provider, model=model, **call
+            "", workload=workload.name, provider=provider, model=model,
+            raise_on_failure=True, **call,
         )
     except SommError as exc:
-        return _refuse(wire, *_failure(exc))
-    except ValueError as exc:  # an unconfigured provider pin or an invalid policy
+        return _refuse(wire, *_failure(exc), ignored)
+    except ValueError as exc:  # an invalid workload policy
         return invalid(str(exc))
 
-    if result.outcome in _FAILED:
-        return _refuse(wire, *_failure(result=result))
     rendered = wire.render(result, requested)
-    headers = {"x-somm-call-id": result.call_id}
+    headers = {"x-somm-call-id": result.call_id, **_ignored_header(ignored)}
     if body.get("stream"):
         return StreamingResponse(
             wire.events(rendered, body), media_type="text/event-stream",

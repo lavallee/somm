@@ -138,18 +138,18 @@ The proxy routes preserve typed provider failures instead of converting all of
 them into HTTP 502. Invalid input returns 400, authentication failures 401, a data
 boundary refusal 403, rate limits and budget refusals 429, transport timeouts 504,
 and transient upstream failures 502. `error.code` is Somm's canonical code;
-`error.retryable` and, for somm's own refusals, `error.retry_after_s` are the runner
-contract.
+`error.retryable` and optional `error.retry_after_s` are the runner contract.
 `x-should-retry` mirrors retryability for compatible SDKs. A 429 deferral or API
 budget refusal explicitly says `retryable: false`; waiting and sending the identical
 request repeatedly will not repair it.
 
 A failed inference response identifies its `call_id`, provider and model. The same
 ID appears in `x-somm-call-id` and the ledger, whose `routing_json` holds the
-route. The client records a provider failure on its result rather than raising
-it, so the provider's own machine fields (`provider_code`, `provider_request_id`,
-`Retry-After`, an upstream 403) do not reach the HTTP response; the canonical
-`error.code` and `retryable` do.
+route. The proxy calls the client with `raise_on_failure=True` and maps the
+adapter's own typed error, so `Retry-After`, an upstream status such as 403, and
+safe machine fields (`provider_code`, `provider_type`, `provider_param`,
+`provider_request_id`) survive when the adapter supplies them. Clients should use
+these fields rather than parsing provider prose.
 
 This HTTP boundary neither retries inference nor chooses another model. Resume a
 transient failure with the original conversation, including completed tool results;

@@ -93,7 +93,6 @@ def test_responses_stream_events_parse_in_the_sdk(tmp_path, fake_provider):
 @pytest.mark.parametrize("extra", [
     {"previous_response_id": "resp_1"},
     {"tools": [{"type": "web_search"}]},
-    {"truncation": "auto"},
     {"input": [{"type": "reasoning", "summary": []}]},
 ])
 def test_responses_rejects_what_it_does_not_support(tmp_path, fake_provider, extra):
@@ -102,6 +101,16 @@ def test_responses_rejects_what_it_does_not_support(tmp_path, fake_provider, ext
     with pytest.raises(openai.BadRequestError):
         _sdk(app).responses.create(**{"model": "gpt-4o-mini", "input": "x", **extra})
     assert fake.requests == []
+
+
+def test_responses_accepts_routine_fields_and_names_them(tmp_path, fake_provider):
+    app = create_app(_cfg(tmp_path), providers=[fake_provider("openai")])
+    raw = _sdk(app).responses.with_raw_response.create(
+        model="gpt-4o-mini", input="x", truncation="auto", parallel_tool_calls=True, top_p=1,
+        store=False, reasoning={"effort": "low", "summary": "auto"})
+    assert raw.headers["x-somm-ignored"] == (
+        "parallel_tool_calls,store,top_p,truncation,reasoning.summary")
+    assert raw.parse().output_text == "hello back"
 
 
 def test_responses_needs_the_token(tmp_path):
