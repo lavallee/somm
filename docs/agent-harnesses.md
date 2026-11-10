@@ -49,7 +49,7 @@ result = harnesses.inspect(
 
 | Name | Executable | Resume | Turn limit | Agent selection | Reasoning effort | Stdin prompt | Reports cost | Reports model |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| `claude-cli` | `claude` | yes | yes | no | yes | always | yes | yes |
+| `claude-cli` | `claude` | yes | yes | no | yes | yes | yes | yes |
 | `codex` (`codex-cli` alias) | `codex` | yes | no | no | yes | yes | no | no |
 | `opencode` | `opencode` | yes | no | yes | no | no | yes | yes |
 | `pi` | `pi` | yes | no | no | yes | yes | no | yes |

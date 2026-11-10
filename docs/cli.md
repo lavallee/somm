@@ -26,7 +26,7 @@ Commands that print a report or a list take `--json` and then print JSON
 only: `status`, `cache-advice`, `generate`, `bench`, `compare`, `frontier`,
 `workload list`, `prompt list`, `boundary routes|audit`, `eval import|run`,
 `campaign run`, `inbox`, `loop run|status`, `ledgers`, `fleet status`,
-`spend`, `gpu spend`, `plans`, `alias list`. Lists print an array (an empty
+`spend`, `climb`, `gpu spend`, `plans`, `alias list`. Lists print an array (an empty
 list prints `[]`); `prompt list --json` leaves out prompt bodies, which
 `prompt show` prints.
 

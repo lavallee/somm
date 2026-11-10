@@ -110,8 +110,6 @@ OpenAI adapter translates:
 
 Add `tools` to the model_intel capabilities set. Workloads that need tool-calling specify `capabilities_required=["tools"]`. Router filters provider/model pairs whose `capabilities_json` doesn't include `tools`. Unknown models still fall through as capable (per existing convention).
 
-Seeded `model_intel` rows for known tool-capable models (Claude 3+, GPT-4+, Gemini 1.5+, etc.) get the `tools` capability set in a one-off seeding pass — separate, small follow-up commit.
-
 ## Streaming
 
 `stream(..., tools=..., events=True)` yields `somm.events.ToolCallDelta(index, id,
@@ -122,37 +120,20 @@ that answer in one piece still emit one fragment per call.
 
 ## Telemetry
 
-For this round: tool calls live on `SommResult.tool_calls` and inside `raw`. No schema migration. The `calls.sqlite` `calls` row keeps its current shape; `tool_calls_count` derivable from `raw_json` if needed later.
+Tool calls live on `SommResult.tool_calls` and inside `raw_json`; the `calls`
+row has no dedicated tool columns. Lifting `tool_calls_count`,
+`tools_offered_count` and `stop_reason` into columns is deferred until a query
+needs them (ROADMAP.md, "Deferred").
 
-Schema bump (proposed 0008) deferred — adds dedicated columns (`tool_calls_count`, `tools_offered_count`, `stop_reason`) once we have a real workload accumulating calls and we know what queries we want to write against them.
+## Not handled
 
-## Out of scope tonight
+- Tool-choice cost shaping (e.g., banning expensive tools when budget is tight).
+- Tool-result truncation when results exceed the model's context.
+- Parallel tool calls in one turn get no special handling; they pass through
+  unchanged.
 
-- Tool-choice cost shaping (e.g., banning expensive tools when budget tight).
-- Tool-result auto-truncation policy when results exceed model context.
-- Parallel tool calls in a single turn — supported by passing the response through unchanged; no special handling needed.
+## Tests
 
-## Test strategy
-
-Per-provider tests in `packages/somm/tests/test_provider_adapters.py` extension:
-- request shape: assert outbound payload contains tools, tool_choice, multi-turn messages translated correctly
-- response parsing: assert `tool_calls` extracted from `tool_use` blocks; `stop_reason` set
-- error path: `SommBadRequest` if provider doesn't support tools yet (for providers landing in tomorrow's pass)
-
-Integration test in `test_library_ext.py` adds: `SommLLM.generate(tools=...)` end-to-end with mocked Anthropic transport.
-
-## Hand-off plan
-
-Tonight (2026-05-19):
-- This spec
-- `ToolCall`, `tools`/`messages`/`tool_choice`/`tool_calls`/`stop_reason` on the request/response dataclasses
-- AnthropicProvider tool support + tests
-- OpenAICompatProvider tool support + tests (covers OpenAI; minimax/openrouter/deepseek inherit)
-- `SommLLM.generate(tools=...)` threading + 1 integration test
-- README mention, CHANGELOG entry
-
-Tomorrow (or later):
-- GeminiProvider tool support (different format: `functionDeclarations` under `tools`)
-- OllamaProvider tool support (`tools` field per Ollama 0.4+ — verify version on the box)
-- model_intel seeding pass for `tools` capability
-- Schema 0008 telemetry columns once a real workload exists
+Per-provider request and response shapes are in
+`packages/somm/tests/test_provider_adapters.py`; the end-to-end
+`generate(tools=...)` path is in `packages/somm/tests/test_library_ext.py`.
