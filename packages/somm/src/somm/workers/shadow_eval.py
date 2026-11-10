@@ -278,43 +278,23 @@ class ShadowEvalWorker:
     # Lease + write
 
     def _claim_lease(self, call_id: str) -> int | None:
-        """Atomic lease acquisition. Returns its eval-result id when acquired."""
-        now = datetime.now(UTC)
-        stale_before = now - timedelta(seconds=self.lease_window_s)
+        """Claim a sample for grading. Returns its eval-result id when acquired.
+
+        One statement: SQLite takes the write lock before an INSERT reads, so
+        the "no eval row yet" check and the placeholder insert cannot
+        interleave with another worker's. Until 0.24 this was a SELECT then
+        an INSERT, and two workers could both claim a sample and both pay
+        for its gold call. Stale placeholders are removed by
+        ``_sweep_stale_leases`` at the start of each run, so a crashed
+        worker's sample becomes claimable again there, not here."""
         with self.repo._open() as conn:
-            # First check: is there an existing completed eval_result?
-            existing = conn.execute(
-                "SELECT id, grading_started_at, judge_score FROM eval_results WHERE call_id = ?",
-                (call_id,),
-            ).fetchone()
-            if existing:
-                eval_id, started_at, judge = existing
-                if judge is not None:
-                    return None  # already graded
-                if (
-                    started_at is None
-                    and conn.execute(
-                        "SELECT gold_model != 'pending' FROM eval_results WHERE id = ?",
-                        (eval_id,),
-                    ).fetchone()[0]
-                ):
-                    return None
-                # existing in-flight — check lease
-                started = _parse_ts(started_at) if started_at else None
-                if started and started > stale_before:
-                    return None
-                conn.execute(
-                    "UPDATE eval_results SET grading_started_at = ? WHERE id = ?",
-                    (now.isoformat(), eval_id),
-                )
-                return int(eval_id)
-            # No existing row — insert a lease placeholder
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO eval_results (call_id, gold_model, grading_started_at) "
-                "VALUES (?, ?, ?)",
-                (call_id, "pending", now.isoformat()),
+                "SELECT ?, 'pending', ? "
+                "WHERE NOT EXISTS (SELECT 1 FROM eval_results WHERE call_id = ?)",
+                (call_id, datetime.now(UTC).isoformat(), call_id),
             )
-            return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            return int(cur.lastrowid) if cur.rowcount == 1 else None
 
     def _release_lease(self, call_id: str) -> None:
         """Delete the lease placeholder outright.
