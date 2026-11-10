@@ -4,7 +4,7 @@ The hook runs in ``post_process``, so webhook I/O is dispatched through the
 hook bus background executor and stays off the caller's hot path.
 
 Outcome matching is deliberately liberal: ``error`` covers upstream errors,
-empty/bad outputs, ``exhausted`` covers exhausted outcomes or error kinds, and
+timeouts, rate limits, empty/bad outputs, ``exhausted`` covers exhausted outcomes or error kinds, and
 ``fallback`` covers explicit fallback-shaped events when callers include them.
 """
 
@@ -37,7 +37,9 @@ def _matches(event: dict[str, Any]) -> bool:
                 return True
         except (TypeError, ValueError):
             pass
-    if "error" in wanted and outcome in {"error", "upstream_error", "empty", "bad_json"}:
+    if "error" in wanted and outcome in {
+        "error", "upstream_error", "timeout", "rate_limit", "empty", "bad_json",
+    }:
         return True
     if "exhausted" in wanted and (outcome == "exhausted" or "exhausted" in error_kind):
         return True
