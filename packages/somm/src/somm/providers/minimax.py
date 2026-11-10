@@ -25,7 +25,8 @@ class MinimaxProvider(OpenAICompatProvider):
         # MiniMax reasoning models use thinking tokens that consume budget before the
         # actual response. 3x headroom with 1024 floor.
         payload = super()._build_payload(request, model)
-        payload["max_tokens"] = max(request.max_tokens * 3, 1024)
+        if not request.exact_max_tokens:
+            payload["max_tokens"] = max(request.max_tokens * 3, 1024)
         return payload
 
 

@@ -25,6 +25,10 @@ class SommRequest:
     prompt: str | list[dict]
     system: str = ""
     max_tokens: int = 256
+    # Send max_tokens exactly as given. Some adapters (Ollama, MiniMax) raise
+    # the outbound cap to leave room for thinking tokens; a caller that has
+    # turned thinking off, or must hold a hard cap, sets this.
+    exact_max_tokens: bool = False
     temperature: float = 0.2
     model: str | None = None  # None = provider's default
     metadata: dict = field(default_factory=dict)

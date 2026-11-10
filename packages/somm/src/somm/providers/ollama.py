@@ -75,6 +75,15 @@ class OllamaProvider:
         self.keep_alive = keep_alive
         self._http = SharedClient()
 
+    def _client(self) -> httpx.Client:
+        """The HTTP client every request goes through.
+
+        Kept as a method because callers wrap or replace it: to fake HTTP in
+        a test, or to adjust a request on its way out. It returns the
+        provider's one reusable client.
+        """
+        return shared_client(self)
+
     def close(self) -> None:
         """Close the pooled HTTP connections; the next call opens new ones."""
         close_shared_client(self)
@@ -148,7 +157,11 @@ class OllamaProvider:
                 # <think>...</think> blocks that consume budget before
                 # the actual response. 3x headroom with a 1024 floor
                 # prevents empty responses after think-block stripping.
-                "num_predict": max(request.max_tokens * 3, 1024),
+                "num_predict": (
+                    request.max_tokens
+                    if request.exact_max_tokens
+                    else max(request.max_tokens * 3, 1024)
+                ),
             },
         }
         if self.enable_think:
@@ -168,7 +181,7 @@ class OllamaProvider:
         # The per-call timeout is passed only when set, so a _post override
         # with the older four-argument signature keeps working.
         per_call = {"timeout": request.timeout} if request.timeout else {}
-        data = self._post(shared_client(self), "/api/chat", payload, model, **per_call)
+        data = self._post(self._client(), "/api/chat", payload, model, **per_call)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         message = data.get("message") or {}
@@ -226,7 +239,11 @@ class OllamaProvider:
             "stream": True,
             "options": {
                 "temperature": request.temperature,
-                "num_predict": max(request.max_tokens * 3, 1024),
+                "num_predict": (
+                    request.max_tokens
+                    if request.exact_max_tokens
+                    else max(request.max_tokens * 3, 1024)
+                ),
             },
         }
         if self.enable_think:
@@ -244,7 +261,7 @@ class OllamaProvider:
         text_parts: list[str] = []
         tool_calls: list[dict] = []
         try:
-            with shared_client(self).stream(
+            with self._client().stream(
                 "POST", f"{self.base_url}/api/chat", json=payload,
                 timeout=request_timeout(request.timeout or self.timeout),
             ) as resp:
@@ -315,7 +332,7 @@ class OllamaProvider:
             payload["keep_alive"] = self.keep_alive
 
         t0 = time.monotonic()
-        data = self._post(shared_client(self), "/api/embeddings", payload, model)
+        data = self._post(self._client(), "/api/embeddings", payload, model)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         embedding = data.get("embedding") or []
@@ -337,7 +354,7 @@ class OllamaProvider:
 
     def health(self) -> ProviderHealth:
         try:
-            r = shared_client(self).get(f"{self.base_url}/api/tags", timeout=request_timeout(2.0))
+            r = self._client().get(f"{self.base_url}/api/tags", timeout=request_timeout(2.0))
             r.raise_for_status()
             return ProviderHealth(available=True, detail=f"{self.base_url} ok")
         except Exception as e:
@@ -345,7 +362,7 @@ class OllamaProvider:
 
     def models(self) -> list[SommModel]:
         try:
-            r = shared_client(self).get(f"{self.base_url}/api/tags", timeout=request_timeout(5.0))
+            r = self._client().get(f"{self.base_url}/api/tags", timeout=request_timeout(5.0))
             r.raise_for_status()
             data = r.json()
         except Exception:
