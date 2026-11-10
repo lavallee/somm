@@ -47,9 +47,17 @@ automatically substitute an installed model. If it is absent, install it with
 model using `SOMM_OLLAMA_MODEL`, `[tool.somm].ollama_model` in pyproject.toml,
 or the per-call `--model` / `model=` option. A 404 now includes this guidance.
 
-Claude CLI retains its existing agent/tool behavior by default, even though
-Somm exposes a single-shot generation interface. For untrusted text, explicitly
-disable built-in tools, MCP configuration, and setting sources:
+Claude CLI calls are lean by default: no built-in tools, MCP servers, or
+setting sources, no persisted session (`--no-session-persistence`, skipped on a
+CLI too old to know it), and a neutral working directory. A one-word prompt
+costs about 3.6k input tokens instead of about 34k. With no model given the
+provider runs `claude-haiku-5-5` (override with `SOMM_CLAUDE_CLI_MODEL` or
+`claude_cli_model`), not the CLI's own default; the row records the model that
+actually served. Configured `claude_cli_extra_args` / `SOMM_CLAUDE_CLI_ARGS`
+replace the lean flag set.
+
+`claude_cli_text_only` / `--claude-cli-text-only` is the same lean set, asserted
+explicitly for untrusted text:
 
 ```sh
 somm generate --provider claude-cli --claude-cli-text-only --json "Summarize this text"
@@ -64,11 +72,9 @@ result = llm.generate(
 )
 ```
 
-This passes `--tools '' --strict-mcp-config --setting-sources ''` as literal
-argv entries. It requires a Claude CLI provider pin and disabled fallback.
-Remove configured `claude_cli_extra_args` / `SOMM_CLAUDE_CLI_ARGS` first:
-combining arbitrary CLI arguments with this mode is rejected. This mode controls
-CLI tool access; it is not an operating-system sandbox.
+It requires a Claude CLI provider pin and disabled fallback, and is rejected
+when `claude_cli_extra_args` / `SOMM_CLAUDE_CLI_ARGS` are configured. This mode
+controls CLI tool access; it is not an operating-system sandbox.
 
 `somm generate` exits 0 only for an OK result, and nonzero for failed outcomes,
 including empty responses. JSON results retain `ok`, `outcome`, and

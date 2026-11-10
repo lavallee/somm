@@ -53,11 +53,10 @@ class Config:
     anthropic_model: str = "claude-haiku-5-5"
     anthropic_auto_cache: bool = True  # top-level cache_control on every Anthropic request
     # CLI-seat executors. `claude_cli_model` pins the model the seat runs;
-    # None leaves the CLI's own default. `claude_cli_extra_args` are appended
-    # to every invocation — the generator-only flag set that strips the
-    # per-process tool/plugin preamble belongs here rather than in code, so a
-    # project can tune it without a release.
-    claude_cli_model: str | None = None
+    # the default is the inexpensive haiku, never the CLI's own (Opus) default.
+    # `claude_cli_extra_args`, when set, replace the provider's built-in lean
+    # flag set (no tools / MCP / settings sources) so a project can tune it.
+    claude_cli_model: str | None = "claude-haiku-5-5"
     claude_cli_extra_args: list[str] | None = None
     # Explicit paths to the seat binaries (SOMM_CLAUDE_BIN / SOMM_CODEX_BIN).
     # None means: look on PATH, then in the well-known user bin dirs. Set it

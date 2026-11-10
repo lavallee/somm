@@ -791,7 +791,9 @@ is on PATH, but never join the default routing order — reach them via
 works even when it is not in your chain, which is the point: you pin a
 seat precisely to move a workload off the metered path.
 
-Pin the seat's model and flags per project:
+The seat runs `claude-haiku-5-5` unless you pin another model, and calls are
+lean by default (no tools, MCP servers, settings sources or saved session).
+Pin the seat's model and flags per project (extra args replace the lean flags):
 
 ```toml
 [tool.somm]

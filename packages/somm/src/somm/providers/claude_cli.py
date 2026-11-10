@@ -7,9 +7,11 @@ telemetry: `claude -p --output-format json` reports the model actually used, tok
 and latency, which this adapter maps onto SommResponse.
 
 Single-shot API: no tool-calling interface, multi-turn messages, or native streaming.
-The CLI can still use its own tools by default. Opt into claude_cli_text_only
-to disable tools, MCP configuration, and setting sources. A neutral temporary
-cwd avoids inheriting the calling project's CLAUDE.md.
+Calls are lean by default: no tools, no MCP servers, no settings sources, no
+persisted session, and a neutral temporary cwd (no CLAUDE.md), so a one-word
+prompt costs ~3.6k input tokens instead of ~34k. Configured extra_args replace
+the lean flag set (the caller then owns it). With no model given the provider
+uses DEFAULT_MODEL rather than the CLI's own (most expensive) default.
 """
 
 from __future__ import annotations
@@ -33,6 +35,10 @@ from somm.providers.base import (
     SommResponse,
 )
 
+DEFAULT_MODEL = "claude-haiku-5-5"  # same inexpensive default as the anthropic provider
+_LEAN_ARGS = ["--tools", "", "--strict-mcp-config", "--setting-sources", ""]
+_NO_PERSIST = "--no-session-persistence"  # absent from old CLIs; see generate()
+
 
 class ClaudeCLIProvider:
     name = "claude-cli"
@@ -40,19 +46,19 @@ class ClaudeCLIProvider:
     def __init__(
         self,
         binary: str = "claude",
-        default_model: str | None = None,   # None → the CLI's own default model
+        default_model: str | None = None,   # None → DEFAULT_MODEL, never the CLI's own
         timeout: float = 600.0,
         extra_args: list[str] | None = None,
     ) -> None:
         self.binary = binary
-        self.default_model = default_model
+        self.default_model = default_model or DEFAULT_MODEL
         self.timeout = timeout
         # Extra CLI flags appended to every invocation. A generator-only caller can pass
         # ["--tools", "", "--strict-mcp-config", "--disable-slash-commands",
         #  "--setting-sources", "project", "--no-session-persistence"] to drop the
         # ~28k-token tool/plugin/skill preamble the CLI otherwise loads per process
         # (measured 37k -> 9k prompt tokens on a one-word prompt, 2026-09-02).
-        # Default [] keeps the historical behaviour for existing callers.
+        # When set they replace the built-in lean flags.
         self.extra_args = list(extra_args or [])
 
     def _prompt_text(self, request: SommRequest) -> str:
@@ -68,18 +74,16 @@ class ClaudeCLIProvider:
 
     def generate(self, request: SommRequest) -> SommResponse:
         model = request.model or self.default_model
-        cmd = [self.binary, "-p", "--output-format", "json"]
-        if model:
-            cmd += ["--model", model]
+        cmd = [self.binary, "-p", "--output-format", "json", "--model", model]
         if request.claude_cli_text_only:
             if self.extra_args:
                 raise SommBadRequest(
                     "claude_cli_text_only cannot be combined with claude_cli_extra_args "
                     "(including SOMM_CLAUDE_CLI_ARGS); remove the extra arguments"
                 )
-            cmd += ["--tools", "", "--strict-mcp-config", "--setting-sources", ""]
+            cmd += _LEAN_ARGS
         else:
-            cmd += self.extra_args
+            cmd += self.extra_args or _LEAN_ARGS
         # This provider exists to spend the SUBSCRIPTION seat. An ambient
         # ANTHROPIC_API_KEY (set for the API provider) silently takes auth
         # precedence inside the CLI and bills — or fails on — the API
@@ -89,13 +93,20 @@ class ClaudeCLIProvider:
             for k, v in os.environ.items()
             if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY")
         }
+        prompt = self._prompt_text(request)
         t0 = time.monotonic()
         try:
             with tempfile.TemporaryDirectory(prefix="somm-claude-cli-") as cwd:
-                proc = subprocess.run(
-                    cmd, input=self._prompt_text(request), capture_output=True, text=True,
-                    timeout=self.timeout, cwd=cwd, env=env,
-                )
+                def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+                    return subprocess.run(
+                        argv, input=prompt, capture_output=True, text=True,
+                        timeout=self.timeout, cwd=cwd, env=env,
+                    )
+
+                # A provider call is a one-shot: leave no session transcript behind.
+                proc = run(cmd + [_NO_PERSIST])
+                if proc.returncode != 0 and f"unknown option '{_NO_PERSIST}'" in (proc.stderr or ""):
+                    proc = run(cmd)  # CLI too old to know the flag
         except subprocess.TimeoutExpired as e:
             raise SommTimeout(f"claude -p timed out after {self.timeout:.0f}s") from e
         latency_ms = int((time.monotonic() - t0) * 1000)
