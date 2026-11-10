@@ -214,11 +214,15 @@ with cross-project decision memory.
   for call in result.tool_calls: ...       # result.stop_reason == "tool_use"
   ```
 
-- `llm.stream(prompt, workload=...)` for streamed responses. An unpinned
-  stream falls back until its first visible chunk; a failure after that
+- `llm.stream(prompt, workload=...)` for streamed responses (`<think>`
+  blocks stripped). It is `generate`'s call path — same policy, pins,
+  boundary, budget and arguments (`messages=`, `tools=`, …). An attempt
+  falls back until its first chunk; a failure after that is recorded and
   raises, so callers that need an answer on a mid-stream failure must retry
-  the whole stream themselves.
-  (`<think>` blocks stripped).
+  the whole stream themselves. `events=True` yields `somm.events`
+  (`StreamStart`, `TextDelta`, `ToolCallDelta`, `ReasoningDelta`, and a final
+  `StreamDone` with the recorded result and real usage when the provider
+  reports it).
 - `llm.embed(text, workload=...)` for embeddings (telemetry row like
   any call).
 - **Structured output** is `llm.generate_structured(...)` (rule 5).
@@ -261,6 +265,26 @@ with cross-project decision memory.
   ```python
   result = llm.generate(prompt=..., workload="triage", reasoning_effort="low")
   ```
+
+- **Decisions (classification-shaped work)** — when the answer is a yes/no,
+  one of a fixed set of labels, or a level on a scale, use `llm.decide`
+  instead of prompting an LLM and parsing its text. It calls a decision
+  model (TypeSafe System One, key in `TYPESAFE_API_KEY`) and returns a label
+  with a probability, recorded and priced on the ledger like any call. Do
+  not call the decision API directly: a direct call has no cost row, no
+  boundary or budget gate, and no calibration.
+
+  ```python
+  r = llm.decide(ticket, ask="Is this about billing?", workload="ticket_billing")
+  r = llm.decide(ticket, ask="Which team owns this?", labels=["billing", "auth", "other"],
+                 workload="ticket_route", min_p=0.8)
+  if r.abstained:  # not sure enough: escalate, same workload
+      value, _ = llm.generate_structured(ticket, schema=Route, workload="ticket_route",
+                                         parent_call_id=r.call_id)
+  r.verdict("auth")  # when you learn the right label; feeds calibration
+  ```
+
+  See `docs/decisions.md`.
 
 ### 8. Turn the intelligence loop on
 

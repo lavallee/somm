@@ -26,6 +26,12 @@ from somm.errors import (
     SommTransientError,
     classify_http_status,
 )
+from somm.providers._http import (
+    SharedClient,
+    close_shared_client,
+    request_timeout,
+    shared_client,
+)
 from somm.providers.base import (
     ProviderHealth,
     SommChunk,
@@ -33,6 +39,7 @@ from somm.providers.base import (
     SommRequest,
     SommResponse,
     ToolCall,
+    ToolCallDelta,
 )
 
 DEFAULT_ANTHROPIC_MODELS = [
@@ -86,6 +93,11 @@ class AnthropicProvider:
         # is read at 0.025–0.1x. Prefixes under the model's minimum are simply
         # not cached, so the flag costs nothing on short prompts.
         self.auto_cache = auto_cache
+        self._http = SharedClient()
+
+    def close(self) -> None:
+        """Close the pooled HTTP connections; the next call opens new ones."""
+        close_shared_client(self)
 
     # ------------------------------------------------------------------
 
@@ -147,12 +159,12 @@ class AnthropicProvider:
         model = request.model or self.default_model
         t0 = time.monotonic()
         try:
-            with httpx.Client(timeout=request.timeout or self.timeout) as client:
-                resp = client.post(
-                    self.API_URL,
-                    headers=self._headers(),
-                    json=self._build_payload(request, model),
-                )
+            resp = shared_client(self).post(
+                self.API_URL,
+                headers=self._headers(),
+                json=self._build_payload(request, model),
+                timeout=request_timeout(request.timeout or self.timeout),
+            )
         except httpx.TimeoutException as e:
             raise SommTimeout(f"anthropic timeout on {model}: {e}", cooldown_s=60.0) from e
         except httpx.RequestError as e:
@@ -218,15 +230,136 @@ class AnthropicProvider:
             resp.text,
             provider=self.name,
             model=model,
-            headers=resp.headers,
+            headers=getattr(resp, "headers", None),
             overloaded_statuses=(529,),
         )
 
     # ------------------------------------------------------------------
 
-    def stream(self, request: SommRequest) -> Iterator[SommChunk]:  # pragma: no cover
-        resp = self.generate(request)
-        yield SommChunk(text=resp.text, done=True, model=resp.model)
+    def stream(self, request: SommRequest) -> Iterator[SommChunk]:
+        """Messages API streaming (server-sent events).
+
+        Yields text, thinking and tool-input deltas as they arrive. The final
+        chunk carries the answer assembled as :meth:`generate` would return
+        it: content blocks (signed thinking included) in ``raw``, tool calls,
+        stop reason and usage. A stream that ends before ``message_stop`` was
+        cut off and raises.
+        """
+        import json
+
+        model = request.model or self.default_model
+        payload = {**self._build_payload(request, model), "stream": True}
+        t0 = time.monotonic()
+        message: dict = {}
+        blocks: dict[int, dict] = {}
+        tool_index: dict[int, int] = {}
+        try:
+            with shared_client(self).stream(
+                "POST", self.API_URL, headers=self._headers(), json=payload,
+                timeout=request_timeout(request.timeout or self.timeout),
+            ) as resp:
+                if resp.status_code != 200:
+                    body = resp.read().decode("utf-8", errors="replace")
+                    self._classify_status(
+                        httpx.Response(resp.status_code, headers=resp.headers, text=body), model
+                    )
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        event = json.loads(line[len("data:") :].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    kind = event.get("type")
+                    if kind == "error":
+                        err = event.get("error") or {}
+                        status = 529 if err.get("type") == "overloaded_error" else 500
+                        self._classify_status(
+                            httpx.Response(status, text=json.dumps(event)), model
+                        )
+                    elif kind == "message_start":
+                        message = dict(event.get("message") or {})
+                    elif kind == "content_block_start":
+                        block = dict(event.get("content_block") or {})
+                        blocks[event.get("index", len(blocks))] = block
+                        if block.get("type") == "tool_use":
+                            ordinal = tool_index.setdefault(event.get("index", 0), len(tool_index))
+                            block["partial_json"] = ""
+                            yield SommChunk(text="", tool_calls=[ToolCallDelta(
+                                ordinal, id=str(block.get("id", "")), name=str(block.get("name", ""))
+                            )])
+                    elif kind == "content_block_delta":
+                        block = blocks.setdefault(event.get("index", 0), {"type": "text", "text": ""})
+                        delta = event.get("delta") or {}
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            block["text"] = block.get("text", "") + delta.get("text", "")
+                            yield SommChunk(text=delta.get("text", ""))
+                        elif dtype == "thinking_delta":
+                            block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+                            yield SommChunk(text="", reasoning=delta.get("thinking", ""))
+                        elif dtype == "signature_delta":
+                            block["signature"] = block.get("signature", "") + delta.get("signature", "")
+                            yield SommChunk(text="", reasoning_signature=delta.get("signature", ""))
+                        elif dtype == "input_json_delta":
+                            fragment = delta.get("partial_json", "")
+                            block["partial_json"] = block.get("partial_json", "") + fragment
+                            yield SommChunk(text="", tool_calls=[ToolCallDelta(
+                                tool_index.get(event.get("index", 0), 0), arguments=fragment
+                            )])
+                    elif kind == "message_delta":
+                        message.update(event.get("delta") or {})
+                        message["usage"] = {**(message.get("usage") or {}),
+                                            **(event.get("usage") or {})}
+                    elif kind == "message_stop":
+                        yield SommChunk(text="", done=True, model=message.get("model") or model,
+                                        response=self._streamed_response(message, blocks, model, t0))
+                        return
+        except httpx.TimeoutException as e:
+            raise SommTimeout(f"anthropic stream timeout on {model}: {e}", cooldown_s=60.0) from e
+        except httpx.RequestError as e:
+            raise SommTransientError(
+                f"anthropic stream network error on {model}: {e}", cooldown_s=30.0
+            ) from e
+        raise SommTransientError(
+            f"anthropic stream on {model} ended before message_stop", cooldown_s=15.0
+        )
+
+    def _streamed_response(self, message: dict, blocks: dict, model: str, t0: float) -> SommResponse:
+        import json
+
+        content = []
+        tool_calls: list[ToolCall] = []
+        for _, block in sorted(blocks.items()):
+            block = dict(block)
+            if block.get("type") == "tool_use":
+                raw_args = block.pop("partial_json", "")
+                try:
+                    block["input"] = json.loads(raw_args) if raw_args else {}
+                    arguments_raw = ""
+                except json.JSONDecodeError:
+                    block["input"], arguments_raw = {}, raw_args
+                tool_calls.append(ToolCall(
+                    id=str(block.get("id", "")), name=str(block.get("name", "")),
+                    arguments=block["input"] if isinstance(block["input"], dict) else {},
+                    arguments_raw=arguments_raw,
+                ))
+            content.append(block)
+        data = {**message, "content": content}
+        usage = data.get("usage") or {}
+        return SommResponse(
+            text=strip_think_block(
+                "".join(b.get("text", "") for b in content if b.get("type") == "text")
+            ),
+            model=data.get("model") or model,
+            tokens_in=anthropic_prompt_tokens(usage),
+            tokens_out=int(usage.get("output_tokens", 0) or 0),
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            raw=data,
+            tool_calls=tool_calls,
+            stop_reason=str(data.get("stop_reason") or ""),
+            reasoning_tokens=reasoning_tokens_from_usage(usage),
+        )
 
     def health(self) -> ProviderHealth:
         # Anthropic has no "list models" endpoint — a cheap probe is a

@@ -1,0 +1,1059 @@
+===== somm =====
+usage: somm [-h] [--version] [--project PROJECT]
+            {chatgpt,status,cache-advice,generate,bench,tail,compare,frontier,workload,boundary,prompt,eval,optimize,campaign,inbox,plugin,mcp,skill,doctor,loop,prune,ledgers,fleet,mirror,alias,serve,spend,climb,gpu,backfill-costs,plans,drain-spool} ...
+
+somm — self-hosted LLM telemetry
+
+positional arguments:
+  {chatgpt,status,cache-advice,generate,bench,tail,compare,frontier,workload,boundary,prompt,eval,optimize,campaign,inbox,plugin,mcp,skill,doctor,loop,prune,ledgers,fleet,mirror,alias,serve,spend,climb,gpu,backfill-costs,plans,drain-spool}
+    chatgpt             Somm-owned ChatGPT subscription connection
+    status              show call roll-up for the current project
+    cache-advice        find low prefix-cache reuse opportunities
+    generate            one-shot LLM call through somm
+    bench               run latency and throughput probes
+    tail                stream new calls as they land
+    compare             run a prompt through N models side-by-side
+    frontier            adequacy frontier per (provider, model) for one workload
+    workload            register and inspect project workloads
+    boundary            data boundary: route tiers, ledger audit, per-workload boundary
+    prompt              manage prompt versions, labels, and A/B variants
+    eval                promote datasets and run eval gates
+    optimize            propose a prompt fork from failing graded calls
+    campaign            run durable experiment campaigns
+    inbox               list, show, apply, and dismiss recommendations
+    plugin              list and inspect plugins, hooks, and providers
+    mcp                 register the somm MCP server with coding agents
+    skill               link the somm skill into coding agents' skill directories
+    doctor              check config + ollama + db + intel + workers + cooldowns
+    loop                run or schedule the intelligence loop (intel refresh, shadow grading,
+                        recommendations)
+    prune               delete calls (and their samples/updates/evals) older than a retention
+                        window
+    ledgers             every ledger on this machine: who writes it, its size, and the mirror gap
+    fleet               per-project fleet health across registered ledgers
+    mirror              the cross-project mirror (~/.somm/global.sqlite)
+    alias               canonical model identities (list, seed, set)
+    serve               run the web admin + HTTP API (localhost:7878)
+    spend               today's LLM spend vs daily budget cap per workload
+    climb               what a workload answers before any model (reads chipsocket receipts)
+    gpu                 rented-GPU spend read from gipper receipts (read-only)
+    backfill-costs      recompute cost_usd for $0 calls that now have pricing intel
+    plans               metered-plan quota usage + pacing (PAYG vs metered, fleet-wide)
+    drain-spool         replay spooled JSONL telemetry (written during DB outages) into the DB
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit
+  --project PROJECT     project name; also accepted after any command (default: $SOMM_PROJECT,
+                        else this directory's project)
+
+exit codes:
+  0   success
+  1   the command ran and the outcome was a failure: a failed call, a bench or
+      compare with no successful call, a failing eval or campaign gate, a data-boundary
+      violation, an unhealthy `doctor`, a loop worker error, or a missing prerequisite
+      (ledger, receipts directory, harness)
+  2   bad usage, or something you named does not exist (workload, prompt version,
+      recommendation, project)
+  With --json, an unhandled error is printed to stderr as {"ok": false, "error": {...}}
+  and exits 2 (bad value), 66 (file not found), 77 (permission denied) or 1.
+  Details: docs/cli.md
+
+===== somm chatgpt =====
+usage: somm chatgpt [-h] {login,status,models,quota} ...
+
+positional arguments:
+  {login,status,models,quota}
+
+options:
+  -h, --help            show this help message and exit
+
+===== somm chatgpt login =====
+usage: somm chatgpt login [-h] [--port PORT] [--no-browser]
+
+options:
+  -h, --help    show this help message and exit
+  --port PORT
+  --no-browser
+
+===== somm chatgpt status =====
+usage: somm chatgpt status [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+===== somm chatgpt models =====
+usage: somm chatgpt models [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+===== somm chatgpt quota =====
+usage: somm chatgpt quota [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+===== somm status =====
+usage: somm status [-h] [--project PROJECT] [--since SINCE] [--json] [--global]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --since SINCE      window in days (default 7)
+  --json             emit stable JSON
+  --global           read from ~/.somm/global.sqlite (requires SOMM_CROSS_PROJECT)
+
+===== somm cache-advice =====
+usage: somm cache-advice [-h] [--project PROJECT] [--since SINCE] [--min-tokens-in MIN_TOKENS_IN]
+                         [--max-cache-read-ratio MAX_CACHE_READ_RATIO] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --since SINCE         window in days (default 7)
+  --min-tokens-in MIN_TOKENS_IN
+  --max-cache-read-ratio MAX_CACHE_READ_RATIO
+  --json                emit stable JSON
+
+===== somm generate =====
+usage: somm generate [-h] [--prompt-file PROMPT_FILE] [--image PATH_OR_URL] [--project PROJECT]
+                     [--workload WORKLOAD] [--system SYSTEM] [--provider PROVIDER] [--model MODEL]
+                     [--max-tokens MAX_TOKENS] [--temperature TEMPERATURE] [--json]
+                     [--claude-cli-text-only]
+                     [prompt]
+
+positional arguments:
+  prompt                prompt text, or '-' to read stdin
+
+options:
+  -h, --help            show this help message and exit
+  --prompt-file PROMPT_FILE
+                        read prompt text from a file
+  --image PATH_OR_URL   attach an image (file path or http(s) URL); repeatable. Routed only to
+                        providers that accept images.
+  --project PROJECT
+  --workload WORKLOAD
+  --system SYSTEM
+  --provider PROVIDER
+  --model MODEL
+  --max-tokens MAX_TOKENS
+  --temperature TEMPERATURE
+  --json                emit a machine-readable result
+  --claude-cli-text-only
+                        disable Claude CLI tools, MCP config, and settings; requires --provider
+                        claude-cli
+
+===== somm bench =====
+usage: somm bench [-h] [--project PROJECT] {latency,throughput} ...
+
+positional arguments:
+  {latency,throughput}
+    latency             run a latency benchmark
+    throughput          run a throughput benchmark
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+
+===== somm bench latency =====
+usage: somm bench latency [-h] [--prompt-file PROMPT_FILE] [--project PROJECT]
+                          [--workload WORKLOAD] [--provider PROVIDER] [--model MODEL]
+                          [--iterations ITERATIONS] [--warmup WARMUP] [--max-tokens MAX_TOKENS]
+                          [--temperature TEMPERATURE] [--allow-fallback] [--json]
+                          [prompt]
+
+positional arguments:
+  prompt                prompt text, or '-' to read stdin
+
+options:
+  -h, --help            show this help message and exit
+  --prompt-file PROMPT_FILE
+                        read prompt text from a file
+  --project PROJECT
+  --workload WORKLOAD
+  --provider PROVIDER
+  --model MODEL
+  --iterations ITERATIONS
+  --warmup WARMUP
+  --max-tokens MAX_TOKENS
+  --temperature TEMPERATURE
+  --allow-fallback      let a failed --provider/--model pin be rescued by the router chain (off by
+                        default: a benchmark that silently changes model measures nothing)
+  --json                emit a machine-readable result
+
+===== somm bench throughput =====
+usage: somm bench throughput [-h] [--prompt-file PROMPT_FILE] [--project PROJECT]
+                             [--workload WORKLOAD] [--provider PROVIDER] [--model MODEL]
+                             [--iterations ITERATIONS] [--warmup WARMUP] [--max-tokens MAX_TOKENS]
+                             [--temperature TEMPERATURE] [--allow-fallback] [--json]
+                             [prompt]
+
+positional arguments:
+  prompt                prompt text, or '-' to read stdin
+
+options:
+  -h, --help            show this help message and exit
+  --prompt-file PROMPT_FILE
+                        read prompt text from a file
+  --project PROJECT
+  --workload WORKLOAD
+  --provider PROVIDER
+  --model MODEL
+  --iterations ITERATIONS
+  --warmup WARMUP
+  --max-tokens MAX_TOKENS
+  --temperature TEMPERATURE
+  --allow-fallback      let a failed --provider/--model pin be rescued by the router chain (off by
+                        default: a benchmark that silently changes model measures nothing)
+  --json                emit a machine-readable result
+
+===== somm tail =====
+usage: somm tail [-h] [--project PROJECT] [--workload WORKLOAD] [--since-minutes SINCE_MINUTES]
+                 [--poll-interval POLL_INTERVAL]
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --workload WORKLOAD   filter to a single workload
+  --since-minutes SINCE_MINUTES
+                        start from N minutes ago (default: now)
+  --poll-interval POLL_INTERVAL
+
+===== somm compare =====
+usage: somm compare [-h] --models MODELS [--project PROJECT] [--workload WORKLOAD]
+                    [--max-tokens MAX_TOKENS] [--temperature TEMPERATURE] [--truncate TRUNCATE]
+                    [--json]
+                    prompt
+
+positional arguments:
+  prompt                the prompt text
+
+options:
+  -h, --help            show this help message and exit
+  --models MODELS       provider/model (repeatable or comma-separated)
+  --project PROJECT
+  --workload WORKLOAD
+  --max-tokens MAX_TOKENS
+  --temperature TEMPERATURE
+  --truncate TRUNCATE   truncate response text at N chars (0 = no truncate)
+  --json                emit JSON instead of the table
+
+===== somm frontier =====
+usage: somm frontier [-h] --workload WORKLOAD [--project PROJECT] [--since SINCE] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --workload WORKLOAD  workload name to inspect
+  --project PROJECT
+  --since SINCE        window in days (default 30)
+  --json               emit JSON instead of the table
+
+===== somm workload =====
+usage: somm workload [-h] [--project PROJECT] {add,create,list,show,set-constraints} ...
+
+positional arguments:
+  {add,create,list,show,set-constraints}
+    add (create)        register a workload in the project DB
+    list                list registered workloads
+    show                show one registered workload
+    set-constraints     update workload adequacy constraints
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+
+===== somm workload add =====
+usage: somm workload add [-h] [--project PROJECT] [--description DESCRIPTION]
+                         [--privacy-class {public,internal,private}]
+                         [--from-example {freeform,structured-extraction}]
+                         [--max-p95-latency-ms MAX_P95_LATENCY_MS]
+                         [--max-p95-ttft-ms MAX_P95_TTFT_MS] [--max-tpot-ms MAX_TPOT_MS]
+                         [--max-capability-failure-rate MAX_CAPABILITY_FAILURE_RATE]
+                         [--max-cost-per-call-usd MAX_COST_PER_CALL_USD]
+                         [--data-boundary {local,zdr,subscribed,unvetted}]
+                         name
+
+positional arguments:
+  name                  workload name
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --description DESCRIPTION
+  --privacy-class {public,internal,private}
+  --from-example {freeform,structured-extraction}
+                        built-in workload template (default: freeform)
+  --max-p95-latency-ms MAX_P95_LATENCY_MS
+  --max-p95-ttft-ms MAX_P95_TTFT_MS
+  --max-tpot-ms MAX_TPOT_MS
+  --max-capability-failure-rate MAX_CAPABILITY_FAILURE_RATE
+  --max-cost-per-call-usd MAX_COST_PER_CALL_USD
+  --data-boundary {local,zdr,subscribed,unvetted}
+                        loosest route tier this workload's data may reach (default: derive)
+
+===== somm workload list =====
+usage: somm workload list [-h] [--project PROJECT] [--json]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --json             emit JSON instead of the table
+
+===== somm workload show =====
+usage: somm workload show [-h] [--project PROJECT] name
+
+positional arguments:
+  name               workload name
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+
+===== somm workload set-constraints =====
+usage: somm workload set-constraints [-h] [--project PROJECT]
+                                     [--max-p95-latency-ms MAX_P95_LATENCY_MS]
+                                     [--max-p95-ttft-ms MAX_P95_TTFT_MS]
+                                     [--max-tpot-ms MAX_TPOT_MS]
+                                     [--max-capability-failure-rate MAX_CAPABILITY_FAILURE_RATE]
+                                     [--max-cost-per-call-usd MAX_COST_PER_CALL_USD] [--clear]
+                                     name
+
+positional arguments:
+  name                  workload name
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --max-p95-latency-ms MAX_P95_LATENCY_MS
+  --max-p95-ttft-ms MAX_P95_TTFT_MS
+  --max-tpot-ms MAX_TPOT_MS
+  --max-capability-failure-rate MAX_CAPABILITY_FAILURE_RATE
+  --max-cost-per-call-usd MAX_COST_PER_CALL_USD
+  --clear               clear all workload constraints
+
+===== somm boundary =====
+usage: somm boundary [-h] [--project PROJECT] {routes,audit,set} ...
+
+positional arguments:
+  {routes,audit,set}
+    routes            every configured route with its tier and basis
+    audit             per workload: declared boundary vs the worst tier that served it
+    set               set a workload's data boundary
+
+options:
+  -h, --help          show this help message and exit
+  --project PROJECT
+
+===== somm boundary routes =====
+usage: somm boundary routes [-h] [--project PROJECT] [--json] [route]
+
+positional arguments:
+  route              openrouter/<model-id>: each upstream endpoint, judged from live ZDR evidence
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --json
+
+===== somm boundary audit =====
+usage: somm boundary audit [-h] [--project PROJECT] [--since SINCE] [--json] [-v]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --since SINCE      window, e.g. 30d, 12h (default 30d)
+  --json
+  -v, --verbose      list routes per workload
+
+===== somm boundary set =====
+usage: somm boundary set [-h] [--project PROJECT] workload {local,zdr,subscribed,unvetted,none}
+
+positional arguments:
+  workload
+  {local,zdr,subscribed,unvetted,none}
+                        tier, or none to derive
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+
+===== somm prompt =====
+usage: somm prompt [-h] [--project PROJECT] {list,show,register,fork,diff,label,promote,score} ...
+
+positional arguments:
+  {list,show,register,fork,diff,label,promote,score}
+    list                list prompt versions for a workload
+    show                show a prompt version or label
+    register            register a new prompt version
+    fork                fork a prompt from a version or label
+    diff                diff two prompt versions or labels
+    label               move a label to a version or weights
+    promote             promote a version to a label
+    score               show per-version eval rollups
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+
+===== somm prompt list =====
+usage: somm prompt list [-h] --workload WORKLOAD [--json] [--project PROJECT]
+
+options:
+  -h, --help           show this help message and exit
+  --workload WORKLOAD
+  --json               emit JSON instead of the table
+  --project PROJECT
+
+===== somm prompt show =====
+usage: somm prompt show [-h] --workload WORKLOAD [--project PROJECT] [--version VERSION |
+                        --label LABEL] [--full]
+
+options:
+  -h, --help           show this help message and exit
+  --workload WORKLOAD
+  --project PROJECT
+  --version VERSION
+  --label LABEL
+  --full
+
+===== somm prompt register =====
+usage: somm prompt register [-h] --workload WORKLOAD [--project PROJECT] (--body-file BODY_FILE |
+                            --body BODY) [--bump {minor,major}]
+
+options:
+  -h, --help            show this help message and exit
+  --workload WORKLOAD
+  --project PROJECT
+  --body-file BODY_FILE
+  --body BODY
+  --bump {minor,major}
+
+===== somm prompt fork =====
+usage: somm prompt fork [-h] --workload WORKLOAD [--project PROJECT] --from FROM_REF
+                        --body-file BODY_FILE
+
+options:
+  -h, --help            show this help message and exit
+  --workload WORKLOAD
+  --project PROJECT
+  --from FROM_REF
+  --body-file BODY_FILE
+
+===== somm prompt diff =====
+usage: somm prompt diff [-h] --workload WORKLOAD [--project PROJECT] a b
+
+positional arguments:
+  a
+  b
+
+options:
+  -h, --help           show this help message and exit
+  --workload WORKLOAD
+  --project PROJECT
+
+===== somm prompt label =====
+usage: somm prompt label [-h] --workload WORKLOAD [--project PROJECT] --label LABEL
+                         (--version VERSION | --weights WEIGHTS)
+
+options:
+  -h, --help           show this help message and exit
+  --workload WORKLOAD
+  --project PROJECT
+  --label LABEL
+  --version VERSION
+  --weights WEIGHTS
+
+===== somm prompt promote =====
+usage: somm prompt promote [-h] --workload WORKLOAD [--project PROJECT] --version VERSION --to TO
+                           [--min-graded MIN_GRADED] [--min-score MIN_SCORE] [--force]
+
+options:
+  -h, --help            show this help message and exit
+  --workload WORKLOAD
+  --project PROJECT
+  --version VERSION
+  --to TO
+  --min-graded MIN_GRADED
+  --min-score MIN_SCORE
+  --force
+
+===== somm prompt score =====
+usage: somm prompt score [-h] --workload WORKLOAD [--project PROJECT] [--version VERSION |
+                         --label LABEL]
+
+options:
+  -h, --help           show this help message and exit
+  --workload WORKLOAD
+  --project PROJECT
+  --version VERSION
+  --label LABEL
+
+===== somm eval =====
+usage: somm eval [-h] [--project PROJECT] {promote-call,import,run} ...
+
+positional arguments:
+  {promote-call,import,run}
+    promote-call        copy a sampled call into a durable eval dataset
+    import              import reviewed JSONL prompt/expected-response pairs
+    run                 run a workload against a durable eval dataset
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+
+===== somm eval promote-call =====
+usage: somm eval promote-call [-h] [--project PROJECT] --dataset DATASET
+                              [--description DESCRIPTION]
+                              call_id
+
+positional arguments:
+  call_id
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --dataset DATASET
+  --description DESCRIPTION
+
+===== somm eval import =====
+usage: somm eval import [-h] --workload WORKLOAD --dataset DATASET --file FILE [--project PROJECT]
+                        [--description DESCRIPTION] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --workload WORKLOAD
+  --dataset DATASET
+  --file FILE
+  --project PROJECT
+  --description DESCRIPTION
+  --json
+
+===== somm eval run =====
+usage: somm eval run [-h] --workload WORKLOAD --dataset DATASET [--project PROJECT]
+                     [--threshold THRESHOLD] [--max-tokens MAX_TOKENS] [--temperature TEMPERATURE]
+                     [--provider PROVIDER] [--model MODEL]
+                     [--reasoning-effort {none,minimal,low,medium,high,xhigh,max}]
+                     [--implementation IMPLEMENTATION] [--judge-config JUDGE_CONFIG] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --workload WORKLOAD
+  --dataset DATASET
+  --project PROJECT
+  --threshold THRESHOLD
+  --max-tokens MAX_TOKENS
+  --temperature TEMPERATURE
+  --provider PROVIDER
+  --model MODEL
+  --reasoning-effort {none,minimal,low,medium,high,xhigh,max}
+                        reasoning budget for models that dial it per request; sweeping this across
+                        runs is how a model gets evaluated rather than assumed
+  --implementation IMPLEMENTATION
+                        explicit implementation coordinate, normally a Git commit SHA
+  --judge-config JUDGE_CONFIG
+                        JSON binary-rubric criteria and explicit judge panel
+  --json
+
+===== somm optimize =====
+usage: somm optimize [-h] --workload WORKLOAD [--project PROJECT] [--from FROM_REF]
+                     [--threshold THRESHOLD] [--limit LIMIT] [--label LABEL]
+                     [--max-tokens MAX_TOKENS] [--temperature TEMPERATURE] [--provider PROVIDER]
+                     [--model MODEL]
+
+options:
+  -h, --help            show this help message and exit
+  --workload WORKLOAD
+  --project PROJECT
+  --from FROM_REF
+  --threshold THRESHOLD
+  --limit LIMIT
+  --label LABEL
+  --max-tokens MAX_TOKENS
+  --temperature TEMPERATURE
+  --provider PROVIDER
+  --model MODEL
+
+===== somm campaign =====
+usage: somm campaign [-h] [--project PROJECT] {run} ...
+
+positional arguments:
+  {run}
+    run              run repeated eval rounds with keep/revert logging
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+
+===== somm campaign run =====
+usage: somm campaign run [-h] --workload WORKLOAD --dataset DATASET [--project PROJECT]
+                         [--name NAME] [--metric {mean_score,pass_rate,error_rate}]
+                         [--direction {gte,lte}] [--threshold THRESHOLD]
+                         [--eval-threshold EVAL_THRESHOLD] [--max-rounds MAX_ROUNDS]
+                         [--token-budget TOKEN_BUDGET] [--plateau-window PLATEAU_WINDOW]
+                         [--min-delta MIN_DELTA] [--max-tokens MAX_TOKENS]
+                         [--temperature TEMPERATURE] [--provider PROVIDER] [--model MODEL]
+                         [--log LOG] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --workload WORKLOAD
+  --dataset DATASET
+  --project PROJECT
+  --name NAME
+  --metric {mean_score,pass_rate,error_rate}
+  --direction {gte,lte}
+  --threshold THRESHOLD
+  --eval-threshold EVAL_THRESHOLD
+  --max-rounds MAX_ROUNDS
+  --token-budget TOKEN_BUDGET
+  --plateau-window PLATEAU_WINDOW
+  --min-delta MIN_DELTA
+  --max-tokens MAX_TOKENS
+  --temperature TEMPERATURE
+  --provider PROVIDER
+  --model MODEL
+  --log LOG
+  --json
+
+===== somm inbox =====
+usage: somm inbox [-h] [--project PROJECT] [--workload WORKLOAD] [--all] [--json]
+                  {list,apply,dismiss,show} ...
+
+positional arguments:
+  {list,apply,dismiss,show}
+    list                list recommendations
+    apply               apply a recommendation
+    dismiss             dismiss one or more recommendations
+    show                print one recommendation with its evidence
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --workload WORKLOAD
+  --all
+  --json
+
+===== somm inbox list =====
+usage: somm inbox list [-h] [--project PROJECT] [--workload WORKLOAD] [--all] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --project PROJECT
+  --workload WORKLOAD
+  --all
+  --json
+
+===== somm inbox apply =====
+usage: somm inbox apply [-h] [--project PROJECT] [--json] recommendation_id
+
+positional arguments:
+  recommendation_id
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --json
+
+===== somm inbox dismiss =====
+usage: somm inbox dismiss [-h] [--project PROJECT] [--json]
+                          recommendation_id [recommendation_id ...]
+
+positional arguments:
+  recommendation_id
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --json
+
+===== somm inbox show =====
+usage: somm inbox show [-h] [--project PROJECT] [--json] recommendation_id
+
+positional arguments:
+  recommendation_id
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --json
+
+===== somm plugin =====
+usage: somm plugin [-h] {list,info} ...
+
+positional arguments:
+  {list,info}
+    list       list reference plugins, active hooks, and providers
+    info       show one reference plugin
+
+options:
+  -h, --help   show this help message and exit
+
+===== somm plugin list =====
+usage: somm plugin list [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+===== somm plugin info =====
+usage: somm plugin info [-h] name
+
+positional arguments:
+  name        reference plugin name
+
+options:
+  -h, --help  show this help message and exit
+
+===== somm mcp =====
+usage: somm mcp [-h] {install,uninstall,status} ...
+
+positional arguments:
+  {install,uninstall,status}
+    install             install the somm MCP server
+    uninstall           remove the somm MCP server
+    status              show whether the somm MCP server is set up
+
+options:
+  -h, --help            show this help message and exit
+
+===== somm mcp install =====
+usage: somm mcp install [-h] [--harness {claude,codex}] [--print] [--scope {user,project}]
+
+options:
+  -h, --help            show this help message and exit
+  --harness {claude,codex}
+                        default: every supported harness found on PATH
+  --print               show what would be done; change nothing
+  --scope {user,project}
+                        claude only (codex is user-level); default: user
+
+===== somm mcp uninstall =====
+usage: somm mcp uninstall [-h] [--harness {claude,codex}] [--print] [--scope {user,project}]
+
+options:
+  -h, --help            show this help message and exit
+  --harness {claude,codex}
+                        default: every supported harness found on PATH
+  --print               show what would be done; change nothing
+  --scope {user,project}
+                        claude only (codex is user-level); default: user
+
+===== somm mcp status =====
+usage: somm mcp status [-h] [--harness {claude,codex}]
+
+options:
+  -h, --help            show this help message and exit
+  --harness {claude,codex}
+                        default: every supported harness found on PATH
+
+===== somm skill =====
+usage: somm skill [-h] {install,uninstall,status} ...
+
+positional arguments:
+  {install,uninstall,status}
+    install             install the somm skill
+    uninstall           remove the somm skill
+    status              show whether the somm skill is set up
+
+options:
+  -h, --help            show this help message and exit
+
+===== somm skill install =====
+usage: somm skill install [-h] [--harness {claude,codex}] [--print]
+
+options:
+  -h, --help            show this help message and exit
+  --harness {claude,codex}
+                        default: every supported harness found on PATH
+  --print               show what would be done; change nothing
+
+===== somm skill uninstall =====
+usage: somm skill uninstall [-h] [--harness {claude,codex}] [--print]
+
+options:
+  -h, --help            show this help message and exit
+  --harness {claude,codex}
+                        default: every supported harness found on PATH
+  --print               show what would be done; change nothing
+
+===== somm skill status =====
+usage: somm skill status [-h] [--harness {claude,codex}]
+
+options:
+  -h, --help            show this help message and exit
+  --harness {claude,codex}
+                        default: every supported harness found on PATH
+
+===== somm doctor =====
+usage: somm doctor [-h] [--project PROJECT] [--max-exhausted-rate FRACTION] [--global]
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --max-exhausted-rate FRACTION
+                        regression gate: exit nonzero when the trailing-24h SommProvidersExhausted
+                        rate exceeds FRACTION (e.g. 0.30). The rate is always printed; this flag
+                        only affects the exit code — suitable for a cron/timer health check.
+  --global              check ~/.somm/global.sqlite (every mirroring project) instead of this
+                        project
+
+===== somm loop =====
+usage: somm loop [-h] [--project PROJECT] {run,install,uninstall,status} ...
+
+positional arguments:
+  {run,install,uninstall,status}
+    run                 one pass: run the workers that are due, then exit
+    install             write a systemd user timer that runs `somm loop run`
+    uninstall           disable the timer for this project
+    status              timer state and worker heartbeats
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+
+===== somm loop run =====
+usage: somm loop run [-h] [--project PROJECT] [--force] [--only {model_intel,shadow_eval,agent}]
+                     [--all-projects] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --force               run every worker regardless of staleness
+  --only {model_intel,shadow_eval,agent}
+                        restrict to one worker (repeatable)
+  --all-projects        every registered project ledger, not just this one
+  --json
+
+===== somm loop install =====
+usage: somm loop install [-h] [--project PROJECT] [--every EVERY] [--no-enable]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --every EVERY      timer cadence (systemd span, default 15min)
+  --no-enable        write units without enabling
+
+===== somm loop uninstall =====
+usage: somm loop uninstall [-h] [--project PROJECT]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+
+===== somm loop status =====
+usage: somm loop status [-h] [--project PROJECT] [--json]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --json
+
+===== somm prune =====
+usage: somm prune [-h] [--project PROJECT] --older-than DAYS [--dry-run] [--vacuum] [--global]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --older-than DAYS  retention window in days
+  --dry-run          report counts without deleting
+  --vacuum           reclaim file space afterwards
+  --global           prune ~/.somm/global.sqlite instead of this project's ledger
+
+===== somm ledgers =====
+usage: somm ledgers [-h] [--scan DIR] [--json] {forget,adopt} ...
+
+positional arguments:
+  {forget,adopt}
+    forget        remove a registration (never deletes a file)
+    adopt         register an existing ledger
+
+options:
+  -h, --help      show this help message and exit
+  --scan DIR      also list calls.sqlite files under DIR that are not registered
+  --json
+
+===== somm ledgers forget =====
+usage: somm ledgers forget [-h] [--path PATH] [--dry-run] PROJECT
+
+positional arguments:
+  PROJECT
+
+options:
+  -h, --help   show this help message and exit
+  --path PATH  forget only this one of its paths
+  --dry-run
+
+===== somm ledgers adopt =====
+usage: somm ledgers adopt [-h] [--project NAME] [--dry-run] PATH
+
+positional arguments:
+  PATH
+
+options:
+  -h, --help      show this help message and exit
+  --project NAME  register under this name (default: every project the file holds)
+  --dry-run
+
+===== somm fleet =====
+usage: somm fleet [-h] {status} ...
+
+positional arguments:
+  {status}
+    status    versions, schema skew, loop, unknown cost (as in doctor --global)
+
+options:
+  -h, --help  show this help message and exit
+
+===== somm fleet status =====
+usage: somm fleet status [-h] [--json]
+
+options:
+  -h, --help  show this help message and exit
+  --json
+
+===== somm mirror =====
+usage: somm mirror [-h] [--project PROJECT] {sync} ...
+
+positional arguments:
+  {sync}
+    sync             copy call rows a registered ledger has and the mirror lacks
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT  only this project's ledgers and rows
+
+===== somm mirror sync =====
+usage: somm mirror sync [-h] [--project PROJECT] [--dry-run] [--batch BATCH]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT  only this project's ledgers and rows
+  --dry-run          count, copy nothing
+  --batch BATCH      rows per transaction
+
+===== somm alias =====
+usage: somm alias [-h] [--project PROJECT] [--global] {list,seed,set} ...
+
+positional arguments:
+  {list,seed,set}
+    list             show alias rows
+    seed             derive aliases by rule from routes seen in the ledger
+    set              map one provider/model route to a canonical id
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --global           operate on ~/.somm/global.sqlite
+
+===== somm alias list =====
+usage: somm alias list [-h] [--json] [--project PROJECT] [--global]
+
+options:
+  -h, --help         show this help message and exit
+  --json
+  --project PROJECT
+  --global           operate on ~/.somm/global.sqlite
+
+===== somm alias seed =====
+usage: somm alias seed [-h] [--project PROJECT] [--global]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --global           operate on ~/.somm/global.sqlite
+
+===== somm alias set =====
+usage: somm alias set [-h] [--project PROJECT] [--global] provider model canonical
+
+positional arguments:
+  provider
+  model
+  canonical
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --global           operate on ~/.somm/global.sqlite
+
+===== somm serve =====
+usage: somm serve [-h] [--project PROJECT] [--host HOST] [--port PORT]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --host HOST
+  --port PORT
+
+===== somm spend =====
+usage: somm spend [-h] [--project PROJECT] [--json]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --json             emit a JSON array instead of the aligned table
+
+===== somm climb =====
+usage: somm climb [-h] [--workload WORKLOAD] [--since SINCE] [--project PROJECT] [--json] [path]
+
+positional arguments:
+  path                 receipts directory or file (default: $SOMM_CLIMB_RECEIPTS)
+
+options:
+  -h, --help           show this help message and exit
+  --workload WORKLOAD  only this socket id; also the exact somm workload name to join by
+  --since SINCE        window in days (default 30)
+  --project PROJECT
+  --json
+
+===== somm gpu =====
+usage: somm gpu [-h] [--project PROJECT] {spend} ...
+
+positional arguments:
+  {spend}
+    spend            GPU spend by day and workload; failed jobs; ledger match
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+
+===== somm gpu spend =====
+usage: somm gpu spend [-h] [--project PROJECT] [--since SINCE] [--path PATH] [--json]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --since SINCE      window in days (default 30)
+  --path PATH        receipts directory (default: $SOMM_GIPPER_RECEIPTS, else
+                     $GIPPER_DATA/receipts, else ~/.local/share/gipper/receipts)
+  --json
+
+===== somm backfill-costs =====
+usage: somm backfill-costs [-h] [--project PROJECT] [--since SINCE] [--dry-run]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT
+  --since SINCE      only calls from the last N days
+  --dry-run          report without writing
+
+===== somm plans =====
+usage: somm plans [-h] [--project PROJECT] [--project-only] [--json] [--catalog] [--learn]
+                  [--dry-run] [--min-events MIN_EVENTS]
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT
+  --project-only        count only this project's usage (default: whole fleet — quotas are shared)
+  --json
+  --catalog             list known plans from the bundled catalog (with sources + verified dates)
+  --learn               write observed quota ceilings from recent 429s into plans.toml
+  --dry-run             show learned limits without writing
+  --min-events MIN_EVENTS
+                        minimum quota-error events required to learn a ceiling
+
+===== somm drain-spool =====
+usage: somm drain-spool [-h] [--project PROJECT]
+
+options:
+  -h, --help         show this help message and exit
+  --project PROJECT

@@ -108,7 +108,7 @@ def _cli_env(tmp_path, monkeypatch):
     cfg = Config()
     cfg.project = "gpu-test"
     cfg.db_dir = tmp_path / ".somm"
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None, **kw: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None, **kw: cfg)
     return cfg
 
 

@@ -12,17 +12,23 @@ signal in the response body).
   key.
 
 Not every 429 is a rate limit. MiniMax answers an exhausted Token Plan
-with 429 and code `2056`, and OpenAI with 429 `insufficient_quota`;
-somm classifies those as
+with 429 and code `2056`; OpenAI answers exhausted credit or a spend
+limit with 429 `insufficient_quota` and a code such as
+`credit_balance_exhausted`; Anthropic answers a reached monthly spend cap
+with 429 and `enforced_spend_limit_reached`. somm classifies those as
 [`SOMM_PROVIDER_INSUFFICIENT_CREDIT`](./SOMM_PROVIDER_INSUFFICIENT_CREDIT.md)
 with its longer cooldown, so a caller that sees this error can treat it
 as a genuine burst.
 
 **Behavior in the router.** `SOMM_PROVIDER_RATE_LIMIT` is **transient**.
-The router cools the provider for `retry_after_s` (the provider's
-`Retry-After` header when present, otherwise a default of 120s) and
-falls through to the next provider in the chain. The cooldown length is
-carried on the exception as `.retry_after_s`.
+The router cools the provider for `retry_after_s` and falls through to
+the next provider in the chain. `retry_after_s` is the provider's
+`Retry-After` header when present (`0` means retry now); otherwise the
+latest of its rate-limit reset headers (Anthropic's
+`anthropic-ratelimit-*-reset` times, OpenAI's `x-ratelimit-reset-*`
+durations such as `6m0s`); otherwise a default of 120s. It is capped at a
+day. The exception also carries `status_code`, `provider_type`,
+`provider_code` and `provider_request_id` (see [`SOMM_ERROR`](./SOMM_ERROR.md)).
 
 **Fix.**
 

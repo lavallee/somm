@@ -15,10 +15,15 @@ from somm_core.parse import strip_think_block
 
 from somm.errors import (
     SommBadRequest,
-    SommModelNotFound,
     SommTimeout,
     SommTransientError,
     classify_http_status,
+)
+from somm.providers._http import (
+    SharedClient,
+    close_shared_client,
+    request_timeout,
+    shared_client,
 )
 from somm.providers._openai_compat import (
     _translate_messages_to_openai,
@@ -33,6 +38,7 @@ from somm.providers.base import (
     SommRequest,
     SommResponse,
     ToolCall,
+    ToolCallDelta,
 )
 
 
@@ -67,33 +73,42 @@ class OllamaProvider:
         # 10x its median because the model just got loaded back into VRAM.
         # Use "0" to opt out, or e.g. "1h" for long-running batches.
         self.keep_alive = keep_alive
+        self._http = SharedClient()
 
-    def _client(self, timeout: float | None = None) -> httpx.Client:
-        return httpx.Client(timeout=timeout or self.timeout)
+    def close(self) -> None:
+        """Close the pooled HTTP connections; the next call opens new ones."""
+        close_shared_client(self)
 
-    def _post(self, client: httpx.Client, path: str, payload: dict, model: str) -> dict:
+    def _post(
+        self, client: httpx.Client, path: str, payload: dict, model: str,
+        timeout: float | None = None,
+    ) -> dict:
         """POST and classify. A local daemon fails in a few ways — not running
         (connection refused), model not pulled (404), out of memory (500) — and
         each used to escape as a raw httpx exception the router could not
         classify. They are somm errors like any other provider's."""
         try:
-            resp = client.post(f"{self.base_url}{path}", json=payload)
+            resp = client.post(
+                f"{self.base_url}{path}", json=payload,
+                timeout=request_timeout(timeout or self.timeout),
+            )
         except httpx.TimeoutException as e:
             raise SommTimeout(f"ollama timeout on {model}: {e}", cooldown_s=60.0, model=model) from e
         except httpx.RequestError as e:
             raise SommTransientError(
                 f"ollama unreachable at {self.base_url}: {e}", cooldown_s=30.0, model=model
             ) from e
-        if resp.status_code == 404:
-            raise SommModelNotFound(
-                f"ollama model {model!r} unavailable (404). Run ollama pull {model}, "
-                "or use ollama list and set SOMM_OLLAMA_MODEL / [tool.somm].ollama_model "
-                "to an installed model (or pass --model).",
-                model=model,
-            )
         if not (200 <= resp.status_code < 300):
+            hint = None
+            if resp.status_code == 404:
+                hint = (
+                    f"ollama model {model!r} unavailable (404). Run ollama pull {model}, "
+                    "or use ollama list and set SOMM_OLLAMA_MODEL / [tool.somm].ollama_model "
+                    "to an installed model (or pass --model)."
+                )
             classify_http_status(
-                resp.status_code, resp.text, provider=self.name, model=model, headers=resp.headers
+                resp.status_code, resp.text, provider=self.name, model=model,
+                headers=getattr(resp, "headers", None), detail=hint,
             )
         return resp.json()
 
@@ -150,8 +165,10 @@ class OllamaProvider:
                 payload["format"] = ollama_format
 
         t0 = time.monotonic()
-        with self._client(request.timeout) as client:
-            data = self._post(client, "/api/chat", payload, model)
+        # The per-call timeout is passed only when set, so a _post override
+        # with the older four-argument signature keeps working.
+        per_call = {"timeout": request.timeout} if request.timeout else {}
+        data = self._post(shared_client(self), "/api/chat", payload, model, **per_call)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         message = data.get("message") or {}
@@ -180,17 +197,32 @@ class OllamaProvider:
         )
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
-        """Native ollama streaming. Emits SommChunk per line of JSONL output.
+        """Native ollama streaming over ``/api/chat`` (JSON lines).
 
-        Each chunk is a text delta; `done=True` fires when ollama signals end.
-        `<think>` stripping is the library's concern (see SommLLM.stream).
+        Sends what :meth:`generate` sends — ``messages``, tools, ``format``,
+        images — and yields text, thinking and tool-call deltas; the line
+        with ``done: true`` becomes the final chunk, carrying the answer with
+        ollama's own token counts. A stream that ends without it was cut off
+        and raises. ``<think>`` stripping is the library's concern.
         """
         import json
 
         model = request.model or self.default_model
-        payload = {
+        if request.tool_choice is not None:
+            raise SommBadRequest(
+                "ollama does not support tool_choice; omit it or route to a "
+                "provider that does (anthropic, openai-compat)"
+            )
+        messages: list[dict] = []
+        if request.system:
+            messages.append({"role": "system", "content": request.system})
+        if request.messages is not None:
+            messages.extend(_translate_messages_to_openai(request.messages))
+        else:
+            messages.append({"role": "user", "content": request.prompt})
+        payload: dict = {
             "model": model,
-            "messages": [],
+            "messages": [_to_ollama_message(m) for m in messages],
             "stream": True,
             "options": {
                 "temperature": request.temperature,
@@ -201,16 +233,28 @@ class OllamaProvider:
             payload["think"] = True
         if self.keep_alive:
             payload["keep_alive"] = self.keep_alive
-        if request.system:
-            payload["messages"].append({"role": "system", "content": request.system})
-        payload["messages"].append(_to_ollama_message({"role": "user", "content": request.prompt}))
+        if request.tools:
+            payload["tools"] = [_translate_tool_to_openai(t) for t in request.tools]
+        if request.response_format is not None:
+            ollama_format = _ollama_response_format(request.response_format)
+            if ollama_format is not None:
+                payload["format"] = ollama_format
 
-        with httpx.Client(timeout=request.timeout or self.timeout) as client:
-            with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
+        t0 = time.monotonic()
+        text_parts: list[str] = []
+        tool_calls: list[dict] = []
+        try:
+            with shared_client(self).stream(
+                "POST", f"{self.base_url}/api/chat", json=payload,
+                timeout=request_timeout(request.timeout or self.timeout),
+            ) as resp:
                 if resp.status_code != 200:
                     body = resp.read().decode("utf-8", errors="replace")
                     classify_http_status(
-                        resp.status_code, body, provider=self.name, model=model, headers=resp.headers
+                        resp.status_code, body, provider=self.name, model=model,
+                        headers=resp.headers,
+                        detail=(f"ollama model {model!r} unavailable (404). Run ollama pull {model}."
+                                if resp.status_code == 404 else None),
                     )
                 for line in resp.iter_lines():
                     if not line:
@@ -219,13 +263,48 @@ class OllamaProvider:
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    text = data.get("message", {}).get("content", "") or ""
-                    done = bool(data.get("done"))
-                    if text:
-                        yield SommChunk(text=text, done=False)
-                    if done:
-                        yield SommChunk(text="", done=True, model=model)
+                    message = data.get("message") or {}
+                    text = message.get("content") or ""
+                    thinking = message.get("thinking") or ""
+                    calls = message.get("tool_calls") or []
+                    fragments = [
+                        ToolCallDelta(
+                            len(tool_calls) + i,
+                            id=str(c.get("id", "")),
+                            name=str((c.get("function") or {}).get("name", "")),
+                            arguments=json.dumps((c.get("function") or {}).get("arguments") or {}),
+                        )
+                        for i, c in enumerate(calls)
+                    ]
+                    tool_calls.extend(calls)
+                    text_parts.append(text)
+                    if text or thinking or fragments:
+                        yield SommChunk(text=text, reasoning=thinking, tool_calls=fragments)
+                    if data.get("done"):
+                        parsed = _parse_ollama_tool_calls(tool_calls)
+                        yield SommChunk(text="", done=True, model=model, response=SommResponse(
+                            text=strip_think_block("".join(text_parts)),
+                            model=model,
+                            tokens_in=int(data.get("prompt_eval_count", 0) or 0),
+                            tokens_out=int(data.get("eval_count", 0) or 0),
+                            latency_ms=int((time.monotonic() - t0) * 1000),
+                            raw=data,
+                            tool_calls=parsed,
+                            stop_reason=_normalize_ollama_done_reason(
+                                data.get("done_reason"), has_tool_calls=bool(parsed)
+                            ),
+                            max_tokens_sent=payload["options"]["num_predict"],
+                        ))
                         return
+        except httpx.TimeoutException as e:
+            raise SommTimeout(f"ollama stream timeout on {model}: {e}", cooldown_s=60.0,
+                              model=model) from e
+        except httpx.RequestError as e:
+            raise SommTransientError(
+                f"ollama unreachable at {self.base_url}: {e}", cooldown_s=30.0, model=model
+            ) from e
+        raise SommTransientError(f"ollama stream on {model} ended before done", cooldown_s=15.0,
+                                 model=model)
 
     def embed(self, request: SommEmbedRequest) -> SommEmbedResponse:
         """POST /api/embeddings. Single-string input only — batch is the
@@ -236,8 +315,7 @@ class OllamaProvider:
             payload["keep_alive"] = self.keep_alive
 
         t0 = time.monotonic()
-        with self._client() as client:
-            data = self._post(client, "/api/embeddings", payload, model)
+        data = self._post(shared_client(self), "/api/embeddings", payload, model)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         embedding = data.get("embedding") or []
@@ -259,19 +337,17 @@ class OllamaProvider:
 
     def health(self) -> ProviderHealth:
         try:
-            with self._client() as client:
-                r = client.get(f"{self.base_url}/api/tags", timeout=2.0)
-                r.raise_for_status()
+            r = shared_client(self).get(f"{self.base_url}/api/tags", timeout=request_timeout(2.0))
+            r.raise_for_status()
             return ProviderHealth(available=True, detail=f"{self.base_url} ok")
         except Exception as e:
             return ProviderHealth(available=False, detail=str(e))
 
     def models(self) -> list[SommModel]:
         try:
-            with self._client() as client:
-                r = client.get(f"{self.base_url}/api/tags", timeout=5.0)
-                r.raise_for_status()
-                data = r.json()
+            r = shared_client(self).get(f"{self.base_url}/api/tags", timeout=request_timeout(5.0))
+            r.raise_for_status()
+            data = r.json()
         except Exception:
             return []
         out: list[SommModel] = []

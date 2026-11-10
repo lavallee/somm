@@ -915,7 +915,7 @@ def test_doctor_reports_worker_heartbeats(tmp_path, capsys, monkeypatch):
             "VALUES ('shadow_eval', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)"
         )
 
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health",
         lambda self: ProviderHealth(available=True, detail="ok"),
@@ -950,7 +950,7 @@ def test_doctor_prints_the_north_star_numbers(tmp_path, capsys, monkeypatch):
              latency_ms=1, cost_usd=0.0, outcome=Outcome.OK, error_kind=None, prompt_hash="p",
              response_hash="r", routing_json=json.dumps({"route_source": "policy"}))
     )
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health",
         lambda self: ProviderHealth(available=True, detail="ok"),
@@ -1112,7 +1112,7 @@ def test_doctor_exhausted_rate_below_threshold_passes(tmp_path, capsys, monkeypa
     _write_call(repo, cfg, wl, ts=now, outcome=Outcome.OK)
     _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
 
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health",
         lambda self: ProviderHealth(available=True, detail="ok"),
@@ -1136,7 +1136,7 @@ def test_doctor_exhausted_rate_above_threshold_fails(tmp_path, capsys, monkeypat
     _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
     _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
 
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health",
         lambda self: ProviderHealth(available=True, detail="ok"),
@@ -1159,7 +1159,7 @@ def test_doctor_exhausted_rate_printed_without_threshold(tmp_path, capsys, monke
     now = datetime.now(UTC)
     _write_call(repo, cfg, wl, ts=now, outcome=Outcome.UPSTREAM_ERROR, error_kind="SommProvidersExhausted")
 
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health",
         lambda self: ProviderHealth(available=True, detail="ok"),
@@ -1191,7 +1191,7 @@ def test_doctor_global_reads_the_shared_ledger_and_reports_fleet(tmp_path, capsy
             client_version=None,
         )
     )
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health",
         lambda self: ProviderHealth(available=True, detail="ok"),
@@ -1216,7 +1216,7 @@ def test_prune_dry_run_then_delete(tmp_path, capsys, monkeypatch):
     wl = repo.register_workload(name="w", project=cfg.project)
     _write_call(repo, cfg, wl, ts=datetime.now(UTC) - timedelta(days=200), outcome=Outcome.OK)
     _write_call(repo, cfg, wl, ts=datetime.now(UTC), outcome=Outcome.OK)
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
 
     assert main(["prune", "--older-than", "90", "--dry-run"]) == 0
     out = capsys.readouterr().out
@@ -1243,7 +1243,7 @@ def test_alias_seed_and_list(tmp_path, capsys, monkeypatch):
             prompt_hash="p", response_hash="r",
         )
     )
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
 
     assert main(["alias", "seed"]) == 0
     assert "wrote 1" in capsys.readouterr().out
@@ -1281,7 +1281,7 @@ def test_doctor_reports_unknown_cost_by_provider(tmp_path, capsys, monkeypatch):
     call("openai", "somm:model_intel")
     call("gpu-box", "unknown:no-price", ts=now - timedelta(days=31))  # outside the window
 
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(
         "somm.cli.OllamaProvider.health",
         lambda self: ProviderHealth(available=True, detail="ok"),

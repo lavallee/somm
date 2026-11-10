@@ -503,6 +503,11 @@ def drain_spool(repo: Repository, spool_dir: Path) -> int:
                             client_version=row.get("client_version"),
                             routing_json=row.get("routing_json"),
                             data_tier=row.get("data_tier"),
+                            kind=row.get("kind"),
+                            label=row.get("label"),
+                            p_top=row.get("p_top"),
+                            abstained=row.get("abstained"),
+                            result_json=row.get("result_json"),
                         )
                     )
             repo.write_calls_batch(calls)

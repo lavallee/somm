@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from somm.providers.base import ProviderHealth, SommResponse
+from somm.providers.base import ProviderHealth, SommChunk, SommResponse
 
 
 class FakeProvider:
@@ -56,8 +56,11 @@ class FakeProvider:
             stop_reason=self.stop_reason,
         )
 
-    def stream(self, request):  # pragma: no cover - the proxy never streams from providers
-        raise AssertionError("the proxy does not use provider streams")
+    def stream(self, request):
+        # Answers in one piece, as the CLI seats and ChatGPT do; the proxy's
+        # streaming routes are exercised through it.
+        resp = self.generate(request)
+        yield SommChunk(text=resp.text, done=True, model=resp.model, response=resp)
 
     def health(self):
         return ProviderHealth(available=True)

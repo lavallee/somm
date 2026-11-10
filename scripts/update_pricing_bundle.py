@@ -60,6 +60,15 @@ EXTRA_ROWS: list[dict] = [
     {"provider": "minimax", "model": "MiniMax-M2.7", "price_in_per_1m": 0.3,
      "price_out_per_1m": 1.2, "context_window": 1000192,
      "capabilities": {"tools": True}},
+    # TypeSafe System One (decision models, SommLLM.decide). LiteLLM's price
+    # file does not carry them. Published rate: $0.042 per million input
+    # tokens, output tokens free (https://docs.typesafe.ai/models.md, read
+    # 2026-11-09). Aliases are priced too: a response may name either.
+    *(
+        {"provider": "typesafe", "model": m, "price_in_per_1m": 0.042,
+         "price_out_per_1m": 0.0, "context_window": None}
+        for m in ("jev-1.13.0", "jev-1.14.0", "jev-latest", "jev-preview")
+    ),
 ]
 
 
