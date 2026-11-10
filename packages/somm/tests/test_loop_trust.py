@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from somm.providers.base import ProviderHealth, SommResponse
+from somm.workers.agent import AgentWorker
 from somm.workers.shadow_eval import ShadowEvalWorker
 from somm_core.config import Config
 from somm_core.models import Call, Outcome
@@ -332,3 +333,177 @@ def test_replay_sends_captured_messages_and_production_params(tmp_path):
     legacy = by_prompt['["not", "messages"]']
     assert legacy.messages is None
     assert (legacy.temperature, legacy.max_tokens) == (0.0, 1024)
+
+
+# ---------------------------------------------------------------------------
+# 5-7. A floor under every recommendation, an expiry, and cost of pass
+
+
+def _graded(repo, wl, project, model, scores, *, judge=False, cost=0.001, cost_source=None,
+            latency_ms=100, eval_age_days=0):
+    for score in scores:
+        call_id = _call(
+            repo, wl.id, project, model=model, cost_usd=cost, cost_source=cost_source,
+            latency_ms=latency_ms,
+        )
+        with repo._open() as conn:
+            conn.execute(
+                "INSERT INTO eval_results (call_id, gold_model, structural_score, "
+                "embedding_score, judge_score, ts) VALUES (?, 'gold-m', ?, ?, ?, "
+                "datetime('now', ?))",
+                (
+                    call_id, None if judge else score, None if judge else score,
+                    score if judge else None, f"-{eval_age_days} days",
+                ),
+            )
+
+
+def _recs(repo, action="switch_model"):
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT evidence_json, expected_impact, confidence FROM recommendations "
+            "WHERE action = ?",
+            (action,),
+        ).fetchall()
+    return [(json.loads(r[0]), r[1], r[2]) for r in rows]
+
+
+def test_noisy_difference_does_not_become_a_switch(tmp_path):
+    """A 0.15 lift in means from two noisy arms of 20 is not evidence."""
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="noisy", project=project)
+    _graded(repo, wl, project, "current", [0.0, 1.0] * 15)  # mean 0.5, sd 0.5
+    _graded(repo, wl, project, "better", [0.3, 1.0] * 10)  # mean 0.65, n 20
+
+    AgentWorker(repo).run_once()
+    assert _recs(repo) == []
+
+
+def test_thin_arm_does_not_become_a_switch(tmp_path):
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="thin", project=project)
+    _graded(repo, wl, project, "current", [0.4] * 30)
+    _graded(repo, wl, project, "better", [0.9] * 8)  # clear but only 8 samples
+
+    AgentWorker(repo).run_once()
+    assert _recs(repo) == []
+
+
+def test_stale_evidence_does_not_become_a_switch(tmp_path):
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="stale", project=project)
+    _graded(repo, wl, project, "current", [0.4] * 40, eval_age_days=60)
+    _graded(repo, wl, project, "better", [0.9] * 30, eval_age_days=60)
+
+    AgentWorker(repo).run_once()
+    assert _recs(repo) == []
+
+
+def test_a_clear_judged_win_records_its_interval_and_cost_of_pass(tmp_path):
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="judged", project=project)
+    _graded(repo, wl, project, "current", [1.0] * 10 + [0.0] * 20, judge=True, cost=0.002)
+    _graded(
+        repo, wl, project, "better", [1.0] * 20 + [0.0] * 5, judge=True, cost=0.001,
+    )
+
+    AgentWorker(repo).run_once()
+    [(evidence, impact, confidence)] = _recs(repo)
+    assert evidence["basis"] == "measured quality"
+    assert evidence["score"] == "judge"
+    assert evidence["current"]["n"] == 30 and evidence["candidate"]["n"] == 25
+    lo, hi = evidence["interval"]
+    assert 0 < lo < evidence["score_delta"] < hi
+    assert evidence["window_days"] == 30
+    # cost per passing answer = mean known cost / pass rate
+    assert evidence["current"]["cost_per_pass"] == round(0.002 / (10 / 30), 6)
+    assert evidence["candidate"]["cost_per_pass"] == round(0.001 / (20 / 25), 6)
+    assert 0.5 < confidence < 1
+    assert "expires_at" in evidence
+
+
+def test_cost_of_pass_is_unknown_without_a_known_price_or_a_pass_score(tmp_path):
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="similar", project=project)
+    _graded(repo, wl, project, "current", [0.3] * 30, latency_ms=500)
+    _graded(
+        repo, wl, project, "better", [0.8] * 25, cost_source="unknown:no-price",
+        latency_ms=100,
+    )
+
+    AgentWorker(repo).run_once()
+    [(evidence, _, _)] = _recs(repo)
+    assert evidence["score"] == "structural"
+    assert evidence["candidate"]["cost_usd"] == "unknown"
+    assert evidence["candidate"]["cost_per_pass"] == "unknown"
+    assert evidence["current"]["cost_per_pass"] == "unknown"  # similarity is not pass/fail
+
+
+def test_catalog_rule_says_it_is_not_a_quality_finding(tmp_path):
+    from somm_core.pricing import write_intel
+
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="catalog", project=project)
+    for _ in range(12):
+        _call(repo, wl.id, project, provider="openrouter", model="old")
+    write_intel(repo, "openrouter", "old", 1.0, 4.0, None, None, "test")
+    with repo._open() as conn:
+        conn.execute(
+            "UPDATE model_intel SET first_seen = datetime('now', '-90 days') WHERE model = 'old'"
+        )
+    write_intel(repo, "openrouter", "new", 0.1, 0.4, None, None, "test")
+
+    AgentWorker(repo).run_once()
+    [(evidence, impact, confidence)] = _recs(repo, "new_model_landed")
+    assert evidence["basis"] == "catalog"
+    assert impact.startswith("catalog fact, not a quality finding")
+    assert confidence is None
+
+
+def test_open_recommendations_expire_closed_not_applied(tmp_path, capsys, monkeypatch):
+    from somm.cli import main
+    from somm_core.read import north_star
+
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="old", project=project)
+    _call(repo, wl.id, project)
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO recommendations (workload_id, action, evidence_json, created_at) "
+            "VALUES (?, 'chronic_cooldown', '{}', datetime('now', '-40 days'))",
+            (wl.id,),
+        )
+        conn.execute(
+            "INSERT INTO recommendations (workload_id, action, evidence_json) "
+            "VALUES (?, 'switch_model', '{}')",
+            (wl.id,),
+        )
+
+    summary = AgentWorker(repo).run_once()
+    assert summary["expired"] == 1
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT action, dismissed_at IS NOT NULL, applied_at, "
+            "json_extract(evidence_json, '$.closed_as') FROM recommendations ORDER BY id"
+        ).fetchall()
+    assert rows == [("chronic_cooldown", 1, None, "expired"), ("switch_model", 0, None, None)]
+    applied = north_star(repo.db_path)["recommendations_applied"]
+    assert (applied["eligible"], applied["acted"], applied["applied"]) == (1, 0, 0)
+
+    cfg = Config()
+    cfg.project = project
+    cfg.db_dir = repo.db_path.parent
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    assert main(["inbox", "list", "--all"]) == 0
+    assert "expired" in capsys.readouterr().out
+
+
+def test_concurrent_agent_runs_write_one_recommendation(tmp_path):
+    project, repo = _repo(tmp_path)
+    wl = repo.register_workload(name="once", project=project)
+    _graded(repo, wl, project, "current", [0.3] * 30, latency_ms=500)
+    _graded(repo, wl, project, "better", [0.8] * 25, latency_ms=100)
+    worker = AgentWorker(repo)
+    [rec] = worker._rec_switch_model()
+    assert worker._write(rec) is True
+    assert worker._write(rec) is False  # the open one blocks a twin, in one statement

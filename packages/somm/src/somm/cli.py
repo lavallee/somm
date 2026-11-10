@@ -1463,7 +1463,7 @@ def _rec_state(rec) -> str:
     if rec.applied_at:
         return "applied"
     if rec.dismissed_at:
-        return "dismissed"
+        return "expired" if rec.evidence.get("closed_as") == "expired" else "dismissed"
     return "open"
 
 
@@ -1486,7 +1486,9 @@ def _cmd_inbox_show(args: argparse.Namespace) -> int:
     if rec.applied_at:
         print(f"  applied:    {rec.applied_at}")
     if rec.dismissed_at:
-        print(f"  dismissed:  {rec.dismissed_at}")
+        print(f"  {_rec_state(rec) + ':':<11} {rec.dismissed_at}")
+    elif not rec.applied_at and rec.evidence.get("expires_at"):
+        print(f"  expires:    {rec.evidence['expires_at']}")
     print(f"  confidence: {confidence}")
     print(f"  impact:     {rec.expected_impact}")
     print("  evidence:")

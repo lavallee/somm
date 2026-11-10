@@ -3,13 +3,16 @@
 Reads calls + eval_results + model_intel; produces rows in `recommendations`
 scored by evidence strength. v0.3c ships 3 recommendation types:
 
-1. switch_model — same workload has been shadow-graded on ≥2 models; one
-   scores ≥10% higher (structural or text) AND costs ≤ the current cost
-   OR latency is substantially better.
+1. switch_model — same workload has been shadow-graded on ≥2 models against
+   the same gold model in the last ``EVIDENCE_WINDOW_DAYS``; both arms have at
+   least ``min_evals_for_switch`` grades, one scores ≥0.1 higher with a 95%
+   interval on the difference that excludes zero, AND it costs ≤ the current
+   cost OR latency is substantially better. The evidence carries n per arm,
+   the interval, the window and the cost per passing answer.
 2. new_model_landed — a same-provider model whose model_intel.first_seen is
    inside the window and later than the current model's, at least 20%
-   cheaper. Surfaces as a "try this" candidate, not an auto-switch, and is
-   proposed once per workload: dismissed is remembered.
+   cheaper. A catalog fact, not a quality finding: it says so, carries no
+   confidence, and is proposed once per workload: dismissed is remembered.
 3. chronic_cooldown — at least `chronic_failure_rate` of a workload's
    production calls to a provider in the window failed to deliver (upstream
    error, exhausted chain, timeout, rate limit). Recommends a fallback,
@@ -20,6 +23,10 @@ scored by evidence strength. v0.3c ships 3 recommendation types:
    recommendation by default; only workloads with policy `auto_heal: true`
    receive an immediate learned_param_override.
 
+Every recommendation expires ``RECOMMENDATION_TTL_DAYS`` after it is created:
+an open one past its ``expires_at`` is closed with ``dismissed_at`` and
+``evidence.closed_as = "expired"``, so it reads as closed, not applied.
+
 Outputs to `recommendations` (schema v1). Config-driven window, threshold,
 notification sink (stdout only in v0.3c; webhook/SMTP in v0.3d+).
 """
@@ -28,12 +35,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import statistics
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from somm_core.cost import known_cost_sql
+from somm_core.cost import cost_is_known
 
 if TYPE_CHECKING:
     from somm_core.repository import Repository
@@ -46,13 +54,23 @@ DELIVERY_FAILURE_OUTCOMES: tuple[str, ...] = ("upstream_error", "exhausted", "ti
 """Outcomes that mean the provider did not deliver, as opposed to delivering badly."""
 
 
+EVIDENCE_WINDOW_DAYS = 30
+"""Shadow grades older than this do not count toward a switch_model."""
+
+RECOMMENDATION_TTL_DAYS = 30
+"""An open recommendation is closed as expired this long after creation: the
+frontier moves, and evidence from last month is not this month's answer."""
+
+Z_95 = 1.96
+
+
 @dataclass(slots=True)
 class Recommendation:
     workload_id: str
     action: str  # "switch_model" | "new_model_landed" | "chronic_cooldown"
     evidence: dict
     expected_impact: str
-    confidence: float  # 0..1
+    confidence: float | None  # 0..1; None for a catalog fact with no measurement
 
 
 class AgentWorker:
@@ -65,7 +83,7 @@ class AgentWorker:
         repo: Repository,
         window_days: int = 7,
         min_calls_for_consideration: int = 10,
-        min_evals_for_switch: int = 5,
+        min_evals_for_switch: int = 20,  # grades per arm, both arms
         quality_threshold: float = 0.1,  # 10% improvement minimum
         chronic_failure_rate: float = 0.10,  # share of a workload's calls to a provider that fail
         notify_sink: str = "stdout",
@@ -80,6 +98,7 @@ class AgentWorker:
 
     def run_once(self) -> dict:
         """Produce recommendations; write to DB; notify. Returns summary."""
+        expired = self._expire_stale()
         recs: list[Recommendation] = []
         recs.extend(self._rec_switch_model())
         recs.extend(self._rec_new_model_landed())
@@ -88,8 +107,7 @@ class AgentWorker:
         # Dedup against existing non-dismissed recs (same workload + action)
         written = 0
         for rec in recs:
-            if not self._already_open(rec):
-                self._write(rec)
+            if self._write(rec):
                 written += 1
 
         adaptive = self._rec_adaptive_param_bump()
@@ -108,8 +126,7 @@ class AgentWorker:
                 )
                 self._write(rec, applied=True)
                 auto_applied += 1
-            elif not self._already_open(rec):
-                self._write(rec)
+            elif self._write(rec):
                 written += 1
 
         all_recs = recs + adaptive
@@ -119,6 +136,7 @@ class AgentWorker:
             "considered": len(all_recs),
             "written": written,
             "auto_applied": auto_applied,
+            "expired": expired,
             "by_action": _count_by_action(all_recs),
         }
 
@@ -126,63 +144,48 @@ class AgentWorker:
     # Rec: switch_model based on shadow-eval deltas
 
     def _rec_switch_model(self) -> list[Recommendation]:
-        """For each workload: if shadow evals show a graded model scores
-        materially higher than the production model, recommend a switch.
+        """For each workload: if shadow grades show another production model
+        scores materially and measurably higher, recommend a switch.
+
+        An arm is one (provider, model) of the workload's production calls,
+        graded against one gold model in the last ``EVIDENCE_WINDOW_DAYS``.
+        One score kind is compared per workload, never mixed: the judge score
+        when both arms have enough, else structural, else text similarity.
+        A switch needs ``min_evals`` grades in each arm, a mean lift of at
+        least ``threshold``, and a 95% interval on that lift above zero.
+        Until 0.24 it needed five grades, any 0.1 lift, and pooled every
+        grade ever taken across gold models.
         """
         out: list[Recommendation] = []
         since = _iso(self._window_start())
 
         with self.repo._open() as conn:
-            # Per (workload_id, prod model/provider): aggregate eval scores
-            # (structural_score and embedding_score are both 0..1-ish).
-            prod_rows = conn.execute(
-                f"""
-                SELECT c.workload_id, c.provider, c.model,
-                       AVG(COALESCE(er.structural_score, er.embedding_score)) AS score,
-                       COUNT(er.id) AS n_evals,
-                       AVG(c.latency_ms) AS latency_ms,
-                       AVG(CASE WHEN {known_cost_sql("c.")} THEN c.cost_usd END) AS cost_usd,
-                       w.name
+            rows = conn.execute(
+                """
+                SELECT c.workload_id, w.name, er.gold_model, c.provider, c.model,
+                       er.judge_score, er.structural_score, er.embedding_score,
+                       c.latency_ms, c.cost_usd, c.cost_source
                 FROM eval_results er
                 JOIN calls c ON c.id = er.call_id
                 JOIN workloads w ON w.id = c.workload_id
-                WHERE (
-                    er.judge_score IS NOT NULL OR er.structural_score IS NOT NULL
-                    OR er.embedding_score IS NOT NULL
-                )
+                WHERE er.gold_model != 'pending'
+                  AND er.ts >= datetime('now', ?)
                   AND c.observation_role = 'production'
                   AND c.budget_eligible != 0
-                GROUP BY c.workload_id, c.provider, c.model
-                HAVING COUNT(er.id) >= ?
                 """,
-                (self.min_evals,),
+                (f"-{EVIDENCE_WINDOW_DAYS} days",),
             ).fetchall()
 
-        by_workload: dict[str, list[dict]] = {}
-        for r in prod_rows:
-            by_workload.setdefault(r[0], []).append(
-                {
-                    "provider": r[1],
-                    "model": r[2],
-                    "score": r[3] or 0,
-                    "n_evals": r[4],
-                    "latency_ms": r[5] or 0,
-                    # None when no call in the group had a known price
-                    # (unknown prices are recorded as 0.0, not free).
-                    "cost_usd": r[6],
-                    "workload_name": r[7],
-                }
-            )
+        groups: dict[tuple[str, str], dict[tuple[str, str], list]] = {}
+        names: dict[str, str] = {}
+        for r in rows:
+            names[r[0]] = r[1]
+            groups.setdefault((r[0], r[2]), {}).setdefault((r[3], r[4]), []).append(r)
 
-        for workload_id, entries in by_workload.items():
-            if len(entries) < 2:
+        for (workload_id, gold_model), arms in groups.items():
+            if len(arms) < 2:
                 continue
-            # Sort by score desc
-            entries.sort(key=lambda e: e["score"], reverse=True)
-            best = entries[0]
-            # Current production = most-used model (first call shows up most in
-            # production). We approximate "current prod" as the model with most
-            # calls in window_days.
+            # Current production = the model with most calls in window_days.
             with self.repo._open() as conn:
                 row = conn.execute(
                     """
@@ -194,67 +197,75 @@ class AgentWorker:
                     """,
                     (workload_id, since),
                 ).fetchone()
-            if not row:
+            if not row or tuple(row) not in arms:
                 continue
-            current_provider, current_model = row
-            current = next(
-                (
-                    e
-                    for e in entries
-                    if e["provider"] == current_provider and e["model"] == current_model
-                ),
-                None,
-            )
-            if (
-                current is None
-                or best["provider"] == current_provider
-                and best["model"] == current_model
-            ):
-                continue
-
-            score_delta = best["score"] - current["score"]
-            if score_delta < self.threshold:
-                continue
-            # Only recommend if the new model is at least as cheap OR at least
-            # 20% faster (avoid "better but 5x more expensive").
-            # An unknown cost is not a cheap one: "cheaper" needs both prices.
-            cheaper = (
-                best["cost_usd"] is not None
-                and current["cost_usd"] is not None
-                and best["cost_usd"] <= current["cost_usd"] * 1.01
-            )
-            faster = best["latency_ms"] < current["latency_ms"] * 0.8
-            if not (cheaper or faster):
-                continue
-
-            out.append(
-                Recommendation(
-                    workload_id=workload_id,
-                    action="switch_model",
-                    evidence={
-                        "workload": current["workload_name"],
-                        "current": {
-                            "provider": current_provider,
-                            "model": current_model,
-                            "score": round(current["score"], 3),
-                            "cost_usd": _round_cost(current["cost_usd"]),
-                            "latency_ms": round(current["latency_ms"]),
-                        },
-                        "candidate": {
-                            "provider": best["provider"],
-                            "model": best["model"],
-                            "score": round(best["score"], 3),
-                            "cost_usd": _round_cost(best["cost_usd"]),
-                            "latency_ms": round(best["latency_ms"]),
-                        },
-                        "score_delta": round(score_delta, 3),
-                        "n_evals": best["n_evals"],
-                    },
-                    expected_impact=_impact_str(current, best),
-                    confidence=min(0.99, 0.5 + score_delta + (best["n_evals"] / 50)),
-                )
-            )
+            rec = self._switch_for(workload_id, names[workload_id], gold_model, tuple(row), arms)
+            if rec is not None:
+                out.append(rec)
         return out
+
+    def _switch_for(self, workload_id, name, gold_model, current_key, arms):
+        """The best measured switch away from ``current_key``, or None."""
+        chosen = None
+        for name_, col in (("judge", 5), ("structural", 6), ("text_similarity", 7)):
+            by_arm = {key: [r[col] for r in rs if r[col] is not None] for key, rs in arms.items()}
+            if len(by_arm[current_key]) < self.min_evals:
+                continue
+            rivals = [
+                k for k, v in by_arm.items() if k != current_key and len(v) >= self.min_evals
+            ]
+            if rivals:
+                chosen = (name_, by_arm, rivals)
+                break
+        if chosen is None:
+            return None
+        kind, scored, others = chosen
+
+        cur = _arm(current_key, scored[current_key], arms[current_key], kind)
+        best = None
+        for key in others:
+            cand = _arm(key, scored[key], arms[key], kind)
+            delta, lo, hi, se = _difference(cand, cur)
+            if delta < self.threshold or lo <= 0:
+                continue
+            if best is None or lo > best[1]:
+                best = (cand, lo, hi, se, delta)
+        if best is None:
+            return None
+        cand, lo, hi, se, delta = best
+
+        # Only recommend if the new model is at least as cheap OR at least
+        # 20% faster (avoid "better but 5x more expensive").
+        # An unknown cost is not a cheap one: "cheaper" needs both prices.
+        cheaper = (
+            cand["cost_usd"] is not None
+            and cur["cost_usd"] is not None
+            and cand["cost_usd"] <= cur["cost_usd"] * 1.01
+        )
+        faster = cand["latency_ms"] < cur["latency_ms"] * 0.8
+        if not (cheaper or faster):
+            return None
+
+        confidence = 0.99 if se == 0 else min(0.99, statistics.NormalDist().cdf(delta / se))
+        return Recommendation(
+            workload_id=workload_id,
+            action="switch_model",
+            evidence={
+                "workload": name,
+                "basis": "measured quality",
+                "score": kind,
+                "gold_model": gold_model,
+                "window_days": EVIDENCE_WINDOW_DAYS,
+                "current": _arm_evidence(cur),
+                "candidate": _arm_evidence(cand),
+                "score_delta": round(delta, 3),
+                "interval": [round(lo, 3), round(hi, 3)],
+                "test": "difference of mean scores ± 1.96 standard errors (95%)",
+                "n_evals": cand["n"],
+            },
+            expected_impact=_impact_str(cur, cand),
+            confidence=round(confidence, 3),
+        )
 
     # ------------------------------------------------------------------
     # Rec: new model landed (from model_intel)
@@ -332,6 +343,7 @@ class AgentWorker:
                         action="new_model_landed",
                         evidence={
                             "workload": name,
+                            "basis": "catalog",
                             "current": {
                                 "provider": provider,
                                 "model": model,
@@ -350,10 +362,12 @@ class AgentWorker:
                             },
                         },
                         expected_impact=(
+                            "catalog fact, not a quality finding: list price "
                             f"~{100 * (1 - (cand_in + cand_out) / max(0.001, cur_in + cur_out)):.0f}% "
-                            f"lower cost; quality untested — run `somm compare <prompt> --models ...` to verify"
+                            "lower; quality untested — run `somm compare <prompt> --models ...` "
+                            "to verify"
                         ),
-                        confidence=0.4,  # untested quality → low confidence
+                        confidence=None,  # nothing measured, so nothing to be confident in
                     )
                 )
         return out
@@ -494,39 +508,63 @@ class AgentWorker:
             ).fetchone()
         return row is not None
 
-    def _already_open(self, rec: Recommendation) -> bool:
-        with self.repo._open() as conn:
-            row = conn.execute(
-                "SELECT id FROM recommendations "
-                "WHERE workload_id = ? AND action = ? AND dismissed_at IS NULL "
-                "AND applied_at IS NULL "
-                "ORDER BY created_at DESC LIMIT 1",
-                (rec.workload_id, rec.action),
-            ).fetchone()
-        return row is not None
+    def _write(self, rec: Recommendation, applied: bool = False) -> bool:
+        """Insert a recommendation; False when an open one for the same
+        workload and action already exists.
 
-    def _write(self, rec: Recommendation, applied: bool = False) -> None:
-        cols = "(workload_id, action, evidence_json, expected_impact, confidence"
-        vals = "(?, ?, ?, ?, ?"
-        params = [
-            rec.workload_id,
-            rec.action,
-            json.dumps(rec.evidence),
-            rec.expected_impact,
+        The check and the insert are one statement, so two agent runs at
+        once cannot both write the same recommendation. An auto-applied
+        self-heal is always written, stamped applied."""
+        evidence = dict(rec.evidence)
+        evidence.setdefault(
+            "expires_at",
+            (datetime.now(UTC) + timedelta(days=RECOMMENDATION_TTL_DAYS)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+        )
+        params = (
+            rec.workload_id, rec.action, json.dumps(evidence), rec.expected_impact,
             rec.confidence,
-        ]
-        if applied:
-            # Auto-applied self-heal: stamp applied_at so the recommendation
-            # surfaces as already-done, not as an open suggestion.
-            cols += ", applied_at"
-            vals += ", CURRENT_TIMESTAMP"
-        cols += ")"
-        vals += ")"
+        )
         with self.repo._open() as conn:
-            conn.execute(
-                f"INSERT INTO recommendations {cols} VALUES {vals}",
-                tuple(params),
+            if applied:
+                cur = conn.execute(
+                    "INSERT INTO recommendations (workload_id, action, evidence_json, "
+                    "expected_impact, confidence, applied_at) "
+                    "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                    params,
+                )
+            else:
+                cur = conn.execute(
+                    "INSERT INTO recommendations (workload_id, action, evidence_json, "
+                    "expected_impact, confidence) SELECT ?, ?, ?, ?, ? "
+                    "WHERE NOT EXISTS (SELECT 1 FROM recommendations WHERE workload_id = ? "
+                    "AND action = ? AND dismissed_at IS NULL AND applied_at IS NULL)",
+                    (*params, rec.workload_id, rec.action),
+                )
+        return cur.rowcount == 1
+
+    def _expire_stale(self) -> int:
+        """Close open recommendations past their expiry. Returns how many.
+
+        Expired is recorded as ``dismissed_at`` plus ``closed_as: expired``
+        in the evidence, so every reader sees it closed and none sees it
+        applied. Rows written before expiries existed use created_at plus
+        ``RECOMMENDATION_TTL_DAYS``."""
+        with self.repo._open() as conn:
+            cur = conn.execute(
+                """
+                UPDATE recommendations
+                SET dismissed_at = CURRENT_TIMESTAMP,
+                    evidence_json = json_set(evidence_json, '$.closed_as', 'expired')
+                WHERE dismissed_at IS NULL AND applied_at IS NULL
+                  AND json_valid(evidence_json)
+                  AND COALESCE(json_extract(evidence_json, '$.expires_at'),
+                               datetime(created_at, ?)) <= datetime('now')
+                """,
+                (f"+{RECOMMENDATION_TTL_DAYS} days",),
             )
+        return cur.rowcount
 
     def _auto_heal_enabled(self, workload_id: str) -> bool:
         with self.repo._open() as conn:
@@ -547,7 +585,8 @@ class AgentWorker:
             print("\n=== somm agent: new recommendations ===")
             for r in recs:
                 name = r.evidence.get("workload", r.workload_id[:10])
-                print(f"  [{r.action}] {name}: {r.expected_impact} (confidence={r.confidence:.2f})")
+                conf = "-" if r.confidence is None else f"{r.confidence:.2f}"
+                print(f"  [{r.action}] {name}: {r.expected_impact} (confidence={conf})")
             print("")
 
     def _window_start(self) -> datetime:
@@ -561,8 +600,51 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
-def _round_cost(value: float | None) -> float | None:
-    return round(value, 6) if value is not None else None
+def _round_cost(value: float | None) -> float | str:
+    return round(value, 6) if value is not None else "unknown"
+
+
+def _arm(key: tuple[str, str], scores: list[float], rows: list, kind: str) -> dict:
+    """One arm's numbers. Cost counts only calls whose price is known; the
+    pass rate exists only for the judge score (a passing answer meets every
+    criterion), since a similarity score has no pass."""
+    known = [r[9] for r in rows if cost_is_known(r[10]) and r[9] is not None]
+    cost = statistics.fmean(known) if known else None
+    pass_rate = sum(1 for x in scores if x >= 1.0) / len(scores) if kind == "judge" else None
+    return {
+        "provider": key[0],
+        "model": key[1],
+        "n": len(scores),
+        "score": statistics.fmean(scores),
+        "variance": statistics.variance(scores) if len(scores) > 1 else 0.0,
+        "latency_ms": statistics.fmean(r[8] or 0 for r in rows),
+        "cost_usd": cost,
+        "pass_rate": pass_rate,
+        "cost_per_pass": cost / pass_rate if cost is not None and pass_rate else None,
+    }
+
+
+def _difference(cand: dict, cur: dict) -> tuple[float, float, float, float]:
+    """(delta, low, high, standard error) of cand - cur at 95%.
+
+    The difference of two means over its standard error; on 0/1 scores this
+    is the two-proportion (Wald) interval."""
+    delta = cand["score"] - cur["score"]
+    se = math.sqrt(cand["variance"] / cand["n"] + cur["variance"] / cur["n"])
+    return delta, delta - Z_95 * se, delta + Z_95 * se, se
+
+
+def _arm_evidence(arm: dict) -> dict:
+    return {
+        "provider": arm["provider"],
+        "model": arm["model"],
+        "n": arm["n"],
+        "score": round(arm["score"], 3),
+        "cost_usd": _round_cost(arm["cost_usd"]),
+        "latency_ms": round(arm["latency_ms"]),
+        "pass_rate": round(arm["pass_rate"], 3) if arm["pass_rate"] is not None else None,
+        "cost_per_pass": _round_cost(arm["cost_per_pass"]),
+    }
 
 
 def _impact_str(current: dict, best: dict) -> str:
