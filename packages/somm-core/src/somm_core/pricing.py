@@ -2,8 +2,8 @@
 
 Library calls `cost_for_call(repo, provider, model, tokens_in, tokens_out)`
 after each LLM call. If (provider, model) is in `model_intel`, returns the
-computed USD cost. If not, returns None: the call is recorded with an
-unknown cost, which `backfill_costs` fills once a price exists.
+computed USD cost. If not, returns 0.0 and the call's cost_source says
+"unknown:no-price"; `backfill_costs` fills it once a price exists.
 
 Prices in `model_intel` are per 1M tokens: input, output, and the
 prompt-cache read and write rates where the source publishes them.
@@ -272,7 +272,7 @@ def free_route(provider: str, model: str) -> str | None:
 
     Local Ollama has no metered price; an OpenRouter ``:free`` variant is
     listed at zero. These record 0.0. Anything else without a known price
-    records NULL, never 0.0.
+    records 0.0 with cost_source "unknown:no-price".
     """
     if provider == "ollama":
         return "local-included-unpriced"
@@ -300,13 +300,14 @@ def cost_for_call(
     *,
     cache_read_tokens: int | None = None,
     cache_write_tokens: int | None = None,
-) -> float | None:
-    """USD cost for one call, or None when somm does not know the price.
+) -> float:
+    """USD cost for one call; 0.0 when somm does not know the price.
 
-    None (recorded as NULL) covers a self-hosted endpoint, an unlisted model
-    and a call with no model name; budgets and averages then skip the call
-    instead of counting it as free. A ``model_intel`` row wins (that is how
-    a local box gets a rate); without one, ``free_route`` routes return 0.0. The
+    An unknown price (a self-hosted endpoint, an unlisted model, a call with
+    no model name) returns 0.0 like a free route, so the number alone cannot
+    tell them apart: ``cost_provenance`` stamps it ``cost_source =
+    "unknown:no-price"``, and readers use ``somm_core.cost.cost_is_known``.
+    A ``model_intel`` row wins (that is how a local box gets a rate). The
     first unknown price for a known-paid provider warns on stderr; refresh
     intel or ``write_intel`` a price, then ``somm backfill-costs``.
     """
@@ -324,7 +325,7 @@ def cost_for_call(
                     f"or add pricing via write_intel().",
                     file=sys.stderr,
                 )
-        return None
+        return 0.0
     return price_tokens(prices, tokens_in, tokens_out, cache_read_tokens, cache_write_tokens)
 
 

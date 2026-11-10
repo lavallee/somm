@@ -630,8 +630,7 @@ def test_failed_grade_releases_candidate_back_to_pool(tmp_path):
         ).fetchone()
     assert n == 0  # lease deleted, not buried
     assert failed[:4] == ("shadow_gold", call_id, "upstream_error", "RuntimeError")
-    # The gold model has no price, so the failed call's cost is unknown.
-    assert failed[4:] == ("simulated 429", 0, 0, None)
+    assert failed[4:] == ("simulated 429", 0, 0, 0.0)
 
     # Candidate resurfaces and grades once the gold provider recovers.
     worker2 = ShadowEvalWorker(repo, providers=[_GoldProvider()])

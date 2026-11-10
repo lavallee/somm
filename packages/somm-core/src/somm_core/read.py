@@ -75,7 +75,7 @@ _CALL_COLUMNS = (
     "latency_ms", "cost_usd", "outcome", "error_kind", "prompt_hash", "response_hash",
     "session_id", "parent_call_id", "correlation_id", "ttft_ms", "cache_tokens_in",
     "cache_tokens_out", "reasoning_tokens", "origin", "call_site", "client_version", "routing_json",
-    "data_tier",
+    "data_tier", "cost_source",
 )
 
 
@@ -142,7 +142,7 @@ def search_calls(
                c.error_kind, c.prompt_hash, c.response_hash, c.session_id,
                c.parent_call_id, c.correlation_id, c.ttft_ms, c.cache_tokens_in,
                c.cache_tokens_out, c.reasoning_tokens, c.origin, c.call_site,
-               c.client_version, c.routing_json, c.data_tier
+               c.client_version, c.routing_json, c.data_tier, c.cost_source
         FROM calls c
         LEFT JOIN workloads w ON w.id = c.workload_id
         WHERE {" AND ".join(clauses)}
@@ -153,8 +153,9 @@ def search_calls(
     rows = _execute(conn_or_path, sql, params)
     out = []
     for r in rows:
-        # cost_usd stays None when the price was unknown: None is not $0.
-        out.append(dict(zip(_CALL_COLUMNS, r, strict=True)))
+        row = dict(zip(_CALL_COLUMNS, r, strict=True))
+        row["cost_usd"] = row["cost_usd"] or 0.0
+        out.append(row)
     return out
 
 

@@ -1222,21 +1222,22 @@ def test_doctor_reports_unknown_cost_by_provider(tmp_path, capsys, monkeypatch):
     wl = repo.register_workload(name="unpriced", project=cfg.project)
     now = datetime.now(UTC)
 
-    def call(provider, cost, ts=now):
+    def call(provider, source, ts=now):
         repo.write_call(
             Call(
                 id=str(uuid.uuid4()), ts=ts, project=cfg.project, workload_id=wl.id,
                 prompt_id=None, provider=provider, model="m", tokens_in=1, tokens_out=1,
-                latency_ms=1, cost_usd=cost, outcome=Outcome.OK, error_kind=None,
-                prompt_hash="a", response_hash="b",
+                latency_ms=1, cost_usd=0.0, outcome=Outcome.OK, error_kind=None,
+                prompt_hash="a", response_hash="b", cost_source=source,
             )
         )
 
-    call("gpu-box", None)
-    call("gpu-box", None)
-    call("claude-cli", None)
-    call("openai", 0.01)
-    call("gpu-box", None, ts=now - timedelta(days=31))  # outside the window
+    call("gpu-box", "unknown:no-price")
+    call("gpu-box", "unknown:no-price")
+    call("claude-cli", "unknown:no-price")
+    call("ollama", "local-included-unpriced")  # free, not unknown
+    call("openai", "somm:model_intel")
+    call("gpu-box", "unknown:no-price", ts=now - timedelta(days=31))  # outside the window
 
     monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
     monkeypatch.setattr(

@@ -49,7 +49,7 @@ from somm_core.graders import (
 )
 from somm_core.models import Call, Outcome
 from somm_core.parse import extract_cache_tokens, stable_hash
-from somm_core.pricing import cost_for_call
+from somm_core.pricing import cost_for_call, free_route, known_prices
 from somm_core.repository import Repository
 
 if TYPE_CHECKING:
@@ -701,7 +701,9 @@ class ShadowEvalWorker:
                 self.repo, provider, actual_model, tokens_in, tokens_out,
                 cache_read_tokens=cache_read, cache_write_tokens=cache_write,
             )
-            if cost_usd is None:
+            if known_prices(self.repo, provider, actual_model) is None and not free_route(
+                provider, actual_model
+            ):
                 cost_basis, cost_accuracy, cost_source = "unknown", "unknown", UNKNOWN_COST_SOURCE
             else:
                 cost_basis, cost_accuracy, cost_source = "computed", "estimated", "somm:model_intel"

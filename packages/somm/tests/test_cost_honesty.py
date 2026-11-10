@@ -11,6 +11,7 @@ import pytest
 from somm.client import SommLLM
 from somm.providers.base import ProviderHealth, SommChunk, SommResponse
 from somm_core.config import Config
+from somm_core.cost import cost_is_known
 from somm_core.pricing import backfill_costs, cost_for_call, sync_bundled_pricing, write_intel
 from somm_core.repository import Repository
 
@@ -144,25 +145,27 @@ def test_backfill_uses_cache_rates(tmp_path):
     assert row["cost_usd"] == pytest.approx(1.22)
 
 
-# ---- unknown is not zero -------------------------------------------------------
+# ---- unknown is not free ---------------------------------------------------------
 
 
-def test_self_hosted_endpoint_records_unknown_not_zero(tmp_path):
-    """A self-hosted endpoint has no price: the row says unknown, not $0."""
+def test_self_hosted_endpoint_records_unknown_source(tmp_path):
+    """A self-hosted endpoint has no price: the row stays 0.0 (the column is
+    NOT NULL) and its source says the price was unknown, not free."""
     llm = SommLLM(config=_config(tmp_path), providers=[UsageProvider(name="gpu-box")])
     try:
         result = llm.generate("hi", workload="w", provider="gpu-box")
         row = _row(llm, result.call_id)
     finally:
         llm.close()
-    assert result.cost_usd is None
-    assert row["cost_usd"] is None
+    assert result.cost_usd == 0.0
+    assert row["cost_usd"] == 0.0
     assert (row["cost_basis"], row["cost_kind"], row["cost_accuracy"], row["cost_source"]) == (
         "unknown",
         "unknown",
         "unknown",
         "unknown:no-price",
     )
+    assert not cost_is_known(row["cost_source"])
 
 
 def test_free_routes_stay_zero_and_say_why(tmp_path):
@@ -183,11 +186,11 @@ def test_free_routes_stay_zero_and_say_why(tmp_path):
     assert local_row["cost_source"] == "local-included-unpriced"
     assert free_row["cost_usd"] == 0.0
     assert free_row["cost_source"] == "openrouter:free-model"
+    assert cost_is_known(local_row["cost_source"]) and cost_is_known(free_row["cost_source"])
 
 
 def test_budget_counts_known_costs_only(tmp_path):
-    """Unknown-cost calls do not count toward a daily cap (they are skipped,
-    not priced at $0); a priced call still trips it. No crash on NULL."""
+    """Unknown-cost calls add nothing to a daily cap; a priced call still trips it."""
     cfg = _config(tmp_path)
     cfg.budget_fail_closed = True
     llm = SommLLM(
@@ -196,7 +199,7 @@ def test_budget_counts_known_costs_only(tmp_path):
     try:
         llm.repo.register_workload(name="capped", project=cfg.project, budget_cap_usd_daily=0.5)
         for _ in range(3):
-            assert llm.generate("hi", workload="capped", provider="gpu-box").cost_usd is None
+            llm.generate("hi", workload="capped", provider="gpu-box")
             llm._writer.flush(timeout=2.0)
         write_intel(llm.repo, "anthropic", "test-model", 1.0, 1.0, None, None, "manual")
         assert llm.generate("hi", workload="capped", provider="anthropic").cost_usd == 1.0
@@ -209,20 +212,29 @@ def test_budget_counts_known_costs_only(tmp_path):
         llm.close()
 
 
-def test_frontier_mean_cost_skips_unknown(tmp_path):
-    """An unpriced model's mean cost is unknown, not $0, so it cannot look free."""
-    llm = SommLLM(config=_config(tmp_path), providers=[UsageProvider(name="gpu-box")])
+def test_frontier_mean_cost_leaves_out_unknown_prices(tmp_path):
+    """An unpriced model's mean cost is unknown, not $0, so it cannot look
+    free; a priced model's mean ignores any unknown rows of its own."""
+    llm = SommLLM(
+        config=_config(tmp_path),
+        providers=[UsageProvider(name="gpu-box"), UsageProvider(name="anthropic")],
+    )
     try:
         llm.generate("hi", workload="w", provider="gpu-box")
+        llm.generate("hi", workload="w", provider="anthropic")  # unpriced at this point
+        write_intel(llm.repo, "anthropic", "test-model", 1.0, 1.0, None, None, "manual")
+        llm.generate("hi", workload="w", provider="anthropic")
         llm._writer.flush(timeout=2.0)
         wl = llm.repo.workload_by_name("w", llm.config.project)
-        rows = llm.repo.workload_frontier(wl.id, since_days=1)
+        rows = {r["provider"]: r for r in llm.repo.workload_frontier(wl.id, since_days=1)}
     finally:
         llm.close()
-    assert rows[0]["mean_cost_per_ok_call"] is None
+    assert rows["gpu-box"]["mean_cost_per_ok_call"] is None
+    assert rows["anthropic"]["mean_cost_per_ok_call"] == pytest.approx(1.0)
 
 
-def test_search_calls_keeps_unknown_cost(tmp_path):
+def test_tail_rows_show_unknown_not_zero(tmp_path):
+    from somm.cli import _fmt_cost
     from somm_core.read import search_calls
 
     llm = SommLLM(config=_config(tmp_path), providers=[UsageProvider(name="gpu-box")])
@@ -232,42 +244,9 @@ def test_search_calls_keeps_unknown_cost(tmp_path):
         rows = search_calls(llm.config.db_path, llm.config.project)
     finally:
         llm.close()
-    assert rows[0]["cost_usd"] is None
-
-
-def test_migration_0029_lets_an_existing_ledger_hold_null(tmp_path):
-    """0001 declared cost_usd NOT NULL; 0029 relaxes it in place, keeping rows,
-    and a connection opened before the migration sees the new definition."""
-    from somm_core.schema import _list_migrations, ensure_schema
-    from somm_core.version import SCHEMA_VERSION
-
-    path = tmp_path / "v28.sqlite"
-    insert = (
-        "INSERT INTO calls (id, ts, project, provider, model, cost_usd, prompt_hash, "
-        "response_hash) VALUES (?, '2026-11-01', 'p', 'x', 'y', ?, 'h', 'h')"
-    )
-    with sqlite3.connect(path) as conn:
-        for version, migration in _list_migrations():
-            if version > 28:
-                continue
-            conn.executescript(migration.read_text())
-            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
-        conn.execute(insert, ("old", 0.25))
-        conn.commit()
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(insert, ("null-before", None))
-    early = sqlite3.connect(path)
-    with sqlite3.connect(path) as conn:
-        assert ensure_schema(conn) == SCHEMA_VERSION
-        assert ensure_schema(conn) == SCHEMA_VERSION  # idempotent
-    early.execute(insert, ("null-after", None))
-    early.commit()
-    assert early.execute("SELECT id, cost_usd FROM calls ORDER BY id").fetchall() == [
-        ("null-after", None),
-        ("old", 0.25),
-    ]
-    assert early.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-    early.close()
+    assert rows[0]["cost_source"] == "unknown:no-price"
+    assert _fmt_cost(rows[0]) == "unknown"
+    assert _fmt_cost({"cost_usd": 0.0, "cost_source": "local-included-unpriced"}) == "$0.0000"
 
 
 # ---- streamed rows -----------------------------------------------------------

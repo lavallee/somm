@@ -60,9 +60,9 @@ def test_cost_for_call_computes_from_prices(tmp_path):
     assert cost == round(0.00045, 8)
 
 
-def test_cost_for_call_returns_none_when_missing(tmp_path):
+def test_cost_for_call_returns_zero_when_missing(tmp_path):
     repo = _tmp_repo(tmp_path)
-    assert cost_for_call(repo, "unknown", "unknown", 1000, 500) is None
+    assert cost_for_call(repo, "unknown", "unknown", 1000, 500) == 0.0
 
 
 def test_cost_for_call_zero_for_local(tmp_path):

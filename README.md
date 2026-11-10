@@ -653,12 +653,14 @@ accounting should treat the dollar amount as unavailable until a local rate
 model is supplied.
 
 When somm has no price for the (provider, model), as with a self-hosted
-endpoint, an unlisted model, or a seat with no reported cost, `cost_usd` is
-`None` (NULL in the ledger) with `cost_basis="unknown"` and
-`cost_source="unknown:no-price"`, never `0.0`; averages skip those calls
-rather than counting them as free. Daily budget caps sum known costs only, so
-calls with an unknown price do not count toward a cap; `somm doctor` reports
-how many there were in the last 30 days, by provider. Once a price exists,
+endpoint, an unlisted model, or a seat with no reported cost, the call records
+`cost_usd = 0.0` with `cost_basis="unknown"` and
+`cost_source="unknown:no-price"`. That source is the only way to tell an
+unknown price from a free one (`somm_core.cost.cost_is_known`); somm's own
+averages and comparisons leave those calls out rather than count them as free.
+Daily budget caps sum known costs only, so calls with an unknown price do not
+count toward a cap; `somm doctor` reports how many there were in the last 30
+days, by provider. Once a price exists,
 `somm backfill-costs` fills them in. Prompt-cache reads and writes are priced
 at the model's cache rates where the bundled snapshot or models.dev publishes
 them, and at the full input rate where it does not.

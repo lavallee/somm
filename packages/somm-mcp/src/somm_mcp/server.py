@@ -40,6 +40,7 @@ from somm.errors import SommPrivacyViolation
 from somm.prompts import register_prompt
 from somm_core.config import Config
 from somm_core.config import load as load_config
+from somm_core.cost import known_cost_sql
 from somm_core.models import PrivacyClass
 from somm_core.parse import stable_hash
 from somm_core.read import search_calls
@@ -794,11 +795,7 @@ def build_server(
                 },
                 "deltas": {
                     "latency_ms": r.latency_ms - original["latency_ms"],
-                    "cost_usd": (
-                        r.cost_usd - original["cost_usd"]
-                        if r.cost_usd is not None and original["cost_usd"] is not None
-                        else None
-                    ),
+                    "cost_usd": r.cost_usd - (original["cost_usd"] or 0),
                     "tokens_out_pct": (
                         100
                         * (r.tokens_out - original["tokens_out"])
@@ -898,11 +895,11 @@ def _shadow_ranking(repo: Repository, workload_id: str, since_days: int) -> list
     """Top-5 (provider, model) for this workload by shadow-eval score."""
     with repo._open() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT c.provider, c.model,
                    AVG(COALESCE(er.structural_score, er.embedding_score)) AS score,
                    AVG(c.latency_ms) AS latency_ms,
-                   AVG(c.cost_usd)   AS cost_usd,
+                   AVG(CASE WHEN {known_cost_sql("c.")} THEN c.cost_usd END) AS cost_usd,
                    COUNT(er.id)      AS n_evals
             FROM eval_results er
             JOIN calls c ON c.id = er.call_id
@@ -952,7 +949,7 @@ def _fetch_call_with_sample(repo: Repository, call_id: str) -> dict | None:
         "tokens_in": row[3],
         "tokens_out": row[4],
         "latency_ms": row[5],
-        "cost_usd": row[6],
+        "cost_usd": row[6] or 0,
         "outcome": row[7],
         "workload_id": row[8],
         "workload_name": row[9],

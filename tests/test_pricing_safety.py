@@ -101,7 +101,7 @@ def test_warn_missing_pricing_for_paid_provider():
     with redirect_stderr(buf):
         cost = cost_for_call(repo, "anthropic", "claude-unknown-99", 1000, 500)
 
-    assert cost is None  # unknown, not free
+    assert cost == 0.0  # recorded 0.0; cost_source says unknown
     warning = buf.getvalue()
     assert "WARNING" in warning
     assert "anthropic/claude-unknown-99" in warning

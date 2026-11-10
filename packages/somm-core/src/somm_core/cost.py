@@ -29,8 +29,20 @@ if TYPE_CHECKING:
 _PLANS_LOCK = threading.Lock()
 _plans_cache: tuple[Path, float | None, dict] | None = None
 
-# cost_source of a call whose price somm did not know (cost_usd NULL).
+# cost_source of a call whose price somm did not know. Its cost_usd is 0.0
+# (the column is NOT NULL), so this source is the one way to tell an unknown
+# price from a free one.
 UNKNOWN_COST_SOURCE = "unknown:no-price"
+
+
+def cost_is_known(cost_source: str | None) -> bool:
+    """False for a row whose 0.0 means "price unknown", not "free"."""
+    return not (cost_source or "").startswith("unknown:")
+
+
+def known_cost_sql(alias: str = "") -> str:
+    """SQL predicate twin of ``cost_is_known``; ``alias`` like ``"c."``."""
+    return f"COALESCE({alias}cost_source, '') NOT LIKE 'unknown:%'"
 
 _PRICING_VERSION_TTL_S = 300.0
 _pricing_lock = threading.Lock()
@@ -101,7 +113,7 @@ def cost_provenance(
 
     A reported figure is what the provider said it charged. An Ollama call is
     ``included``: zero metered price, not zero economic cost. A call with no
-    known price (``cost_usd`` NULL) is ``unknown`` throughout, with source
+    known price (recorded as 0.0) is ``unknown`` throughout, with source
     ``unknown:no-price``. Anything else is computed from ``model_intel`` and
     says which pricing row it used.
     """

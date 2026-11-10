@@ -2245,7 +2245,15 @@ class Repository:
                                 THEN ((latency_ms - ttft_ms) * 1.0 / (tokens_out - 1))
                             END
                         ) AS tpot_ms,
-                        AVG(CASE WHEN outcome = 'ok' THEN cost_usd END) AS mean_cost_per_ok_call,
+                        -- An unknown price is recorded as 0.0; it must not
+                        -- make a model look free (somm_core.cost.known_cost_sql).
+                        AVG(
+                            CASE
+                                WHEN outcome = 'ok'
+                                 AND COALESCE(cost_source, '') NOT LIKE 'unknown:%'
+                                THEN cost_usd
+                            END
+                        ) AS mean_cost_per_ok_call,
                         SUM(cost_usd) AS total_cost_usd
                     FROM v_calls_classified
                     WHERE workload_id = ?

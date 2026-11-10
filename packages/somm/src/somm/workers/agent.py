@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from somm_core.cost import known_cost_sql
+
 if TYPE_CHECKING:
     from somm_core.repository import Repository
 
@@ -134,12 +136,12 @@ class AgentWorker:
             # Per (workload_id, prod model/provider): aggregate eval scores
             # (structural_score and embedding_score are both 0..1-ish).
             prod_rows = conn.execute(
-                """
+                f"""
                 SELECT c.workload_id, c.provider, c.model,
                        AVG(COALESCE(er.structural_score, er.embedding_score)) AS score,
                        COUNT(er.id) AS n_evals,
                        AVG(c.latency_ms) AS latency_ms,
-                       AVG(c.cost_usd)   AS cost_usd,
+                       AVG(CASE WHEN {known_cost_sql("c.")} THEN c.cost_usd END) AS cost_usd,
                        w.name
                 FROM eval_results er
                 JOIN calls c ON c.id = er.call_id
@@ -165,7 +167,8 @@ class AgentWorker:
                     "score": r[3] or 0,
                     "n_evals": r[4],
                     "latency_ms": r[5] or 0,
-                    # None when no call in the group had a known price.
+                    # None when no call in the group had a known price
+                    # (unknown prices are recorded as 0.0, not free).
                     "cost_usd": r[6],
                     "workload_name": r[7],
                 }
