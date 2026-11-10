@@ -2589,9 +2589,12 @@ def _print_north_star(db_path: Path, *, global_view: bool) -> None:
 
             keys = ("acted", "eligible", "pending", "applied")
             total = dict.fromkeys(keys, 0)
+            # Count each file once: several project names can share a ledger.
+            seen = {Path(db_path).resolve()}
             for _project, path in registered_ledgers():
-                if Path(path).resolve() == Path(db_path).resolve() or not Path(path).exists():
+                if Path(path).resolve() in seen or not Path(path).exists():
                     continue
+                seen.add(Path(path).resolve())
                 rec = north_star(Path(path))["recommendations_applied"]
                 for k in keys:
                     total[k] += rec.get(k, 0)
@@ -2780,14 +2783,18 @@ def _unknown_cost_by_provider(repo: Repository, days: int = 30) -> list[tuple[st
 def _workloads_without_output_schema(
     repo: Repository, *, min_calls: int = _OUTPUT_SCHEMA_MIN_CALLS
 ) -> list[tuple[str, str, int]]:
-    """Workloads with real traffic and no declared output schema, busiest first."""
+    """Workloads with real traffic and no declared output schema, busiest first.
+
+    Credited to ``calls.project``: a workload id is name + schemas, so in a
+    mirror two projects declaring the same workload share one workloads row,
+    owned by whichever registered first."""
     with repo._open() as conn:
         rows = conn.execute(
-            "SELECT w.project, w.name, COUNT(c.id) AS n "
+            "SELECT c.project, w.name, COUNT(c.id) AS n "
             "FROM workloads w JOIN calls c ON c.workload_id = w.id "
             "WHERE w.output_schema_json IS NULL "
             "OR TRIM(w.output_schema_json) IN ('', 'null', '{}') "
-            "GROUP BY w.project, w.name HAVING n >= ? ORDER BY n DESC",
+            "GROUP BY c.project, w.name HAVING n >= ? ORDER BY n DESC",
             (min_calls,),
         ).fetchall()
     return [(r[0], r[1], r[2]) for r in rows]

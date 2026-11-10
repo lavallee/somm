@@ -169,7 +169,7 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                 WITH base AS (
                     SELECT
                         c.project,
-                        COALESCE(w.name, '(unregistered)') AS workload,
+                        COALESCE(wn.name, '(unregistered)') AS workload,
                         c.provider,
                         c.model,
                         c.tokens_in,
@@ -184,6 +184,12 @@ def _serving_stats_sql(*, include_project: bool) -> str:
                         w.max_p95_ttft_ms AS goodput_slo_ttft_ms,
                         w.max_tpot_ms AS goodput_slo_tpot_ms
                     FROM calls c
+                    -- The name comes with the id (it is hashed into it), so any
+                    -- row for the id names it; settings such as SLOs belong to
+                    -- the project, so they come only from the caller's own row.
+                    -- In a mirror two projects can share one id and one row.
+                    LEFT JOIN workloads wn
+                      ON wn.id = c.workload_id
                     LEFT JOIN workloads w
                       ON w.id = c.workload_id
                      AND w.project = c.project
