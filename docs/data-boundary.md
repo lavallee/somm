@@ -166,8 +166,8 @@ response names it. With none, the route is refused like any other; a roster
 walk moves to its next model. With fallbacks off, a pinned request fails
 (and the roster or chain moves on) when none of its endpoints can serve it,
 rather than reaching one that retains. The tier is `zdr` only when the pin is on the
-wire, so streams (which are not pinned) are not promoted. The proxy dispatches
-through `generate`, so its calls are promoted like any other.
+wire; streams walk the roster and pin each model as `generate` does, and the
+proxy dispatches through the same client, so all are promoted alike.
 
 Under the default boundary nothing here runs: requests are unchanged and the
 lists are never fetched. Otherwise they are fetched on first need, at most
@@ -186,7 +186,7 @@ Every place a request can leave the process calls the same `admit()` check:
 | Path | When no admissible route remains |
 |---|---|
 | `generate` / `agenerate`, routed | Inadmissible providers are dropped before the attempt loop; if none remain, `SommPrivacyViolation` |
-| `stream` / `astream` | Same, before the first candidate is opened |
+| `stream` / `astream` | Same path as `generate`, before the first candidate is opened |
 | Pinned call (`provider=`, `model=`) | Raises; a pin does not override a boundary, and `allow_fallback=True` does not rescue it |
 | Workload routing policy | The policy's fallback chain is checked the same way |
 | OpenRouter roster walk | Checked per roster model; only admissible models are tried |

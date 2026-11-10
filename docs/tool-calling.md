@@ -112,6 +112,14 @@ Add `tools` to the model_intel capabilities set. Workloads that need tool-callin
 
 Seeded `model_intel` rows for known tool-capable models (Claude 3+, GPT-4+, Gemini 1.5+, etc.) get the `tools` capability set in a one-off seeding pass — separate, small follow-up commit.
 
+## Streaming
+
+`stream(..., tools=..., events=True)` yields `somm.events.ToolCallDelta(index, id,
+name, arguments)` fragments as they arrive: `id` and `name` on a call's first
+fragment, then pieces of its JSON argument string. The final `StreamDone.result`
+carries the assembled `tool_calls`, exactly as `generate` returns them. Adapters
+that answer in one piece still emit one fragment per call.
+
 ## Telemetry
 
 For this round: tool calls live on `SommResult.tool_calls` and inside `raw`. No schema migration. The `calls.sqlite` `calls` row keeps its current shape; `tool_calls_count` derivable from `raw_json` if needed later.
@@ -120,7 +128,6 @@ Schema bump (proposed 0008) deferred — adds dedicated columns (`tool_calls_cou
 
 ## Out of scope tonight
 
-- Streaming tool calls (incremental tool-arg deltas over SSE).
 - Tool-choice cost shaping (e.g., banning expensive tools when budget tight).
 - Tool-result auto-truncation policy when results exceed model context.
 - Parallel tool calls in a single turn — supported by passing the response through unchanged; no special handling needed.
