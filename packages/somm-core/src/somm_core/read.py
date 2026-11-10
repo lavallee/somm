@@ -47,7 +47,9 @@ def spend_today(
             SELECT
                 COALESCE(w.name, ?) AS workload,
                 SUM(c.cost_usd) AS spent_usd,
-                MAX(w.budget_cap_usd_daily) AS cap_usd
+                -- A workload id is shared by every project that declares the
+                -- same name and schemas; only this project's row sets its cap.
+                MAX(CASE WHEN w.project = c.project THEN w.budget_cap_usd_daily END) AS cap_usd
             FROM calls c
             LEFT JOIN workloads w ON w.id = c.workload_id
             WHERE c.project = ?
@@ -412,7 +414,8 @@ def _decisions_recalled(conn: sqlite3.Connection) -> dict:
             FROM (
                 SELECT d.recalled_from,
                        (d.workload_id IS NOT NULL AND NOT EXISTS (
-                           SELECT 1 FROM calls c WHERE c.workload_id = d.workload_id
+                           SELECT 1 FROM calls c
+                           WHERE c.workload_id = d.workload_id AND c.project = d.project
                        )) AS residue
                 FROM decisions d
             )
