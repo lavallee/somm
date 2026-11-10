@@ -978,6 +978,7 @@ provider is opt-in via its own env var.
 | `OPENAI_API_KEY` | — | enables OpenAI |
 | `SOMM_OPENAI_MODEL` | `gpt-6-luna` | |
 | `SOMM_OPENAI_BASE_URL` | `https://api.openai.com/v1` | for OpenAI-compatible gateways |
+| `SOMM_OPENAI_ENDPOINTS` | — | extra named OpenAI-compatible endpoints, comma-separated: `name=URL [model=M] [key_env=VAR]`; reachable by pin, in the chain only via `SOMM_PROVIDER_ORDER` ([rented GPUs](docs/rented-gpus.md#calling-a-model-served-on-a-rented-box)) |
 | `PERPLEXITY_API_KEY` | — | enables Perplexity (meant to be pinned for grounded answers; with a key set it also joins the default chain, after OpenAI) |
 | `SOMM_PERPLEXITY_MODEL` | `sonar` | |
 | `SOMM_HTTP_TIMEOUT` | `180` | seconds, every HTTP provider; `timeout=` overrides it per call |

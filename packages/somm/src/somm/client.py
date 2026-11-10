@@ -81,6 +81,7 @@ from somm.providers.base import (
 from somm.providers.registry import (
     BUILTIN_PROVIDER_SPECS,
     ProviderSpec,
+    endpoint_provider_specs,
     load_entrypoint_provider_specs,
 )
 from somm.routing import (
@@ -563,13 +564,17 @@ def build_default_providers(config: Config, tracker=None, full: bool = False) ->
     Third-party entry-point providers are appended after built-ins in the
     default routing chain when they declare ``default_order_rank``; ranked
     plugins are ordered by ``(rank, name)`` for deterministic routing.
+    Endpoints named in SOMM_OPENAI_ENDPOINTS have no rank: they join the
+    chain only when SOMM_PROVIDER_ORDER lists them, and are otherwise
+    reachable by pin.
     """
     logger = logging.getLogger("somm.providers")
     specs: list[ProviderSpec] = list(BUILTIN_PROVIDER_SPECS)
     builtin_names = {spec.name for spec in specs}
     seen_names = set(builtin_names)
     plugin_specs: list[ProviderSpec] = []
-    for spec in load_entrypoint_provider_specs():
+    # Configured endpoints (SOMM_OPENAI_ENDPOINTS) first, then plugins.
+    for spec in [*endpoint_provider_specs(config), *load_entrypoint_provider_specs()]:
         if spec.name in builtin_names:
             logger.warning("skipping provider spec %r: provider name is built in", spec.name)
             continue

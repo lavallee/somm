@@ -29,6 +29,8 @@ def _boundary_base_urls(cfg) -> dict[str, str]:
     urls = {"ollama": cfg.ollama_url}
     if getattr(cfg, "openai_base_url", None):
         urls["openai"] = cfg.openai_base_url
+    for endpoint in getattr(cfg, "openai_endpoints", None) or []:
+        urls.setdefault(endpoint["name"], endpoint["base_url"])
     return urls
 
 

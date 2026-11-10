@@ -14,15 +14,17 @@ The spec factory is called as ``factory(config, tracker)`` and should return a
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from importlib.metadata import entry_points
 from typing import Any
 
 from somm_core.config import Config
 
 from somm.providers._cli_bin import BinaryLookup, resolve_cli_binary
+from somm.providers._openai_compat import OpenAICompatProvider
 from somm.providers.anthropic import AnthropicProvider
 from somm.providers.base import SommProvider
 from somm.providers.claude_cli import ClaudeCLIProvider
@@ -212,6 +214,47 @@ BUILTIN_PROVIDER_SPECS: list[ProviderSpec] = [
 ]
 
 
+def endpoint_provider_specs(config: Config) -> list[ProviderSpec]:
+    """Named OpenAI-compatible endpoints from configuration
+    (``SOMM_OPENAI_ENDPOINTS``, parsed into ``config.openai_endpoints``).
+
+    Each is reachable by pin and joins the routing chain only when
+    ``SOMM_PROVIDER_ORDER`` names it (``default_order_rank=None``). A name
+    that is a built-in provider's is skipped. Its data tier follows the
+    usual rules (a loopback or private base URL is ``local``, anything else
+    ``unvetted`` until boundary.toml declares it), and with no price in
+    somm's intel its calls record ``cost_source = "unknown:no-price"``.
+    """
+    builtin = {spec.name for spec in BUILTIN_PROVIDER_SPECS}
+    specs: list[ProviderSpec] = []
+    for endpoint in config.openai_endpoints or []:
+        if endpoint["name"] in builtin:
+            LOGGER.warning(
+                "skipping SOMM_OPENAI_ENDPOINTS entry %r: provider name is built in",
+                endpoint["name"],
+            )
+            continue
+        specs.append(ProviderSpec(endpoint["name"], partial(_endpoint, endpoint), None))
+    return specs
+
+
+def _endpoint(endpoint: dict[str, str], config: Config, tracker: Any) -> SommProvider | None:
+    key_env = endpoint.get("key_env") or ""
+    # A self-run server often takes no key; one that names a key env var
+    # it cannot find is not configured.
+    api_key = os.environ.get(key_env, "") if key_env else "none"
+    if not api_key:
+        return None
+    provider = OpenAICompatProvider(
+        api_key=api_key,
+        base_url=endpoint["base_url"],
+        default_model=endpoint.get("model") or "",
+        timeout=config.http_timeout,
+    )
+    provider.name = endpoint["name"]
+    return provider
+
+
 def _coerce_entrypoint_spec(entry_point_name: str, loaded: object) -> ProviderSpec | None:
     candidate = loaded
     if not isinstance(candidate, ProviderSpec) and callable(candidate):
@@ -290,7 +333,8 @@ def build_pinned_only_providers(
     *,
     exclude: set[str] | frozenset[str] | None = None,
 ) -> dict[str, SommProvider]:
-    """Build the out-of-chain executors that are available on this machine.
+    """Build the out-of-chain executors that are available on this machine:
+    the seats, and any configured OpenAI-compatible endpoints.
 
     ``exclude`` drops names the caller already has in its chain, so a chain
     member always wins over a pinned-only copy — one provider instance per
@@ -303,8 +347,9 @@ def build_pinned_only_providers(
     """
     skip = set(exclude or ())
     built: dict[str, SommProvider] = {}
-    for spec in BUILTIN_PROVIDER_SPECS:
-        if spec.name not in PINNED_ONLY_PROVIDER_NAMES or spec.name in skip:
+    seats = [spec for spec in BUILTIN_PROVIDER_SPECS if spec.name in PINNED_ONLY_PROVIDER_NAMES]
+    for spec in [*seats, *endpoint_provider_specs(config)]:
+        if spec.name in skip:
             continue
         try:
             provider = spec.factory(config, tracker)
