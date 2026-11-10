@@ -478,7 +478,24 @@ tracebacks or provider-specific messages.
 | `somm_record_decision` | persist the outcome of a sommelier conversation (cross-project) |
 | `somm_search_decisions` | recall prior decisions — globally by default |
 
-Add to Claude Code / Cursor / Windsurf:
+#### Connect your coding agent
+
+```bash
+somm mcp install      # register the MCP server (Claude Code, Codex)
+somm skill install    # link the somm skill so agents write somm-aware code
+somm mcp status       # and `somm skill status`; `somm doctor` shows both too
+```
+
+Each takes `--harness claude|codex` (default: every one found on PATH),
+`--print` to show what would run without changing anything, and
+`uninstall` reverses it. `mcp install` hands off to `claude mcp add` /
+`codex mcp add` (`--scope project` for Claude's `.mcp.json`), using the
+absolute path of the current Python so the harness can launch it; if the
+harness CLI is missing it prints the snippet to paste. `skill install`
+symlinks the installed `somm-skill` package into `~/.claude/skills/somm` and
+`~/.agents/skills/somm` (Codex), so upgrading the package updates the skill;
+`status` reports a link that has gone stale. Needs `somm-mcp` / `somm-skill`
+installed in the same environment. For Cursor, Windsurf and others, paste:
 
 ```json
 {
