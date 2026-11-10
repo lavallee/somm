@@ -162,7 +162,7 @@ def _cmd_boundary_routes(args: argparse.Namespace) -> int:
 
 
 def _cmd_boundary_audit(args: argparse.Namespace) -> int:
-    from somm_core.boundary import audit
+    from somm_core.boundary_audit import audit
 
     cfg = _common.load_config(project=args.project)
     try:

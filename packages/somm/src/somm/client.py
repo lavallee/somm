@@ -1539,42 +1539,22 @@ class SommLLM:
         max_tokens: int | None = None,
         route_source: str = "default",
     ) -> None:
-        """One calls row for demand the boundary turned away.
+        """One calls row for demand the boundary turned away (see
+        :func:`somm.boundary.refusal_call`). ``routing_json`` lists every
+        refused route with reason ``boundary``."""
+        from somm.boundary import refusal_call
 
-        outcome is ``unknown`` (an existing value: consumers that switch on
-        outcome must not meet a new one), error_kind ``SommPrivacyViolation``,
-        and error_detail starts ``refused: data_boundary``. No provider was
-        contacted, so provider is empty, cost is zero, data_tier is NULL, and
-        the row is not budget-eligible. ``routing_json`` lists every refused
-        route with reason ``boundary``.
-        """
-        refused = ", ".join(f"{r['provider']}/{r['model'] or '-'}={r['tier']}" for r in exc.refused)
         skipped = [[r["provider"], r["model"] or "", "boundary"] for r in exc.refused]
         route = _route_record(mode, skipped[0][:2] if skipped else None, None, skipped, max_tokens)
-        detail = (
-            f"refused: data_boundary={exc.data_boundary} (from {exc.boundary_source}) "
-            f"| refused routes: {refused or 'none'}"
-        )[:512]
         try:
-            call = Call(
-                id=str(uuid.uuid4()),
-                ts=datetime.now(UTC),
+            call = refusal_call(
+                exc,
                 project=self.config.project,
                 workload_id=wl.id,
-                prompt_id=None,
-                provider="",
-                model=model or "",
-                tokens_in=0,
-                tokens_out=0,
-                latency_ms=0,
-                cost_usd=0.0,
-                outcome=Outcome.UNKNOWN,
-                error_kind="SommPrivacyViolation",
-                error_detail=detail,
+                model=model,
+                prompt_hash=prompt_hash,
                 max_tokens=max_tokens,
                 routing_json=json.dumps({"route_source": route_source, "route": route}),
-                prompt_hash=prompt_hash,
-                response_hash=stable_hash(""),
                 correlation_id=(
                     correlation_id if correlation_id is not None else hooks.current_correlation_id()
                 ),
@@ -1582,13 +1562,9 @@ class SommLLM:
                 parent_call_id=parent_call_id,
                 cost_basis="computed",
                 cost_kind="unknown",
-                cost_accuracy="actual",
-                cost_source=None,
                 observation_role=observation_role or "production",
                 source_call_id=source_call_id,
-                budget_eligible=False,
                 call_site=hooks.current_call_site(),
-                client_version=_CLIENT_VERSION,
             )
             self._finish_call(call, workload=workload, short_circuited=None)
         except Exception:  # noqa: BLE001 — the refusal itself must still raise

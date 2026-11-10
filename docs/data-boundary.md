@@ -131,9 +131,10 @@ parsed, somm ignores all of its promotions and treats every project default as
 anything.
 
 Workload handlers are matched as `handler:<kind>`. A handler class may also
-declare its own tier with a `data_tier` attribute; undeclared is `unvetted`,
-so a bounded workload does not consult it (the boundary-checked provider chain
-answers instead).
+declare `data_tier = "local"` when the data it is handed stays on your
+hardware. Any other declaration, or none, is `unvetted`, so a bounded workload
+does not consult it (the boundary-checked provider chain answers instead)
+unless your file declares `handler:<kind>`.
 
 ## OpenRouter: tiers from evidence
 
@@ -165,9 +166,10 @@ With qualifying endpoints, the request is pinned to exactly them:
 response names it. With none, the route is refused like any other; a roster
 walk moves to its next model. With fallbacks off, a pinned request fails
 (and the roster or chain moves on) when none of its endpoints can serve it,
-rather than reaching one that retains. The tier is `zdr` only when the pin is on the
-wire; streams walk the roster and pin each model as `generate` does, and the
-proxy dispatches through the same client, so all are promoted alike.
+rather than reaching one that retains. The tier is `zdr` only when the pin is
+on the wire. Streams walk the roster and pin each model as `generate` does,
+and the proxy dispatches through the same client, so all three are admitted
+and promoted from the same evidence.
 
 Under the default boundary nothing here runs: requests are unchanged and the
 lists are never fetched. Otherwise they are fetched on first need, at most

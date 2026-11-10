@@ -132,8 +132,8 @@ class RouteTier:
     tier: DataTier
     basis: str
     # "default" (shipped/somm rule), "assumed" (a shipped tier that depends on
-    # an account setting somm cannot see, e.g. a seat's training toggle), or
-    # "owner" (boundary.toml).
+    # an account setting somm cannot see, e.g. a seat's training toggle),
+    # "owner" (boundary.toml), or "evidence" (promoted by live evidence).
     origin: str
     rule: str = ""  # the pattern or rule that matched
     source: str = ""
@@ -163,7 +163,7 @@ class RouteTier:
 @dataclass(frozen=True, slots=True)
 class _Rule:
     tier: DataTier
-    origin: str
+    origin: str  # "owner", "default", or "assumed" (a shipped `assumed = true` rule)
     match: str = ""  # "provider" or "provider/model-glob"
     host: str = ""  # endpoint host glob (owner only)
     hosts: tuple[str, ...] = ()  # hosts a shipped provider tier applies to
@@ -174,14 +174,6 @@ class _Rule:
     confidence: str = ""
     quote: str = ""
     jurisdiction: str = ""
-    assumed: bool = False
-
-    @property
-    def label(self) -> str:
-        """Origin label for reports: owner, assumed, or default."""
-        if self.origin == "owner":
-            return "owner"
-        return "assumed" if self.assumed else "default"
 
     @property
     def provider_pattern(self) -> str:
@@ -240,8 +232,8 @@ class BoundaryPolicy:
         """Classify one route. Never raises; unknown is ``unvetted``.
 
         ``kind="handler"`` classifies a workload handler: its rule name is
-        ``handler:<kind>`` and ``declared_tier`` (the handler's own claim) is
-        used when no rule matches.
+        ``handler:<kind>``. When no rule matches, a handler that declares
+        ``local`` is ``local``; any other declaration is ``unvetted``.
         """
         provider = str(provider or "")
         model = str(model or "")
@@ -283,7 +275,7 @@ class BoundaryPolicy:
         shipped_model = _best(model_rules, name, model)
         if shipped_model is not None:
             return result(shipped_model, shipped_model.tier, shipped_model.basis,
-                          shipped_model.label, shipped_model.match)
+                          shipped_model.origin, shipped_model.match)
         # 3. Endpoint: loopback or private address never leaves your hardware.
         if host and _is_local_host(host):
             return RouteTier(
@@ -304,20 +296,20 @@ class BoundaryPolicy:
                     f"({', '.join(shipped.hosts)})",
                     "default", "endpoint",
                 )
-            return result(shipped, shipped.tier, shipped.basis, shipped.label, shipped.match)
-        # 5. A handler's own declaration.
-        if kind == "handler" and declared_tier is not None:
-            try:
-                tier = parse_tier(declared_tier)
-            except ValueError:
-                tier = DataTier.UNVETTED
+            return result(shipped, shipped.tier, shipped.basis, shipped.origin, shipped.match)
+        # 5. A handler may claim only `local` (its data stays in this process
+        # or on your hardware); a looser claim is no evidence of anything.
+        if kind == "handler" and str(declared_tier or "").strip().lower() == "local":
             return RouteTier(
-                provider=name, model=model, tier=tier,
-                basis=f"declared by the {provider!r} handler", origin="default",
+                provider=name, model=model, tier=DataTier.LOCAL,
+                basis=f"declared local by the {provider!r} handler", origin="default",
                 rule="handler",
             )
         # 6. Fail closed.
-        what = "handler declares no tier" if kind == "handler" else "no rule classifies this route"
+        what = (
+            "handler does not declare local" if kind == "handler"
+            else "no rule classifies this route"
+        )
         return RouteTier(
             provider=name, model=model, tier=DataTier.UNVETTED,
             basis=f"{what}; unknown routes are unvetted", origin="default", rule="fallback",
@@ -355,7 +347,7 @@ class BoundaryPolicy:
                 {
                     "match": rule.match or f"host={rule.host}",
                     "tier": rule.tier.value,
-                    "origin": rule.label,
+                    "origin": rule.origin,
                     "basis": rule.note if rule.origin == "owner" else rule.basis,
                     "hosts": list(rule.hosts),
                     "source": rule.source,
@@ -432,10 +424,12 @@ def _parse_rules(data: dict, origin: str) -> list[_Rule]:
             # A rule with a bad tier fails closed rather than vanishing.
             tier = DataTier.UNVETTED
         hosts = entry.get("hosts") or ()
+        # Only shipped rules can be "assumed"; an owner rule is a declaration.
+        assumed = origin == "default" and entry.get("assumed") is True
         rules.append(
             _Rule(
                 tier=tier,
-                origin=origin,
+                origin="assumed" if assumed else origin,
                 match=match,
                 host=host,
                 hosts=tuple(str(h).lower() for h in hosts) if isinstance(hosts, list) else (),
@@ -446,8 +440,6 @@ def _parse_rules(data: dict, origin: str) -> list[_Rule]:
                 confidence=str(entry.get("confidence", "") or ""),
                 quote=str(entry.get("quote", "") or ""),
                 jurisdiction=str(entry.get("jurisdiction", "") or ""),
-                # Only shipped rules can be "assumed"; an owner rule is a declaration.
-                assumed=bool(entry.get("assumed", False)) and origin == "default",
             )
         )
     return rules
@@ -641,117 +633,8 @@ def refusal_message(
     )
 
 
-# ---------------------------------------------------------------------------
-# Audit
-
-
+# Written as calls.error_kind on a boundary refusal row.
 REFUSAL_ERROR_KIND = "SommPrivacyViolation"
-
-
-def audit(
-    conn,
-    project: str,
-    *,
-    since_days: float = 30.0,
-    policy: BoundaryPolicy | None = None,
-    base_urls: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
-    """Per workload: declared and effective boundary, and the worst tier that
-    actually carried its data in the window, from the ledger.
-
-    Rows written before ``calls.data_tier`` existed are classified from
-    provider/model at read time (``base_urls`` maps a provider name to the
-    endpoint to assume, e.g. the configured Ollama URL). Every row that
-    reached a provider counts, whatever its outcome: a failed call still sent
-    its prompt. Boundary refusals (no provider) are counted separately.
-    ``violation`` is True when the worst tier is looser than the effective
-    boundary.
-    """
-    policy = policy or load_policy()
-    base_urls = base_urls or {}
-    since = f"-{float(since_days)} days"
-    workloads = conn.execute(
-        "SELECT id, name, privacy_class, data_boundary FROM workloads WHERE project = ?",
-        (project,),
-    ).fetchall()
-    by_id: dict[str, dict[str, Any]] = {}
-    for wid, name, privacy, stored in workloads:
-        stub = _AuditWorkload(name=name, privacy_class=privacy, data_boundary=stored)
-        effective = resolve_boundary(stub, project=project, policy=policy)
-        by_id[wid] = {
-            "workload": name,
-            "workload_id": wid,
-            "privacy_class": privacy,
-            "declared_boundary": stored,
-            "effective_boundary": effective.tier.value,
-            "boundary_source": effective.source,
-            "calls": 0,
-            "refusals": 0,
-            "worst_tier": None,
-            "violation": False,
-            "assumed": False,
-            "routes": [],
-        }
-    rows = conn.execute(
-        "SELECT workload_id, provider, model, data_tier, error_kind, COUNT(*) "
-        "FROM calls WHERE project = ? AND ts >= datetime('now', ?) "
-        "GROUP BY workload_id, provider, model, data_tier, error_kind",
-        (project, since),
-    ).fetchall()
-    for wid, provider, model, data_tier, error_kind, n in rows:
-        entry = by_id.get(wid)
-        if entry is None:
-            continue
-        if not provider:
-            if error_kind == REFUSAL_ERROR_KIND:
-                entry["refusals"] += n
-            continue
-        route = policy.classify(provider, model, base_url=base_urls.get(provider))
-        if data_tier:
-            try:
-                tier = parse_tier(data_tier)
-                basis, recorded = "recorded at call time", True
-            except ValueError:
-                tier, basis, recorded = DataTier.UNVETTED, f"unknown recorded tier {data_tier!r}", True
-        else:
-            tier, basis, recorded = route.tier, f"classified now: {route.basis}", False
-        entry["calls"] += n
-        entry["routes"].append(
-            {
-                "provider": provider,
-                "model": model,
-                "tier": tier.value,
-                "calls": n,
-                "recorded": recorded,
-                "origin": route.origin,
-                "basis": basis,
-            }
-        )
-        worst = entry["worst_tier"]
-        if worst is None or tier.rank > parse_tier(worst).rank:
-            entry["worst_tier"] = tier.value
-    out = []
-    for entry in by_id.values():
-        if entry["worst_tier"] is not None:
-            entry["violation"] = (
-                parse_tier(entry["worst_tier"]).rank > parse_tier(entry["effective_boundary"]).rank
-            )
-        entry["routes"].sort(key=lambda r: (-parse_tier(r["tier"]).rank, -r["calls"]))
-        # "assumed": the worst route's tier rests on an account setting somm
-        # cannot see (a seat), so the clean result is only as good as that.
-        entry["assumed"] = any(
-            r["origin"] == "assumed" and r["tier"] == entry["worst_tier"] for r in entry["routes"]
-        )
-        out.append(entry)
-    out.sort(key=lambda e: (not e["violation"], -e["calls"], e["workload"]))
-    return out
-
-
-@dataclass(frozen=True, slots=True)
-class _AuditWorkload:
-    name: str
-    privacy_class: str
-    data_boundary: str | None
 
 
 __all__ = [
@@ -771,3 +654,6 @@ __all__ = [
     "refusal_message",
     "resolve_boundary",
 ]
+
+# The ledger audit lives in its own module; re-exported here for old imports.
+from somm_core.boundary_audit import audit  # noqa: E402
