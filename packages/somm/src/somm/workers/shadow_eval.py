@@ -37,6 +37,7 @@ Shadow config shape (stored as JSON on workloads.shadow_config_json):
 from __future__ import annotations
 
 import json
+import sqlite3
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -584,18 +585,36 @@ class ShadowEvalWorker:
 
         The replay used to hard-code temperature 0 and 1024 tokens. Rows
         written before the client recorded params (both NULL) keep those
-        defaults. Not replayed because the capture does not keep them: the
-        system prompt, tools and tool_choice, response_format and
-        reasoning_effort."""
+        defaults. A sample captured since schema 31 also carries the rest of
+        the request (system prompt, tools, tool choice, response format,
+        reasoning effort) in ``samples.request_json``; when it is there the
+        gold model is asked the same request, not just the same prompt."""
         with self.repo._open() as conn:
             row = conn.execute(
                 "SELECT temperature, max_tokens FROM calls WHERE id = ?", (call_id,)
             ).fetchone()
+            try:
+                captured = conn.execute(
+                    "SELECT request_json FROM samples WHERE call_id = ?", (call_id,)
+                ).fetchone()
+            except sqlite3.Error:  # a ledger older than schema 31
+                captured = None
         temperature, max_tokens = row if row else (None, None)
-        return {
+        params: dict[str, Any] = {
             "temperature": 0.0 if temperature is None else float(temperature),
             "max_tokens": 1024 if not max_tokens else int(max_tokens),
         }
+        try:
+            request = json.loads(captured[0]) if captured and captured[0] else {}
+        except (TypeError, ValueError):
+            request = {}
+        for key in ("system", "tools", "tool_choice", "response_format", "reasoning_effort"):
+            if request.get(key):
+                params[key] = request[key]
+        for key in ("temperature", "max_tokens"):
+            if request.get(key) is not None:
+                params[key] = request[key]
+        return params
 
     def _fetch_bodies(self, call_id: str) -> tuple[str | None, str | None]:
         with self.repo._open() as conn:
