@@ -5,7 +5,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
-## [Unreleased]
+## [0.20.2] — 2026-11-09
 
 ### Fixed
 - **One bad telemetry row killed the writer thread.** A row SQLite could not bind or
