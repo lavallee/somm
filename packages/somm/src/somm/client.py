@@ -3614,6 +3614,35 @@ class SommLLM:
             parent_call_id=parent_call_id,
         )
 
+    def decide_many(
+        self,
+        text: Any,
+        *,
+        questions: dict[str, dict],
+        workload: str = "default",
+        context: Any = None,
+        min_p: float | None = None,
+        model: str | None = None,
+        timeout: float | None = None,
+        long_context: bool = False,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+    ):
+        """Ask a decision model several named questions about ``text`` in one request.
+
+        ``questions`` maps a name to ``{"ask": ..., "labels" | "scale": ...,
+        "min_p": ...}`` (the same arguments as ``decide``). Returns a dict of
+        name -> ``somm.decide.DecisionResult`` in the order given; one
+        ``calls`` row records the request. See docs/decisions.md.
+        """
+        from somm.decide import decide_many
+
+        return decide_many(
+            self, text, questions=questions, workload=workload, context=context,
+            min_p=min_p, model=model, timeout=timeout, long_context=long_context,
+            session_id=session_id, parent_call_id=parent_call_id,
+        )
+
 
 def llm(**kwargs) -> SommLLM:
     """Factory matching the plan's `somm.llm(project=...)` signature."""
