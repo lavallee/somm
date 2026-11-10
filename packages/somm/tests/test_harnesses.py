@@ -148,9 +148,8 @@ def test_claude_argv_and_result(tmp_path: Path) -> None:
         executable="/opt/claude",
     )
     argv = adapter.build_argv(request)
-    assert argv[:2] == ["/opt/claude", "-p"]
-    assert "do it" not in argv
-    assert adapter.stdin_data(request) == "do it"
+    assert argv[:3] == ["/opt/claude", "-p", "do it"]
+    assert adapter.stdin_data(request) is None
     assert argv[argv.index("--model") + 1] == "sonnet"
     assert argv[argv.index("--effort") + 1] == "high"
     assert argv[argv.index("--max-turns") + 1] == "20"
@@ -997,16 +996,45 @@ def test_opencode_unknown_version_keeps_v1_flags(tmp_path: Path) -> None:
 _FLAG_PROMPT = "--dangerously-skip-permissions do x"
 
 
-def test_claude_harness_sends_a_flag_like_prompt_on_stdin(tmp_path: Path) -> None:
-    # claude rejects a bare `--` ("unknown option '--'"), so the prompt goes
-    # on stdin, which is how somm's claude-cli provider already feeds `-p`.
+def test_claude_harness_follows_the_request_for_where_the_prompt_goes(tmp_path: Path) -> None:
+    """A runner that launches the process itself reads `prompt_via_stdin` to
+    decide whether to write stdin, so the adapter must honour the flag and
+    never move the prompt on its own (0.20.2–0.24.0 did, leaving such a
+    runner with an empty prompt)."""
     adapter = harnesses.get("claude-cli")
-    request = _request(tmp_path, prompt=_FLAG_PROMPT, allow_unsafe=False)
-    argv = adapter.build_argv(request)
-    assert _FLAG_PROMPT not in argv
-    assert "--dangerously-skip-permissions" not in argv
-    assert adapter.stdin_data(request) == _FLAG_PROMPT
+
+    in_argv = _request(tmp_path, prompt="do it", allow_unsafe=False)
+    assert adapter.build_argv(in_argv)[:3] == [in_argv.resolved_executable("claude"), "-p", "do it"]
+    assert adapter.stdin_data(in_argv) is None
+
+    on_stdin = _request(tmp_path, prompt="do it", prompt_via_stdin=True, allow_unsafe=False)
+    assert "do it" not in adapter.build_argv(on_stdin)
+    assert adapter.stdin_data(on_stdin) == "do it"
+
+
+def test_claude_harness_keeps_a_flag_like_prompt_from_being_an_option(tmp_path: Path) -> None:
+    # claude rejects a bare `--`, so in argv a prompt that starts with "-"
+    # gets a leading space: it is then `-p`'s argument, not an option.
+    adapter = harnesses.get("claude-cli")
+    argv = adapter.build_argv(_request(tmp_path, prompt=_FLAG_PROMPT, allow_unsafe=False))
+    assert argv[2] == " " + _FLAG_PROMPT
+    assert not any(a.startswith("--dangerously") for a in argv)
     assert adapter.capabilities.prompt_via_stdin
+
+
+def test_somm_launch_moves_a_long_prompt_to_stdin(tmp_path: Path, monkeypatch) -> None:
+    adapter = harnesses.get("claude-cli")
+    seen = {}
+
+    def fake_launch(argv, req, *, stdin_data=None, **kwargs):
+        seen.update(argv=argv, stdin_data=stdin_data)
+        return object()
+
+    monkeypatch.setattr("somm.harnesses.base.launch_process", fake_launch)
+    long_prompt = "x" * 200_000
+    adapter.start(_request(tmp_path, prompt=long_prompt, allow_unsafe=False))
+    assert seen["stdin_data"] == long_prompt
+    assert long_prompt not in seen["argv"]
 
 
 def test_claude_harness_start_passes_the_prompt_as_stdin(tmp_path: Path, monkeypatch) -> None:
