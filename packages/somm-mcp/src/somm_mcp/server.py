@@ -40,6 +40,7 @@ from somm.errors import SommPrivacyViolation
 from somm.prompts import register_prompt
 from somm_core.config import Config
 from somm_core.config import load as load_config
+from somm_core.cost import known_cost_sql
 from somm_core.models import PrivacyClass
 from somm_core.parse import stable_hash
 from somm_core.read import search_calls
@@ -252,7 +253,9 @@ def build_server(
         Returns the top-N ranked candidates from model_intel with reasoning,
         plus any prior cross-project decisions whose question hashes match.
         The agent uses this to surface options + rationale to the user,
-        then records the chosen outcome via `somm_record_decision`.
+        then records the chosen outcome via `somm_record_decision`. When the
+        user follows one of the returned `prior_decisions`, pass its `id` as
+        `recalled_from` there: that is how somm counts a decision recalled.
 
         Args:
             question: natural-language question (stored verbatim on any
@@ -319,6 +322,7 @@ def build_server(
         workload: str | None = None,
         constraints: dict | None = None,
         agent: str | None = None,
+        recalled_from: str | None = None,
     ) -> dict:
         """Record the outcome of a sommelier conversation.
 
@@ -340,12 +344,26 @@ def build_server(
             constraints: the constraint dict from somm_advise (stored for
               audit / dedup).
             agent: the caller identifier (e.g. "claude-code-myproject").
+            recalled_from: the `id` of a prior decision (from somm_advise's
+              `prior_decisions`) this one follows. Kept only when that decision
+              exists and chose the same provider and model; otherwise the
+              decision is recorded as a fresh choice and the reason returned.
         """
-        from somm.sommelier import build_decision
+        from somm.sommelier import build_decision, recall_mismatch
 
         wl = None
         if workload:
             wl = repo.workload_by_name(workload, cfg.project)
+
+        recall_note = None
+        if recalled_from:
+            prior = repo.get_decision(recalled_from)
+            if prior is None:
+                g = _global_repo(cfg)
+                prior = g.get_decision(recalled_from) if g is not None else None
+            recall_note = recall_mismatch(prior, chosen_provider, chosen_model)
+            if recall_note is not None:
+                recalled_from = None
 
         decision = build_decision(
             question=question,
@@ -358,6 +376,7 @@ def build_server(
             workload_id=wl.id if wl else None,
             constraints=constraints,
             agent=agent,
+            recalled_from=recalled_from,
         )
 
         # Primary write
@@ -376,7 +395,7 @@ def build_server(
                 "mirrored": False,
                 "mirror_error": str(e),
             }
-        return {
+        out = {
             "decision_id": decision.id,
             "question_hash": decision.question_hash,
             "mirrored": mirrored,
@@ -384,7 +403,11 @@ def build_server(
                 "provider": decision.chosen_provider,
                 "model": decision.chosen_model,
             },
+            "recalled_from": decision.recalled_from,
         }
+        if recall_note is not None:
+            out["recall_ignored"] = recall_note
+        return out
 
     # ------------------------------------------------------------------
     # somm_search_decisions
@@ -894,11 +917,11 @@ def _shadow_ranking(repo: Repository, workload_id: str, since_days: int) -> list
     """Top-5 (provider, model) for this workload by shadow-eval score."""
     with repo._open() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT c.provider, c.model,
                    AVG(COALESCE(er.structural_score, er.embedding_score)) AS score,
                    AVG(c.latency_ms) AS latency_ms,
-                   AVG(c.cost_usd)   AS cost_usd,
+                   AVG(CASE WHEN {known_cost_sql("c.")} THEN c.cost_usd END) AS cost_usd,
                    COUNT(er.id)      AS n_evals
             FROM eval_results er
             JOIN calls c ON c.id = er.call_id
@@ -917,7 +940,7 @@ def _shadow_ranking(repo: Repository, workload_id: str, since_days: int) -> list
             "model": r[1],
             "score": round(r[2] or 0, 3),
             "latency_ms_avg": round(r[3] or 0),
-            "cost_usd_avg": round(r[4] or 0, 6),
+            "cost_usd_avg": round(r[4], 6) if r[4] is not None else None,
             "n_evals": r[5],
         }
         for r in rows
@@ -1006,6 +1029,7 @@ def _decision_as_dict(d) -> dict:
         "agent": d.agent,
         "superseded_by": d.superseded_by,
         "outcome_note": d.outcome_note,
+        "recalled_from": d.recalled_from,
     }
 
 

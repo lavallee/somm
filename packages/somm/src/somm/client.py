@@ -28,7 +28,7 @@ from somm_core import EmbedResult, Outcome, SommResult, cost_for_call
 from somm_core.config import Config
 from somm_core.config import load as load_config
 from somm_core.cost import cost_provenance as _cost_provenance
-from somm_core.models import Call, Prompt
+from somm_core.models import Call, MarkHook, Prompt
 from somm_core.models import ToolCall as CoreToolCall
 from somm_core.parse import (
     ThinkStreamStripper,
@@ -54,7 +54,9 @@ from somm.errors import (
     SommAuthError,
     SommFatalError,
     SommProvidersExhausted,
+    SommRateLimited,
     SommStructuredError,
+    SommTimeout,
     SommTransientError,
 )
 from somm.errors import SommStrictMode as _SommStrictMode
@@ -83,6 +85,7 @@ from somm.routing import (
     _auth_chain_error,
     _classify_unknown,
     _record_health,
+    reasoning_ate_budget,
 )
 from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
@@ -263,6 +266,13 @@ def _format_structured_failure(
         "the schema validator.\n"
         "Docs: docs/errors/SOMM_STRUCTURED_OUTPUT_FAILED.md"
     )
+
+
+def _mark_bad_json(result: SommResult, error: str) -> None:
+    """Record that a delivered answer was not the JSON the caller needed."""
+    result.error_kind = "SommStructuredError"
+    result.error_detail = f"structured output: {_scrub_secrets(error)}"[:512]
+    result.mark(Outcome.BAD_JSON)
 
 
 def _register_project_once(project: str, db_path: Path) -> None:
@@ -596,7 +606,75 @@ def build_default_providers(config: Config, tracker=None, full: bool = False) ->
 
 
 
-def _served(resp, provider_name: str) -> tuple:
+def _failure_outcome(exc: BaseException) -> Outcome:
+    """The outcome a call that ended in ``exc`` records.
+
+    Timeouts and rate limits keep their own values so rollups can tell a
+    slow or throttled provider from a broken one; the rest is an upstream
+    error, or exhaustion when the chain ran out.
+    """
+    if isinstance(exc, SommProvidersExhausted) or type(exc).__name__ == "SommProvidersExhausted":
+        return Outcome.EXHAUSTED
+    if isinstance(exc, (SommTimeout, TimeoutError)):
+        return Outcome.TIMEOUT
+    if isinstance(exc, SommRateLimited):
+        return Outcome.RATE_LIMIT
+    return Outcome.UPSTREAM_ERROR
+
+
+# Skip reasons for providers that were never candidates; they do not count
+# toward fallback depth.
+_NOT_CANDIDATE = frozenset({"boundary", "capability", "plan_blocked"})
+_ROUTE_SKIPPED_MAX = 16
+
+
+def _route_record(
+    mode: str,
+    first: list | None,
+    served: list | None,
+    skipped: list,
+    max_tokens: int | None,
+) -> dict:
+    """The ``route`` object every call row carries in ``routing_json``.
+
+    ``first`` and ``served`` are ``[provider, model]`` (``served`` is None
+    when no route answered); ``skipped`` is ``[provider, model, reason]``
+    per candidate passed over; ``depth`` counts the real candidates among
+    them, so it is 0 when the first choice served; ``max_tokens`` is the cap
+    sent to the provider that answered, or the requested one.
+    """
+    return {
+        "mode": mode,
+        "first": first,
+        "served": served,
+        "depth": sum(1 for s in skipped if s[2] not in _NOT_CANDIDATE),
+        "skipped": [list(s) for s in skipped[:_ROUTE_SKIPPED_MAX]],
+        "max_tokens": max_tokens,
+    }
+
+
+def _route_source(*, policy: bool, learned_override: bool, pinned: bool) -> str:
+    """Why the route was chosen, for ``routing_json["route_source"]``.
+
+    First match wins: a workload policy (``somm/auto`` included), a learned
+    override that changed the request, a caller pin (provider or model),
+    else the default chain.
+    """
+    if policy:
+        return "policy"
+    if learned_override:
+        return "learned_override"
+    if pinned:
+        return "pin"
+    return "default"
+
+
+def _route_summary(skipped: list) -> str:
+    """``provider=reason`` per skipped candidate, for an error_detail."""
+    return ", ".join(f"{s[0]}={s[2]}" for s in skipped[:_ROUTE_SKIPPED_MAX])
+
+
+def _served(resp, provider_name: str, max_tokens: int | None = None) -> tuple:
     """Read one provider response into the fields every call path records.
 
     Returns ``(text, provider, model, tokens_in, tokens_out, latency_ms,
@@ -617,6 +695,12 @@ def _served(resp, provider_name: str) -> tuple:
             model=resp.model,
             tokens_out=resp.tokens_out,
             latency_ms=resp.latency_ms,
+            reasoning_tokens=(
+                (resp.reasoning_tokens or extract_reasoning_tokens(resp.raw))
+                if reasoning_ate_budget(resp)
+                else None
+            ),
+            max_tokens=getattr(resp, "max_tokens_sent", None) or max_tokens,
         )
     cost_source = f"provider:{provider_name}" if resp.cost_usd is not None else None
     return (
@@ -727,6 +811,8 @@ def _format_empty_detail(
     model: str,
     tokens_out: int,
     latency_ms: int,
+    reasoning_tokens: int | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     """Build a bounded diagnostic for the EMPTY outcome.
 
@@ -738,12 +824,23 @@ def _format_empty_detail(
                              post-processing (e.g. minimax M2.7 generating
                              only inside ``<think>`` blocks; full latency).
 
+    ``reasoning_tokens`` is passed only when the provider reported that
+    reasoning took (nearly) the whole output; the detail then also carries
+    ``reasoning_exhausted`` and says to raise max_tokens. It stays a
+    ``stripped_empty`` row, which the self-heal detector keys on.
+
     Both fields are kept on the row so SQL filters (``WHERE outcome='empty'
     AND error_detail LIKE '%no_content%'``) can split them without joining.
     """
     hint = "no_content" if tokens_out == 0 else "stripped_empty"
-    parts = [
-        f"EmptyResponse: {hint}",
+    parts = [f"EmptyResponse: {hint}"]
+    if reasoning_tokens:
+        sent = f" (max_tokens sent: {max_tokens})" if max_tokens else ""
+        parts.append(
+            f"reasoning_exhausted: {reasoning_tokens} of {tokens_out} output tokens "
+            f"were reasoning{sent}; raise max_tokens or lower reasoning_effort"
+        )
+    parts += [
         f"out_tokens={tokens_out}",
         f"latency_ms={latency_ms}",
     ]
@@ -1143,6 +1240,8 @@ class SommLLM:
         session_id: str | None = None,
         parent_call_id: str | None = None,
         correlation_id: str | None = None,
+        max_tokens: int | None = None,
+        route_source: str = "default",
     ) -> None:
         """Raise SommPrivacyViolation (after recording a refusal row) when no
         route within ``boundary`` remains for this call. A pin is checked
@@ -1174,6 +1273,9 @@ class SommLLM:
             session_id=session_id,
             parent_call_id=parent_call_id,
             correlation_id=correlation_id,
+            mode="pinned" if pinned else "chain",
+            max_tokens=max_tokens,
+            route_source=route_source,
         )
         raise exc
 
@@ -1190,6 +1292,9 @@ class SommLLM:
         session_id: str | None = None,
         parent_call_id: str | None = None,
         correlation_id: str | None = None,
+        mode: str = "chain",
+        max_tokens: int | None = None,
+        route_source: str = "default",
     ) -> None:
         """One calls row for demand the boundary turned away.
 
@@ -1197,9 +1302,12 @@ class SommLLM:
         outcome must not meet a new one), error_kind ``SommPrivacyViolation``,
         and error_detail starts ``refused: data_boundary``. No provider was
         contacted, so provider is empty, cost is zero, data_tier is NULL, and
-        the row is not budget-eligible.
+        the row is not budget-eligible. ``routing_json`` lists every refused
+        route with reason ``boundary``.
         """
         refused = ", ".join(f"{r['provider']}/{r['model'] or '-'}={r['tier']}" for r in exc.refused)
+        skipped = [[r["provider"], r["model"] or "", "boundary"] for r in exc.refused]
+        route = _route_record(mode, skipped[0][:2] if skipped else None, None, skipped, max_tokens)
         detail = (
             f"refused: data_boundary={exc.data_boundary} (from {exc.boundary_source}) "
             f"| refused routes: {refused or 'none'}"
@@ -1220,6 +1328,8 @@ class SommLLM:
                 outcome=Outcome.UNKNOWN,
                 error_kind="SommPrivacyViolation",
                 error_detail=detail,
+                max_tokens=max_tokens,
+                routing_json=json.dumps({"route_source": route_source, "route": route}),
                 prompt_hash=prompt_hash,
                 response_hash=stable_hash(""),
                 correlation_id=(
@@ -1330,7 +1440,13 @@ class SommLLM:
                 latency_ttft_ms=call.ttft_ms,
             )
         )
-        if call.outcome != Outcome.OK and self._on_error is not None:
+        # A caller that stops reading a stream early chose to; that is
+        # recorded, not alerted.
+        if (
+            call.outcome != Outcome.OK
+            and call.error_kind != "StreamAbandoned"
+            and self._on_error is not None
+        ):
             with contextlib.suppress(Exception):  # the alerter must not break the caller
                 self._on_error(
                     {
@@ -1343,6 +1459,38 @@ class SommLLM:
                         "error_detail": call.error_detail,
                     }
                 )
+
+    def _mark_persister(self, call: Call) -> Callable[[SommResult], None]:
+        """What ``SommResult.mark()`` runs for a call this client recorded.
+
+        The row may still be in the writer queue, so the queued ``Call`` is
+        corrected first (an insert that has not happened yet carries the
+        mark), then the queue is flushed and the stored row updated (an
+        insert that already happened is corrected). Either way the ledger
+        ends up with the mark, and ``call_updates`` keeps a record of it.
+        """
+
+        def persist(result: SommResult) -> None:
+            call.outcome = result.outcome
+            call.error_kind = result.error_kind
+            call.error_detail = result.error_detail
+            self._writer.flush()
+            for repo in (self.repo, self._mirror_repo):
+                if repo is None:
+                    continue
+                try:
+                    repo.record_outcome_update(
+                        call.id,
+                        result.outcome,
+                        error_kind=result.error_kind,
+                        error_detail=result.error_detail,
+                    )
+                except Exception:  # noqa: BLE001 — a mark must not break the caller
+                    logging.getLogger("somm.client").warning(
+                        "could not persist outcome mark for call %s", call.id, exc_info=True
+                    )
+
+        return persist
 
     def generate(
         self,
@@ -1458,11 +1606,13 @@ class SommLLM:
         # output budget on thinking tokens and returns empty). Fail-open and
         # one-directional — only ever RAISES max_tokens, never lowers it, and a
         # lookup failure must never break a live call.
+        learned_override = False
         if wl is not None and model:
             try:
                 _ov = self.repo.lookup_learned_override(wl.id, model, provider)
                 _floor = _ov.get("max_tokens_floor") if _ov else None
                 if _floor and _floor > max_tokens:
+                    learned_override = True
                     logging.getLogger("somm.client").info(
                         "somm self-heal: max_tokens %d→%d for workload=%s model=%s (%s)",
                         max_tokens,
@@ -1568,14 +1718,26 @@ class SommLLM:
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
 
-        routing_json = None
-        if model == "somm/auto" and short_circuit is None:
+        adaptive = model == "somm/auto" and short_circuit is None
+        route_source = _route_source(
+            policy=adaptive or (bool(wl.policy) and provider is None),
+            learned_override=learned_override,
+            pinned=bool(provider or model),
+        )
+        if short_circuit is not None:
+            route_mode = "hook"
+        elif adaptive:
+            route_mode = "adaptive"
+        else:
+            route_mode = "pinned" if provider is not None else "chain"
+        routing_metadata: dict = {}
+        if adaptive:
             if provider is not None:
                 raise ValueError("somm/auto chooses its provider; omit the provider pin")
             from somm.adaptive import decide_workload
 
             decision = decide_workload(wl, messages or [{"role": "user", "content": prompt_text}])
-            routing_json = json.dumps(decision.as_dict())
+            routing_metadata = decision.as_dict()
             provider, model = decision.target.provider, decision.target.model
             req.model = model
             req.reasoning_effort = decision.target.reasoning_effort
@@ -1608,6 +1770,8 @@ class SommLLM:
                 session_id=session_id,
                 parent_call_id=parent_call_id,
                 correlation_id=correlation_id,
+                max_tokens=max_tokens,
+                route_source=route_source,
             )
 
         # Fail-closed budget gate: refuse before any provider call once the
@@ -1638,6 +1802,12 @@ class SommLLM:
         # only on the narrow "pinned failed + chain saved us" window.
         fallback_info: dict | None = None
         raise_after_record: Exception | None = None
+        # The route, for routing_json: first choice, candidates skipped and
+        # why, whether any route answered, and the max_tokens it was sent.
+        route_first: list | None = None
+        route_skipped: list = []
+        responded = False
+        sent_max_tokens: int | None = None
 
         if short_circuit is not None:
             text = short_circuit.text
@@ -1649,15 +1819,22 @@ class SommLLM:
             tool_calls_out = _to_core_tool_calls(short_circuit.tool_calls)
             raw_out = short_circuit.raw
             cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
+            route_first = [actual_provider, actual_model]
+            responded = True
         elif provider is not None:
             chosen = self._pick_provider(provider)
+            route_first = [chosen.name, model or getattr(chosen, "default_model", "") or ""]
             try:
+                resp = chosen.generate(req)
                 (
                     text, actual_provider, actual_model, tokens_in, tokens_out, latency_ms,
                     tool_calls_out, stop_reason_out, reasoning_content_out, raw_out,
                     cost_usd_out, reported_cost_source, outcome, error_kind, error_detail,
-                ) = _served(chosen.generate(req), chosen.name)
+                ) = _served(resp, chosen.name, max_tokens)
+                responded = True
+                sent_max_tokens = resp.max_tokens_sent
             except Exception as exc:
+                route_skipped.append([*route_first, type(exc).__name__])
                 # The pinned target failed. Remember what the caller asked
                 # for either way — on_fallback needs pinned vs. actual, and
                 # the sticky path reports the pin as the attribution.
@@ -1675,7 +1852,7 @@ class SommLLM:
                     # comparison, and replay runs. Surface the original error
                     # with the pinned attribution intact.
                     fallback_info = None
-                    outcome = Outcome.UPSTREAM_ERROR
+                    outcome = _failure_outcome(exc)
                     error_kind = type(exc).__name__
                     error_detail = _pinned_error_detail(exc, chosen.name, model)
                     actual_provider = chosen.name
@@ -1699,19 +1876,24 @@ class SommLLM:
                     # serve different model inventories, so re-using the pinned
                     # model name (e.g. "qwen3:14b" on Minimax) guarantees a 404.
                     req.model = None
+                    rescue_route: dict = {}
                     try:
-                        router_result = self.router.dispatch(req, wait=wait_on_exhausted)
+                        router_result = self.router.dispatch(
+                            req, wait=wait_on_exhausted, route=rescue_route
+                        )
                         (
                             text, actual_provider, actual_model, tokens_in, tokens_out,
                             latency_ms, tool_calls_out, stop_reason_out, reasoning_content_out,
                             raw_out, cost_usd_out, reported_cost_source, outcome, error_kind,
                             error_detail,
-                        ) = _served(router_result.response, router_result.provider)
+                        ) = _served(router_result.response, router_result.provider, max_tokens)
+                        responded = True
+                        sent_max_tokens = router_result.response.max_tokens_sent
                     except Exception as chain_exc:
                         # Total failure — clear fallback_info so on_fallback
                         # doesn't fire; on_error handles final-failure signal.
                         fallback_info = None
-                        outcome = Outcome.UPSTREAM_ERROR
+                        outcome = _failure_outcome(chain_exc)
                         error_kind = type(chain_exc).__name__
                         error_detail = _format_error_detail(chain_exc, chosen.name, model)
                         actual_provider = chosen.name
@@ -1721,8 +1903,10 @@ class SommLLM:
                             chain_exc, SommProvidersExhausted
                         ):
                             raise_after_record = chain_exc
+                    route_skipped.extend(rescue_route.get("skipped", []))
         else:
             dispatch_raise_exhausted = wait_on_exhausted is not None
+            chain_route: dict = {}
             try:
                 if wl.policy:
                     retry_cfg = wl.policy.get("retry") or {}
@@ -1739,27 +1923,45 @@ class SommLLM:
                         wait=policy_wait,
                         retry_max=retry_cfg.get("max"),
                         retry_backoff_s=retry_cfg.get("backoff_s"),
+                        route=chain_route,
                     )
                 else:
-                    router_result = self.router.dispatch(req, wait=wait_on_exhausted)
+                    router_result = self.router.dispatch(
+                        req, wait=wait_on_exhausted, route=chain_route
+                    )
                 (
                     text, actual_provider, actual_model, tokens_in, tokens_out, latency_ms,
                     tool_calls_out, stop_reason_out, reasoning_content_out, raw_out,
                     cost_usd_out, reported_cost_source, outcome, error_kind, error_detail,
-                ) = _served(router_result.response, router_result.provider)
+                ) = _served(router_result.response, router_result.provider, max_tokens)
+                responded = True
+                sent_max_tokens = router_result.response.max_tokens_sent
                 fallback_info = _routed_past_info(router_result, model)
             except Exception as exc:
                 if hasattr(exc, "model") and exc.model:
                     actual_model = exc.model
-                outcome = (
-                    Outcome.EXHAUSTED
-                    if type(exc).__name__ == "SommProvidersExhausted"
-                    else Outcome.UPSTREAM_ERROR
-                )
+                outcome = _failure_outcome(exc)
                 error_kind = type(exc).__name__
                 error_detail = _format_error_detail(exc, actual_provider, actual_model)
                 if dispatch_raise_exhausted and isinstance(exc, SommProvidersExhausted):
                     raise_after_record = exc
+            route_first = chain_route.get("first")
+            route_skipped = chain_route.get("skipped", [])
+
+        if not actual_provider and route_skipped:
+            # No route answered and none is named on the row: say what was
+            # tried and why each candidate was passed over.
+            error_detail = (
+                f"{error_detail or error_kind} | route: {_route_summary(route_skipped)}"
+            )[:512]
+        routing_metadata["route_source"] = route_source
+        routing_metadata["route"] = _route_record(
+            route_mode,
+            route_first,
+            [actual_provider, actual_model] if responded else None,
+            route_skipped,
+            sent_max_tokens or max_tokens,
+        )
 
         cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
         reasoning_tokens = extract_reasoning_tokens(raw_out)
@@ -1777,7 +1979,10 @@ class SommLLM:
             cost_usd=(
                 cost_usd_out
                 if cost_usd_out is not None
-                else cost_for_call(self.repo, actual_provider, actual_model, tokens_in, tokens_out)
+                else cost_for_call(
+                    self.repo, actual_provider, actual_model, tokens_in, tokens_out,
+                    cache_read_tokens=cache_tokens_in, cache_write_tokens=cache_tokens_out,
+                )
             ),
             call_id=call_id,
             outcome=outcome,
@@ -1801,17 +2006,14 @@ class SommLLM:
             source=reported_cost_source or short_circuited,
         )
         if raw_out and raw_out.get("somm_recovery"):
-            routing_metadata = json.loads(routing_json) if routing_json else {}
             routing_metadata["recovery"] = raw_out["somm_recovery"]
-            routing_json = json.dumps(routing_metadata)
         # A provider that pinned the request (OpenRouter under a strict
         # boundary) says so on the response: the tier it put on the wire, the
         # upstreams it allowed, and which one served when the response names it.
         pinned_route = raw_out.get("somm_route") if isinstance(raw_out, dict) else None
         if isinstance(pinned_route, dict):
-            routing_metadata = json.loads(routing_json) if routing_json else {}
             routing_metadata["upstream"] = pinned_route
-            routing_json = json.dumps(routing_metadata)
+        routing_json = json.dumps(routing_metadata, default=str)
         call = Call(
             routing_json=routing_json,
             id=call_id,
@@ -1869,6 +2071,7 @@ class SommLLM:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        result._on_mark = MarkHook(self._mark_persister(call))
         self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
 
         # Fire on_fallback when a pinned call got rescued by the chain
@@ -1942,11 +2145,20 @@ class SommLLM:
         if raise_on_empty and outcome == Outcome.EMPTY:
             from somm.errors import SommEmptyResponse
 
+            if error_detail and "reasoning_exhausted" in error_detail:
+                cause = (
+                    "the model spent its whole output budget on reasoning; raise "
+                    "max_tokens or lower reasoning_effort"
+                )
+            else:
+                cause = (
+                    "bump max_tokens / pick a non-thinking model if a thinking "
+                    "model burned the whole budget"
+                )
             raise SommEmptyResponse(
                 f"empty response from {actual_provider}/{actual_model} "
-                f"(workload={workload!r}); set raise_on_empty=False to "
-                f"swallow, or bump max_tokens / pick a non-thinking model "
-                f"if a thinking model burned the whole budget."
+                f"(workload={workload!r}): {cause}. Set raise_on_empty=False to "
+                f"swallow. Detail: {error_detail}"
             )
 
         return result
@@ -2418,6 +2630,7 @@ class SommLLM:
                 prompt_hash=stable_hash(messages if messages is not None else prompt_text),
                 session_id=session_id,
                 parent_call_id=parent_call_id,
+                max_tokens=max_tokens,
             )
             req.data_boundary = boundary.tier.value
 
@@ -2433,13 +2646,31 @@ class SommLLM:
             if not boundary.is_default:
                 candidates = self._boundary_chain(candidates, model, boundary, stream=True)
             self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
+        route_skipped: list = []
+        route_first: list | None = None
         if short_circuit is None:
             stream_candidates = self._stream_candidates(provider)
-            if not boundary.is_default:
-                stream_candidates = self._boundary_chain(
-                    stream_candidates, model, boundary, stream=True
-                )
+            pool = [self._pick_provider(provider)] if provider else list(self.providers)
+            admitted = (
+                pool
+                if boundary.is_default
+                else self._boundary_chain(pool, model, boundary, stream=True)
+            )
+            for p in pool:
+                slot = model or getattr(p, "default_model", "") or ""
+                if p not in admitted:
+                    route_skipped.append([p.name, slot, "boundary"])
+                elif p not in stream_candidates:
+                    route_skipped.append([p.name, slot, "cooled"])
+            if admitted:
+                route_first = [
+                    admitted[0].name, model or getattr(admitted[0], "default_model", "") or ""
+                ]
+            stream_candidates = [p for p in stream_candidates if p in admitted]
             chosen = stream_candidates[0] if stream_candidates else None
+        else:
+            route_first = [short_circuit.provider, short_circuit.model]
+        route_source = _route_source(policy=False, learned_override=False, pinned=bool(provider or model))
         routed_past: list[tuple[str, Exception]] = []
         call_id = str(uuid.uuid4())
         ts = datetime.now(UTC)
@@ -2485,11 +2716,15 @@ class SommLLM:
                     has_next = attempt_no + 1 < len(stream_candidates)
                     stripper = ThinkStreamStripper()
                     raw_out = None
+                    actual_model = model or ""
                     try:
                         for chunk in candidate.stream(req):
                             chunk_raw = getattr(chunk, "raw", None)
                             if isinstance(chunk_raw, dict):
                                 raw_out = chunk_raw
+                            # The served model, as generate records resp.model.
+                            if getattr(chunk, "model", ""):
+                                actual_model = chunk.model
                             if chunk.text:
                                 visible = stripper.feed(chunk.text)
                                 if visible:
@@ -2506,6 +2741,11 @@ class SommLLM:
                                     yield tail
                                 break
                     except Exception as exc:
+                        route_skipped.append([
+                            candidate.name,
+                            model or getattr(candidate, "default_model", "") or "",
+                            type(exc).__name__,
+                        ])
                         # Text already reached the caller, the stream is
                         # pinned, or this was the last candidate: nothing to
                         # fall back to. Otherwise cool the provider and move on.
@@ -2528,6 +2768,11 @@ class SommLLM:
                         # Empty stream: like the router, move on rather than
                         # hand the caller nothing, and cool briefly.
                         _record_health(self._tracker.mark_failure, candidate.name, cooldown_s=15)
+                        route_skipped.append([
+                            candidate.name,
+                            model or getattr(candidate, "default_model", "") or "",
+                            "empty",
+                        ])
                         continue
                     if collected:
                         # Best-effort: the text already reached the caller, so
@@ -2556,16 +2801,23 @@ class SommLLM:
                         latency_ms=int((time.monotonic() - t0) * 1000),
                     )
         except Exception as exc:
-            outcome = (
-                Outcome.EXHAUSTED
-                if isinstance(exc, SommProvidersExhausted)
-                else Outcome.UPSTREAM_ERROR
-            )
+            outcome = _failure_outcome(exc)
             error_kind = type(exc).__name__
             error_detail = _format_error_detail(
                 exc, chosen.name if chosen is not None else actual_provider, actual_model
             )
             text = "".join(collected)
+            raise
+        except BaseException as exc:
+            # The caller stopped consuming (generator closed, task cancelled,
+            # interrupt). The answer is incomplete, so it is not OK; nothing
+            # says it was wrong either, so it is unknown.
+            outcome = Outcome.UNKNOWN
+            error_kind = "StreamAbandoned" if isinstance(exc, GeneratorExit) else type(exc).__name__
+            error_detail = (
+                f"{error_kind}: caller stopped reading after "
+                f"{sum(len(c) for c in collected)} chars"
+            )
             raise
         finally:
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -2574,6 +2826,30 @@ class SommLLM:
                 chosen.name if chosen is not None else ("hook" if short_circuit is not None else "")
             )
             model_name = actual_model or provider_name
+            if not provider_name and route_skipped:
+                error_detail = (
+                    f"{error_detail or error_kind} | route: {_route_summary(route_skipped)}"
+                )[:512]
+            served = (
+                [
+                    provider_name,
+                    model
+                    or (getattr(chosen, "default_model", "") if chosen is not None else "")
+                    or model_name,
+                ]
+                if provider_name and (collected or outcome in (Outcome.OK, Outcome.EMPTY))
+                else None
+            )
+            stream_routing_json = json.dumps({
+                "route_source": route_source,
+                "route": _route_record(
+                    "hook" if short_circuit is not None else ("pinned" if provider else "chain"),
+                    route_first,
+                    served,
+                    route_skipped,
+                    max_tokens,
+                ),
+            })
             cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
             citations = extract_citations(raw_out)
             citations_json = _citations_json(citations)
@@ -2587,6 +2863,8 @@ class SommLLM:
                     model_name,
                     tokens_in,
                     tokens_out,
+                    cache_read_tokens=cache_tokens_in,
+                    cache_write_tokens=cache_tokens_out,
                 )
             )
             cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version = (
@@ -2619,6 +2897,7 @@ class SommLLM:
                 call_site=hooks.current_call_site(),
                 client_version=_CLIENT_VERSION,
                 reasoning_tokens=extract_reasoning_tokens(raw_out),
+                routing_json=stream_routing_json,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 ttft_ms=ttft_ms,
@@ -2812,7 +3091,7 @@ class SommLLM:
             parsed = extract_json(result.text)
             if parsed is None:
                 last_error = "response did not contain a parseable JSON object or array"
-                result.mark(Outcome.BAD_JSON)
+                _mark_bad_json(result, last_error)
                 continue
 
             try:
@@ -2824,13 +3103,11 @@ class SommLLM:
                     validated = schema(parsed)
             except Exception as exc:
                 last_error = str(exc) or type(exc).__name__
-                result.mark(Outcome.BAD_JSON)
+                _mark_bad_json(result, last_error)
                 continue
 
             return validated, result
 
-        if last_result is not None and not delivery_failure:
-            last_result.mark(Outcome.BAD_JSON)
         raise SommStructuredError(
             _format_structured_failure(last_raw, last_error, delivery_failure=delivery_failure),
             last_raw=last_raw,
@@ -2943,7 +3220,11 @@ class SommLLM:
             parsed = extract_json(result.text)
             if parsed is not None:
                 return (parsed, result) if with_result else parsed
-            result.mark(Outcome.BAD_JSON)
+            if result.outcome == Outcome.OK:
+                # A delivery failure (empty, errored) already says what happened.
+                _mark_bad_json(
+                    result, "response did not contain a parseable JSON object or array"
+                )
         failed = {"raw": last_text, "_somm_parse_err": True}
         return (failed, result) if with_result else failed
 

@@ -5,6 +5,64 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.23.0] — 2026-11-10
+
+### Added
+- **`somm mcp install` and `somm skill install` connect your coding agents.**
+  `somm mcp install` registers the MCP server through `claude mcp add` /
+  `codex mcp add` using an absolute interpreter path, and prints a paste-ready
+  snippet when the harness CLI is missing. `somm skill install` links the packaged
+  skill into `~/.claude/skills` and `~/.agents/skills`, so upgrades update it. Both
+  have `uninstall`, `status` and `--print`, and `somm doctor` shows MCP and skill
+  state per harness.
+- **Somm measures its three north-star numbers.** `somm doctor` and
+  `somm doctor --global` print decisions recalled, evidence-routed share and
+  recommendations applied, each with its denominator or the reason it is not
+  measurable yet; `somm_core.read.north_star()` returns them.
+  `somm_record_decision` takes `recalled_from`, kept only when the cited decision
+  chose the same provider and model (schema 28). Decisions bound to a workload with
+  no calls are counted apart as test residue.
+
+### Changed
+- **Every call row records its route.** `routing_json` always carries
+  `route_source` (`policy`, `learned_override`, `pin` or `default`) and a `route`
+  object: first choice, served route, fallback depth, skipped candidates with
+  reasons, and the `max_tokens` sent. Exhausted and refusal rows name each candidate
+  they tried.
+- **Recorded cost is honest.** The bundled pricing snapshot became the only price
+  table: the hand-written seed and static tables, which disagreed with it (one model
+  at three times its price), were removed. Prompt-cache reads and writes are priced
+  at each model's cache rates instead of the full input rate (schema 29 adds the
+  rates to `model_intel`). A call with no known price keeps `cost_usd = 0.0` but is
+  marked `cost_source = "unknown:no-price"`, so the frontier, recommendations and
+  displays no longer treat it as free. Budget caps sum known costs only. Streamed
+  rows name the model that served them, and `somm doctor` reports unknown-cost calls
+  by provider.
+- **`claude-cli` calls are lean and leave nothing behind.** They pass
+  `--no-session-persistence`, so they no longer litter Claude Code transcripts, and
+  run with no tools, MCP servers or settings sources by default (about 3.6k input
+  tokens instead of about 34k for a one-word prompt). With no model given the seat
+  runs `claude-haiku-5-5` instead of the CLI's own default, and says so once on
+  stderr (closes #79). Configured `claude_cli_extra_args` replace the lean flag set.
+
+### Fixed
+- **Outcome marks reach the ledger.** `SommResult.mark()` updated only the
+  in-memory result; it now also updates the stored row and appends to
+  `call_updates`, so structured-output failures are recorded as `bad_json`. Pinned
+  and streamed timeouts and rate limits were recorded as `upstream_error` and now
+  record `timeout` and `rate_limit`.
+- **Empty replies say when reasoning used the budget.** When reasoning tokens made
+  up nearly all of the output, `error_detail` adds `reasoning_exhausted` with the
+  counts and advice to raise `max_tokens`, and `raise_on_empty` says the same.
+- **Abandoned streams are no longer recorded as ok.** A stream the caller stops
+  reading is recorded as `unknown` with error kind `StreamAbandoned`.
+
+### Documentation
+- The site leads with the meter and the memory: a rewritten landing page with the
+  loop diagram and an honest status, new components, glossary and "why build this"
+  pages, the stale explainer copies removed, and README claims corrected against the
+  code.
+
 ## [0.22.0] — 2026-11-09
 
 ### Added

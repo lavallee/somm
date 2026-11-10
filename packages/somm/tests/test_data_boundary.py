@@ -733,10 +733,10 @@ def test_migration_0027_on_an_existing_ledger(tmp_path):
             "VALUES ('c1', '2026-11-01', 'p', 'w1', 'openai', 'gpt', 1, 2, 3, 0.0, 'ok', 'p', 'r')"
         )
         conn.commit()
-        assert ensure_schema(conn) == SCHEMA_VERSION == 27
+        assert ensure_schema(conn) == SCHEMA_VERSION >= 27
         assert conn.execute("SELECT data_boundary FROM workloads").fetchall() == [(None,)]
         assert conn.execute("SELECT id, data_tier FROM calls").fetchall() == [("c1", None)]
-        assert ensure_schema(conn) == 27
+        assert ensure_schema(conn) == SCHEMA_VERSION
     repo = Repository(path)
     wl = repo.workload_by_name("old", "p")
     assert wl.data_boundary is None and wl.privacy_class is PrivacyClass.PRIVATE

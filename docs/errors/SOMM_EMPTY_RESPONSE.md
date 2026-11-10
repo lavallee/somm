@@ -35,7 +35,11 @@ in two different ways depending on where they're caught:
    llm.generate(prompt, workload="my_workload", raise_on_empty=False)
    ```
 
-2. If a thinking model is the culprit, increase `max_tokens` so
+2. If a thinking model is the culprit — the row's `error_detail` says
+   `reasoning_exhausted: N of M output tokens were reasoning` when the
+   provider reported its reasoning tokens, and
+   `routing_json.route.max_tokens` is the cap actually sent (some
+   adapters multiply yours) — increase `max_tokens` so
    reasoning doesn't consume the whole budget, or switch to a
    non-thinking model for this workload:
    ```python

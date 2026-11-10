@@ -38,6 +38,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, uuid5
 
+from somm_core.cost import UNKNOWN_COST_SOURCE
 from somm_core.cost import computed_cost_kind as _cost_kind
 from somm_core.cost import pricing_version as _pricing_version
 from somm_core.graders import (
@@ -47,8 +48,8 @@ from somm_core.graders import (
     parse_binary_judge_response,
 )
 from somm_core.models import Call, Outcome
-from somm_core.parse import stable_hash
-from somm_core.pricing import cost_for_call
+from somm_core.parse import extract_cache_tokens, stable_hash
+from somm_core.pricing import cost_for_call, free_route, known_prices
 from somm_core.repository import Repository
 
 if TYPE_CHECKING:
@@ -694,11 +695,18 @@ class ShadowEvalWorker:
         tokens_in = int(response.tokens_in) if response is not None else 0
         tokens_out = int(response.tokens_out) if response is not None else 0
         reported_cost = _reported_cost(raw)
+        cache_read, cache_write = extract_cache_tokens(raw)
         if reported_cost is None:
-            cost_usd = cost_for_call(self.repo, provider, actual_model, tokens_in, tokens_out)
-            cost_basis = "computed"
-            cost_accuracy = "estimated"
-            cost_source = "somm:model_intel"
+            cost_usd = cost_for_call(
+                self.repo, provider, actual_model, tokens_in, tokens_out,
+                cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+            )
+            if known_prices(self.repo, provider, actual_model) is None and not free_route(
+                provider, actual_model
+            ):
+                cost_basis, cost_accuracy, cost_source = "unknown", "unknown", UNKNOWN_COST_SOURCE
+            else:
+                cost_basis, cost_accuracy, cost_source = "computed", "estimated", "somm:model_intel"
         else:
             cost_usd = reported_cost
             cost_basis = "reported"
@@ -731,6 +739,8 @@ class ShadowEvalWorker:
                 )
             ),
             parent_call_id=call_row["call_id"],
+            cache_tokens_in=cache_read,
+            cache_tokens_out=cache_write,
             cost_basis=cost_basis,
             cost_kind=_cost_kind(provider),
             cost_accuracy=cost_accuracy,

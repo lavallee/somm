@@ -43,8 +43,9 @@ from somm_core import VERSION, list_intel
 from somm_core.aliases import needs_alias
 from somm_core.boundary import TIER_NAMES
 from somm_core.config import load as _load_config
+from somm_core.cost import cost_is_known, known_cost_sql
 from somm_core.models import Outcome, PrivacyClass
-from somm_core.read import fleet_summary, search_calls, spend_today
+from somm_core.read import fleet_summary, north_star, search_calls, spend_today
 from somm_core.repository import Repository
 
 from somm.providers.ollama import OllamaProvider
@@ -1656,6 +1657,26 @@ def _fmt_stat_float(value: object) -> str:
     return f"{float(value):.1f}"
 
 
+def _fmt_cost(row: dict) -> str:
+    """A row's cost; ``unknown`` when its 0.0 means somm had no price."""
+    if not row.get("cost_known", cost_is_known(row.get("cost_source"))):
+        return "unknown"
+    return f"${float(row['cost_usd'] or 0.0):.4f}"
+
+
+def _mark_cost_known(repo: Repository | None, rows: list[dict]) -> None:
+    """Set ``cost_known`` on result rows from their ledger rows' cost_source.
+
+    Run after the client closed (its writer flushed); a row whose call is not
+    in the ledger is left as known.
+    """
+    if repo is None:
+        return
+    for row in rows:
+        call = repo.get_call(row["call_id"]) if row.get("call_id") else None
+        row["cost_known"] = call is None or cost_is_known(call.cost_source)
+
+
 def _fmt_stat_pct(value: object) -> str:
     if value is None:
         return "-"
@@ -1953,6 +1974,7 @@ def _bench_summary(rows: list[dict], *, wall_seconds: float) -> dict:
     total_output_tokens = sum(row["tokens_out"] for row in ok_rows)
     total_tokens = total_input_tokens + total_output_tokens
     total_cost = sum(row["cost_usd"] for row in rows)
+    unpriced = sum(1 for row in rows if not row.get("cost_known", True))
     return {
         "calls": len(rows),
         "ok_calls": len(ok_rows),
@@ -1994,6 +2016,7 @@ def _bench_summary(rows: list[dict], *, wall_seconds: float) -> dict:
             "total": total_tokens,
         },
         "cost_usd": total_cost,
+        "unpriced_calls": unpriced,
     }
 
 
@@ -2044,6 +2067,7 @@ def _cmd_bench(args: argparse.Namespace) -> int:
             )
     finally:
         llm.close()
+    _mark_cost_known(getattr(llm, "repo", None), rows)
     wall_seconds = time.monotonic() - (start or time.monotonic())
     summary = _bench_summary(rows, wall_seconds=wall_seconds)
     payload = {
@@ -2080,6 +2104,7 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         f"out_tok/s={_fmt_stat_float(thr['output_tokens_per_second'])} "
         f"total_tok/s={_fmt_stat_float(thr['total_tokens_per_second'])} "
         f"cost=${summary['cost_usd']:.4f}"
+        + (f" (+{summary['unpriced_calls']} unpriced)" if summary["unpriced_calls"] else "")
     )
     return 0
 
@@ -2115,7 +2140,7 @@ def _cmd_tail(args: argparse.Namespace) -> int:
                     continue
                 seen_ids.add(r["id"])
                 ts = r["ts"][:19].replace("T", " ")
-                cost_s = f"${r['cost_usd']:.4f}"
+                cost_s = _fmt_cost(r)
                 print(
                     f"{ts:<20} {r['workload'][:19]:<20} {r['provider'][:9]:<10} "
                     f"{r['model'][:21]:<22} {r['latency_ms']:>7} {r['tokens_in']:>6} "
@@ -2237,6 +2262,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                 )
     finally:
         llm.close()
+    _mark_cost_known(getattr(llm, "repo", None), results)
 
     _print_comparison(results, truncate=args.truncate)
     return 0
@@ -2277,7 +2303,7 @@ def _print_comparison(results: list[dict], truncate: int = 240) -> None:
                 f"{'—':>10}  ERROR: {r['error']}"
             )
             continue
-        cost_s = f"${r['cost_usd']:.4f}"
+        cost_s = _fmt_cost(r)
         text = r["text"].replace("\n", "\\n")
         if len(text) > truncate:
             text = text[:truncate] + "…"
@@ -2366,6 +2392,25 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_connect(args: argparse.Namespace) -> int:
+    from somm import connect
+
+    targets = [args.harness] if args.harness else connect.found_harnesses()
+    if not targets:
+        print("no supported harness (claude, codex) on PATH; pass --harness")
+        return 1
+    if args.connect_cmd == "status":
+        print("\n".join(connect.status_lines(targets)))
+        return 0
+    action = "add" if args.connect_cmd == "install" else "remove"
+    for h in targets:
+        if args.connect_group == "mcp":
+            print(connect.mcp_apply(h, action, args.scope, dry_run=args.print))
+        else:
+            print(connect.skill_apply(h, action, dry_run=args.print))
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
     global_view = bool(getattr(args, "global_view", False))
@@ -2383,6 +2428,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(f"db perms: {mode} {'(ok)' if ok else '(WARN — expect 600)'}")
 
     ok_overall = True
+
+    from somm import connect
+
+    for line in connect.status_lines(connect.found_harnesses()):
+        print(f"agent {line}")
 
     # Ollama
     p = OllamaProvider(base_url=cfg.ollama_url, default_model=cfg.ollama_model)
@@ -2492,6 +2542,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             f"({sited}/{total_sited} calls in the last 24h)"
         )
 
+    # Calls whose price somm did not know (recorded 0.0, source unknown:*).
+    # Budgets count them as nothing, so this is spend the caps cannot see.
+    unknown = _unknown_cost_by_provider(repo)
+    if not unknown:
+        print("unknown cost (30d): none")
+    else:
+        detail = ", ".join(f"{provider} {n}" for provider, n in unknown)
+        print(f"unknown cost (30d): {sum(n for _, n in unknown)} calls  ({detail})")
+
     # Undeclared output contracts. Not a health failure — a workload runs fine
     # without a declared output schema. It is an evaluation gap: without one,
     # nothing downstream can decide whether a fixture could falsify the
@@ -2514,7 +2573,68 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
     _print_fleet_section(db_path)
 
+    _print_north_star(db_path, global_view=global_view)
+
     return 0 if ok_overall else 1
+
+
+def _print_north_star(db_path: Path, *, global_view: bool) -> None:
+    """VISION.md's three numbers with their denominators, or why one cannot be
+    measured. A mirror carries decisions and calls but never recommendations,
+    so `--global` totals that one over the registered project ledgers."""
+    try:
+        ns = north_star(db_path)
+        if global_view:
+            from somm_core.registry import registered_ledgers
+
+            keys = ("acted", "eligible", "pending", "applied")
+            total = dict.fromkeys(keys, 0)
+            for _project, path in registered_ledgers():
+                if Path(path).resolve() == Path(db_path).resolve() or not Path(path).exists():
+                    continue
+                rec = north_star(Path(path))["recommendations_applied"]
+                for k in keys:
+                    total[k] += rec.get(k, 0)
+            total["window_days"] = ns["recommendations_applied"]["window_days"]
+            total["measurable"] = total["eligible"] > 0
+            if not total["measurable"]:
+                total["reason"] = "no project ledger has a recommendation closed or 14 days old"
+            ns["recommendations_applied"] = total
+    except Exception as exc:  # noqa: BLE001 - a doctor must not crash on a report
+        print(f"north star: unavailable ({exc})")
+        return
+
+    def pct(n: int, d: int) -> str:
+        return f"{n / d:.1%}" if d else "—"
+
+    rec, route, recs = (
+        ns["decisions_recalled"], ns["evidence_routed"], ns["recommendations_applied"]
+    )
+    print("north star:" + ("  (recommendations totalled over project ledgers)" if global_view else ""))
+    if rec["measurable"]:
+        print(
+            f"  decisions recalled       {rec['recalled']} of {rec['decisions']} decisions"
+            f"  ({rec['excluded']} excluded: workload has no calls here)"
+        )
+    else:
+        print(f"  decisions recalled       not measurable yet: {rec['reason']}")
+    if route["measurable"]:
+        print(
+            f"  evidence-routed share    {pct(route['evidence'], route['marked'])}  "
+            f"({route['evidence']} of {route['marked']} production calls, "
+            f"{route['window_days']}d; {route['unmarked']} unknown)"
+        )
+    else:
+        print(f"  evidence-routed share    not measurable yet: {route['reason']}")
+    if recs["measurable"]:
+        print(
+            f"  recommendations applied  {pct(recs['acted'], recs['eligible'])}  "
+            f"({recs['acted']} of {recs['eligible']} applied or dismissed within "
+            f"{recs['window_days']}d; {recs['applied']} applied ever; "
+            f"{recs['pending']} younger and open)"
+        )
+    else:
+        print(f"  recommendations applied  not measurable yet: {recs['reason']}")
 
 
 def _print_loop_state(loop: dict, ledgers: list[dict], *, is_mirror: bool) -> None:
@@ -2642,6 +2762,19 @@ def _call_site_coverage_24h(
             (since,),
         ).fetchone()[0]
     return sited, total
+
+
+def _unknown_cost_by_provider(repo: Repository, days: int = 30) -> list[tuple[str, int]]:
+    """(provider, calls) with an unknown cost in the trailing window, most first."""
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    with repo._open() as conn:
+        rows = conn.execute(
+            "SELECT provider, COUNT(*) FROM calls "
+            f"WHERE ts >= ? AND NOT {known_cost_sql()} "
+            "GROUP BY provider ORDER BY COUNT(*) DESC, provider",
+            (since,),
+        ).fetchall()
+    return [(str(r[0]), int(r[1])) for r in rows]
 
 
 def _workloads_without_output_schema(
@@ -3646,6 +3779,37 @@ def build_parser() -> argparse.ArgumentParser:
     ppi = pp_sub.add_parser("info", help="show one reference plugin")
     ppi.add_argument("name", help="reference plugin name")
     ppi.set_defaults(func=_cmd_plugin_info)
+
+    for group, noun, helptext in (
+        ("mcp", "the somm MCP server", "register the somm MCP server with coding agents"),
+        ("skill", "the somm skill", "link the somm skill into coding agents' skill directories"),
+    ):
+        pg = sub.add_parser(group, help=helptext)
+        pg_sub = pg.add_subparsers(dest="connect_cmd", required=True)
+        for name, text in (
+            ("install", f"install {noun}"),
+            ("uninstall", f"remove {noun}"),
+            ("status", f"show whether {noun} is set up"),
+        ):
+            pc = pg_sub.add_parser(name, help=text)
+            pc.add_argument(
+                "--harness",
+                choices=["claude", "codex"],
+                default=None,
+                help="default: every supported harness found on PATH",
+            )
+            if name != "status":
+                pc.add_argument(
+                    "--print", action="store_true", help="show what would be done; change nothing"
+                )
+            if name != "status" and group == "mcp":
+                pc.add_argument(
+                    "--scope",
+                    choices=["user", "project"],
+                    default="user",
+                    help="claude only (codex is user-level); default: user",
+                )
+            pc.set_defaults(func=_cmd_connect, connect_group=group)
 
     pd = sub.add_parser("doctor", help="check config + ollama + db + intel + workers + cooldowns")
     pd.add_argument("--project", default=None)

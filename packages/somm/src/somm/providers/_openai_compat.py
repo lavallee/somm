@@ -143,12 +143,13 @@ class OpenAICompatProvider:
 
         t0 = time.monotonic()
         while True:
+            payload = self._build_payload(request, model)
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     resp = client.post(
                         self._chat_url(),
                         headers=self._headers(),
-                        json=self._build_payload(request, model),
+                        json=payload,
                     )
             except httpx.TimeoutException as e:
                 raise SommTimeout(f"{self.name} timeout on {model}: {e}", cooldown_s=60.0) from e
@@ -203,6 +204,7 @@ class OpenAICompatProvider:
             # beats a token-times-price estimate; the client records the
             # basis as "reported" when this is set.
             cost_usd=extract_reported_cost(data),
+            max_tokens_sent=payload.get("max_tokens", payload.get("max_completion_tokens")),
         )
 
     def _downgrade_structured_mode(self, request: SommRequest, exc: SommBadRequest) -> bool:
@@ -281,7 +283,7 @@ class OpenAICompatProvider:
                     continue
                 data_str = line[len("data:") :].strip()
                 if data_str == "[DONE]":
-                    yield SommChunk(text="", done=True)
+                    yield SommChunk(text="", done=True, model=model)
                     return
                 try:
                     event = json.loads(data_str)
@@ -294,7 +296,7 @@ class OpenAICompatProvider:
                 piece = delta.get("content") or ""
                 if piece:
                     yield SommChunk(text=piece, done=False)
-            yield SommChunk(text="", done=True)
+            yield SommChunk(text="", done=True, model=model)
 
     def health(self) -> ProviderHealth:
         try:

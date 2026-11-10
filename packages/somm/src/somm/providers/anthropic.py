@@ -226,7 +226,7 @@ class AnthropicProvider:
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:  # pragma: no cover
         resp = self.generate(request)
-        yield SommChunk(text=resp.text, done=True)
+        yield SommChunk(text=resp.text, done=True, model=resp.model)
 
     def health(self) -> ProviderHealth:
         # Anthropic has no "list models" endpoint — a cheap probe is a

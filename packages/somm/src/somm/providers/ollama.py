@@ -176,6 +176,7 @@ class OllamaProvider:
             raw=data,
             tool_calls=tool_calls,
             stop_reason=stop_reason,
+            max_tokens_sent=payload["options"]["num_predict"],
         )
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
@@ -223,7 +224,7 @@ class OllamaProvider:
                     if text:
                         yield SommChunk(text=text, done=False)
                     if done:
-                        yield SommChunk(text="", done=True)
+                        yield SommChunk(text="", done=True, model=model)
                         return
 
     def embed(self, request: SommEmbedRequest) -> SommEmbedResponse:

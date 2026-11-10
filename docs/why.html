@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>somm · why build this</title>
+<meta name="description" content="The case for building somm instead of adopting a gateway and a tracing product, the objections to it, and when to use something else.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="./">
+      <span class="mark">somm</span>
+      <span class="mark-sub">/ why build this</span>
+    </a>
+    <nav>
+      <a href="./">home</a>
+      <a href="components.html">components</a>
+      <a href="glossary.html">glossary</a>
+      <a class="gh" href="https://github.com/lavallee/somm" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="section">
+    <div class="wrap">
+      <h2>Why build this</h2>
+      <p class="section-lede">
+        The usual advice is to put a gateway in front of your providers and
+        send traces to an observability product. For many people that is the
+        right answer, and this page says when. somm exists for a narrower
+        case: one developer, a dozen projects, no operations budget, and a
+        wish for each project to start from what the others learned.
+      </p>
+
+      <h3>The argument</h3>
+      <ol class="plain">
+        <li>
+          <strong>The unit of learning is your whole machine, not one
+          project.</strong> A model <a class="term" href="glossary.html#decision">decision</a>
+          made in one project is stored machine-wide by design and found from
+          any other. A tool that keeps one project's traces cannot do this
+          however good it is. In November 2026 no tool surveyed combined
+          cross-project decision memory, grading of production traffic that
+          feeds routing, a local ledger and a surface a coding agent can ask
+          (VISION.md, "Re-grounding, November 2026").
+        </li>
+        <li>
+          <strong>Cost is not always dollars.</strong> Coding plans and
+          subscription <a class="term" href="glossary.html#seat">seats</a> run
+          out by the window. Gateway budgets are typically dollar limits per
+          key over a period; LiteLLM's proxy, for example, sets
+          <code>max_budget</code> with a <code>budget_duration</code> and keeps
+          keys and spend in Postgres
+          (<a href="https://docs.litellm.ai/docs/proxy/virtual_keys" rel="noopener">LiteLLM docs</a>,
+          checked 2026-11-09). somm records quota windows, paces against
+          them and learns limits from your own rate-limit errors. The failure
+          it guards against is real: a week in July 2026 in which 91.1% of
+          306,734 calls failed while marginal spend was near zero
+          (<a href="https://github.com/lavallee/somm/blob/main/docs/incidents/2026-07-provider-exhaustion.md">incident</a>).
+        </li>
+        <li>
+          <strong>The record has to be the truth.</strong> Grading, comparing
+          and recommending are only as good as the rows under them. somm owns
+          the provider layer so that a <a class="term" href="glossary.html#pin">pin</a>
+          never substitutes a model, every failure is recorded against the
+          model asked for, and a telemetry failure never breaks or repeats a
+          paid call (CHANGELOG.md, 0.20.2). Wrapping someone else's client
+          would put those guarantees in code it does not control.
+        </li>
+        <li>
+          <strong>Not every workload should stay a model call.</strong> A
+          router chooses between models. A
+          <a class="term" href="glossary.html#handler">handler</a> lets a rule
+          take over part of a workload under the same name, so "should this
+          still be a model call?" becomes a query
+          (<a href="components.html#handlers">the climb</a>; gabe's
+          <code>same_event</code>, 700,000 calls on a 7B local model, VISION.md).
+        </li>
+        <li>
+          <strong>Coding-agent attempts are calls too.</strong> They are often
+          the most expensive thing a project does, and the harness that ran a
+          model changes the result too (VISION.md,
+          "Strategy bets"). somm records each attempt in the same
+          ledger as API calls (<a href="components.html#harnesses">harnesses</a>).
+        </li>
+        <li>
+          <strong>Your data and your tools should outlast vendors.</strong> One
+          SQLite file per project, no account, no phone-home, works offline
+          with Ollama. The field moves quickly; facts checked on 2026-11-09
+          from each project's own pages:
+          <ul class="plain">
+            <li>Langfuse joined ClickHouse in January 2026; both say the MIT core and self-hosting are unchanged (<a href="https://langfuse.com/blog/joining-clickhouse" rel="noopener">Langfuse</a>).</li>
+            <li>Traceloop, maker of OpenLLMetry, joined ServiceNow in March 2026 (<a href="https://www.traceloop.com/blog/traceloop-is-joining-servicenow" rel="noopener">Traceloop</a>).</li>
+            <li>promptfoo joined OpenAI on 9 March 2026 and says it stays MIT (<a href="https://promptfoo.dev/blog/promptfoo-joining-openai" rel="noopener">promptfoo</a>).</li>
+            <li>TensorZero's repository was archived on 12 June 2026 (<a href="https://github.com/tensorzero/tensorzero" rel="noopener">GitHub</a>).</li>
+            <li>OpenAI Evals became read-only on 31 October 2026 and shuts down on 30 November 2026 (<a href="https://developers.openai.com/api/docs/deprecations" rel="noopener">OpenAI deprecations</a>).</li>
+            <li>Malicious LiteLLM releases 1.82.7 and 1.82.8 were published to PyPI in March 2026 (<a href="https://github.com/BerriAI/litellm/issues/24518" rel="noopener">LiteLLM issue #24518</a>); VISION.md counts two compromised releases of the library in 2026.</li>
+          </ul>
+          None of this says those tools are bad. It says a single developer
+          cannot re-platform every year, and that a file you own does not get
+          acquired.
+        </li>
+      </ol>
+
+      <h3>Objections, and honest answers</h3>
+      <dl class="terms">
+        <dt>"Just use a gateway plus a tracing product."</dt>
+        <dd>
+          If you have one or two projects, a team, or a need for a trace
+          viewer, annotation queues and single sign-on, do that. What the pair
+          does not give you is listed above: decisions remembered across
+          projects, subscription windows as a routing input, agent attempts on
+          the same ledger, rule-served work under the same name. It is also
+          two services to run. somm can sit beside one: it has an OpenTelemetry
+          exporter plugin (<code>somm[otel]</code>), though aligning it with
+          the current conventions is still ROADMAP phase 4.
+        </dd>
+
+        <dt>"You depend on LiteLLM anyway."</dt>
+        <dd>
+          Partly, yes. <code>somm-service</code> depends on
+          <code>litellm</code> and its proxy routes call it directly
+          (<code>packages/somm-service/pyproject.toml</code>,
+          <code>proxy.py</code>), and the bundled price snapshot is derived
+          from LiteLLM's price file (<code>scripts/update_pricing_bundle.py</code>).
+          The library, <code>somm</code> plus <code>somm-core</code>, does not
+          import it; its only third-party dependency is <code>httpx</code>.
+          ROADMAP phase 4 moves the proxy onto somm's own router and removes
+          LiteLLM from <code>somm-service</code>. Until then, installing the
+          service installs LiteLLM; pin a release you have checked.
+        </dd>
+
+        <dt>"SQLite won't scale."</dt>
+        <dd>
+          It does not need to scale far: one file per project, one developer.
+          The October census read a shared ledger holding 1.7 million calls
+          since June (CHANGELOG.md, 0.17.0). There are no published load
+          tests. The <code>somm[postgres]</code> extra installs only a driver,
+          for shared-deployment experiments (README.md).
+        </dd>
+
+        <dt>"OpenRouter already routes and shows costs."</dt>
+        <dd>
+          It is a hosted service; somm runs on your machine and uses OpenRouter
+          as one provider among eleven. OpenRouter's own routing options include
+          a zero-retention filter
+          (<a href="https://openrouter.ai/docs/guides/routing/provider-selection" rel="noopener">OpenRouter docs</a>,
+          checked 2026-11-09), and somm uses OpenRouter's published list to
+          decide when a model meets a <code>zdr</code> boundary (0.22.0). If
+          one bill for many models is all you need, use OpenRouter alone.
+        </dd>
+
+        <dt>"Is the memory real?"</dt>
+        <dd>
+          Not proven yet. Recalls are not stored, and in November nearly every
+          decision in the shared ledger had been written by a test fixture
+          (VISION.md). The design is in place; the evidence is not.
+        </dd>
+
+        <dt>"The recommendations were wrong."</dt>
+        <dd>
+          Many were. In October, 40 of 49 open recommendations came from one
+          rule misreading one column, fixed in 0.17.2; by November 54 had been
+          created and none applied (CHANGELOG.md, VISION.md). Finding that out
+          is what the ledger is for.
+        </dd>
+
+        <dt>"It is pre-1.0."</dt>
+        <dd>
+          Yes, and the release gate refuses a 1.x version without a written
+          decision that the API is ready (RELEASING.md).
+        </dd>
+
+        <dt>"It is one person's project."</dt>
+        <dd>
+          It is built by one developer for that developer's projects first.
+          The mitigation is that it is MIT-licensed, the data is plain SQLite,
+          and <a href="https://github.com/lavallee/somm/blob/main/docs/BLUEPRINT.md">BLUEPRINT.md</a>
+          writes the design down for anyone who wants to rebuild it.
+        </dd>
+
+        <dt>"I don't write Python."</dt>
+        <dd>
+          The library is Python 3.12 or later. Other programs can use the
+          proxy routes or send OpenTelemetry traces to the service, with the
+          proxy's current limits described <a href="components.html#proxy">here</a>.
+        </dd>
+      </dl>
+
+      <h3>When to use something else</h3>
+      <ul class="plain">
+        <li><strong>A team</strong> that needs a shared hosted dashboard, single sign-on or annotation queues: use a tracing platform. somm is built for one person.</li>
+        <li><strong>A production gateway</strong> for many services at high request rates: use a dedicated gateway. somm's proxy is not yet on its own router and has no published load numbers.</li>
+        <li><strong>One project, one provider, no grading:</strong> the provider's own SDK is enough.</li>
+        <li><strong>Only a searchable log of prompts</strong> in SQLite: Simon Willison's <code>llm</code> keeps one (<a href="https://simonwillison.net/tags/llm/" rel="noopener">simonwillison.net</a>).</li>
+        <li><strong>A trace viewer for local use:</strong> Arize Phoenix runs locally under the Elastic License 2.0 (<a href="https://github.com/Arize-ai/phoenix" rel="noopener">GitHub</a>); somm's traces can be exported to a viewer like it.</li>
+      </ul>
+
+      <h3>What somm still depends on, and has not proven</h3>
+      <ul class="plain">
+        <li><strong>Depends on:</strong> LiteLLM in <code>somm-service</code> and for the price snapshot; models.dev and OpenRouter's catalogue for model intel; the providers' own terms for every tier above <code>local</code>.</li>
+        <li><strong>Not proven:</strong> that decisions are recalled across projects (unmeasured); that a recommendation gets applied because of its evidence (none yet); that coding agents use the MCP server and skill (installed in none at the November audit); that most of a climb is visible to the ledger (it is not yet).</li>
+        <li><strong>Not published:</strong> load numbers, dashboard screenshots, a recorded demo.</li>
+      </ul>
+      <p>
+        ROADMAP.md's November sequence puts a trustworthy record first and
+        this explanation last, for that reason.
+      </p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      somm · <a href="./">home</a> · <a href="components.html">components</a> ·
+      <a href="glossary.html">glossary</a> ·
+      <a href="https://github.com/lavallee/somm" rel="noopener">source</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

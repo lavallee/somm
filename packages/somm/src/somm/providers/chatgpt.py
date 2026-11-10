@@ -331,7 +331,8 @@ class ChatGPTProvider:
                             reasoning_tokens=usage.get("completion_tokens_details", {}).get("reasoning_tokens"))
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
-        yield SommChunk(self.generate(request).text, done=True)
+        resp = self.generate(request)
+        yield SommChunk(resp.text, done=True, model=resp.model)
 
     def health(self) -> ProviderHealth:
         from somm.chatgpt_auth import PERMISSION, read_json

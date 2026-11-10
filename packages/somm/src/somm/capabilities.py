@@ -9,8 +9,8 @@ Capability sources per provider:
 - **OpenRouter**: populates `modality` (e.g. `"text+image->text"`) and
   `architecture` (incl. `input_modalities`) on every model. We derive
   `vision` from either field.
-- **Anthropic / OpenAI**: no list-models API for pricing, so capabilities
-  come from the static pricing seed. Vision is inferred from model name
+- **Anthropic / OpenAI**: capabilities come from the bundled pricing
+  snapshot and models.dev. Without a flag, vision is inferred from model name
   as a conservative starter — opus/sonnet/haiku 4.x and gpt-4o* support
   images natively.
 - **Ollama**: family-based inference; `llava`, `bakllava`, `llama3.2-vision`

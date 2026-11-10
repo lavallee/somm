@@ -105,12 +105,19 @@ class SommResponse:
     # reports them separately (OpenAI-compatible
     # ``completion_tokens_details.reasoning_tokens``). None when unknown.
     reasoning_tokens: int | None = None
+    # The output cap the adapter actually put on the wire, when it differs
+    # from the request's (several adapters multiply max_tokens to leave room
+    # for reasoning). None means it sent ``request.max_tokens`` unchanged.
+    max_tokens_sent: int | None = None
 
 
 @dataclass(slots=True)
 class SommChunk:
     text: str
     done: bool = False
+    # The model that served the stream, on the final chunk, as
+    # SommResponse.model does for generate. "" when the adapter does not say.
+    model: str = ""
 
 
 @dataclass(slots=True)

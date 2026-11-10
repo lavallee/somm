@@ -125,7 +125,10 @@ def record_attempt(
     cost = (
         float(result.cost_usd)
         if reported
-        else cost_for_call(repo, provider, model, tokens_in, tokens_out)
+        else cost_for_call(
+            repo, provider, model, tokens_in, tokens_out,
+            cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+        )
     )
     cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version = cost_provenance(
         repo, provider, model, reported=reported, source=f"harness:{provider}" if reported else None

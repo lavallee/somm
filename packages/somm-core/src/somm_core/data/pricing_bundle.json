@@ -9,6 +9,8 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 1.0,
+   "cache_write_per_1m": 12.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -20,6 +22,21 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.25,
+   "cache_write_per_1m": 12.5,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-fable-5-2",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": 1000000,
+   "cache_read_per_1m": 0.2,
+   "cache_write_per_1m": 10.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -31,6 +48,8 @@
    "price_in_per_1m": 1.0,
    "price_out_per_1m": 5.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.1,
+   "cache_write_per_1m": 1.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -42,6 +61,8 @@
    "price_in_per_1m": 1.0,
    "price_out_per_1m": 5.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.1,
+   "cache_write_per_1m": 1.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -53,6 +74,8 @@
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.5,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.01,
+   "cache_write_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -64,6 +87,8 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 1.0,
+   "cache_write_per_1m": 12.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -75,6 +100,8 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.25,
+   "cache_write_per_1m": 12.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -86,6 +113,8 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 1.0,
+   "cache_write_per_1m": 12.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -97,6 +126,8 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.5,
+   "cache_write_per_1m": 6.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -108,6 +139,8 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.5,
+   "cache_write_per_1m": 6.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -119,6 +152,8 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.5,
+   "cache_write_per_1m": 6.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -130,6 +165,8 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.5,
+   "cache_write_per_1m": 6.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -141,6 +178,8 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.5,
+   "cache_write_per_1m": 6.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -152,6 +191,8 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.5,
+   "cache_write_per_1m": 6.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -163,6 +204,8 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.5,
+   "cache_write_per_1m": 6.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -174,6 +217,8 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.5,
+   "cache_write_per_1m": 6.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -185,6 +230,8 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 20.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.2,
+   "cache_write_per_1m": 5.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -196,6 +243,8 @@
    "price_in_per_1m": 3.0,
    "price_out_per_1m": 15.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.3,
+   "cache_write_per_1m": 3.75,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -207,6 +256,8 @@
    "price_in_per_1m": 3.0,
    "price_out_per_1m": 15.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.3,
+   "cache_write_per_1m": 3.75,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -218,6 +269,8 @@
    "price_in_per_1m": 3.0,
    "price_out_per_1m": 15.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.3,
+   "cache_write_per_1m": 3.75,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -229,6 +282,8 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.2,
+   "cache_write_per_1m": 2.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -240,6 +295,8 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.1,
+   "cache_write_per_1m": 2.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -251,6 +308,7 @@
    "price_in_per_1m": 0.28,
    "price_out_per_1m": 0.42,
    "context_window": 131072,
+   "cache_read_per_1m": 0.028,
    "capabilities": {
     "tools": true
    }
@@ -261,6 +319,8 @@
    "price_in_per_1m": 0.28,
    "price_out_per_1m": 0.42,
    "context_window": 131072,
+   "cache_read_per_1m": 0.028,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true
    }
@@ -271,6 +331,7 @@
    "price_in_per_1m": 0.14,
    "price_out_per_1m": 0.28,
    "context_window": 128000,
+   "cache_read_per_1m": 0.014,
    "capabilities": {
     "tools": true
    }
@@ -281,6 +342,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.006,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -292,6 +355,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.006,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -303,6 +368,7 @@
    "price_in_per_1m": 0.55,
    "price_out_per_1m": 2.19,
    "context_window": 65536,
+   "cache_read_per_1m": 0.14,
    "capabilities": {
     "tools": true
    }
@@ -312,14 +378,16 @@
    "model": "deepseek-reasoner",
    "price_in_per_1m": 0.28,
    "price_out_per_1m": 0.42,
-   "context_window": 131072
+   "context_window": 131072,
+   "cache_read_per_1m": 0.028
   },
   {
    "provider": "deepseek",
    "model": "deepseek-reasoner",
    "price_in_per_1m": 0.28,
    "price_out_per_1m": 0.42,
-   "context_window": 131072
+   "context_window": 131072,
+   "cache_read_per_1m": 0.028
   },
   {
    "provider": "deepseek",
@@ -327,6 +395,8 @@
    "price_in_per_1m": 0.27,
    "price_out_per_1m": 1.1,
    "context_window": 65536,
+   "cache_read_per_1m": 0.07,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true
    }
@@ -337,6 +407,7 @@
    "price_in_per_1m": 0.28,
    "price_out_per_1m": 0.4,
    "context_window": 163840,
+   "cache_read_per_1m": 0.028,
    "capabilities": {
     "tools": true
    }
@@ -347,6 +418,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.006,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -358,6 +431,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.006,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -369,6 +444,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.006,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -380,6 +457,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.006,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -391,6 +470,8 @@
    "price_in_per_1m": 1.32,
    "price_out_per_1m": 3.96,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.044,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true
    }
@@ -401,6 +482,8 @@
    "price_in_per_1m": 1.32,
    "price_out_per_1m": 3.96,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.044,
+   "cache_write_per_1m": 0.0,
    "capabilities": {
     "tools": true
    }
@@ -452,6 +535,7 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.5,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.03,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -463,6 +547,7 @@
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.4,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.01,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -474,6 +559,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -484,7 +570,8 @@
    "model": "gemini-2.5-pro-preview-tts",
    "price_in_per_1m": 1.0,
    "price_out_per_1m": 20.0,
-   "context_window": 8192
+   "context_window": 8192,
+   "cache_read_per_1m": 0.125
   },
   {
    "provider": "gemini",
@@ -492,6 +579,7 @@
    "price_in_per_1m": 0.5,
    "price_out_per_1m": 3.0,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.05,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -503,6 +591,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 1.5,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -514,6 +603,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 1.5,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -525,6 +615,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 12.0,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -536,6 +627,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 12.0,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -547,6 +639,7 @@
    "price_in_per_1m": 1.5,
    "price_out_per_1m": 9.0,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.15,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -558,6 +651,7 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.5,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.03,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -569,6 +663,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 3.75,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -580,6 +675,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 3.75,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -591,6 +687,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 3.75,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -602,6 +699,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.1,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -662,6 +760,7 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.5,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.03,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -673,6 +772,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 3.75,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -684,6 +784,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 3.75,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -695,6 +796,7 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.5,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.03,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -706,6 +808,7 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.5,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.03,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -769,6 +872,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 12.0,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -780,6 +884,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 12.0,
    "context_window": 1048576,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -791,6 +896,7 @@
    "price_in_per_1m": 1.0,
    "price_out_per_1m": 5.0,
    "context_window": 131072,
+   "cache_read_per_1m": 0.1,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -899,6 +1005,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 200000,
+   "cache_read_per_1m": 0.03,
+   "cache_write_per_1m": 0.375,
    "capabilities": {
     "tools": true
    }
@@ -909,6 +1017,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.03,
+   "cache_write_per_1m": 0.375,
    "capabilities": {
     "tools": true
    }
@@ -919,6 +1029,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.4,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.03,
+   "cache_write_per_1m": 0.375,
    "capabilities": {
     "tools": true
    }
@@ -929,6 +1041,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.03,
+   "cache_write_per_1m": 0.375,
    "capabilities": {
     "tools": true
    }
@@ -939,6 +1053,8 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.4,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.03,
+   "cache_write_per_1m": 0.375,
    "capabilities": {
     "tools": true
    }
@@ -959,6 +1075,19 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 1000000,
+   "cache_read_per_1m": 0.06,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "minimax",
+   "model": "MiniMax-M3.1-Flash",
+   "price_in_per_1m": 0.15,
+   "price_out_per_1m": 0.6,
+   "context_window": 1000000,
+   "cache_read_per_1m": 0.015,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -970,6 +1099,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 30.0,
    "context_window": 400000,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1010,6 +1140,8 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 20.0,
    "context_window": 922000,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 5.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1021,6 +1153,8 @@
    "price_in_per_1m": 12.5,
    "price_out_per_1m": 75.0,
    "context_window": 272000,
+   "cache_read_per_1m": 1.25,
+   "cache_write_per_1m": 15.625,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1070,6 +1204,7 @@
    "price_in_per_1m": 3.0,
    "price_out_per_1m": 12.0,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.75,
    "capabilities": {
     "tools": true
    }
@@ -1080,6 +1215,7 @@
    "price_in_per_1m": 0.8,
    "price_out_per_1m": 3.2,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true
    }
@@ -1090,6 +1226,7 @@
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 0.8,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.05,
    "capabilities": {
     "tools": true
    }
@@ -1100,6 +1237,7 @@
    "price_in_per_1m": 3.75,
    "price_out_per_1m": 15.0,
    "context_window": 128000,
+   "cache_read_per_1m": 1.875,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1111,6 +1249,7 @@
    "price_in_per_1m": 3.75,
    "price_out_per_1m": 15.0,
    "context_window": 128000,
+   "cache_write_per_1m": 1.875,
    "capabilities": {
     "tools": true
    }
@@ -1121,6 +1260,7 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 1.2,
    "context_window": 128000,
+   "cache_read_per_1m": 0.15,
    "capabilities": {
     "tools": true
    }
@@ -1131,6 +1271,7 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 16.0,
    "context_window": 200000,
+   "cache_read_per_1m": 1.0,
    "capabilities": {
     "tools": true
    }
@@ -1230,6 +1371,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 8.0,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1241,6 +1383,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 8.0,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1252,6 +1395,7 @@
    "price_in_per_1m": 0.4,
    "price_out_per_1m": 1.6,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.1,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1263,6 +1407,7 @@
    "price_in_per_1m": 0.4,
    "price_out_per_1m": 1.6,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.1,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1274,6 +1419,7 @@
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.4,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1285,6 +1431,7 @@
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.4,
    "context_window": 1047576,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1296,6 +1443,7 @@
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
+   "cache_read_per_1m": 1.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1318,6 +1466,7 @@
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
+   "cache_read_per_1m": 1.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1329,6 +1478,7 @@
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
+   "cache_read_per_1m": 1.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1360,6 +1510,7 @@
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.6,
    "context_window": 128000,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1371,6 +1522,7 @@
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.6,
    "context_window": 128000,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1392,6 +1544,7 @@
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.6,
    "context_window": 128000,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1403,6 +1556,7 @@
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.6,
    "context_window": 128000,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1414,6 +1568,7 @@
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
+   "cache_read_per_1m": 1.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1425,6 +1580,7 @@
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
+   "cache_read_per_1m": 1.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1436,6 +1592,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1447,6 +1604,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1458,6 +1616,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "vision": true
    }
@@ -1468,6 +1627,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1479,6 +1639,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1490,6 +1651,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 2.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1501,6 +1663,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 2.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1512,6 +1675,7 @@
    "price_in_per_1m": 0.05,
    "price_out_per_1m": 0.4,
    "context_window": 272000,
+   "cache_read_per_1m": 0.005,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1523,6 +1687,7 @@
    "price_in_per_1m": 0.05,
    "price_out_per_1m": 0.4,
    "context_window": 272000,
+   "cache_read_per_1m": 0.005,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1556,6 +1721,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1567,6 +1733,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1578,6 +1745,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1589,6 +1757,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1600,6 +1769,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 128000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1611,6 +1781,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 400000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1622,6 +1793,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": 400000,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1633,6 +1805,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 2.0,
    "context_window": 400000,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1644,6 +1817,7 @@
    "price_in_per_1m": 1.75,
    "price_out_per_1m": 14.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.175,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1655,6 +1829,7 @@
    "price_in_per_1m": 1.75,
    "price_out_per_1m": 14.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.175,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1666,6 +1841,7 @@
    "price_in_per_1m": 1.75,
    "price_out_per_1m": 14.0,
    "context_window": 128000,
+   "cache_read_per_1m": 0.175,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1677,6 +1853,7 @@
    "price_in_per_1m": 1.75,
    "price_out_per_1m": 14.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.175,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1710,6 +1887,7 @@
    "price_in_per_1m": 1.75,
    "price_out_per_1m": 14.0,
    "context_window": 128000,
+   "cache_read_per_1m": 0.175,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1721,6 +1899,7 @@
    "price_in_per_1m": 1.75,
    "price_out_per_1m": 14.0,
    "context_window": 272000,
+   "cache_read_per_1m": 0.175,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1732,6 +1911,7 @@
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 15.0,
    "context_window": 1050000,
+   "cache_read_per_1m": 0.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1743,6 +1923,7 @@
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 15.0,
    "context_window": 1050000,
+   "cache_read_per_1m": 0.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1754,6 +1935,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 4.5,
    "context_window": 272000,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1765,6 +1947,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 4.5,
    "context_window": 272000,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1776,6 +1959,7 @@
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 1.25,
    "context_window": 272000,
+   "cache_read_per_1m": 0.02,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1787,6 +1971,7 @@
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 1.25,
    "context_window": 272000,
+   "cache_read_per_1m": 0.02,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1820,6 +2005,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 30.0,
    "context_window": 1050000,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1831,6 +2017,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 30.0,
    "context_window": 1050000,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1841,14 +2028,16 @@
    "model": "gpt-5.5-cyber",
    "price_in_per_1m": 12.5,
    "price_out_per_1m": 75.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 1.25
   },
   {
    "provider": "openai",
    "model": "gpt-5.5-cyber-preview",
    "price_in_per_1m": 12.5,
    "price_out_per_1m": 75.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 1.25
   },
   {
    "provider": "openai",
@@ -1878,6 +2067,8 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 20.0,
    "context_window": 922000,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 5.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1889,6 +2080,8 @@
    "price_in_per_1m": 12.5,
    "price_out_per_1m": 75.0,
    "context_window": 272000,
+   "cache_read_per_1m": 1.25,
+   "cache_write_per_1m": 15.625,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1900,6 +2093,8 @@
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 1.2,
    "context_window": 922000,
+   "cache_read_per_1m": 0.02,
+   "cache_write_per_1m": 0.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1911,6 +2106,8 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 20.0,
    "context_window": 922000,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 5.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1922,6 +2119,8 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 12.0,
    "context_window": 922000,
+   "cache_read_per_1m": 0.2,
+   "cache_write_per_1m": 2.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1933,6 +2132,8 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": 922000,
+   "cache_read_per_1m": 1.0,
+   "cache_write_per_1m": 12.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1944,6 +2145,7 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": 922000,
+   "cache_read_per_1m": 1.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1955,6 +2157,8 @@
    "price_in_per_1m": 20.0,
    "price_out_per_1m": 100.0,
    "context_window": 922000,
+   "cache_read_per_1m": 2.0,
+   "cache_write_per_1m": 25.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1966,6 +2170,8 @@
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.5,
    "context_window": 922000,
+   "cache_read_per_1m": 0.01,
+   "cache_write_per_1m": 0.125,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1977,6 +2183,8 @@
    "price_in_per_1m": 15.0,
    "price_out_per_1m": 75.0,
    "context_window": 922000,
+   "cache_read_per_1m": 1.5,
+   "cache_write_per_1m": 18.75,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1988,6 +2196,8 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": 922000,
+   "cache_read_per_1m": 0.2,
+   "cache_write_per_1m": 2.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -1999,6 +2209,8 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": 922000,
+   "cache_read_per_1m": 0.1,
+   "cache_write_per_1m": 2.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2010,6 +2222,8 @@
    "price_in_per_1m": 1.0,
    "price_out_per_1m": 5.0,
    "context_window": 922000,
+   "cache_read_per_1m": 0.05,
+   "cache_write_per_1m": 1.25,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2081,6 +2295,8 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 20.0,
    "context_window": 922000,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 5.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2092,6 +2308,8 @@
    "price_in_per_1m": 12.5,
    "price_out_per_1m": 75.0,
    "context_window": 272000,
+   "cache_read_per_1m": 1.25,
+   "cache_write_per_1m": 15.625,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2102,14 +2320,16 @@
    "model": "gpt-rosalind-discovery",
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.5
   },
   {
    "provider": "openai",
    "model": "gpt-rosalind-research",
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.5
   },
   {
    "provider": "openai",
@@ -2117,6 +2337,7 @@
    "price_in_per_1m": 15.0,
    "price_out_per_1m": 60.0,
    "context_window": 200000,
+   "cache_read_per_1m": 7.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2128,6 +2349,7 @@
    "price_in_per_1m": 15.0,
    "price_out_per_1m": 60.0,
    "context_window": 200000,
+   "cache_read_per_1m": 7.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2161,6 +2383,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 8.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2172,6 +2395,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 8.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2183,6 +2407,7 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 40.0,
    "context_window": 200000,
+   "cache_read_per_1m": 2.5,
    "capabilities": {
     "vision": true
    }
@@ -2193,6 +2418,7 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 40.0,
    "context_window": 200000,
+   "cache_read_per_1m": 2.5,
    "capabilities": {
     "vision": true
    }
@@ -2203,6 +2429,7 @@
    "price_in_per_1m": 1.1,
    "price_out_per_1m": 4.4,
    "context_window": 200000,
+   "cache_read_per_1m": 0.55,
    "capabilities": {
     "tools": true
    }
@@ -2213,6 +2440,7 @@
    "price_in_per_1m": 1.1,
    "price_out_per_1m": 4.4,
    "context_window": 200000,
+   "cache_read_per_1m": 0.55,
    "capabilities": {
     "tools": true
    }
@@ -2245,6 +2473,7 @@
    "price_in_per_1m": 1.1,
    "price_out_per_1m": 4.4,
    "context_window": 200000,
+   "cache_read_per_1m": 0.275,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2256,6 +2485,7 @@
    "price_in_per_1m": 1.1,
    "price_out_per_1m": 4.4,
    "context_window": 200000,
+   "cache_read_per_1m": 0.275,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2267,6 +2497,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 8.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "vision": true
    }
@@ -2277,6 +2508,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 8.0,
    "context_window": 200000,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "vision": true
    }
@@ -2315,6 +2547,7 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": null,
+   "cache_read_per_1m": 1.0,
    "capabilities": {
     "tools": true
    }
@@ -2324,7 +2557,8 @@
    "model": "anthropic/claude-fable-5-1",
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.25
   },
   {
    "provider": "perplexity",
@@ -2332,6 +2566,7 @@
    "price_in_per_1m": 1.0,
    "price_out_per_1m": 5.0,
    "context_window": null,
+   "cache_read_per_1m": 0.1,
    "capabilities": {
     "tools": true
    }
@@ -2342,6 +2577,7 @@
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.5,
    "context_window": null,
+   "cache_read_per_1m": 0.01,
    "capabilities": {
     "tools": true
    }
@@ -2352,6 +2588,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": null,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true
    }
@@ -2362,6 +2599,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": null,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true
    }
@@ -2372,6 +2610,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": null,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true
    }
@@ -2382,6 +2621,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": null,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true
    }
@@ -2392,6 +2632,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 25.0,
    "context_window": null,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true
    }
@@ -2401,7 +2642,8 @@
    "model": "anthropic/claude-opus-5-5",
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 20.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.2
   },
   {
    "provider": "perplexity",
@@ -2409,6 +2651,7 @@
    "price_in_per_1m": 3.0,
    "price_out_per_1m": 15.0,
    "context_window": null,
+   "cache_read_per_1m": 0.3,
    "capabilities": {
     "tools": true
    }
@@ -2419,6 +2662,7 @@
    "price_in_per_1m": 3.0,
    "price_out_per_1m": 15.0,
    "context_window": null,
+   "cache_read_per_1m": 0.3,
    "capabilities": {
     "tools": true
    }
@@ -2429,6 +2673,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": null,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true
    }
@@ -2439,6 +2684,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": null,
+   "cache_read_per_1m": 0.1,
    "capabilities": {
     "tools": true
    }
@@ -2483,6 +2729,7 @@
    "price_in_per_1m": 0.5,
    "price_out_per_1m": 3.0,
    "context_window": null,
+   "cache_read_per_1m": 0.05,
    "capabilities": {
     "tools": true
    }
@@ -2503,6 +2750,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 1.5,
    "context_window": null,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true
    }
@@ -2513,6 +2761,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 12.0,
    "context_window": null,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true
    }
@@ -2523,6 +2772,7 @@
    "price_in_per_1m": 1.5,
    "price_out_per_1m": 9.0,
    "context_window": null,
+   "cache_read_per_1m": 0.15,
    "capabilities": {
     "tools": true
    }
@@ -2533,6 +2783,7 @@
    "price_in_per_1m": 0.3,
    "price_out_per_1m": 2.5,
    "context_window": null,
+   "cache_read_per_1m": 0.03,
    "capabilities": {
     "tools": true
    }
@@ -2543,6 +2794,7 @@
    "price_in_per_1m": 1.5,
    "price_out_per_1m": 7.5,
    "context_window": null,
+   "cache_read_per_1m": 0.15,
    "capabilities": {
     "tools": true
    }
@@ -2553,6 +2805,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 3.75,
    "context_window": null,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true
    }
@@ -2562,14 +2815,16 @@
    "model": "google/gemini-3.8-flash",
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 3.75,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.075
   },
   {
    "provider": "perplexity",
    "model": "google/gemini-4-argon",
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.1
   },
   {
    "provider": "perplexity",
@@ -2612,6 +2867,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": null,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true
    }
@@ -2622,6 +2878,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 2.0,
    "context_window": null,
+   "cache_read_per_1m": 0.025,
    "capabilities": {
     "tools": true
    }
@@ -2631,7 +2888,8 @@
    "model": "openai/gpt-5-nano",
    "price_in_per_1m": 0.05,
    "price_out_per_1m": 0.4,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.005
   },
   {
    "provider": "perplexity",
@@ -2639,6 +2897,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 10.0,
    "context_window": null,
+   "cache_read_per_1m": 0.125,
    "capabilities": {
     "tools": true
    }
@@ -2649,6 +2908,7 @@
    "price_in_per_1m": 1.75,
    "price_out_per_1m": 14.0,
    "context_window": null,
+   "cache_read_per_1m": 0.175,
    "capabilities": {
     "tools": true
    }
@@ -2658,7 +2918,8 @@
    "model": "openai/gpt-5.3-codex",
    "price_in_per_1m": 3.5,
    "price_out_per_1m": 28.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.35
   },
   {
    "provider": "perplexity",
@@ -2666,6 +2927,7 @@
    "price_in_per_1m": 2.5,
    "price_out_per_1m": 15.0,
    "context_window": null,
+   "cache_read_per_1m": 0.25,
    "capabilities": {
     "tools": true
    }
@@ -2676,6 +2938,7 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 4.5,
    "context_window": null,
+   "cache_read_per_1m": 0.075,
    "capabilities": {
     "tools": true
    }
@@ -2686,6 +2949,7 @@
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 1.25,
    "context_window": null,
+   "cache_read_per_1m": 0.02,
    "capabilities": {
     "tools": true
    }
@@ -2696,6 +2960,7 @@
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 30.0,
    "context_window": null,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true
    }
@@ -2706,6 +2971,7 @@
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 1.2,
    "context_window": null,
+   "cache_read_per_1m": 0.02,
    "capabilities": {
     "tools": true
    }
@@ -2716,6 +2982,7 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 20.0,
    "context_window": null,
+   "cache_read_per_1m": 0.4,
    "capabilities": {
     "tools": true
    }
@@ -2726,6 +2993,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 12.0,
    "context_window": null,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true
    }
@@ -2735,28 +3003,33 @@
    "model": "openai/gpt-6-astra",
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 1.0,
+   "cache_write_per_1m": 12.5
   },
   {
    "provider": "perplexity",
    "model": "openai/gpt-6-luna",
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.5,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.01
   },
   {
    "provider": "perplexity",
    "model": "openai/gpt-6-sol",
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.2
   },
   {
    "provider": "perplexity",
    "model": "openai/gpt-6.1-sol",
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.1
   },
   {
    "provider": "perplexity",
@@ -2764,6 +3037,7 @@
    "price_in_per_1m": 0.13,
    "price_out_per_1m": 0.26,
    "context_window": null,
+   "cache_read_per_1m": 0.028,
    "capabilities": {
     "tools": true
    }
@@ -2773,7 +3047,8 @@
    "model": "perplexity/deepseek-v4-pro-0813",
    "price_in_per_1m": 1.32,
    "price_out_per_1m": 3.96,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.044
   },
   {
    "provider": "perplexity",
@@ -2781,6 +3056,7 @@
    "price_in_per_1m": 1.4,
    "price_out_per_1m": 4.4,
    "context_window": null,
+   "cache_read_per_1m": 0.14,
    "capabilities": {
     "tools": true
    }
@@ -2791,6 +3067,7 @@
    "price_in_per_1m": 1.4,
    "price_out_per_1m": 4.4,
    "context_window": null,
+   "cache_read_per_1m": 0.26,
    "capabilities": {
     "tools": true
    }
@@ -2801,6 +3078,7 @@
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.5,
    "context_window": null,
+   "cache_read_per_1m": 0.03,
    "capabilities": {
     "tools": true
    }
@@ -2811,6 +3089,7 @@
    "price_in_per_1m": 0.95,
    "price_out_per_1m": 4.0,
    "context_window": null,
+   "cache_read_per_1m": 0.19,
    "capabilities": {
     "tools": true
    }
@@ -2821,6 +3100,7 @@
    "price_in_per_1m": 3.0,
    "price_out_per_1m": 15.0,
    "context_window": null,
+   "cache_read_per_1m": 0.3,
    "capabilities": {
     "tools": true
    }
@@ -2831,6 +3111,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 2.5,
    "context_window": null,
+   "cache_read_per_1m": 0.25,
    "capabilities": {
     "tools": true
    }
@@ -2841,6 +3122,7 @@
    "price_in_per_1m": 0.0115,
    "price_out_per_1m": 0.17,
    "context_window": null,
+   "cache_read_per_1m": 0.00115,
    "capabilities": {
     "tools": true
    }
@@ -2850,7 +3132,8 @@
    "model": "perplexity/nemotron-3.5-super-120b-a12b",
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 0.5,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.04
   },
   {
    "provider": "perplexity",
@@ -2858,6 +3141,7 @@
    "price_in_per_1m": 0.25,
    "price_out_per_1m": 2.5,
    "context_window": null,
+   "cache_read_per_1m": 0.0625,
    "capabilities": {
     "tools": true
    }
@@ -3037,6 +3321,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 2.5,
    "context_window": null,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true
    }
@@ -3047,6 +3332,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 2.5,
    "context_window": null,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true
    }
@@ -3057,6 +3343,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 2.5,
    "context_window": null,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true
    }
@@ -3067,6 +3354,7 @@
    "price_in_per_1m": 1.25,
    "price_out_per_1m": 2.5,
    "context_window": null,
+   "cache_read_per_1m": 0.2,
    "capabilities": {
     "tools": true
    }
@@ -3077,6 +3365,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 6.0,
    "context_window": null,
+   "cache_read_per_1m": 0.3,
    "capabilities": {
     "tools": true
    }
@@ -3087,6 +3376,7 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 6.0,
    "context_window": null,
+   "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true
    }
@@ -3096,7 +3386,8 @@
    "model": "xai/grok-4.7",
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 6.0,
-   "context_window": null
+   "context_window": null,
+   "cache_read_per_1m": 0.5
   }
  ]
 }

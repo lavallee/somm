@@ -21,12 +21,28 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from somm_core.plans import load_plans, plan_for, plans_path
+from somm_core.pricing import free_route, known_prices
 
 if TYPE_CHECKING:
     from somm_core.repository import Repository
 
 _PLANS_LOCK = threading.Lock()
 _plans_cache: tuple[Path, float | None, dict] | None = None
+
+# cost_source of a call whose price somm did not know. Its cost_usd is 0.0
+# (the column is NOT NULL), so this source is the one way to tell an unknown
+# price from a free one.
+UNKNOWN_COST_SOURCE = "unknown:no-price"
+
+
+def cost_is_known(cost_source: str | None) -> bool:
+    """False for a row whose 0.0 means "price unknown", not "free"."""
+    return not (cost_source or "").startswith("unknown:")
+
+
+def known_cost_sql(alias: str = "") -> str:
+    """SQL predicate twin of ``cost_is_known``; ``alias`` like ``"c."``."""
+    return f"COALESCE({alias}cost_source, '') NOT LIKE 'unknown:%'"
 
 _PRICING_VERSION_TTL_S = 300.0
 _pricing_lock = threading.Lock()
@@ -96,8 +112,10 @@ def cost_provenance(
     """``(cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version)``.
 
     A reported figure is what the provider said it charged. An Ollama call is
-    ``included``: zero metered price, not zero economic cost. Anything else is
-    computed from ``model_intel`` and says which pricing row it used.
+    ``included``: zero metered price, not zero economic cost. A call with no
+    known price (recorded as 0.0) is ``unknown`` throughout, with source
+    ``unknown:no-price``. Anything else is computed from ``model_intel`` and
+    says which pricing row it used.
     """
     if provider == "chatgpt":
         return "unknown", "included", "unknown", "chatgpt-subscription", None
@@ -105,6 +123,11 @@ def cost_provenance(
         return "reported", "unknown", "unknown", source, None
     if provider == "ollama":
         return "unknown", "included", "unknown", "local-included-unpriced", None
+    if known_prices(repo, provider, model) is None:
+        free = free_route(provider or "", model or "")
+        if free is not None:
+            return "computed", computed_cost_kind(provider), "estimated", free, None
+        return "unknown", "unknown", "unknown", UNKNOWN_COST_SOURCE, None
     return (
         "computed",
         computed_cost_kind(provider),

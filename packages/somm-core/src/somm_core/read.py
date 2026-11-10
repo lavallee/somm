@@ -75,7 +75,7 @@ _CALL_COLUMNS = (
     "latency_ms", "cost_usd", "outcome", "error_kind", "prompt_hash", "response_hash",
     "session_id", "parent_call_id", "correlation_id", "ttft_ms", "cache_tokens_in",
     "cache_tokens_out", "reasoning_tokens", "origin", "call_site", "client_version", "routing_json",
-    "data_tier",
+    "data_tier", "cost_source",
 )
 
 
@@ -142,7 +142,7 @@ def search_calls(
                c.error_kind, c.prompt_hash, c.response_hash, c.session_id,
                c.parent_call_id, c.correlation_id, c.ttft_ms, c.cache_tokens_in,
                c.cache_tokens_out, c.reasoning_tokens, c.origin, c.call_site,
-               c.client_version, c.routing_json, c.data_tier
+               c.client_version, c.routing_json, c.data_tier, c.cost_source
         FROM calls c
         LEFT JOIN workloads w ON w.id = c.workload_id
         WHERE {" AND ".join(clauses)}
@@ -296,3 +296,142 @@ def fleet_summary(
         "provider_spellings": spellings,
         "unaliased": [(r[0], r[1]) for r in pairs],
     }
+
+
+# ---------------------------------------------------------------------------
+# North-star numbers — VISION.md's decisions recalled, evidence-routed share,
+# and recommendations applied, computed from rows the ledger already holds.
+
+# Values of ``routing_json.route_source``, and whether each means the route was
+# decided by somm's evidence rather than by the caller or the default chain.
+ROUTE_SOURCES = {
+    "recommendation": True,
+    "policy": True,
+    "learned_override": True,
+    "pin": False,
+    "default": False,
+}
+RECOMMENDATION_WINDOW_DAYS = 14
+
+
+def north_star(db_path: Path, *, since_days: int = 30) -> dict:
+    """The three north-star numbers for one ledger, each with its denominator.
+
+    Every entry carries ``measurable``; when it is false, ``reason`` says why.
+
+    - ``decisions_recalled``: decisions with ``recalled_from`` set, over all
+      decisions. A decision bound to a workload id that has no calls in this
+      ledger is test residue and is counted in ``excluded`` instead.
+    - ``evidence_routed``: of production calls in the last ``since_days`` whose
+      ``routing_json`` names a ``route_source``, how many were decided by a
+      recommendation, a workload policy, or a learned override. Calls without
+      the marker are ``unmarked``, never counted as pins.
+    - ``recommendations_applied``: of recommendations whose fate is known
+      (closed, or open for fourteen days), how many were applied or dismissed
+      within fourteen days of being created.
+    """
+    with _connect_ro(db_path) as conn:
+        return {
+            "decisions_recalled": _decisions_recalled(conn),
+            "evidence_routed": _evidence_routed(conn, since_days),
+            "recommendations_applied": _recommendations_applied(conn),
+        }
+
+
+def _decisions_recalled(conn: sqlite3.Connection) -> dict:
+    try:
+        recalled, total, excluded = conn.execute(
+            """
+            SELECT COALESCE(SUM(residue = 0 AND recalled_from IS NOT NULL), 0),
+                   COALESCE(SUM(residue = 0), 0),
+                   COALESCE(SUM(residue), 0)
+            FROM (
+                SELECT d.recalled_from,
+                       (d.workload_id IS NOT NULL AND NOT EXISTS (
+                           SELECT 1 FROM calls c WHERE c.workload_id = d.workload_id
+                       )) AS residue
+                FROM decisions d
+            )
+            """
+        ).fetchone()
+    except sqlite3.Error:
+        return {"measurable": False, "reason": "this ledger predates recall tracking (schema 28)"}
+    out = {"measurable": total > 0, "recalled": recalled, "decisions": total, "excluded": excluded}
+    if not total:
+        out["reason"] = "no decisions recorded"
+    return out
+
+
+def _evidence_routed(conn: sqlite3.Connection, since_days: int) -> dict:
+    try:
+        rows = conn.execute(
+            """
+            SELECT CASE WHEN json_valid(routing_json)
+                        THEN json_extract(routing_json, '$.route_source') END AS source,
+                   COUNT(*)
+            FROM calls
+            WHERE ts >= datetime('now', ?) AND observation_role = 'production'
+            GROUP BY source
+            """,
+            (f"-{int(since_days)} days",),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        return {
+            "measurable": False,
+            "window_days": since_days,
+            "reason": f"calls on this ledger's schema cannot say ({exc})",
+        }
+    by_source = {s: n for s, n in rows if s in ROUTE_SOURCES}
+    marked = sum(by_source.values())
+    unmarked = sum(n for s, n in rows if s not in ROUTE_SOURCES)
+    out = {
+        "measurable": marked > 0,
+        "window_days": since_days,
+        "evidence": sum(n for s, n in by_source.items() if ROUTE_SOURCES[s]),
+        "marked": marked,
+        "unmarked": unmarked,
+        "by_source": by_source,
+    }
+    if not marked:
+        out["reason"] = (
+            f"none of {unmarked} production calls in the window records why its "
+            "route was chosen (routing_json.route_source)"
+        )
+    return out
+
+
+def _recommendations_applied(conn: sqlite3.Connection) -> dict:
+    days = RECOMMENDATION_WINDOW_DAYS
+    try:
+        acted, eligible, pending, applied = conn.execute(
+            """
+            SELECT COALESCE(SUM(closed IS NOT NULL
+                                AND julianday(closed) - julianday(created_at) <= ?), 0),
+                   COALESCE(SUM(closed IS NOT NULL
+                                OR julianday('now') - julianday(created_at) >= ?), 0),
+                   COALESCE(SUM(closed IS NULL
+                                AND julianday('now') - julianday(created_at) < ?), 0),
+                   COALESCE(SUM(applied_at IS NOT NULL), 0)
+            FROM (SELECT created_at, applied_at,
+                         COALESCE(applied_at, dismissed_at) AS closed
+                  FROM recommendations)
+            """,
+            (days, days, days),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        return {
+            "measurable": False,
+            "window_days": days,
+            "reason": f"recommendations cannot be read here ({exc})",
+        }
+    out = {
+        "measurable": eligible > 0,
+        "window_days": days,
+        "acted": acted,
+        "eligible": eligible,
+        "pending": pending,
+        "applied": applied,
+    }
+    if not eligible:
+        out["reason"] = f"no recommendation is closed or {days} days old ({pending} younger)"
+    return out
