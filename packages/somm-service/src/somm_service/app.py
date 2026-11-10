@@ -13,7 +13,7 @@ HTTP surface:
   POST /api/recommendations/{id}/dismiss
   POST /api/recommendations/{id}/apply
   POST /api/otlp/v1/traces     Lenient OTLP JSON trace ingest
-  POST /v1/traces              Alias for OTLP JSON trace ingest
+  POST /v1/traces              Alias for OTLP trace ingest (JSON, or protobuf with the otlp extra)
   POST /v1/messages            Anthropic Messages-compatible LLM proxy
   POST /v1/chat/completions    OpenAI Chat Completions-compatible LLM proxy
   POST /v1/responses           OpenAI Responses-compatible LLM proxy (common subset)
@@ -26,6 +26,7 @@ model_intel / shadow_eval / agent workers on their cadences.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import html
 import ipaddress
@@ -284,9 +285,9 @@ class LocalSecurityMiddleware:
                 self._set_security_headers(response)
                 await response(scope, receive, send)
                 return
-            if (
-                protected_messages or protected_chat or protected_otlp
-            ) and not self._is_json_request(headers):
+            if (protected_messages or protected_chat or protected_otlp) and not (
+                self._is_json_request(headers) or (protected_otlp and _is_otlp_protobuf(headers))
+            ):
                 if protected_messages:
                     response = _anthropic_error(
                         error_type="invalid_request_error",
@@ -1254,7 +1255,13 @@ def _call_from_otlp_span(
             attrs,
             "somm.workload",
             "llm.workload",
-            "gen_ai.operation.name",
+            # Harness spans all carry operation "invoke_agent"; their span
+            # name ("invoke_agent <harness>") tells them apart.
+            *(
+                []
+                if attrs.get("gen_ai.operation.name") == "invoke_agent"
+                else ["gen_ai.operation.name"]
+            ),
             default=span.get("name") or "otel",
         )
     )
@@ -1311,7 +1318,7 @@ def _call_from_otlp_span(
             0,
         )
         or None,
-        session_id=str(_attr(attrs, "somm.session_id", "session.id", default=trace_id)),
+        session_id=str(_attr(attrs, "somm.session_id", "session.id", "gen_ai.conversation.id", default=trace_id)),
         parent_call_id=parent_call_id,
         cache_tokens_in=_as_int(
             _attr(
@@ -1422,15 +1429,73 @@ def _ingest_otlp_payload(
     }, 200
 
 
-async def _api_otlp_traces(request: Request) -> JSONResponse:
+def _is_otlp_protobuf(headers: Headers) -> bool:
+    media_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    return media_type == "application/x-protobuf"
+
+
+def _otlp_protobuf_to_dict(body: bytes) -> dict:
+    """Decode an OTLP/HTTP protobuf body into the dict the JSON path consumes."""
+    from google.protobuf.json_format import MessageToDict
+    from google.protobuf.message import DecodeError
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+        ExportTraceServiceRequest,
+    )
+
+    try:
+        payload = MessageToDict(ExportTraceServiceRequest.FromString(body))
+    except DecodeError as exc:
+        raise ValueError(str(exc)) from exc
+    # Protobuf JSON renders bytes as base64; OTLP JSON (and the call id derived
+    # from it) uses hex.
+    for rs in payload.get("resourceSpans", []):
+        for ss in rs.get("scopeSpans", []):
+            for span in ss.get("spans", []):
+                for key in ("traceId", "spanId", "parentSpanId"):
+                    if key in span:
+                        span[key] = base64.b64decode(span[key]).hex()
+    return payload
+
+
+async def _read_bounded_body(request: Request, *, max_bytes: int) -> bytes:
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > max_bytes:
+        raise PayloadTooLarge(f"request body exceeds {max_bytes} bytes")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise PayloadTooLarge(f"request body exceeds {max_bytes} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _api_otlp_traces(request: Request) -> Response:
     cfg: Config = request.app.state.config
     repo: Repository = request.app.state.repo
+    protobuf = _is_otlp_protobuf(request.headers)
     try:
-        payload = await read_bounded_json(request, max_bytes=cfg.service_otlp_max_body_bytes)
+        if protobuf:
+            try:
+                import opentelemetry.proto  # noqa: F401
+            except ImportError:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "OTLP protobuf needs the optional package: "
+                        "pip install 'somm-service[otlp]' (or send application/json)",
+                    },
+                    status_code=415,
+                )
+            body = await _read_bounded_body(request, max_bytes=cfg.service_otlp_max_body_bytes)
+            payload = _otlp_protobuf_to_dict(body)
+        else:
+            payload = await read_bounded_json(request, max_bytes=cfg.service_otlp_max_body_bytes)
     except PayloadTooLarge as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=413)
-    except json.JSONDecodeError:
-        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid OTLP protobuf" if protobuf else "invalid JSON"}, status_code=400)
     if not isinstance(payload, dict):
         return JSONResponse(
             {"ok": False, "error": "OTLP payload must be an object"}, status_code=400
@@ -1442,6 +1507,19 @@ async def _api_otlp_traces(request: Request) -> JSONResponse:
         max_spans=cfg.service_otlp_max_spans,
         max_attr_chars=cfg.service_otlp_max_attr_chars,
     )
+    if protobuf and status == 200:
+        # OTLP/HTTP: reply in the request's content type; partial_success is
+        # set only when spans were rejected.
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceResponse,
+        )
+
+        reply = ExportTraceServiceResponse()
+        rejected = result["skipped"] + result["conflicts"]
+        if rejected:
+            reply.partial_success.rejected_spans = rejected
+            reply.partial_success.error_message = f"{rejected} spans could not be recorded"
+        return Response(reply.SerializeToString(), media_type="application/x-protobuf")
     return JSONResponse(result, status_code=status)
 
 

@@ -20,6 +20,9 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.optional-dependencies]
+otlp = ["opentelemetry-proto>=1.20"]
+
 [project.scripts]
 somm-serve = "somm_service.cli:main"
 
