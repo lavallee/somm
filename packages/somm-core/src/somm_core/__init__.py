@@ -25,6 +25,10 @@ _EXPORTS: dict[str, str] = {
     "SommResult": "somm_core.models",
     "ToolCall": "somm_core.models",
     "Workload": "somm_core.models",
+    # data boundary
+    "DataTier": "somm_core.boundary",
+    "RouteTier": "somm_core.boundary",
+    "admit": "somm_core.boundary",
     # graders
     "GradeScores": "somm_core.graders",
     "grade_response_pair": "somm_core.graders",

@@ -1,0 +1,186 @@
+# somm data-boundary defaults — the tier somm assumes for each route
+# before the owner says otherwise in ~/.somm/boundary.toml.
+#
+# Tiers, strictest first:
+#   local      the data never leaves hardware you run
+#   zdr        a third party under an explicit zero-retention, no-training
+#              commitment. NOTHING ships as zdr: a ZDR agreement belongs to
+#              an account (and sometimes excludes models), so only the owner
+#              can declare it.
+#   subscribed a US-headquartered, first-party provider the owner holds an
+#              account with, under that provider's standard terms
+#   unvetted   everything else, and anything somm cannot classify
+#
+# A tier is a property of a ROUTE (provider + model, sometimes plan), not of
+# a provider alone. `match` is "provider" or "provider/model-glob"; the most
+# specific match wins. `hosts` lists the API hosts a provider tier applies to:
+# the same provider pointed at another base URL is unvetted, unless that URL
+# is loopback or a private address (local). Model entries are checked before
+# the loopback rule, so a cloud model behind a local daemon is not local.
+#
+# Fields: `basis` (always); for vendor facts `source`, `quote`, `last_verified`
+# and `confidence` (high = first-party page read, operative sentence quoted;
+# med = first-party page read, a fact missing or ambiguous). `assumed = true`
+# marks a route whose real tier depends on an account setting somm cannot see
+# (a seat's training toggle): `somm boundary routes` and `audit` print it as
+# "assumed" until the owner declares it in boundary.toml.
+#
+# Evidence: somm-private research/revamp-2026-11/11-data-policy-facts.md (run 1,
+# fetched 2026-11-09). Re-verify before each release, like plan_catalog.toml.
+
+# --- model entries (checked before the loopback rule) ----------------------
+
+[[route]]
+match = "ollama/*:cloud"
+tier = "unvetted"
+basis = "A cloud-tagged model offloads to Ollama's servers even through a loopback daemon; no contractual ZDR; inference hosts not identified."
+jurisdiction = "unverified (Ollama Inc. HQ not stated on pages read)"
+source = "https://docs.ollama.com/cloud"
+quote = "In the Ollama app or CLI, use gemma4:cloud. Cloud models do not need to be downloaded."
+last_verified = "2026-11-09"
+confidence = "med"
+
+[[route]]
+match = "ollama/*-cloud"
+tier = "unvetted"
+basis = "Older cloud tag form (e.g. qwen3-coder:480b-cloud): offloads to Ollama's servers like ':cloud'."
+source = "https://ollama.com/blog/cloud-models"
+quote = "qwen3-coder:480b-cloud"
+last_verified = "2026-11-09"
+confidence = "med"
+
+[[route]]
+match = "openrouter/*:free"
+tier = "unvetted"
+basis = "Free-tier endpoints: policy is per upstream and free accounts have a separate training setting. Never promoted by pattern."
+source = "https://openrouter.ai/docs/guides/privacy/provider-logging.md"
+quote = "There are separate settings for paid and free models."
+last_verified = "2026-11-09"
+confidence = "high"
+
+# --- provider entries ------------------------------------------------------
+
+[[route]]
+match = "ollama"
+tier = "unvetted"
+basis = "An Ollama endpoint that is not loopback or a private address (a remote box, or ollama.com's hosted API): transient processing per policy, no contract, hosting unverified. Declare your own box in boundary.toml."
+source = "https://ollama.com/privacy"
+quote = "we process this content transiently to provide the Service and this content is not stored beyond the time required to fulfill the request"
+last_verified = "2026-11-09"
+confidence = "med"
+
+[[route]]
+match = "anthropic"
+tier = "subscribed"
+hosts = ["api.anthropic.com"]
+basis = "US-headquartered vendor (Anthropic PBC, San Francisco); commercial terms bar training on Customer Content; 30-day default retention."
+jurisdiction = "US"
+source = "https://www.anthropic.com/legal/commercial-terms"
+quote = "Anthropic may not train models on Customer Content from Services."
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "claude-cli"
+tier = "subscribed"
+assumed = true
+basis = "Claude Code seat on a consumer plan: US vendor, but training follows the account's model-improvement setting, which somm cannot see. Subscribed only if that setting is off; demote in boundary.toml if it is on."
+jurisdiction = "US"
+source = "https://code.claude.com/docs/en/data-usage"
+quote = "We will train new models using data from Free, Pro, Max, and Ultra accounts when this setting is on (including when you use Claude Code from these accounts)."
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "openai"
+tier = "subscribed"
+hosts = ["api.openai.com", "*.api.openai.com"]
+basis = "US vendor (OpenAI OpCo, LLC, Delaware); API data not used for training by default; abuse-monitoring logs up to 30 days."
+jurisdiction = "US"
+source = "https://platform.openai.com/docs/guides/your-data"
+quote = "data sent to the OpenAI API is not used to train or improve OpenAI models (unless you explicitly opt in to share data with us)"
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "codex-cli"
+tier = "subscribed"
+assumed = true
+basis = "Codex CLI on a ChatGPT individual-plan login: US vendor, but training follows two account settings ('Improve the model for everyone', 'Include environments') somm cannot see. Demote in boundary.toml if either is on."
+jurisdiction = "US"
+source = "https://help.openai.com/en/articles/5722486-how-your-data-is-used-to-improve-model-performance"
+quote = "When you use our services for individuals (Free, Plus, Pro), we may use your content to train our models."
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "chatgpt"
+tier = "subscribed"
+assumed = true
+basis = "ChatGPT seat: same terms and setting as codex-cli; somm cannot see whether 'Improve the model for everyone' is off."
+jurisdiction = "US"
+source = "https://help.openai.com/en/articles/5722486-how-your-data-is-used-to-improve-model-performance"
+quote = "You can choose whether your conversations help improve our models."
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "gemini"
+tier = "unvetted"
+hosts = ["generativelanguage.googleapis.com"]
+basis = "One provider name, two regimes: unpaid quota trains on inputs and human reviewers may read them; paid (a Cloud project with active billing) does not. somm cannot tell which a key is. Promote to subscribed in boundary.toml only for a billing-enabled key."
+jurisdiction = "US (Google); processing in any country where Google operates"
+source = "https://ai.google.dev/gemini-api/terms"
+quote = "Your access to Gemini API is a 'Paid Service' only when accessing the API through a Cloud Project associated with an active billing account."
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "perplexity"
+tier = "unvetted"
+hosts = ["api.perplexity.ai"]
+basis = "US vendor with a contractual no-training clause, but default retention is not stated. A promotion to subscribed is proposed and awaits the owner's approval."
+jurisdiction = "US (Perplexity AI, Inc., San Francisco)"
+source = "https://www.perplexity.ai/hub/legal/perplexity-api-terms-of-service"
+quote = "Perplexity shall not use (or authorize third parties to use) Customer Content to train, retrain, fine-tune or otherwise improve any generative artificial intelligence models."
+last_verified = "2026-11-09"
+confidence = "med"
+
+[[route]]
+match = "openrouter"
+tier = "unvetted"
+basis = "Aggregator: the serving upstream varies per request and per endpoint, and default routing may reach endpoints that retain or train. Promote specific provider/model patterns in boundary.toml."
+source = "https://openrouter.ai/docs/guides/features/zdr.md"
+quote = "If OpenRouter is not able to establish or ascertain a clear policy for a provider or endpoint, we take a conservative stance and assume that the endpoint both retains and trains on data and mark it as such."
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "minimax"
+tier = "unvetted"
+basis = "Singapore entity (Nanonoble Pte. Ltd.), not US; terms permit using input and output to improve services; no ZDR."
+jurisdiction = "SG; stored in a US data center per privacy policy"
+source = "https://platform.minimax.io/protocol/terms-of-service"
+quote = "We may use the input and generated content to provide, maintain, develop, and improve our Services"
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "deepseek"
+tier = "unvetted"
+basis = "PRC entity (Hangzhou DeepSeek Artificial Intelligence Co., Ltd.) with storage in the PRC; privacy policy states training use."
+jurisdiction = "CN"
+source = "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html"
+quote = "To improve and develop the Services and to train and improve our technology, such as our machine learning models and algorithms."
+last_verified = "2026-11-09"
+confidence = "high"
+
+[[route]]
+match = "opencode"
+tier = "unvetted"
+basis = "Multi-provider coding agent: the serving provider depends on its own configuration."
+
+[[route]]
+match = "pi"
+tier = "unvetted"
+basis = "Multi-provider coding agent: the serving provider depends on its own configuration."

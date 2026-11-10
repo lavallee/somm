@@ -618,13 +618,13 @@ class Repository:
         row = conn.execute(
             "SELECT max_p95_latency_ms, max_p95_ttft_ms, max_tpot_ms, "
             "max_capability_failure_rate, max_cost_per_call_usd, "
-            "budget_cap_usd_daily, shadow_config_json, policy_json "
+            "budget_cap_usd_daily, shadow_config_json, policy_json, data_boundary "
             "FROM workloads WHERE id = ?",
             (workload_id,),
         ).fetchone()
         if row is None:
             return None
-        return {
+        snapshot = {
             "max_p95_latency_ms": row[0],
             "max_p95_ttft_ms": row[1],
             "max_tpot_ms": row[2],
@@ -634,6 +634,11 @@ class Repository:
             "shadow_config": json.loads(row[6]) if row[6] else None,
             "policy": json.loads(row[7]) if row[7] else None,
         }
+        # History only: a rollback never restores a looser boundary, so the
+        # key is recorded (when set) for audit and diff but not re-applied.
+        if row[8]:
+            snapshot["data_boundary"] = row[8]
+        return snapshot
 
     def _record_workload_revision_in_tx(
         self,
@@ -691,9 +696,18 @@ class Repository:
         max_capability_failure_rate: float | None = None,
         max_cost_per_call_usd: float | None = None,
         policy: dict | None = None,
+        data_boundary: str | None = None,
     ) -> Workload:
+        """Register a workload. Idempotent on (name + schemas): an existing row
+        keeps its stored settings, except ``data_boundary``, which is written
+        whenever it is passed (an explicit boundary must never be ignored).
+        ``data_boundary`` is not part of the content-addressed id."""
         wid = _workload_id(name, input_schema, output_schema)
         policy = _validate_workload_policy(policy)
+        if data_boundary is not None:
+            from somm_core.boundary import parse_tier
+
+            data_boundary = parse_tier(data_boundary).value
         with self._open() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -705,8 +719,8 @@ class Repository:
                         budget_cap_usd_daily, privacy_class, capabilities_required_json,
                         max_p95_latency_ms, max_p95_ttft_ms, max_tpot_ms,
                         max_capability_failure_rate, max_cost_per_call_usd,
-                        policy_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        policy_json, data_boundary
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         wid,
@@ -725,9 +739,15 @@ class Repository:
                         max_capability_failure_rate,
                         max_cost_per_call_usd,
                         json.dumps(policy, sort_keys=True) if policy else None,
+                        data_boundary,
                     ),
                 )
                 self._ensure_initial_workload_revision_in_tx(conn, wid)
+                if data_boundary is not None:
+                    self._set_data_boundary_in_tx(conn, wid, data_boundary, None)
+                stored = conn.execute(
+                    "SELECT data_boundary FROM workloads WHERE id = ?", (wid,)
+                ).fetchone()
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -748,7 +768,57 @@ class Repository:
             max_capability_failure_rate=max_capability_failure_rate,
             max_cost_per_call_usd=max_cost_per_call_usd,
             policy=policy,
+            data_boundary=stored[0] if stored else data_boundary,
         )
+
+    def _set_data_boundary_in_tx(
+        self,
+        conn: sqlite3.Connection,
+        workload_id: str,
+        data_boundary: str | None,
+        created_by: str | None,
+    ) -> bool:
+        current = conn.execute(
+            "SELECT data_boundary FROM workloads WHERE id = ?", (workload_id,)
+        ).fetchone()
+        if current is None:
+            return False
+        if current[0] == data_boundary:
+            return True
+        self._ensure_initial_workload_revision_in_tx(conn, workload_id)
+        conn.execute(
+            "UPDATE workloads SET data_boundary = ? WHERE id = ?", (data_boundary, workload_id)
+        )
+        snapshot = self._workload_config_snapshot(conn, workload_id)
+        if snapshot is not None:
+            if data_boundary is None:
+                snapshot["data_boundary"] = None
+            self._record_workload_revision_in_tx(conn, workload_id, snapshot, created_by)
+        return True
+
+    def set_workload_data_boundary(
+        self,
+        workload_id: str,
+        data_boundary: str | None,
+        created_by: str | None = None,
+    ) -> None:
+        """Set (or clear, with None) a workload's stored data boundary and
+        append a workload revision. Raises ValueError on an unknown tier or
+        workload."""
+        if data_boundary is not None:
+            from somm_core.boundary import parse_tier
+
+            data_boundary = parse_tier(data_boundary).value
+        with self._open() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                found = self._set_data_boundary_in_tx(conn, workload_id, data_boundary, created_by)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        if not found:
+            raise ValueError(f"unknown workload {workload_id!r}")
 
     def workload_by_name(self, name: str, project: str) -> Workload | None:
         with self._open() as conn:
@@ -757,7 +827,8 @@ class Repository:
                 "quality_criteria_json, budget_cap_usd_daily, privacy_class, "
                 "capabilities_required_json, "
                 "max_p95_latency_ms, max_p95_ttft_ms, max_tpot_ms, "
-                "max_capability_failure_rate, max_cost_per_call_usd, policy_json "
+                "max_capability_failure_rate, max_cost_per_call_usd, policy_json, "
+                "data_boundary "
                 "FROM workloads WHERE project = ? AND name = ? "
                 "ORDER BY created_at DESC LIMIT 1",
                 (project, name),
@@ -780,6 +851,7 @@ class Repository:
             max_capability_failure_rate=row[12],
             max_cost_per_call_usd=row[13],
             policy=json.loads(row[14]) if row[14] else None,
+            data_boundary=row[15],
         )
 
     def set_workload_constraints(
@@ -1777,10 +1849,11 @@ class Repository:
                     cache_tokens_out, citations_json, cost_basis, cost_kind,
                     cost_accuracy, cost_source, pricing_version, observation_role,
                     source_call_id, eval_result_id, provider_request_id, billing_id,
-                    origin, budget_eligible, call_site, reasoning_tokens, client_version, routing_json
+                    origin, budget_eligible, call_site, reasoning_tokens, client_version, routing_json,
+                    data_tier
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -1827,6 +1900,7 @@ class Repository:
                     call.reasoning_tokens,
                     call.client_version,
                     call.routing_json,
+                    call.data_tier,
                 ),
             )
 
@@ -1849,10 +1923,11 @@ class Repository:
                         cache_tokens_out, citations_json, cost_basis, cost_kind,
                         cost_accuracy, cost_source, pricing_version, observation_role,
                         source_call_id, eval_result_id, provider_request_id, billing_id,
-                        origin, budget_eligible, call_site, reasoning_tokens, client_version, routing_json
+                        origin, budget_eligible, call_site, reasoning_tokens, client_version, routing_json,
+                        data_tier
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     [
@@ -1900,6 +1975,7 @@ class Repository:
                             c.reasoning_tokens,
                             c.client_version,
                             c.routing_json,
+                            c.data_tier,
                         )
                         for c in calls
                     ],
@@ -1920,7 +1996,7 @@ class Repository:
                 "citations_json, cost_basis, cost_kind, cost_accuracy, cost_source, "
                 "pricing_version, observation_role, source_call_id, eval_result_id, "
                 "provider_request_id, billing_id, origin, budget_eligible, "
-                "call_site, reasoning_tokens, client_version, routing_json "
+                "call_site, reasoning_tokens, client_version, routing_json, data_tier "
                 "FROM calls WHERE id = ?",
                 (call_id,),
             ).fetchone()
@@ -1970,6 +2046,7 @@ class Repository:
             reasoning_tokens=row[40],
             client_version=row[41],
             routing_json=row[42],
+            data_tier=row[43],
         )
 
     def prune_calls(self, *, older_than_days: int, dry_run: bool = False) -> dict:

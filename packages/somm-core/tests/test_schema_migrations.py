@@ -614,9 +614,9 @@ def test_v25_upgrade_preserves_calls_and_adds_optional_routing(tmp_path):
             conn.commit()
         conn.execute("INSERT INTO calls (id, ts, project, provider, model, tokens_in, tokens_out, latency_ms, cost_usd, outcome, prompt_hash, response_hash) VALUES ('old','2026-11-01','test','minimax','m',1,2,3,0.01,'ok','p','r')")
         conn.commit()
-        assert ensure_schema(conn) == 26
+        assert ensure_schema(conn) == SCHEMA_VERSION
         assert conn.execute("SELECT id, routing_json FROM calls").fetchall() == [("old", None)]
-        assert ensure_schema(conn) == 26
+        assert ensure_schema(conn) == SCHEMA_VERSION
 
 
 _CONCURRENT_OPEN = """

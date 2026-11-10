@@ -127,6 +127,10 @@ class Workload:
     max_cost_per_call_usd: float | None = None  # cost ceiling per ok call
     policy: dict | None = None
     created_at: datetime | None = None
+    # 0027: the loosest data tier (somm_core.boundary.DataTier) this
+    # workload's data may reach. None = derive (privacy_class, then the project
+    # default, then unvetted). Not part of the content-addressed id.
+    data_boundary: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +292,10 @@ class Call:
     reasoning_tokens: int | None = None
     client_version: str | None = None
     routing_json: str | None = None  # Requested alias, selected tier/reason and quota snapshot; no prompt text.
+    # 0027: data tier of the route that served (or was attempted). None on
+    # rows written before the column existed and on boundary refusals, which
+    # reached no route; the audit classifies those from provider/model.
+    data_tier: str | None = None
 
 
 @dataclass(slots=True)
