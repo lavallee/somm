@@ -223,7 +223,7 @@ class OllamaProvider:
                     if text:
                         yield SommChunk(text=text, done=False)
                     if done:
-                        yield SommChunk(text="", done=True)
+                        yield SommChunk(text="", done=True, model=model)
                         return
 
     def embed(self, request: SommEmbedRequest) -> SommEmbedResponse:

@@ -281,7 +281,7 @@ class OpenAICompatProvider:
                     continue
                 data_str = line[len("data:") :].strip()
                 if data_str == "[DONE]":
-                    yield SommChunk(text="", done=True)
+                    yield SommChunk(text="", done=True, model=model)
                     return
                 try:
                     event = json.loads(data_str)
@@ -294,7 +294,7 @@ class OpenAICompatProvider:
                 piece = delta.get("content") or ""
                 if piece:
                     yield SommChunk(text=piece, done=False)
-            yield SommChunk(text="", done=True)
+            yield SommChunk(text="", done=True, model=model)
 
     def health(self) -> ProviderHealth:
         try:

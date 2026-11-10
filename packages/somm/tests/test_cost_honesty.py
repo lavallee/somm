@@ -268,3 +268,74 @@ def test_migration_0029_lets_an_existing_ledger_hold_null(tmp_path):
     ]
     assert early.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     early.close()
+
+
+# ---- streamed rows -----------------------------------------------------------
+
+
+class DefaultModelStreamer(UsageProvider):
+    """Streams under its default model, naming it on the final chunk the way
+    the real adapters do."""
+
+    def stream(self, request):
+        yield SommChunk(text="ok", done=False)
+        yield SommChunk(text="", done=True, model=request.model or self.model)
+
+
+def test_stream_without_a_model_is_priced_like_generate(tmp_path):
+    """No model given: the row used to say model=<provider name>, which has no
+    price. It now names the model the provider served and prices it."""
+    llm = SommLLM(
+        config=_config(tmp_path), providers=[DefaultModelStreamer(name="anthropic")]
+    )
+    try:
+        write_intel(llm.repo, "anthropic", "test-model", 1.0, 1.0, None, None, "manual")
+        assert "".join(llm.stream("hello world", workload="w", provider="anthropic")) == "ok"
+        llm._writer.flush(timeout=2.0)
+        with sqlite3.connect(llm.config.db_path) as conn:
+            model, cost, basis = conn.execute(
+                "SELECT model, cost_usd, cost_basis FROM calls"
+            ).fetchone()
+    finally:
+        llm.close()
+    assert model == "test-model"
+    assert cost is not None and cost > 0
+    assert basis == "computed"
+
+
+def test_openai_compat_stream_names_its_model(monkeypatch):
+    import httpx
+    from somm.providers.base import SommRequest
+    from somm.providers.openai import OpenAIProvider
+
+    body = 'data: {"choices": [{"delta": {"content": "hi"}}]}\n\ndata: [DONE]\n\n'
+
+    class _Client(httpx.Client):
+        def __init__(self, *a, **kw):
+            kw.pop("transport", None)
+            transport = httpx.MockTransport(lambda request: httpx.Response(200, text=body))
+            super().__init__(*a, transport=transport, **kw)
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    provider = OpenAIProvider(api_key="k", default_model="gpt-test")
+    chunks = list(provider.stream(SommRequest(prompt="hi")))
+    assert chunks[-1].done and chunks[-1].model == "gpt-test"
+
+
+def test_ollama_stream_names_its_model(monkeypatch):
+    import httpx
+    from somm.providers.base import SommRequest
+    from somm.providers.ollama import OllamaProvider
+
+    body = '{"message": {"content": "hi"}, "done": false}\n{"done": true}\n'
+
+    class _Client(httpx.Client):
+        def __init__(self, *a, **kw):
+            kw.pop("transport", None)
+            transport = httpx.MockTransport(lambda request: httpx.Response(200, text=body))
+            super().__init__(*a, transport=transport, **kw)
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    provider = OllamaProvider(base_url="http://127.0.0.1:1", default_model="qwen-local")
+    chunks = list(provider.stream(SommRequest(prompt="hi")))
+    assert chunks[-1].done and chunks[-1].model == "qwen-local"
