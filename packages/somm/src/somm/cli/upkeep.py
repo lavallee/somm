@@ -365,7 +365,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         "backfill-costs",
         help="recompute cost_usd for $0 calls that now have pricing intel",
     )
-    pbf.add_argument("--project", default=None)
+    _common.add_project(pbf)
     pbf.add_argument("--since", type=int, default=None, help="only calls from the last N days")
     pbf.add_argument("--dry-run", action="store_true", help="report without writing")
     pbf.set_defaults(func=_cmd_backfill_costs)
@@ -374,7 +374,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         "plans",
         help="metered-plan quota usage + pacing (PAYG vs metered, fleet-wide)",
     )
-    ppl.add_argument("--project", default=None)
+    _common.add_project(ppl)
     ppl.add_argument(
         "--project-only",
         action="store_true",
@@ -404,5 +404,5 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         "drain-spool",
         help="replay spooled JSONL telemetry (written during DB outages) into the DB",
     )
-    pds.add_argument("--project", default=None)
+    _common.add_project(pds)
     pds.set_defaults(func=_cmd_drain_spool)

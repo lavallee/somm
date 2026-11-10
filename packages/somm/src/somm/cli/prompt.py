@@ -371,16 +371,17 @@ def _cmd_prompt_score(args: argparse.Namespace) -> int:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     pprompt = sub.add_parser("prompt", help="manage prompt versions, labels, and A/B variants")
+    _common.add_project(pprompt)
     pprompt_sub = pprompt.add_subparsers(dest="prompt_cmd", required=True)
 
     pplst = pprompt_sub.add_parser("list", help="list prompt versions for a workload")
     pplst.add_argument("--workload", required=True)
-    pplst.add_argument("--project", default=None)
+    _common.add_project(pplst)
     pplst.set_defaults(func=_cmd_prompt_list)
 
     ppsh = pprompt_sub.add_parser("show", help="show a prompt version or label")
     ppsh.add_argument("--workload", required=True)
-    ppsh.add_argument("--project", default=None)
+    _common.add_project(ppsh)
     ppsh_ref = ppsh.add_mutually_exclusive_group()
     ppsh_ref.add_argument("--version", default=None)
     ppsh_ref.add_argument("--label", default=None)
@@ -389,7 +390,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 
     ppreg = pprompt_sub.add_parser("register", help="register a new prompt version")
     ppreg.add_argument("--workload", required=True)
-    ppreg.add_argument("--project", default=None)
+    _common.add_project(ppreg)
     ppreg_body = ppreg.add_mutually_exclusive_group(required=True)
     ppreg_body.add_argument("--body-file", default=None)
     ppreg_body.add_argument("--body", default=None)
@@ -398,21 +399,21 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 
     ppfork = pprompt_sub.add_parser("fork", help="fork a prompt from a version or label")
     ppfork.add_argument("--workload", required=True)
-    ppfork.add_argument("--project", default=None)
+    _common.add_project(ppfork)
     ppfork.add_argument("--from", dest="from_ref", required=True)
     ppfork.add_argument("--body-file", required=True)
     ppfork.set_defaults(func=_cmd_prompt_fork)
 
     ppdiff = pprompt_sub.add_parser("diff", help="diff two prompt versions or labels")
     ppdiff.add_argument("--workload", required=True)
-    ppdiff.add_argument("--project", default=None)
+    _common.add_project(ppdiff)
     ppdiff.add_argument("a")
     ppdiff.add_argument("b")
     ppdiff.set_defaults(func=_cmd_prompt_diff)
 
     pplabel = pprompt_sub.add_parser("label", help="move a label to a version or weights")
     pplabel.add_argument("--workload", required=True)
-    pplabel.add_argument("--project", default=None)
+    _common.add_project(pplabel)
     pplabel.add_argument("--label", required=True)
     pplabel_target = pplabel.add_mutually_exclusive_group(required=True)
     pplabel_target.add_argument("--version", default=None)
@@ -421,7 +422,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 
     ppprom = pprompt_sub.add_parser("promote", help="promote a version to a label")
     ppprom.add_argument("--workload", required=True)
-    ppprom.add_argument("--project", default=None)
+    _common.add_project(ppprom)
     ppprom.add_argument("--version", required=True)
     ppprom.add_argument("--to", required=True)
     ppprom.add_argument("--min-graded", type=int, default=None)
@@ -431,7 +432,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 
     ppscore = pprompt_sub.add_parser("score", help="show per-version eval rollups")
     ppscore.add_argument("--workload", required=True)
-    ppscore.add_argument("--project", default=None)
+    _common.add_project(ppscore)
     ppscore_ref = ppscore.add_mutually_exclusive_group()
     ppscore_ref.add_argument("--version", default=None)
     ppscore_ref.add_argument("--label", default=None)

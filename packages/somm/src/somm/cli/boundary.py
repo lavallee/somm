@@ -304,19 +304,20 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pbd = sub.add_parser(
         "boundary", help="data boundary: route tiers, ledger audit, per-workload boundary"
     )
+    _common.add_project(pbd)
     pbd_sub = pbd.add_subparsers(dest="boundary_cmd", required=True)
     pbr = pbd_sub.add_parser("routes", help="every configured route with its tier and basis")
     pbr.add_argument(
         "route", nargs="?", default=None,
         help="openrouter/<model-id>: each upstream endpoint, judged from live ZDR evidence",
     )
-    pbr.add_argument("--project", default=None)
+    _common.add_project(pbr)
     pbr.add_argument("--json", action="store_true")
     pbr.set_defaults(func=_cmd_boundary_routes)
     pba = pbd_sub.add_parser(
         "audit", help="per workload: declared boundary vs the worst tier that served it"
     )
-    pba.add_argument("--project", default=None)
+    _common.add_project(pba)
     pba.add_argument("--since", default="30d", help="window, e.g. 30d, 12h (default 30d)")
     pba.add_argument("--json", action="store_true")
     pba.add_argument("-v", "--verbose", action="store_true", help="list routes per workload")
@@ -324,5 +325,5 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pbs = pbd_sub.add_parser("set", help="set a workload's data boundary")
     pbs.add_argument("workload")
     pbs.add_argument("tier", choices=[*TIER_NAMES, "none"], help="tier, or none to derive")
-    pbs.add_argument("--project", default=None)
+    _common.add_project(pbs)
     pbs.set_defaults(func=_cmd_boundary_set)

@@ -103,12 +103,12 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         "loop",
         help="run or schedule the intelligence loop (intel refresh, shadow grading, recommendations)",
     )
-    plp.add_argument("--project", default=None)
+    _common.add_project(plp)
     plp_sub = plp.add_subparsers(dest="loop_cmd")
     plr = plp_sub.add_parser("run", help="one pass: run the workers that are due, then exit")
     # `--project` is accepted on either side of the subcommand (`somm loop
     # status --project X` reads like every other command).
-    plr.add_argument("--project", default=argparse.SUPPRESS)
+    _common.add_project(plr)
     plr.add_argument("--force", action="store_true", help="run every worker regardless of staleness")
     plr.add_argument(
         "--only", action="append", choices=["model_intel", "shadow_eval", "agent"],
@@ -118,13 +118,13 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
                      help="every registered project ledger, not just this one")
     plr.add_argument("--json", action="store_true")
     pli = plp_sub.add_parser("install", help="write a systemd user timer that runs `somm loop run`")
-    pli.add_argument("--project", default=argparse.SUPPRESS)
+    _common.add_project(pli)
     pli.add_argument("--every", default="15min", help="timer cadence (systemd span, default 15min)")
     pli.add_argument("--no-enable", action="store_true", help="write units without enabling")
     plu = plp_sub.add_parser("uninstall", help="disable the timer for this project")
-    plu.add_argument("--project", default=argparse.SUPPRESS)
+    _common.add_project(plu)
     pls = plp_sub.add_parser("status", help="timer state and worker heartbeats")
-    pls.add_argument("--project", default=argparse.SUPPRESS)
+    _common.add_project(pls)
     pls.add_argument("--json", action="store_true")
     plp.set_defaults(func=_cmd_loop, loop_cmd="status", json=False)
 
@@ -132,7 +132,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         "prune",
         help="delete calls (and their samples/updates/evals) older than a retention window",
     )
-    ppr.add_argument("--project", default=None)
+    _common.add_project(ppr)
     ppr.add_argument(
         "--older-than", type=int, required=True, metavar="DAYS", help="retention window in days"
     )

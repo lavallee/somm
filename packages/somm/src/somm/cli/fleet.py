@@ -149,11 +149,12 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pfls.set_defaults(func=_cmd_fleet_status)
 
     pmir = sub.add_parser("mirror", help="the cross-project mirror (~/.somm/global.sqlite)")
+    _common.add_project(pmir, help="only this project's ledgers and rows")
     pmir_sub = pmir.add_subparsers(dest="mirror_cmd", required=True)
     pmirs = pmir_sub.add_parser(
         "sync", help="copy call rows a registered ledger has and the mirror lacks"
     )
-    pmirs.add_argument("--project", default=None, help="only this project's ledgers and rows")
+    _common.add_project(pmirs, help="only this project's ledgers and rows")
     pmirs.add_argument("--dry-run", action="store_true", help="count, copy nothing")
     pmirs.add_argument("--batch", type=int, default=5000, help="rows per transaction")
     pmirs.set_defaults(func=_cmd_mirror_sync)

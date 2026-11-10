@@ -45,7 +45,7 @@ def _cmd_alias(args: argparse.Namespace) -> int:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     pal = sub.add_parser("alias",help="canonical model identities (list, seed, set)")
-    pal.add_argument("--project", default=None)
+    _common.add_project(pal)
     pal.add_argument("--global", dest="global_view", action="store_true",
                      help="operate on ~/.somm/global.sqlite")
     pal_sub = pal.add_subparsers(dest="alias_cmd")
@@ -57,7 +57,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pal_set.add_argument("model")
     pal_set.add_argument("canonical")
     for sp in (pal_list, pal_seed, pal_set):
-        sp.add_argument("--project", default=argparse.SUPPRESS)
+        _common.add_project(sp)
         sp.add_argument("--global", dest="global_view", action="store_true",
                         default=argparse.SUPPRESS, help="operate on ~/.somm/global.sqlite")
     pal.set_defaults(func=_cmd_alias, alias_cmd="list")

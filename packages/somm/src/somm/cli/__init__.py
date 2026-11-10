@@ -86,6 +86,12 @@ from somm.providers.ollama import OllamaProvider  # noqa: F401
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="somm", description="somm — self-hosted LLM telemetry")
     p.add_argument("--version", action="version", version=f"somm {VERSION}")
+    p.add_argument(
+        "--project",
+        default=None,
+        help="project name; also accepted after any command (default: $SOMM_PROJECT, "
+        "else this directory's project)",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
     from somm.cli_chatgpt import add_parser as add_chatgpt_parser
 

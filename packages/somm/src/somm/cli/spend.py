@@ -74,7 +74,7 @@ def _cmd_gpu_spend(args: argparse.Namespace) -> int:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     pspend = sub.add_parser("spend", help="today's LLM spend vs daily budget cap per workload")
-    pspend.add_argument("--project", default=None)
+    _common.add_project(pspend)
     pspend.add_argument(
         "--json",
         dest="json",
@@ -85,9 +85,10 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pspend.set_defaults(func=_cmd_spend)
 
     pgpu = sub.add_parser("gpu", help="rented-GPU spend read from gipper receipts (read-only)")
+    _common.add_project(pgpu)
     pgpu_sub = pgpu.add_subparsers(dest="gpu_cmd", required=True)
     pgs = pgpu_sub.add_parser("spend", help="GPU spend by day and workload; failed jobs; ledger match")
-    pgs.add_argument("--project", default=None)
+    _common.add_project(pgs)
     pgs.add_argument("--since", type=int, default=30, help="window in days (default 30)")
     pgs.add_argument("--path", default=None, help="receipts directory (default: $SOMM_GIPPER_RECEIPTS, "
                      "else $GIPPER_DATA/receipts, else ~/.local/share/gipper/receipts)")

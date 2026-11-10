@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -554,7 +555,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         print("  somm compare 'hi' --models minimax/MiniMax-M3,openai/gpt-6-luna", file=sys.stderr)
         return 2
 
-    llm = SommLLM(project=args.project or "compare")
+    llm = SommLLM(project=args.project or os.environ.get("SOMM_PROJECT") or "compare")
     try:
         results = compare_models(
             llm,
@@ -676,7 +677,7 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     ps = sub.add_parser("status", help="show call roll-up for the current project")
-    ps.add_argument("--project", default=None)
+    _common.add_project(ps)
     ps.add_argument("--since", type=int, default=7, help="window in days (default 7)")
     ps.add_argument("--json", action="store_true", help="emit stable JSON")
     ps.add_argument(
@@ -688,7 +689,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     ps.set_defaults(func=_cmd_status)
 
     pcache = sub.add_parser("cache-advice", help="find low prefix-cache reuse opportunities")
-    pcache.add_argument("--project", default=None)
+    _common.add_project(pcache)
     pcache.add_argument("--since", type=int, default=7, help="window in days (default 7)")
     pcache.add_argument("--min-tokens-in", type=int, default=1_000)
     pcache.add_argument("--max-cache-read-ratio", type=float, default=0.20)
@@ -698,7 +699,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pg = sub.add_parser("generate", help="one-shot LLM call through somm")
     pg.add_argument("prompt", nargs="?", help="prompt text, or '-' to read stdin")
     pg.add_argument("--prompt-file", default=None, help="read prompt text from a file")
-    pg.add_argument("--project", default=None)
+    _common.add_project(pg)
     pg.add_argument("--workload", default="generate")
     pg.add_argument("--system", default="")
     pg.add_argument("--provider", default=None)
@@ -711,12 +712,13 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pg.set_defaults(func=_cmd_generate)
 
     pb = sub.add_parser("bench", help="run latency and throughput probes")
+    _common.add_project(pb)
     pb_sub = pb.add_subparsers(dest="bench_cmd", required=True)
     for bench_cmd, default_iterations in (("latency", 5), ("throughput", 10)):
         pbench = pb_sub.add_parser(bench_cmd, help=f"run a {bench_cmd} benchmark")
         pbench.add_argument("prompt", nargs="?", help="prompt text, or '-' to read stdin")
         pbench.add_argument("--prompt-file", default=None, help="read prompt text from a file")
-        pbench.add_argument("--project", default=None)
+        _common.add_project(pbench)
         pbench.add_argument("--workload", default=None)
         pbench.add_argument("--provider", default=None)
         pbench.add_argument("--model", default=None)
@@ -737,7 +739,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         pbench.set_defaults(func=_cmd_bench)
 
     pt = sub.add_parser("tail", help="stream new calls as they land")
-    pt.add_argument("--project", default=None)
+    _common.add_project(pt)
     pt.add_argument("--workload", default=None, help="filter to a single workload")
     pt.add_argument(
         "--since-minutes", type=int, default=0, help="start from N minutes ago (default: now)"
@@ -753,7 +755,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         required=True,
         help="provider/model (repeatable or comma-separated)",
     )
-    pc.add_argument("--project", default=None)
+    _common.add_project(pc)
     pc.add_argument("--workload", default="compare")
     pc.add_argument("--max-tokens", type=int, default=256)
     pc.add_argument("--temperature", type=float, default=0.0)
@@ -770,6 +772,6 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         help="adequacy frontier per (provider, model) for one workload",
     )
     pf.add_argument("--workload", required=True, help="workload name to inspect")
-    pf.add_argument("--project", default=None)
+    _common.add_project(pf)
     pf.add_argument("--since", type=int, default=30, help="window in days (default 30)")
     pf.set_defaults(func=_cmd_frontier)

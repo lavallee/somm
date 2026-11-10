@@ -462,7 +462,7 @@ def _fmt_delta(delta: timedelta) -> str:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     pd = sub.add_parser("doctor", help="check config + ollama + db + intel + workers + cooldowns")
-    pd.add_argument("--project", default=None)
+    _common.add_project(pd)
     pd.add_argument(
         "--max-exhausted-rate",
         type=float,

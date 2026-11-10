@@ -141,14 +141,14 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pinbox = sub.add_parser("inbox", help="list, show, apply, and dismiss recommendations")
     # Bare `somm inbox [--project X]` lists: agents and people both type it
     # that way, and it used to fail with "invalid choice: 'X'".
-    pinbox.add_argument("--project", default=None)
+    _common.add_project(pinbox)
     pinbox.add_argument("--workload", default=None)
     pinbox.add_argument("--all", action="store_true")
     pinbox.add_argument("--json", action="store_true")
     pinbox.set_defaults(func=_cmd_inbox_list)
     pinbox_sub = pinbox.add_subparsers(dest="inbox_cmd", required=False)
     pinbox_list = pinbox_sub.add_parser("list", help="list recommendations")
-    pinbox_list.add_argument("--project", default=argparse.SUPPRESS)
+    _common.add_project(pinbox_list)
     pinbox_list.add_argument("--workload", default=argparse.SUPPRESS)
     pinbox_list.add_argument("--all", action="store_true", default=argparse.SUPPRESS)
     pinbox_list.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
@@ -156,18 +156,18 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 
     pinbox_apply = pinbox_sub.add_parser("apply", help="apply a recommendation")
     pinbox_apply.add_argument("recommendation_id", type=int)
-    pinbox_apply.add_argument("--project", default=argparse.SUPPRESS)
+    _common.add_project(pinbox_apply)
     pinbox_apply.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     pinbox_apply.set_defaults(func=_cmd_inbox_apply)
 
     pinbox_dismiss = pinbox_sub.add_parser("dismiss", help="dismiss one or more recommendations")
     pinbox_dismiss.add_argument("recommendation_ids", type=int, nargs="+", metavar="recommendation_id")
-    pinbox_dismiss.add_argument("--project", default=argparse.SUPPRESS)
+    _common.add_project(pinbox_dismiss)
     pinbox_dismiss.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     pinbox_dismiss.set_defaults(func=_cmd_inbox_dismiss)
 
     pinbox_show = pinbox_sub.add_parser("show", help="print one recommendation with its evidence")
     pinbox_show.add_argument("recommendation_id", type=int)
-    pinbox_show.add_argument("--project", default=argparse.SUPPRESS)
+    _common.add_project(pinbox_show)
     pinbox_show.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     pinbox_show.set_defaults(func=_cmd_inbox_show)

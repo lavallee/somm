@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from somm.cli import _common
+
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     try:
@@ -25,7 +27,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     psr = sub.add_parser("serve", help="run the web admin + HTTP API (localhost:7878)")
-    psr.add_argument("--project", default=None)
+    _common.add_project(psr)
     psr.add_argument("--host", default="127.0.0.1")
     psr.add_argument("--port", type=int, default=7878)
     psr.set_defaults(func=_cmd_serve)

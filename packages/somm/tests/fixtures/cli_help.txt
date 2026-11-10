@@ -1,5 +1,5 @@
 ===== somm =====
-usage: somm [-h] [--version]
+usage: somm [-h] [--version] [--project PROJECT]
             {chatgpt,status,cache-advice,generate,bench,tail,compare,frontier,workload,boundary,prompt,eval,optimize,campaign,inbox,plugin,mcp,skill,doctor,loop,prune,ledgers,fleet,mirror,alias,serve,spend,gpu,backfill-costs,plans,drain-spool} ...
 
 somm — self-hosted LLM telemetry
@@ -43,6 +43,8 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --version             show program's version number and exit
+  --project PROJECT     project name; also accepted after any command (default: $SOMM_PROJECT,
+                        else this directory's project)
 
 ===== somm chatgpt =====
 usage: somm chatgpt [-h] {login,status,models,quota} ...
@@ -128,7 +130,7 @@ options:
                         claude-cli
 
 ===== somm bench =====
-usage: somm bench [-h] {latency,throughput} ...
+usage: somm bench [-h] [--project PROJECT] {latency,throughput} ...
 
 positional arguments:
   {latency,throughput}
@@ -137,6 +139,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  --project PROJECT
 
 ===== somm bench latency =====
 usage: somm bench latency [-h] [--prompt-file PROMPT_FILE] [--project PROJECT]
@@ -229,7 +232,7 @@ options:
   --since SINCE        window in days (default 30)
 
 ===== somm workload =====
-usage: somm workload [-h] {add,create,list,show,set-constraints} ...
+usage: somm workload [-h] [--project PROJECT] {add,create,list,show,set-constraints} ...
 
 positional arguments:
   {add,create,list,show,set-constraints}
@@ -240,6 +243,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  --project PROJECT
 
 ===== somm workload add =====
 usage: somm workload add [-h] [--project PROJECT] [--description DESCRIPTION]
@@ -310,7 +314,7 @@ options:
   --clear               clear all workload constraints
 
 ===== somm boundary =====
-usage: somm boundary [-h] {routes,audit,set} ...
+usage: somm boundary [-h] [--project PROJECT] {routes,audit,set} ...
 
 positional arguments:
   {routes,audit,set}
@@ -320,6 +324,7 @@ positional arguments:
 
 options:
   -h, --help          show this help message and exit
+  --project PROJECT
 
 ===== somm boundary routes =====
 usage: somm boundary routes [-h] [--project PROJECT] [--json] [route]
@@ -355,7 +360,7 @@ options:
   --project PROJECT
 
 ===== somm prompt =====
-usage: somm prompt [-h] {list,show,register,fork,diff,label,promote,score} ...
+usage: somm prompt [-h] [--project PROJECT] {list,show,register,fork,diff,label,promote,score} ...
 
 positional arguments:
   {list,show,register,fork,diff,label,promote,score}
@@ -370,6 +375,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  --project PROJECT
 
 ===== somm prompt list =====
 usage: somm prompt list [-h] --workload WORKLOAD [--project PROJECT]
@@ -464,7 +470,7 @@ options:
   --label LABEL
 
 ===== somm eval =====
-usage: somm eval [-h] {promote-call,import,run} ...
+usage: somm eval [-h] [--project PROJECT] {promote-call,import,run} ...
 
 positional arguments:
   {promote-call,import,run}
@@ -474,6 +480,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  --project PROJECT
 
 ===== somm eval promote-call =====
 usage: somm eval promote-call [-h] [--project PROJECT] --dataset DATASET
@@ -548,14 +555,15 @@ options:
   --model MODEL
 
 ===== somm campaign =====
-usage: somm campaign [-h] {run} ...
+usage: somm campaign [-h] [--project PROJECT] {run} ...
 
 positional arguments:
   {run}
-    run       run repeated eval rounds with keep/revert logging
+    run              run repeated eval rounds with keep/revert logging
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help         show this help message and exit
+  --project PROJECT
 
 ===== somm campaign run =====
 usage: somm campaign run [-h] --workload WORKLOAD --dataset DATASET [--project PROJECT]
@@ -884,14 +892,15 @@ options:
   --json
 
 ===== somm mirror =====
-usage: somm mirror [-h] {sync} ...
+usage: somm mirror [-h] [--project PROJECT] {sync} ...
 
 positional arguments:
   {sync}
-    sync      copy call rows a registered ledger has and the mirror lacks
+    sync             copy call rows a registered ledger has and the mirror lacks
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help         show this help message and exit
+  --project PROJECT  only this project's ledgers and rows
 
 ===== somm mirror sync =====
 usage: somm mirror sync [-h] [--project PROJECT] [--dry-run] [--batch BATCH]
@@ -964,14 +973,15 @@ options:
   --json             emit a JSON array instead of the aligned table
 
 ===== somm gpu =====
-usage: somm gpu [-h] {spend} ...
+usage: somm gpu [-h] [--project PROJECT] {spend} ...
 
 positional arguments:
   {spend}
-    spend     GPU spend by day and workload; failed jobs; ledger match
+    spend            GPU spend by day and workload; failed jobs; ledger match
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help         show this help message and exit
+  --project PROJECT
 
 ===== somm gpu spend =====
 usage: somm gpu spend [-h] [--project PROJECT] [--since SINCE] [--path PATH] [--json]

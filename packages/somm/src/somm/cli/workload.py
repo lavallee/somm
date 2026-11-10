@@ -251,13 +251,14 @@ def _cmd_workload_set_constraints(args: argparse.Namespace) -> int:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     pw = sub.add_parser("workload", help="register and inspect project workloads")
+    _common.add_project(pw)
     pw_sub = pw.add_subparsers(dest="workload_cmd", required=True)
 
     pwa = pw_sub.add_parser(
         "add", aliases=["create"], help="register a workload in the project DB"
     )
     pwa.add_argument("name", help="workload name")
-    pwa.add_argument("--project", default=None)
+    _common.add_project(pwa)
     pwa.add_argument("--description", default=None)
     pwa.add_argument(
         "--privacy-class",
@@ -284,17 +285,17 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pwa.set_defaults(func=_cmd_workload_add)
 
     pwl = pw_sub.add_parser("list", help="list registered workloads")
-    pwl.add_argument("--project", default=None)
+    _common.add_project(pwl)
     pwl.set_defaults(func=_cmd_workload_list)
 
     pws = pw_sub.add_parser("show", help="show one registered workload")
     pws.add_argument("name", help="workload name")
-    pws.add_argument("--project", default=None)
+    _common.add_project(pws)
     pws.set_defaults(func=_cmd_workload_show)
 
     pwc = pw_sub.add_parser("set-constraints", help="update workload adequacy constraints")
     pwc.add_argument("name", help="workload name")
-    pwc.add_argument("--project", default=None)
+    _common.add_project(pwc)
     pwc.add_argument("--max-p95-latency-ms", type=int, default=None)
     pwc.add_argument("--max-p95-ttft-ms", type=int, default=None)
     pwc.add_argument("--max-tpot-ms", type=float, default=None)

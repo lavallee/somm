@@ -467,6 +467,7 @@ def _print_campaign_run(result, *, log_path: str | None = None) -> None:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     peval = sub.add_parser("eval", help="promote datasets and run eval gates")
+    _common.add_project(peval)
     peval_sub = peval.add_subparsers(dest="eval_cmd", required=True)
 
     peval_promote = peval_sub.add_parser(
@@ -474,7 +475,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         help="copy a sampled call into a durable eval dataset",
     )
     peval_promote.add_argument("call_id")
-    peval_promote.add_argument("--project", default=None)
+    _common.add_project(peval_promote)
     peval_promote.add_argument("--dataset", required=True)
     peval_promote.add_argument("--description", default="")
     peval_promote.set_defaults(func=_cmd_eval_promote_call)
@@ -486,7 +487,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     peval_import.add_argument("--workload", required=True)
     peval_import.add_argument("--dataset", required=True)
     peval_import.add_argument("--file", required=True)
-    peval_import.add_argument("--project", default=None)
+    _common.add_project(peval_import)
     peval_import.add_argument("--description", default="")
     peval_import.add_argument("--json", action="store_true")
     peval_import.set_defaults(func=_cmd_eval_import)
@@ -497,7 +498,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     )
     peval_run.add_argument("--workload", required=True)
     peval_run.add_argument("--dataset", required=True)
-    peval_run.add_argument("--project", default=None)
+    _common.add_project(peval_run)
     peval_run.add_argument("--threshold", type=float, default=0.8)
     peval_run.add_argument("--max-tokens", type=int, default=1024)
     peval_run.add_argument("--temperature", type=float, default=0.0)
@@ -530,7 +531,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         help="propose a prompt fork from failing graded calls",
     )
     popt.add_argument("--workload", required=True)
-    popt.add_argument("--project", default=None)
+    _common.add_project(popt)
     popt.add_argument("--from", dest="from_ref", default="production")
     popt.add_argument("--threshold", type=float, default=0.8)
     popt.add_argument("--limit", type=int, default=8)
@@ -542,6 +543,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     popt.set_defaults(func=_cmd_optimize)
 
     pcamp = sub.add_parser("campaign", help="run durable experiment campaigns")
+    _common.add_project(pcamp)
     pcamp_sub = pcamp.add_subparsers(dest="campaign_cmd", required=True)
     pcamp_run = pcamp_sub.add_parser(
         "run",
@@ -549,7 +551,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     )
     pcamp_run.add_argument("--workload", required=True)
     pcamp_run.add_argument("--dataset", required=True)
-    pcamp_run.add_argument("--project", default=None)
+    _common.add_project(pcamp_run)
     pcamp_run.add_argument("--name", default=None)
     pcamp_run.add_argument(
         "--metric",
