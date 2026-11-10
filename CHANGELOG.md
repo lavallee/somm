@@ -5,6 +5,57 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.26.0] — 2026-11-10
+
+### Added
+- **Several questions in one decision request.** `llm.decide_many(text,
+  questions={name: {...}})` asks every question about one input in a single request
+  and returns `{name: DecisionResult}`; one `calls` row holds every answer in
+  `result_json["questions"]`. `timeout=` and `long_context=` are on `decide_many`.
+  Verdicts name their question (`verdict:<question>`), and
+  `decision_calibration(question=)` reads them. Built from the vendor's
+  documentation; not yet verified against the live API.
+- **Grading decisions against an LLM.** `somm.decide.grade_decisions(llm, workload)`
+  asks an LLM the same questions about sampled inputs (opt in with `enable_shadow`),
+  records its answers as verdicts and its call id as `verdict_by`, never grades a row
+  twice, and stops at the shadow budget.
+- **`somm_core.read.decision_economics`**: agreement, abstain share, and cost per
+  1,000 inputs with and without the decision model in front.
+- **Extra OpenAI-compatible endpoints need no plugin.** `SOMM_OPENAI_ENDPOINTS`
+  declares named endpoints (name, base URL, model, key env var) that are reachable by
+  pin, join the chain only when ordered, and are classified by the usual
+  data-boundary rules. See `docs/rented-gpus.md`.
+- **somm's own OpenTelemetry exporter can post to somm's own service.** The OTLP
+  trace ingest accepted JSON only, so the protobuf the exporter sends got a 400. It
+  now also accepts `application/x-protobuf` when the optional `somm-service[otlp]`
+  extra is installed, answers with a protobuf `ExportTraceServiceResponse`, and
+  returns 415 naming the extra when it is not.
+
+### Changed
+- **The shadow replay asks the gold model the same request.** Samples record the
+  system prompt, tools, tool choice, response format, reasoning effort, temperature
+  and max tokens in `samples.request_json` (schema 31), and the worker replays them.
+  Older samples replay as before.
+- **`/v1/responses` returns refusals as refusals**: a `refusal` content part,
+  streamed with the `response.refusal.*` events.
+- **The data-boundary code got smaller.** A handler may declare only `local`; one
+  helper writes every refusal row; the audit moved to `somm_core.boundary_audit`
+  (still importable from `somm_core.boundary`); streams are promoted by evidence
+  like `generate`.
+- **MCP `somm_compare` runs through `somm.compare`**, the same code as the CLI. A
+  boundary refusal reads `REFUSED (SOMM_PRIVACY_VIOLATION): …` in both.
+- **The shadow-eval worker no longer considers decide rows or grading calls.**
+
+### Fixed
+- **Harness `invoke_agent` spans were ingested under a workload literally named
+  `invoke_agent`**, and `gen_ai.conversation.id` was ignored on ingest, losing
+  harness session ids.
+
+### Documentation
+- The roadmap states, per phase, what shipped and what remains; the vision records
+  what two days of work did and did not change; the README, site, docs pages and
+  skill were corrected against the code.
+
 ## [0.25.0] — 2026-11-10
 
 ### Added
