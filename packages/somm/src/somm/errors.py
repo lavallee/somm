@@ -20,12 +20,31 @@ class SommError(Exception):
 
     ``provider``, ``model`` and ``call_id`` say which route failed and which
     ledger row recorded it, when somm knows; they are None otherwise.
+
+    When the error came from a provider's HTTP answer, the upstream detail
+    rides along, each None when the provider did not say:
+
+    - ``status_code``: the exact upstream HTTP status (a 403 stays 403).
+    - ``provider_code``, ``provider_type``, ``provider_param``: the ``code``,
+      ``type`` and ``param`` of the provider's error object, as strings.
+    - ``provider_request_id``: the provider's request id, for its support.
+    - ``retry_after_s``: seconds the provider asked us to wait
+      (``Retry-After`` or its rate-limit reset headers).
+
+    None of these carries the provider's error *message*, which can echo the
+    prompt; that stays in the (truncated) exception text.
     """
 
     code: str = "SOMM_ERROR"
     provider: str | None = None
     model: str | None = None
     call_id: str | None = None
+    status_code: int | None = None
+    provider_code: str | None = None
+    provider_type: str | None = None
+    provider_param: str | None = None
+    provider_request_id: str | None = None
+    retry_after_s: float | None = None
 
 
 class SommProviderError(SommError):
@@ -154,13 +173,38 @@ class SommRefused(SommProviderError):
     ``content_filter`` (OpenAI-compatible). The call itself was delivered and
     is recorded as such; this is raised only for ``raise_on_failure=True``.
     Retrying the same prompt on the same model rarely helps.
+
+    It carries what a wire format needs to report the refusal as an answer:
+    ``stop_reason``, any ``text`` the model did produce, ``tokens_in`` /
+    ``tokens_out``, and (from the base) the served ``model``, ``provider``
+    and ``call_id``. Each is None when not known.
     """
 
     code = "SOMM_UPSTREAM_REFUSED"
 
-    def __init__(self, detail: str = "", *, stop_reason: str = "") -> None:
+    def __init__(
+        self,
+        detail: str = "",
+        *,
+        stop_reason: str = "",
+        text: str | None = None,
+        tokens_in: int | None = None,
+        tokens_out: int | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        call_id: str | None = None,
+    ) -> None:
         super().__init__(detail)
         self.stop_reason = stop_reason
+        self.text = text
+        self.tokens_in = tokens_in
+        self.tokens_out = tokens_out
+        if model is not None:
+            self.model = model
+        if provider is not None:
+            self.provider = provider
+        if call_id is not None:
+            self.call_id = call_id
 
 
 class SommBudgetExceeded(SommFatalError):
@@ -292,7 +336,12 @@ def describe_error(error: SommError) -> dict[str, Any]:
     service adapters should dispatch on the canonical ``code`` and can use the
     retry metadata here without parsing a traceback or provider message.
     """
-    retryable = isinstance(error, (SommTransientError, SommProvidersExhausted))
+    # Exhausted credit is transient for the *router* (another provider can
+    # serve the call) but not for a caller: retrying the same provider fails
+    # until someone tops it up.
+    retryable = isinstance(
+        error, (SommTransientError, SommProvidersExhausted)
+    ) and not isinstance(error, SommInsufficientCredit)
     description: dict[str, Any] = {
         "schema_version": 1,
         "code": error.code,
@@ -303,7 +352,7 @@ def describe_error(error: SommError) -> dict[str, Any]:
     retry_after_s = getattr(error, "retry_after_s", None)
     if retry_after_s is None:
         retry_after_s = getattr(error, "next_cool_in_s", None)
-    if retry_after_s is None and isinstance(error, SommTransientError):
+    if retry_after_s is None and retryable and isinstance(error, SommTransientError):
         retry_after_s = error.cooldown_s
     if retry_after_s is not None:
         description["retry_after_s"] = float(retry_after_s)
@@ -312,6 +361,12 @@ def describe_error(error: SommError) -> dict[str, Any]:
         "provider",
         "model",
         "call_id",
+        "status_code",
+        "provider_code",
+        "provider_type",
+        "provider_param",
+        "provider_request_id",
+        "stop_reason",
         "workload",
         "spent_usd",
         "cap_usd",
@@ -346,6 +401,17 @@ _INSUFFICIENT_CREDIT_SIGNALS = (
     # usage. (2056)". A plan that is used up for the window, not a burst.
     "usage limit reached",
     "purchase credits",
+    # OpenAI billing 429s name the cause in ``error.code``
+    # (https://developers.openai.com/api/docs/guides/error-codes).
+    "credit_balance_exhausted",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "organization_usage_limit_exceeded",
+    # Anthropic: the monthly spend-cap 429 (``error.details.error_code``) and
+    # the owner-set spend-limit 400 ("You have reached your specified API
+    # usage limits"); https://platform.claude.com/docs/en/api/rate-limits.
+    "enforced_spend_limit_reached",
+    "api usage limits",
 )
 
 # Vendor-specific numeric codes that mean "plan or balance exhausted" even
@@ -405,27 +471,203 @@ def looks_like_insufficient_credit(body: str) -> bool:
 # call it.
 
 
+_MAX_WAIT_S = 86400.0
+_FIELD_MAX = 256
+
+
+def _header(headers: Any, name: str) -> str | None:
+    """Case-insensitive lookup of a lower-case ``name`` in an ``httpx.Headers``,
+    a plain dict, or a test fake; None when absent or unreadable."""
+    if not headers:
+        return None
+    try:
+        value = headers.get(name)
+        if value is None:
+            value = next((v for k, v in headers.items() if str(k).lower() == name), None)
+    except Exception:  # noqa: BLE001 - a fake that is not a mapping
+        return None
+    return None if value is None else str(value)
+
+
+def _seconds_until(raw: str) -> float | None:
+    """An RFC 3339 time or an HTTP-date, as seconds from now (never negative)."""
+    try:
+        then = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            from email.utils import parsedate_to_datetime
+
+            then = parsedate_to_datetime(raw)
+        except Exception:  # noqa: BLE001
+            return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    return max(0.0, (then - datetime.now(UTC)).total_seconds())
+
+
+_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
+_DURATION_UNIT_S = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
+
+
+def _duration_seconds(raw: str) -> float | None:
+    """OpenAI's reset durations: ``1s``, ``6m0s``."""
+    raw = raw.strip()
+    parts = _DURATION_PART.findall(raw)
+    if not parts or "".join(n + u for n, u in parts) != raw:
+        return None
+    return sum(float(n) * _DURATION_UNIT_S[u] for n, u in parts)
+
+
+# Rate-limit reset headers, read on a 429 that has no Retry-After. Anthropic
+# sends RFC 3339 times (https://platform.claude.com/docs/en/api/rate-limits,
+# "Response headers"); OpenAI sends durations such as ``6m0s``
+# (https://developers.openai.com/api/docs/guides/rate-limits).
+_RESET_TIME_HEADERS = tuple(
+    f"anthropic-ratelimit-{kind}-reset"
+    for kind in ("requests", "tokens", "input-tokens", "output-tokens")
+)
+_RESET_DURATION_HEADERS = ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens")
+
+
 def retry_after_seconds(headers: Mapping[str, str] | None) -> float | None:
     """Parse ``Retry-After`` as delta-seconds or an HTTP-date. ``None`` if absent
     or unparseable."""
-    if not headers:
-        return None
-    raw = headers.get("Retry-After") or headers.get("retry-after")
+    raw = _header(headers, "retry-after")
     if not raw:
         return None
     try:
         return max(0.0, float(raw))
     except ValueError:
-        pass
-    try:
-        from email.utils import parsedate_to_datetime
+        return _seconds_until(raw)
 
-        then = parsedate_to_datetime(raw)
-        if then.tzinfo is None:
-            then = then.replace(tzinfo=UTC)
-        return max(0.0, (then - datetime.now(UTC)).total_seconds())
-    except Exception:
+
+def _reset_seconds(headers: Any) -> float | None:
+    """The latest rate-limit reset the provider announced: the call can fail
+    until every exhausted limit is back, and the headers do not say which one
+    was exhausted."""
+    waits: list[float | None] = []
+    for name in _RESET_TIME_HEADERS + _RESET_DURATION_HEADERS:
+        raw = _header(headers, name)
+        if raw:
+            parse = _seconds_until if name in _RESET_TIME_HEADERS else _duration_seconds
+            waits.append(parse(raw))
+    known = [w for w in waits if w is not None]
+    return max(known) if known else None
+
+
+def _short(value: Any) -> str | None:
+    if value is None or value == "" or isinstance(value, (dict, list)):
         return None
+    return str(value)[:_FIELD_MAX]
+
+
+def _upstream_fields(status: int | None, body: str, headers: Any) -> dict[str, Any]:
+    """The machine-readable parts of a provider's error answer.
+
+    Read only from documented error objects: OpenAI's
+    ``error.{code,type,param}``
+    (https://developers.openai.com/api/docs/guides/error-codes); Anthropic's
+    ``error.type``, ``error.details.error_code`` and body ``request_id``
+    (https://platform.claude.com/docs/en/api/errors,
+    https://platform.claude.com/docs/en/api/rate-limits); OpenRouter's numeric
+    ``error.code`` (https://openrouter.ai/docs/api-reference/errors); and
+    MiniMax's ``base_resp.status_code``, which the adapter already read for
+    plan exhaustion. The request id is Anthropic's ``request-id`` or OpenAI's
+    ``x-request-id`` header. The error ``message`` is never copied: it can
+    echo the prompt.
+    """
+    try:
+        data = json.loads(body) if body else None
+    except (TypeError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        data = {}
+    err = data.get("error")
+    fields: dict[str, Any] = {"status_code": status}
+    if isinstance(err, dict):
+        fields["provider_code"] = _short(err.get("code"))
+        fields["provider_type"] = _short(err.get("type"))
+        fields["provider_param"] = _short(err.get("param"))
+        details = err.get("details")
+        if fields["provider_code"] is None and isinstance(details, dict):
+            fields["provider_code"] = _short(details.get("error_code"))
+    base = data.get("base_resp")
+    if fields.get("provider_code") is None and isinstance(base, dict) and base.get("status_code"):
+        fields["provider_code"] = _short(base["status_code"])
+    request_id = _header(headers, "request-id") or _header(headers, "x-request-id")
+    fields["provider_request_id"] = _short(request_id or data.get("request_id"))
+    wait = retry_after_seconds(headers)
+    if wait is None and status == 429:
+        wait = _reset_seconds(headers)
+    fields["retry_after_s"] = None if wait is None else min(wait, _MAX_WAIT_S)
+    return fields
+
+
+def _attach(exc: SommError, fields: Mapping[str, Any]) -> SommError:
+    for name, value in fields.items():
+        if value is not None:
+            setattr(exc, name, value)
+    return exc
+
+
+def http_error(
+    status: int,
+    body: str,
+    *,
+    provider: str,
+    model: str,
+    headers: Mapping[str, str] | None = None,
+    overloaded_statuses: tuple[int, ...] = (529,),
+    detail: str | None = None,
+) -> SommError:
+    """The SommError a non-2xx provider answer means, with the upstream fields
+    (``status_code``, ``provider_*``, ``retry_after_s``) filled.
+
+    ``detail`` replaces the message, which otherwise quotes up to 200
+    characters of the body, for an adapter that keeps provider text out of
+    its messages or has a better hint.
+    """
+    body = body or ""
+    fields = _upstream_fields(status, body, headers)
+    snippet = body[:200]
+
+    def say(default: str) -> str:
+        return default if detail is None else detail
+
+    exc: SommError
+    if looks_like_insufficient_credit(body) or status == 402:
+        # Out of money or quota: a billing state on this provider, not a bad
+        # request or a bad key. Transient for the router, which falls through;
+        # 402 Payment Required means this whatever the body says.
+        exc = SommInsufficientCredit(say(f"{provider} out of credit on {model}: {snippet}"), model=model)
+    elif status in (401, 403):
+        exc = SommAuthError(say(f"{provider} auth failed ({status}): {snippet}"))
+    elif status == 400 and not _looks_like_model_not_found(body):
+        exc = SommBadRequest(say(f"{provider} 400 on {model}: {snippet}"))
+    elif status in (400, 404):
+        exc = SommModelNotFound(
+            say(f"{provider} {status} — model {model!r} not found: {snippet}"), model=model
+        )
+    elif status == 408:
+        exc = SommTimeout(say(f"{provider} 408 on {model}"), cooldown_s=60.0, model=model)
+    elif status == 429:
+        wait = fields["retry_after_s"]
+        exc = SommRateLimited(
+            say(f"{provider} 429 on {model}: {snippet}"),
+            retry_after_s=120.0 if wait is None else wait,
+            model=model,
+        )
+    elif status in overloaded_statuses:
+        exc = SommTransientError(
+            say(f"{provider} overloaded ({status}) on {model}"), cooldown_s=60.0, model=model
+        )
+    elif 500 <= status < 600:
+        exc = SommUpstream5xx(say(f"{provider} {status} on {model}"), cooldown_s=30.0, model=model)
+    else:
+        exc = SommTransientError(
+            say(f"{provider} unexpected {status} on {model}: {snippet}"), cooldown_s=30.0, model=model
+        )
+    return _attach(exc, fields)
 
 
 def classify_http_status(
@@ -436,43 +678,22 @@ def classify_http_status(
     model: str,
     headers: Mapping[str, str] | None = None,
     overloaded_statuses: tuple[int, ...] = (529,),
+    detail: str | None = None,
 ) -> None:
     """Raise the SommError that an HTTP status from a provider means.
 
     Returns normally on 2xx. ``body`` is the response text (it is truncated
-    for the message; the whole thing is scanned for billing phrases).
-    ``overloaded_statuses`` are provider-specific "try again shortly" codes
-    outside the 5xx range (Anthropic's 529).
+    for the message; the whole thing is scanned for billing phrases and
+    parsed for the provider's error object). ``overloaded_statuses`` are
+    provider-specific "try again shortly" codes outside the 5xx range
+    (Anthropic's 529). The raised error carries the upstream fields; see
+    :func:`http_error`.
     """
     if 200 <= status < 300:
         return
-    snippet = body[:200]
-    if looks_like_insufficient_credit(body):
-        # Out of money or quota: a billing state on this provider, not a bad
-        # request or a bad key. Transient, so the router falls through.
-        raise SommInsufficientCredit(f"{provider} out of credit on {model}: {snippet}", model=model)
-    if status == 402:
-        # Payment Required means the same thing whatever the body says.
-        raise SommInsufficientCredit(f"{provider} out of credit on {model}: {snippet}", model=model)
-    if status in (401, 403):
-        raise SommAuthError(f"{provider} auth failed ({status}): {snippet}")
-    if status == 400:
-        if _looks_like_model_not_found(body):
-            raise SommModelNotFound(
-                f"{provider} 400 — model {model!r} not found: {snippet}", model=model
-            )
-        raise SommBadRequest(f"{provider} 400 on {model}: {snippet}")
-    if status == 404:
-        raise SommModelNotFound(f"{provider} 404 — model {model!r} not found: {snippet}", model=model)
-    if status == 429:
-        retry = retry_after_seconds(headers) or 120.0
-        raise SommRateLimited(f"{provider} 429 on {model}: {snippet}", retry_after_s=retry, model=model)
-    if status in overloaded_statuses:
-        raise SommTransientError(f"{provider} overloaded ({status}) on {model}", cooldown_s=60.0, model=model)
-    if 500 <= status < 600:
-        raise SommUpstream5xx(f"{provider} {status} on {model}", cooldown_s=30.0, model=model)
-    raise SommTransientError(
-        f"{provider} unexpected {status} on {model}: {snippet}", cooldown_s=30.0, model=model
+    raise http_error(
+        status, body, provider=provider, model=model, headers=headers,
+        overloaded_statuses=overloaded_statuses, detail=detail,
     )
 
 
@@ -487,15 +708,20 @@ def classify_body_error(err: object, *, provider: str, model: str) -> None:
         msg = str(err.get("message", ""))
         code = err.get("code")
         typ = str(err.get("type", ""))
+        exc: SommError
         if str(code) in _PLAN_EXHAUSTED_BODY_CODES or looks_like_insufficient_credit(f"{code} {typ} {msg}"):
-            raise SommInsufficientCredit(f"{provider} out of credit on {model}: {msg}", model=model)
-        if code == 404 or _looks_like_model_not_found(f"{code} {msg}"):
-            raise SommModelNotFound(f"{provider} body-404 on {model}: {msg}", model=model)
-        if code == 429 or "rate" in msg.lower():
-            raise SommRateLimited(f"{provider} body-429 on {model}: {msg}", retry_after_s=120.0, model=model)
-        if "auth" in typ.lower() or "auth" in msg.lower():
-            raise SommAuthError(f"{provider} body-auth on {model}: {msg}")
-        raise SommTransientError(f"{provider} body-error on {model}: {msg}", cooldown_s=60.0, model=model)
+            exc = SommInsufficientCredit(f"{provider} out of credit on {model}: {msg}", model=model)
+        elif code == 404 or _looks_like_model_not_found(f"{code} {msg}"):
+            exc = SommModelNotFound(f"{provider} body-404 on {model}: {msg}", model=model)
+        elif code == 429 or "rate" in msg.lower():
+            exc = SommRateLimited(f"{provider} body-429 on {model}: {msg}", retry_after_s=120.0, model=model)
+        elif "auth" in typ.lower() or "auth" in msg.lower():
+            exc = SommAuthError(f"{provider} body-auth on {model}: {msg}")
+        else:
+            exc = SommTransientError(f"{provider} body-error on {model}: {msg}", cooldown_s=60.0, model=model)
+        # The HTTP status was 2xx, so only the error object's own fields apply.
+        fields = _upstream_fields(None, json.dumps({"error": err}, default=str), None)
+        raise _attach(exc, fields)
     raise SommTransientError(f"{provider} body-error on {model}: {err}", cooldown_s=60.0, model=model)
 
 

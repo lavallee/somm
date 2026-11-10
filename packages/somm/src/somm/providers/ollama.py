@@ -15,10 +15,15 @@ from somm_core.parse import strip_think_block
 
 from somm.errors import (
     SommBadRequest,
-    SommModelNotFound,
     SommTimeout,
     SommTransientError,
     classify_http_status,
+)
+from somm.providers._http import (
+    SharedClient,
+    close_shared_client,
+    request_timeout,
+    shared_client,
 )
 from somm.providers._openai_compat import (
     _translate_messages_to_openai,
@@ -67,33 +72,42 @@ class OllamaProvider:
         # 10x its median because the model just got loaded back into VRAM.
         # Use "0" to opt out, or e.g. "1h" for long-running batches.
         self.keep_alive = keep_alive
+        self._http = SharedClient()
 
-    def _client(self, timeout: float | None = None) -> httpx.Client:
-        return httpx.Client(timeout=timeout or self.timeout)
+    def close(self) -> None:
+        """Close the pooled HTTP connections; the next call opens new ones."""
+        close_shared_client(self)
 
-    def _post(self, client: httpx.Client, path: str, payload: dict, model: str) -> dict:
+    def _post(
+        self, client: httpx.Client, path: str, payload: dict, model: str,
+        timeout: float | None = None,
+    ) -> dict:
         """POST and classify. A local daemon fails in a few ways — not running
         (connection refused), model not pulled (404), out of memory (500) — and
         each used to escape as a raw httpx exception the router could not
         classify. They are somm errors like any other provider's."""
         try:
-            resp = client.post(f"{self.base_url}{path}", json=payload)
+            resp = client.post(
+                f"{self.base_url}{path}", json=payload,
+                timeout=request_timeout(timeout or self.timeout),
+            )
         except httpx.TimeoutException as e:
             raise SommTimeout(f"ollama timeout on {model}: {e}", cooldown_s=60.0, model=model) from e
         except httpx.RequestError as e:
             raise SommTransientError(
                 f"ollama unreachable at {self.base_url}: {e}", cooldown_s=30.0, model=model
             ) from e
-        if resp.status_code == 404:
-            raise SommModelNotFound(
-                f"ollama model {model!r} unavailable (404). Run ollama pull {model}, "
-                "or use ollama list and set SOMM_OLLAMA_MODEL / [tool.somm].ollama_model "
-                "to an installed model (or pass --model).",
-                model=model,
-            )
         if not (200 <= resp.status_code < 300):
+            hint = None
+            if resp.status_code == 404:
+                hint = (
+                    f"ollama model {model!r} unavailable (404). Run ollama pull {model}, "
+                    "or use ollama list and set SOMM_OLLAMA_MODEL / [tool.somm].ollama_model "
+                    "to an installed model (or pass --model)."
+                )
             classify_http_status(
-                resp.status_code, resp.text, provider=self.name, model=model, headers=resp.headers
+                resp.status_code, resp.text, provider=self.name, model=model,
+                headers=getattr(resp, "headers", None), detail=hint,
             )
         return resp.json()
 
@@ -150,8 +164,10 @@ class OllamaProvider:
                 payload["format"] = ollama_format
 
         t0 = time.monotonic()
-        with self._client(request.timeout) as client:
-            data = self._post(client, "/api/chat", payload, model)
+        # The per-call timeout is passed only when set, so a _post override
+        # with the older four-argument signature keeps working.
+        per_call = {"timeout": request.timeout} if request.timeout else {}
+        data = self._post(shared_client(self), "/api/chat", payload, model, **per_call)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         message = data.get("message") or {}
@@ -236,8 +252,7 @@ class OllamaProvider:
             payload["keep_alive"] = self.keep_alive
 
         t0 = time.monotonic()
-        with self._client() as client:
-            data = self._post(client, "/api/embeddings", payload, model)
+        data = self._post(shared_client(self), "/api/embeddings", payload, model)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         embedding = data.get("embedding") or []
@@ -259,19 +274,17 @@ class OllamaProvider:
 
     def health(self) -> ProviderHealth:
         try:
-            with self._client() as client:
-                r = client.get(f"{self.base_url}/api/tags", timeout=2.0)
-                r.raise_for_status()
+            r = shared_client(self).get(f"{self.base_url}/api/tags", timeout=request_timeout(2.0))
+            r.raise_for_status()
             return ProviderHealth(available=True, detail=f"{self.base_url} ok")
         except Exception as e:
             return ProviderHealth(available=False, detail=str(e))
 
     def models(self) -> list[SommModel]:
         try:
-            with self._client() as client:
-                r = client.get(f"{self.base_url}/api/tags", timeout=5.0)
-                r.raise_for_status()
-                data = r.json()
+            r = shared_client(self).get(f"{self.base_url}/api/tags", timeout=request_timeout(5.0))
+            r.raise_for_status()
+            data = r.json()
         except Exception:
             return []
         out: list[SommModel] = []

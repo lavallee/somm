@@ -12,6 +12,13 @@ timeout expired.
   that hung or took longer than its `timeout` setting.
 - Local network issues (VPN, flaky wifi, DNS) between you and the
   provider.
+- The provider itself answered HTTP 408 (OpenRouter and the ChatGPT
+  connection do); `status_code` is then 408.
+
+One configured value sets two limits on each HTTP request: connecting may
+take at most 10 s (or the whole value, if smaller), while reading, writing
+and waiting for a pooled connection get the whole value. Connections are
+kept open and reused between calls, so most calls do not connect at all.
 
 **Behavior in the router.** `SOMM_PROVIDER_TIMEOUT` is **transient**.
 The router cools the provider (default 60s) and falls through to the

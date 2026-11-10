@@ -13,7 +13,13 @@ provider. somm matches known billing-signal phrases in the response
 body (case-insensitively, e.g. `"insufficient_quota"`, `"credit
 balance is too low"`, `"exceeded your current quota"`, `"usage limit
 reached"`) and a short list of vendor codes to make this call. A 402
-means this whatever the body says.
+means this whatever the body says. So do OpenAI's billing codes
+(`credit_balance_exhausted`, `organization_spend_limit_exceeded`,
+`project_spend_limit_exceeded`, `organization_usage_limit_exceeded`) and
+Anthropic's spend limits (the 429 `enforced_spend_limit_reached` for a
+tier's monthly cap, and the 400 "You have reached your specified API
+usage limits" for a limit you set). The exception keeps the upstream
+`status_code` and the provider's code in `provider_code`.
 
 MiniMax is the case to know: a used-up Token Plan comes back as HTTP
 429 `rate_limit_error` with `"Token Plan usage limit reached: Upgrade
@@ -28,6 +34,12 @@ hour) rather than the usual short one — a balance won't replenish in
 seconds, so somm sidelines the lapsed provider instead of hammering it
 on every subsequent call. The router falls through to the next provider
 in the chain.
+
+**For a caller it is not retryable.** Retrying the same provider fails
+until someone tops it up, so `somm.describe_error(e)` reports
+`retryable: false` (and no `retry_after_s` unless the provider sent
+`Retry-After`), and the proxy answers with the upstream status and
+`x-should-retry: false`. Through 0.24 it said `retryable: true`.
 
 **Fix.**
 
