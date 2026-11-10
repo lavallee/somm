@@ -3554,6 +3554,35 @@ class SommLLM:
     def __exit__(self, *exc_info) -> None:
         self.close()
 
+    def decide(
+        self,
+        text: Any,
+        *,
+        ask: str,
+        labels: list[str] | dict[str, str] | None = None,
+        scale: list[str] | None = None,
+        workload: str = "default",
+        context: Any = None,
+        min_p: float | None = None,
+        model: str | None = None,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+    ):
+        """Ask a decision model one typed question about ``text``.
+
+        ``ask`` alone is yes/no; add ``labels`` for a choice or ``scale``
+        (levels, lowest first) for a score. Below ``min_p`` the result is
+        marked abstained. Returns a ``somm.decide.DecisionResult``; see that
+        module and docs/decisions.md.
+        """
+        from somm.decide import decide
+
+        return decide(
+            self, text, ask=ask, labels=labels, scale=scale, workload=workload,
+            context=context, min_p=min_p, model=model, session_id=session_id,
+            parent_call_id=parent_call_id,
+        )
+
 
 def llm(**kwargs) -> SommLLM:
     """Factory matching the plan's `somm.llm(project=...)` signature."""

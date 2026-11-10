@@ -3,6 +3,18 @@
 `somm` accepts content-block prompts (text + image) and routes them only
 to (provider, model) pairs known to serve the required capabilities.
 
+## From the shell
+
+```bash
+somm generate "Compare these two charts." --image q1.png --image q2.png
+somm generate "What is in this?" --image https://example.com/x.png --json
+```
+
+`--image` takes a file path (read and sent inline; the type comes from the
+extension and must be an image) or an `http(s)` URL, and repeats. It builds the
+same content blocks as `image_prompt()` below, so routing, capability checks and
+the per-provider translation are identical.
+
 ## Two ways to send an image
 
 ```python

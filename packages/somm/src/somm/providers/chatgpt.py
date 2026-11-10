@@ -16,6 +16,13 @@ from somm.errors import (
     SommRateLimited,
     SommTimeout,
     SommUpstream5xx,
+    http_error,
+)
+from somm.providers._http import (
+    SharedClient,
+    close_shared_client,
+    request_timeout,
+    shared_client,
 )
 from somm.providers._openai_compat import (
     _translate_content_to_openai,
@@ -185,6 +192,9 @@ def chat_completion(response: dict) -> dict:
 
 
 def response_error(event: dict, *, request_id: str | None = None, status_code: int | None = None, retry_after: str | None = None) -> Exception:
+    """The error for a failure event inside the Responses stream, where there
+    is no HTTP status to go by. A non-2xx HTTP answer goes through
+    ``somm.errors.http_error`` like every other adapter's."""
     error = (event.get("response") or {}).get("error") or event.get("error") or event
     if not isinstance(error, dict):
         error = {}
@@ -224,6 +234,11 @@ class ChatGPTProvider:
     def __init__(self, *, auth: ChatGPTAuth | None = None, timeout: float = 180):
         self.auth = auth or ChatGPTAuth()
         self.timeout = timeout
+        self._http = SharedClient()
+
+    def close(self) -> None:
+        """Close the pooled HTTP connections; the next call opens new ones."""
+        close_shared_client(self)
 
     def complete_chat(self, body: dict, timeout: float | None = None) -> dict:
         items, recovery = prepare_response_input(body["messages"])
@@ -259,9 +274,10 @@ class ChatGPTProvider:
         except ChatGPTAuthError as exc:
             raise SommAuthError(str(exc)) from exc
         try:
-            with httpx.Client(timeout=timeout or self.timeout) as client, client.stream(
+            with shared_client(self).stream(
                 "POST", RESOURCE + "/responses", json=payload,
                 headers={"Authorization": "Bearer " + token, "User-Agent": "somm"},
+                timeout=request_timeout(timeout or self.timeout),
             ) as response:
                 if not response.is_success:
                     response.read()
@@ -269,10 +285,13 @@ class ChatGPTProvider:
                         error_body = response.json()
                     except ValueError:
                         error_body = {}
-                    raise response_error({"type": "error", "error": error_body.get("error", error_body) if isinstance(error_body, dict) else {}},
-                                         request_id=response.headers.get("x-request-id"),
-                                         status_code=response.status_code,
-                                         retry_after=response.headers.get("retry-after"))
+                    error = error_body.get("error", error_body) if isinstance(error_body, dict) else {}
+                    label = (error.get("code") or error.get("type")) if isinstance(error, dict) else None
+                    # The message names the provider's code, never its text,
+                    # which can echo the conversation.
+                    raise http_error(response.status_code, response.text, provider=self.name,
+                                     model=body["model"], headers=response.headers,
+                                     detail=f"ChatGPT inference failed: {label or 'inference_failed'}")
                 data_lines = []
                 for line in chain(response.iter_lines(), [""]):
                     if line.startswith("data:"):
@@ -341,8 +360,8 @@ class ChatGPTProvider:
         return ProviderHealth(PERMISSION in record.get("scopes", []), "Somm-owned ChatGPT plan connection")
 
     def models(self) -> list[SommModel]:
-        response = httpx.get(RESOURCE + "/models", timeout=20,
-                            headers={"Authorization": "Bearer " + self.auth.access_token(), "User-Agent": "somm"})
+        response = shared_client(self).get(RESOURCE + "/models", timeout=request_timeout(20),
+                                           headers={"Authorization": "Bearer " + self.auth.access_token(), "User-Agent": "somm"})
         response.raise_for_status()
         return [SommModel(v.get("slug") or v.get("id"), capabilities=["tools", "vision"])
                 for v in response.json().get("models", []) if v.get("visibility") == "list"]

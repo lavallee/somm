@@ -69,6 +69,9 @@ class Config:
     minimax_api_key: str | None = None
     minimax_model: str = "MiniMax-M3"
     deepseek_api_key: str | None = None
+    # Decision model for SommLLM.decide (TypeSafe System One). Not a
+    # generation provider: it never joins the routing chain.
+    typesafe_api_key: str | None = None
     deepseek_model: str = "deepseek-flash"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.8-flash"
@@ -267,6 +270,7 @@ def load(
         ("SOMM_GEMINI_MODEL", "gemini_model"),
         ("PERPLEXITY_API_KEY", "perplexity_api_key"),
         ("SOMM_PERPLEXITY_MODEL", "perplexity_model"),
+        ("TYPESAFE_API_KEY", "typesafe_api_key"),
     ):
         if env_var.endswith("_API_KEY"):
             val = _key_env(env_var)

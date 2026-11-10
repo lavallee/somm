@@ -3388,6 +3388,34 @@
    "price_out_per_1m": 6.0,
    "context_window": null,
    "cache_read_per_1m": 0.5
+  },
+  {
+   "provider": "typesafe",
+   "model": "jev-1.13.0",
+   "price_in_per_1m": 0.042,
+   "price_out_per_1m": 0.0,
+   "context_window": null
+  },
+  {
+   "provider": "typesafe",
+   "model": "jev-1.14.0",
+   "price_in_per_1m": 0.042,
+   "price_out_per_1m": 0.0,
+   "context_window": null
+  },
+  {
+   "provider": "typesafe",
+   "model": "jev-latest",
+   "price_in_per_1m": 0.042,
+   "price_out_per_1m": 0.0,
+   "context_window": null
+  },
+  {
+   "provider": "typesafe",
+   "model": "jev-preview",
+   "price_in_per_1m": 0.042,
+   "price_out_per_1m": 0.0,
+   "context_window": null
   }
  ]
 }

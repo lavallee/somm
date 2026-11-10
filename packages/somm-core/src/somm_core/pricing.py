@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 # Providers known to charge per-token. Missing pricing for these is a bug.
 _PAID_PROVIDERS: frozenset[str] = frozenset(
-    {"anthropic", "openai", "gemini", "deepseek", "minimax", "perplexity"}
+    {"anthropic", "openai", "gemini", "deepseek", "minimax", "perplexity", "typesafe"}
 )
 
 # Track which (provider, model) pairs have already emitted a missing-pricing

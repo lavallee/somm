@@ -38,6 +38,7 @@ import json
 import math
 import threading
 import time
+import types
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -47,10 +48,12 @@ from somm.errors import (
     SommBudgetExceeded,
     SommDeferred,
     SommError,
+    SommInsufficientCredit,
     SommPrivacyViolation,
     SommProviderError,
     SommProviderNotConfigured,
     SommRateLimited,
+    SommRefused,
     SommTimeout,
     describe_error,
 )
@@ -190,6 +193,7 @@ _STATUS: list[tuple[type, int, str]] = [
     (SommProviderNotConfigured, 400, "invalid_request_error"),
     (SommBadRequest, 400, "invalid_request_error"),
     (SommAuthError, 401, "authentication_error"),
+    (SommInsufficientCredit, 402, "billing_error"),
     (SommRateLimited, 429, "rate_limit_error"),
     (SommBudgetExceeded, 429, "rate_limit_error"),
     (SommTimeout, 504, "timeout_error"),
@@ -239,6 +243,20 @@ def _failure(exc: SommError) -> tuple[int, dict, dict]:
     if isinstance(retry_after, (float, int)) and math.isfinite(retry_after) and retry_after >= 0:
         headers["Retry-After"] = str(math.ceil(retry_after))
     return status, payload, headers
+
+
+def _refusal(exc: SommRefused, wire: _Wire) -> Any:
+    """A refusal is an answer, not a failed request: the wire reports it in
+    its own shape (Anthropic ``stop_reason: refusal``, Chat Completions
+    ``finish_reason: content_filter``) with whatever text and usage the
+    client attached to the error."""
+    return types.SimpleNamespace(
+        call_id=exc.call_id or "", text=exc.text or "", tool_calls=[], raw=None,
+        stop_reason="refusal" if wire.envelope == "anthropic" else "content_filter",
+        model=exc.model or "", provider=exc.provider,
+        tokens_in=exc.tokens_in or 0, tokens_out=exc.tokens_out or 0,
+        reasoning_content="", cache_tokens_in=None, reasoning_tokens=None,
+    )
 
 
 def _anthropic_error(*, error_type: str, message: str, status: int,
@@ -781,6 +799,8 @@ async def _serve(request: Request, wire: _Wire) -> Response:
             "", workload=workload.name, provider=provider, model=model,
             raise_on_failure=True, **call,
         )
+    except SommRefused as exc:
+        result = _refusal(exc, wire)
     except SommError as exc:
         return _refuse(wire, *_failure(exc), ignored)
     except ValueError as exc:  # an invalid workload policy

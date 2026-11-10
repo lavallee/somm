@@ -219,15 +219,18 @@ def test_timeout_reaches_the_provider_request_on_every_entry_point(tmp_path):
 
 
 def _capture_httpx_timeout(monkeypatch, status=200, body=None):
+    """The read timeout each request went out with. Clients are reused, so
+    the timeout rides on the request, not on the client."""
     seen: list = []
     real = httpx.Client
 
+    def answer(request):
+        seen.append(request.extensions["timeout"]["read"])
+        return httpx.Response(status, json=body or {})
+
     class Capturing(real):
         def __init__(self, *args, **kwargs):
-            seen.append(kwargs.get("timeout"))
-            kwargs["transport"] = httpx.MockTransport(
-                lambda request: httpx.Response(status, json=body or {})
-            )
+            kwargs.setdefault("transport", httpx.MockTransport(answer))
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "Client", Capturing)

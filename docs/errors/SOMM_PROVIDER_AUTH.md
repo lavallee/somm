@@ -11,6 +11,12 @@ response body).
   endpoint.
 - A typo'd env var name, so somm picked up an empty or wrong key.
 
+The exception's `status_code` tells the two apart: 401 is the key, 403 is
+what the key may do (Anthropic `permission_error`, an OpenRouter guardrail
+or moderation block). `provider_type` and `provider_request_id` say what the
+provider called it. The proxy passes the status through, so a 403 upstream
+is a 403 to its caller (through 0.24 it became 401).
+
 **Behavior in the router.** A bad key is that provider's problem, not the
 request's. Since 0.19.2:
 

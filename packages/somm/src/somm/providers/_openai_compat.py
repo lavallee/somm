@@ -29,6 +29,12 @@ from somm.errors import (
     classify_body_error,
     classify_http_status,
 )
+from somm.providers._http import (
+    SharedClient,
+    close_shared_client,
+    request_timeout,
+    shared_client,
+)
 from somm.providers.base import (
     ProviderHealth,
     SommChunk,
@@ -81,6 +87,12 @@ class OpenAICompatProvider:
             self.default_model = default_model
         self.timeout = timeout
         self._structured_mode = self.structured_output_mode
+        self._http = SharedClient()
+
+    def close(self) -> None:
+        """Close the pooled HTTP connections. The provider stays usable: the
+        next call opens a new client."""
+        close_shared_client(self)
 
     # ------------------------------------------------------------------
 
@@ -146,12 +158,12 @@ class OpenAICompatProvider:
         while True:
             payload = self._build_payload(request, model)
             try:
-                with httpx.Client(timeout=request.timeout or self.timeout) as client:
-                    resp = client.post(
-                        self._chat_url(),
-                        headers=self._headers(),
-                        json=payload,
-                    )
+                resp = shared_client(self).post(
+                    self._chat_url(),
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=request_timeout(request.timeout or self.timeout),
+                )
             except httpx.TimeoutException as e:
                 raise SommTimeout(f"{self.name} timeout on {model}: {e}", cooldown_s=60.0) from e
             except httpx.RequestError as e:
@@ -234,7 +246,8 @@ class OpenAICompatProvider:
         if 200 <= resp.status_code < 300:
             return
         classify_http_status(
-            resp.status_code, resp.text, provider=self.name, model=model, headers=resp.headers
+            resp.status_code, resp.text, provider=self.name, model=model,
+            headers=getattr(resp, "headers", None),
         )
 
     def _raise_body_error(self, err: dict | str, model: str) -> None:
@@ -397,19 +410,21 @@ class OpenAICompatProvider:
 
     def health(self) -> ProviderHealth:
         try:
-            with httpx.Client(timeout=5.0) as client:
-                r = client.get(self._models_url(), headers=self._auth_header())
-                r.raise_for_status()
+            r = shared_client(self).get(
+                self._models_url(), headers=self._auth_header(), timeout=request_timeout(5.0)
+            )
+            r.raise_for_status()
             return ProviderHealth(available=True, detail=f"{self.base_url} reachable")
         except Exception as e:
             return ProviderHealth(available=False, detail=str(e))
 
     def models(self) -> list[SommModel]:
         try:
-            with httpx.Client(timeout=10.0) as client:
-                r = client.get(self._models_url(), headers=self._auth_header())
-                r.raise_for_status()
-                data = r.json()
+            r = shared_client(self).get(
+                self._models_url(), headers=self._auth_header(), timeout=request_timeout(10.0)
+            )
+            r.raise_for_status()
+            data = r.json()
         except Exception:
             return [SommModel(name=self.default_model)] if self.default_model else []
         out: list[SommModel] = []

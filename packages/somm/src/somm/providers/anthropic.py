@@ -26,6 +26,12 @@ from somm.errors import (
     SommTransientError,
     classify_http_status,
 )
+from somm.providers._http import (
+    SharedClient,
+    close_shared_client,
+    request_timeout,
+    shared_client,
+)
 from somm.providers.base import (
     ProviderHealth,
     SommChunk,
@@ -87,6 +93,11 @@ class AnthropicProvider:
         # is read at 0.025–0.1x. Prefixes under the model's minimum are simply
         # not cached, so the flag costs nothing on short prompts.
         self.auto_cache = auto_cache
+        self._http = SharedClient()
+
+    def close(self) -> None:
+        """Close the pooled HTTP connections; the next call opens new ones."""
+        close_shared_client(self)
 
     # ------------------------------------------------------------------
 
@@ -148,12 +159,12 @@ class AnthropicProvider:
         model = request.model or self.default_model
         t0 = time.monotonic()
         try:
-            with httpx.Client(timeout=request.timeout or self.timeout) as client:
-                resp = client.post(
-                    self.API_URL,
-                    headers=self._headers(),
-                    json=self._build_payload(request, model),
-                )
+            resp = shared_client(self).post(
+                self.API_URL,
+                headers=self._headers(),
+                json=self._build_payload(request, model),
+                timeout=request_timeout(request.timeout or self.timeout),
+            )
         except httpx.TimeoutException as e:
             raise SommTimeout(f"anthropic timeout on {model}: {e}", cooldown_s=60.0) from e
         except httpx.RequestError as e:
@@ -219,7 +230,7 @@ class AnthropicProvider:
             resp.text,
             provider=self.name,
             model=model,
-            headers=resp.headers,
+            headers=getattr(resp, "headers", None),
             overloaded_statuses=(529,),
         )
 
