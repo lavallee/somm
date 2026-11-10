@@ -935,7 +935,7 @@ internal names or personal paths.
 
 ## Status
 
-**v0.22.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
+**v0.23.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
 the public API, MCP tools, service contracts, and migration semantics are not
 yet declared stable. See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.
