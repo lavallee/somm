@@ -32,7 +32,7 @@ from somm_core.models import (
 from somm_core.parse import prompt_id as _prompt_id
 from somm_core.parse import stable_hash
 from somm_core.parse import workload_id as _workload_id
-from somm_core.schema import ensure_schema
+from somm_core.schema import _execute_pragma, ensure_schema
 
 _POLICY_KEYS = {"fallback", "retry", "timeout_s", "auto_heal", "adaptive"}
 _RETRY_KEYS = {"max", "backoff_s", "deadline_s"}
@@ -576,9 +576,12 @@ class Repository:
             isolation_level=None,  # autocommit; we manage transactions
             check_same_thread=False,
         )
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
+        # busy_timeout first so every later statement waits for a peer; the
+        # journal-mode switch ignores the busy handler, so it gets its own
+        # bounded retry (several processes opening a fresh ledger at once).
         conn.execute("PRAGMA busy_timeout = 5000")
+        _execute_pragma(conn, "PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
         self._local.conn = conn
         self._local.pid = pid

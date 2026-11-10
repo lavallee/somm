@@ -94,7 +94,10 @@ class OpenCodeHarness(BaseHarness):
             # 2.x removed --dir and runs in the process working directory.
             argv.extend(["--dir", request.resolved_cwd()])
         argv.extend(str(arg) for arg in request.extra)
-        argv.append(request.prompt)
+        # `--` ends option parsing, so a prompt starting with "-" is the
+        # message, not a flag (2.x verified: the value after `--` is taken as a
+        # positional; 1.x uses yargs, which treats `--` the same way).
+        argv.extend(["--", request.prompt])
         return argv
 
     @staticmethod

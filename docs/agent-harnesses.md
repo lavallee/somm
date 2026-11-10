@@ -49,7 +49,7 @@ result = harnesses.inspect(
 
 | Name | Executable | Resume | Turn limit | Agent selection | Reasoning effort | Stdin prompt | Reports cost | Reports model |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| `claude-cli` | `claude` | yes | yes | no | yes | no | yes | yes |
+| `claude-cli` | `claude` | yes | yes | no | yes | always | yes | yes |
 | `codex` (`codex-cli` alias) | `codex` | yes | no | no | yes | yes | no | no |
 | `opencode` | `opencode` | yes | no | yes | no | no | yes | yes |
 | `pi` | `pi` | yes | no | no | yes | yes | no | yes |
@@ -180,8 +180,10 @@ means "network must be blocked", so it is rejected on adapters without a
 network sandbox. Leave it `None` there.
 
 For every adapter, a `cwd` that is missing or is not a directory raises. Somm
-never falls back to the home directory. Codex prompts and session ids follow a
-`--` separator, so text that looks like an option is passed as data.
+never falls back to the home directory. A prompt that looks like an option is
+passed as data: Codex prompts and session ids, and OpenCode and Pi prompts,
+follow a `--` separator; `claude-cli` always writes the prompt to `claude -p` on
+stdin, because `claude` rejects a bare `--`.
 
 `executable=` can pin a specific CLI path when PATH is not authoritative (for
 example, when a maintained per-user installation should win over an older

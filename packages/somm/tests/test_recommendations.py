@@ -126,6 +126,26 @@ def test_inbox_cli_lists_and_applies(tmp_path, capsys, monkeypatch):
     assert refreshed.policy["fallback"][0] == {"provider": "openrouter", "model": "fast"}
 
 
+def test_bare_inbox_lists_and_takes_flags_before_the_subcommand(tmp_path, capsys, monkeypatch):
+    """`somm inbox --project X` used to die with "invalid choice: 'X'"."""
+    monkeypatch.chdir(tmp_path)
+    repo = Repository(tmp_path / ".somm" / "calls.sqlite")
+    _wl, rec_id = _seed_switch_recommendation(repo, project="cli-recs")
+
+    for argv in (
+        ["inbox", "--project", "cli-recs"],
+        ["inbox", "--project", "cli-recs", "list"],
+    ):
+        assert main(argv) == 0
+        assert "switch_model" in capsys.readouterr().out
+
+    assert main(["inbox", "--project", "cli-recs", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["id"] == rec_id
+
+    assert main(["inbox", "--project", "cli-recs", "show", str(rec_id)]) == 0
+    assert "switch_model" in capsys.readouterr().out
+
+
 def test_inbox_cli_shows_evidence_and_dismisses_several(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     repo = Repository(tmp_path / ".somm" / "calls.sqlite")

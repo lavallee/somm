@@ -50,3 +50,24 @@ def test_an_unregistered_project_falls_back_to_the_local_ledger(tmp_path, monkey
     _ledger, cwd = _registered_ledger(tmp_path, monkeypatch)
     cfg = load(project="nobody-registered-this", cwd=cwd, prefer_registry=True)
     assert cfg.db_path == (cwd / ".somm" / "calls.sqlite").resolve()
+
+
+def test_direct_config_honours_global_path_override(tmp_path, monkeypatch):
+    """A hand-built Config must not fall through to ~/.somm/global.sqlite."""
+    from somm_core.config import Config
+
+    monkeypatch.setenv("SOMM_GLOBAL_PATH", str(tmp_path / "g.sqlite"))
+    assert Config().global_db_path == tmp_path / "g.sqlite"
+
+    explicit = Config()
+    explicit.cross_project_path = tmp_path / "explicit.sqlite"
+    assert explicit.global_db_path == tmp_path / "explicit.sqlite"
+
+
+def test_suite_never_resolves_the_real_global_ledger():
+    """The repo conftest points SOMM_GLOBAL_PATH at a temp dir for every test."""
+    from pathlib import Path
+
+    from somm_core.config import Config
+
+    assert Path.home() / ".somm" not in Config().global_db_path.parents

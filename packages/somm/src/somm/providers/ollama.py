@@ -15,6 +15,7 @@ from somm_core.parse import strip_think_block
 
 from somm.errors import (
     SommBadRequest,
+    SommModelNotFound,
     SommTimeout,
     SommTransientError,
     classify_http_status,
@@ -84,10 +85,11 @@ class OllamaProvider:
                 f"ollama unreachable at {self.base_url}: {e}", cooldown_s=30.0, model=model
             ) from e
         if resp.status_code == 404:
-            raise SommBadRequest(
+            raise SommModelNotFound(
                 f"ollama model {model!r} unavailable (404). Run ollama pull {model}, "
                 "or use ollama list and set SOMM_OLLAMA_MODEL / [tool.somm].ollama_model "
                 "to an installed model (or pass --model).",
+                model=model,
             )
         if not (200 <= resp.status_code < 300):
             classify_http_status(

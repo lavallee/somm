@@ -30,7 +30,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from somm.errors import SommTransientError
+from somm.errors import SommModelNotFound, SommTransientError
 from somm.providers._openai_compat import OpenAICompatProvider
 from somm.providers.base import SommModel, SommRequest, SommResponse
 
@@ -96,7 +96,11 @@ class OpenRouterProvider(OpenAICompatProvider):
             tried_any = True
             try:
                 return self._call_single(request, model)
-            except SommTransientError as e:
+            except (SommTransientError, SommModelNotFound) as e:
+                # A withdrawn free model answers 404 ("No endpoints found").
+                # That used to be fatal here: it aborted the whole chain and,
+                # never cooled, was retried on every call. Now it cools on the
+                # same per-model ladder as a rate limit and the walk moves on.
                 if self.tracker:
                     self.tracker.mark_failure(self.name, model, cooldown_s=e.cooldown_s)
                 last_exc = e
@@ -119,7 +123,11 @@ class OpenRouterProvider(OpenAICompatProvider):
         pinned = replace(request, model=model)
         resp = super().generate(pinned)
         if self.tracker:
-            self.tracker.mark_ok(self.name, model)
+            # Best-effort: a locked ledger must not turn this paid answer
+            # into a failure the router would retry elsewhere.
+            from somm.routing import _record_health
+
+            _record_health(self.tracker.mark_ok, self.name, model)
         return resp
 
     def models(self):

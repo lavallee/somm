@@ -7,6 +7,7 @@ Migrations are versioned SQL files under `migrations/NNNN_<name>.sql`.
 from __future__ import annotations
 
 import sqlite3
+import time
 from importlib import resources
 from pathlib import Path
 
@@ -72,6 +73,27 @@ def _already_applied(version: int, conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _execute_pragma(conn: sqlite3.Connection, stmt: str, *, wait_s: float = 10.0) -> None:
+    """Run a migration PRAGMA, waiting out a peer that holds the database.
+
+    Switching ``journal_mode`` needs an exclusive lock and SQLite does not
+    consult the busy handler for it, so with a second process mid-migration it
+    fails at once with "database is locked" whatever ``busy_timeout`` says.
+    The pragmas only set durable database properties, so retrying is safe.
+    """
+    deadline = time.monotonic() + wait_s
+    delay = 0.01
+    while True:
+        try:
+            conn.execute(stmt)
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
 def ensure_schema(conn: sqlite3.Connection) -> int:
     """Apply any pending migrations. Returns the schema version after running.
 
@@ -114,10 +136,24 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
                 # got as far as its pragmas is harmless.
                 pragmas = [s for s in statements if s.lstrip().upper().startswith("PRAGMA")]
                 ddl = [s for s in statements if not s.lstrip().upper().startswith("PRAGMA")]
+                # Another process may be migrating the same fresh ledger (several
+                # clients constructed at once). BEGIN IMMEDIATE takes the write
+                # lock up front, where busy_timeout applies; a deferred BEGIN
+                # would fail at once with "database is locked" when two readers
+                # both try to upgrade. Once we hold the lock, re-read the version:
+                # if a peer applied this migration while we waited, skip it rather
+                # than re-run its DDL or collide on the schema_version stamp.
+                if current_schema_version(conn) >= version:
+                    applied = version
+                    continue
                 for stmt in pragmas:
-                    conn.execute(stmt)
+                    _execute_pragma(conn, stmt)
                 try:
-                    conn.execute("BEGIN")
+                    conn.execute("BEGIN IMMEDIATE")
+                    if current_schema_version(conn) >= version:
+                        conn.execute("ROLLBACK")
+                        applied = version
+                        continue
                     for stmt in ddl:
                         conn.execute(stmt)
                     conn.execute(

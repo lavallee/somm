@@ -88,6 +88,44 @@ class SommBadRequest(SommFatalError):
     code = "SOMM_PROVIDER_BAD_REQUEST"
 
 
+MODEL_NOT_FOUND_COOLDOWN_S = 3600.0
+"""Base cooldown for a (provider, model) slot the provider says it does not
+serve. A withdrawn model does not come back in seconds; the router's
+escalation ladder lengthens this for a slot that keeps failing."""
+
+
+class SommModelNotFound(SommBadRequest):
+    """The provider does not serve this model (404, or a 400 naming the model).
+
+    Still a ``SommBadRequest``: a pinned call, the proxy and anyone catching
+    ``SommBadRequest`` see what they always saw. The router and OpenRouter's
+    roster walk treat it as a dead *slot*, not a bad request: they cool that
+    (provider, model) on the escalating ladder and try the next candidate. A
+    withdrawn model used to be fatal and never cooled, so it was retried on
+    every call and aborted the chain each time.
+    """
+
+    def __init__(self, detail: str = "", *, model: str = "",
+                 cooldown_s: float = MODEL_NOT_FOUND_COOLDOWN_S) -> None:
+        super().__init__(detail)
+        self.model = model
+        self.cooldown_s = cooldown_s
+
+
+# Wording that means "no such model" in a 400 body. Narrow on purpose, like
+# the billing phrases: a false positive would route past a malformed request.
+_MODEL_NOT_FOUND_SIGNALS = (
+    "model_not_found",
+    "is not a valid model id",
+    "no endpoints found",
+)
+
+
+def _looks_like_model_not_found(body: str) -> bool:
+    low = body.lower()
+    return any(sig in low for sig in _MODEL_NOT_FOUND_SIGNALS)
+
+
 class SommBudgetExceeded(SommFatalError):
     """Fail-closed budget gate refused the call before dispatch.
 
@@ -354,9 +392,13 @@ def classify_http_status(
     if status in (401, 403):
         raise SommAuthError(f"{provider} auth failed ({status}): {snippet}")
     if status == 400:
+        if _looks_like_model_not_found(body):
+            raise SommModelNotFound(
+                f"{provider} 400 — model {model!r} not found: {snippet}", model=model
+            )
         raise SommBadRequest(f"{provider} 400 on {model}: {snippet}")
     if status == 404:
-        raise SommBadRequest(f"{provider} 404 — model {model!r} not found: {snippet}")
+        raise SommModelNotFound(f"{provider} 404 — model {model!r} not found: {snippet}", model=model)
     if status == 429:
         retry = retry_after_seconds(headers) or 120.0
         raise SommRateLimited(f"{provider} 429 on {model}: {snippet}", retry_after_s=retry, model=model)
@@ -382,6 +424,8 @@ def classify_body_error(err: object, *, provider: str, model: str) -> None:
         typ = str(err.get("type", ""))
         if str(code) in _PLAN_EXHAUSTED_BODY_CODES or looks_like_insufficient_credit(f"{code} {typ} {msg}"):
             raise SommInsufficientCredit(f"{provider} out of credit on {model}: {msg}", model=model)
+        if code == 404 or _looks_like_model_not_found(f"{code} {msg}"):
+            raise SommModelNotFound(f"{provider} body-404 on {model}: {msg}", model=model)
         if code == 429 or "rate" in msg.lower():
             raise SommRateLimited(f"{provider} body-429 on {model}: {msg}", retry_after_s=120.0, model=model)
         if "auth" in typ.lower() or "auth" in msg.lower():
