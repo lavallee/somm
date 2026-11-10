@@ -238,6 +238,27 @@ def _cmd_cache_advice(args: argparse.Namespace) -> int:
     return 0
 
 
+def _image_prompt(text: str, images: list[str]) -> list[dict]:
+    """The text plus one image block per ``--image``: a file path (read inline)
+    or an http(s) URL. Same block shape ``somm_core.parse.image_prompt`` builds."""
+    import mimetypes
+
+    from somm_core.parse import image_prompt
+
+    blocks: list[dict] = [{"type": "text", "text": text}]
+    for ref in images:
+        if ref.startswith(("http://", "https://")):
+            blocks.append(image_prompt(text, url=ref)[1])
+            continue
+        media_type = mimetypes.guess_type(ref)[0] or ""
+        if not media_type.startswith("image/"):
+            raise ValueError(f"--image {ref!r}: not a recognised image file type")
+        blocks.append(
+            image_prompt(text, Path(ref).read_bytes(), media_type=media_type)[1]
+        )
+    return blocks
+
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     if args.prompt_file and args.prompt:
         raise ValueError("pass either PROMPT or --prompt-file, not both")
@@ -249,6 +270,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         prompt = args.prompt
     if not prompt:
         raise ValueError("prompt is required (pass PROMPT, --prompt-file, or '-')")
+    if args.image:
+        prompt = _image_prompt(prompt, args.image)
 
     cfg = _common.load_config(project=args.project)
     from somm.client import SommLLM
@@ -711,6 +734,14 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pg = sub.add_parser("generate", help="one-shot LLM call through somm")
     pg.add_argument("prompt", nargs="?", help="prompt text, or '-' to read stdin")
     pg.add_argument("--prompt-file", default=None, help="read prompt text from a file")
+    pg.add_argument(
+        "--image",
+        action="append",
+        default=[],
+        metavar="PATH_OR_URL",
+        help="attach an image (file path or http(s) URL); repeatable. Routed only to "
+        "providers that accept images.",
+    )
     _common.add_project(pg)
     pg.add_argument("--workload", default="generate")
     pg.add_argument("--system", default="")

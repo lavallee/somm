@@ -104,8 +104,8 @@ options:
   --json                emit stable JSON
 
 ===== somm generate =====
-usage: somm generate [-h] [--prompt-file PROMPT_FILE] [--project PROJECT] [--workload WORKLOAD]
-                     [--system SYSTEM] [--provider PROVIDER] [--model MODEL]
+usage: somm generate [-h] [--prompt-file PROMPT_FILE] [--image PATH_OR_URL] [--project PROJECT]
+                     [--workload WORKLOAD] [--system SYSTEM] [--provider PROVIDER] [--model MODEL]
                      [--max-tokens MAX_TOKENS] [--temperature TEMPERATURE] [--json]
                      [--claude-cli-text-only]
                      [prompt]
@@ -117,6 +117,8 @@ options:
   -h, --help            show this help message and exit
   --prompt-file PROMPT_FILE
                         read prompt text from a file
+  --image PATH_OR_URL   attach an image (file path or http(s) URL); repeatable. Routed only to
+                        providers that accept images.
   --project PROJECT
   --workload WORKLOAD
   --system SYSTEM
