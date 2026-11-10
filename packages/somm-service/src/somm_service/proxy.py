@@ -16,6 +16,10 @@ Supported request shapes:
   Headers:
     X-Somm-Workload: <workload name>   (optional; defaults to config.project default)
     X-Somm-Project:  <project name>    (optional; defaults to config.project)
+    X-Somm-Data-Boundary: <tier>       (optional; may only tighten the workload's)
+
+On a route outside the workload's data boundary: 403 with SOMM_PRIVACY_VIOLATION,
+a refusal row in the ledger, and litellm is never invoked.
 
 On budget exceeded: 429 with a provider-compatible error body and litellm is
 NOT called.
@@ -26,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import time
 import uuid
 from collections.abc import Iterator
@@ -39,6 +44,7 @@ from somm.errors import (
     SommBadRequest,
     SommBudgetExceeded,
     SommError,
+    SommPrivacyViolation,
     SommRateLimited,
     SommTimeout,
     describe_error,
@@ -424,6 +430,8 @@ def _openai_provider_error(
         status, error_type = 429, "rate_limit_error"
     elif isinstance(error, SommTimeout):
         status, error_type = 504, "timeout_error"
+    elif isinstance(error, SommPrivacyViolation):
+        status, error_type = 403, "permission_error"
     elif not detail["retryable"]:
         status, error_type = 400, "invalid_request_error"
     # Adapters can preserve a more specific upstream status without requiring
@@ -476,6 +484,82 @@ def _resolve_workload(repo, request: Request, project: str, cfg) -> Any:
             budget_cap_usd_daily=default_cap,
         )
     return wl
+
+
+def _route_base_url(provider: str, cfg) -> str | None:
+    """The endpoint litellm will use for ``provider``, where somm knows it."""
+    if provider == "ollama":
+        return os.environ.get("OLLAMA_API_BASE") or getattr(cfg, "ollama_url", None)
+    return None
+
+
+def _data_tier(provider: str, model_only: str, cfg) -> str | None:
+    from somm_core.boundary import classify
+
+    try:
+        return classify(provider, model_only, base_url=_route_base_url(provider, cfg)).tier.value
+    except Exception:  # noqa: BLE001 — recording only
+        return None
+
+
+def _boundary_refusal(
+    repo, cfg, request: Request, project: str, workload: Any, provider: str, model_only: str,
+    body: dict,
+) -> SommPrivacyViolation | None:
+    """Check the target route against the workload's data boundary.
+
+    Returns the refusal (after writing its ledger row) or None when the route
+    is admissible. Same rule as the library: one ``admit()`` check, never
+    retried, never rescued by another route.
+    """
+    from somm.boundary import check_route, resolve_boundary
+
+    header = request.headers.get("x-somm-data-boundary")
+    try:
+        boundary = resolve_boundary(workload, per_call=header, project=project)
+    except ValueError:
+        boundary = resolve_boundary(workload, per_call="local", project=project)
+    if boundary.is_default:
+        return None
+    try:
+        check_route(
+            provider=provider,
+            model=model_only,
+            boundary=boundary,
+            workload=getattr(workload, "name", None),
+            base_url=_route_base_url(provider, cfg),
+            context="the proxy target",
+        )
+    except SommPrivacyViolation as exc:
+        refused = ", ".join(f"{r['provider']}/{r['model'] or '-'}={r['tier']}" for r in exc.refused)
+        repo.write_call(
+            Call(
+                id=str(uuid.uuid4()),
+                ts=datetime.now(UTC),
+                project=project,
+                workload_id=workload.id,
+                prompt_id=None,
+                provider="",
+                model=model_only,
+                tokens_in=0,
+                tokens_out=0,
+                latency_ms=0,
+                cost_usd=0.0,
+                outcome=Outcome.UNKNOWN,
+                error_kind="SommPrivacyViolation",
+                error_detail=(
+                    f"refused: data_boundary={exc.data_boundary} (from {exc.boundary_source}) "
+                    f"| refused routes: {refused}"
+                )[:512],
+                prompt_hash=stable_hash(body.get("messages")),
+                response_hash=stable_hash(""),
+                cost_accuracy="actual",
+                cost_source=None,
+                budget_eligible=False,
+            )
+        )
+        return exc
+    return None
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -639,6 +723,7 @@ def _make_messages_streaming_response(
                 temperature=body.get("temperature"),
                 max_tokens=body.get("max_tokens"),
                 top_p=body.get("top_p"),
+                data_tier=_data_tier(provider, model_only, cfg),
             )
             repo.write_call(call)
 
@@ -734,6 +819,10 @@ async def messages_endpoint(request: Request) -> Response:
     requested_model = params["model"]
     provider, model_only = _provider_from_model(requested_model)
 
+    refusal = _boundary_refusal(repo, cfg, request, project, workload, provider, model_only, body)
+    if refusal is not None:
+        return _anthropic_error(error_type="permission_error", message=str(refusal), status=403)
+
     if body.get("stream"):
         return _make_messages_streaming_response(
             repo=repo,
@@ -802,6 +891,7 @@ async def messages_endpoint(request: Request) -> Response:
         temperature=body.get("temperature"),
         max_tokens=body.get("max_tokens"),
         top_p=body.get("top_p"),
+        data_tier=_data_tier(provider, model_only, cfg),
     )
     repo.write_call(call)
 
@@ -899,6 +989,10 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
         if provider == "minimax":
             params["thinking"] = {"type": "disabled"}
 
+    refusal = _boundary_refusal(repo, cfg, request, project, workload, provider, model_only, body)
+    if refusal is not None:
+        return _openai_provider_error(refusal, provider=provider, model=model_only, routing=routing)
+
     if provider != "chatgpt":
         try:
             enforce_workload_budget(
@@ -994,6 +1088,7 @@ async def chat_completions_endpoint(request: Request) -> JSONResponse:
         temperature=body.get("temperature"),
         max_tokens=body.get("max_tokens") or body.get("max_completion_tokens"),
         top_p=body.get("top_p"),
+        data_tier=_data_tier(provider, model_only, cfg),
     )
     repo.write_call(call)
 

@@ -5,7 +5,11 @@ Design:
 - OFF by default. Per-workload opt-in via `repo.set_shadow_config(...)`.
 - privacy_class=private workloads are BANNED from shadow-eval — the gate is
   enforced by the `shadow_candidates` view (schema v2) AND defense-in-depth
-  here in Python.
+  here in Python (counted in ``private_skipped``).
+- Data boundary: the gold route, and every judge route, must be admissible
+  for the graded workload's boundary (somm_core.boundary). A workload whose
+  gold route is outside it is skipped (``boundary_skipped``); an
+  inadmissible judge is refused and recorded in the receipt, never called.
 - Budget ceiling: per-workload `budget_usd_daily`. Worker sums the cost_usd
   of today's eval_results rows and stops sampling that workload when it
   hits the cap.
@@ -107,6 +111,7 @@ class ShadowEvalWorker:
             "calls_graded": 0,
             "budget_skipped": 0,
             "private_skipped": 0,
+            "boundary_skipped": 0,
             "errors": [],
         }
 
@@ -127,9 +132,24 @@ class ShadowEvalWorker:
                     continue
                 cfg = ShadowConfig.from_dict(cfg_raw)
 
-                # Privacy defense-in-depth (view already filters, but double check).
-                # Skipped here silently — SOMM_PRIVACY_VIOLATION is raised in the
-                # router when a private workload is called upstream.
+                # Privacy defense-in-depth: the view already filters private
+                # workloads; check again here so either defense alone holds.
+                if any(
+                    str(c.get("privacy_class") or "").lower() == "private" for c in calls
+                ) or self._workload_is_private(workload_id):
+                    summary["private_skipped"] += len(calls)
+                    continue
+                boundary = self._boundary_for(calls[0])
+                if not boundary.is_default and not self._admits(
+                    boundary, cfg.gold_provider, cfg.gold_model
+                ):
+                    summary["boundary_skipped"] += len(calls)
+                    _log.warning(
+                        "shadow: gold route %s/%s is outside data boundary %s for workload %s",
+                        cfg.gold_provider, cfg.gold_model, boundary.tier.value, workload_id,
+                    )
+                    continue
+                self._boundary = boundary
 
                 # Budget check
                 spent = self._shadow_spent_today(workload_id)
@@ -164,6 +184,43 @@ class ShadowEvalWorker:
                 summary["errors"].append(f"{workload_id}: {e}")
 
         return summary
+
+    # ------------------------------------------------------------------
+    # Privacy and data boundary
+
+    _boundary = None
+
+    def _workload_is_private(self, workload_id: str) -> bool:
+        with self.repo._open() as conn:
+            row = conn.execute(
+                "SELECT privacy_class FROM workloads WHERE id = ?", (workload_id,)
+            ).fetchone()
+        return bool(row) and str(row[0]).lower() == "private"
+
+    def _boundary_for(self, call_row: dict):
+        from somm_core.boundary import resolve_boundary
+
+        wl = None
+        if call_row.get("workload_name"):
+            wl = self.repo.workload_by_name(call_row["workload_name"], call_row["project"])
+        return resolve_boundary(wl, project=call_row.get("project"))
+
+    def _route_tier(self, provider_name: str, model: str):
+        from somm_core.boundary import classify
+
+        from somm.boundary import base_url_of
+
+        provider = self.providers.get(provider_name)
+        return classify(
+            provider_name,
+            model,
+            base_url=base_url_of(provider) if provider is not None else None,
+        )
+
+    def _admits(self, boundary, provider_name: str, model: str) -> bool:
+        from somm_core.boundary import admit
+
+        return admit(self._route_tier(provider_name, model), boundary.tier)
 
     # ------------------------------------------------------------------
     # Candidate sourcing
@@ -392,6 +449,20 @@ class ShadowEvalWorker:
                 gold_response_hash=None,
                 notes=[f"gold_provider {cfg.gold_provider!r} not configured"],
             )
+        boundary = self._boundary
+        if (
+            boundary is not None
+            and not boundary.is_default
+            and not self._admits(boundary, cfg.gold_provider, cfg.gold_model)
+        ):
+            return EvalOutcome(
+                call_id=call_row["call_id"],
+                structural_score=None,
+                text_similarity_score=None,
+                judge_score=None,
+                gold_response_hash=None,
+                notes=[f"refused: gold route outside data boundary {boundary.tier.value}"],
+            )
         gold_request = SommRequest(
             prompt=prompt, model=cfg.gold_model, temperature=0.0, max_tokens=1024
         )
@@ -492,6 +563,24 @@ class ShadowEvalWorker:
             model = spec.get("model")
             if not provider_name or not model:
                 receipts.append({"error": "judge provider and model are required", "spec": spec})
+                continue
+            boundary = self._boundary
+            if (
+                boundary is not None
+                and not boundary.is_default
+                and not self._admits(boundary, str(provider_name), str(model))
+            ):
+                route = self._route_tier(str(provider_name), str(model))
+                receipts.append(
+                    {
+                        "provider": provider_name,
+                        "model": model,
+                        "error": (
+                            f"refused: judge route is {route.tier.value}, outside data "
+                            f"boundary {boundary.tier.value}"
+                        ),
+                    }
+                )
                 continue
             provider = self.providers.get(str(provider_name))
             if provider is None:
@@ -654,6 +743,7 @@ class ShadowEvalWorker:
             billing_id=billing_id,
             origin="native",
             budget_eligible=True,
+            data_tier=self._route_tier(provider, actual_model).tier.value,
         )
         self.repo.write_call(call)
         return call

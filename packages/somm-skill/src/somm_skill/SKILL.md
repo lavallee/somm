@@ -89,7 +89,13 @@ llm.repo.set_shadow_config(wl.id, {
 ```
 
 Capture is the documented consent for body storage; `privacy_class=PRIVATE`
-workloads are never captured regardless. Grading needs the workers running
+workloads are never captured regardless.
+
+Sensitive data: give the workload a data boundary
+(`data_boundary="local" | "zdr" | "subscribed"`, or `somm boundary set`). Routes
+outside it are refused with `SommPrivacyViolation` (never retried, never a
+looser fallback); a private workload is always `local`. Check
+`somm boundary audit` before tightening. See docs/data-boundary.md. Grading needs the workers running
 (see rule 8).
 
 ### 4. Stamp provenance on stored data

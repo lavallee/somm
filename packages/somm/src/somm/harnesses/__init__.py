@@ -32,7 +32,7 @@ from .base import (
 )
 from .claude_cli import ClaudeCLIHarness
 from .codex import CodexHarness
-from .ledger import DEFAULT_WORKLOAD, record_attempt
+from .ledger import DEFAULT_WORKLOAD, check_boundary, harness_route, record_attempt
 from .opencode import OpenCodeHarness
 from .pi import PiHarness
 
@@ -131,10 +131,26 @@ def validate_request(name: str, request: HarnessRequest) -> None:
         )
 
 
-def start(name: str, request: HarnessRequest) -> HarnessHandle:
-    """Start one attempt and return immediately with its process handle."""
+def start(
+    name: str,
+    request: HarnessRequest,
+    *,
+    workload: str | None = None,
+    project: str | None = None,
+    data_boundary: str | None = None,
+) -> HarnessHandle:
+    """Start one attempt and return immediately with its process handle.
+
+    With a ``workload`` (or a ``data_boundary``), the harness's data tier is
+    checked first; an attempt outside the boundary raises
+    ``SommPrivacyViolation`` and nothing is launched.
+    """
 
     validate_request(name, request)
+    if workload is not None or data_boundary is not None:
+        check_boundary(
+            name, request, workload=workload, project=project, data_boundary=data_boundary
+        )
     return get(name).start(request)
 
 
@@ -277,14 +293,28 @@ def run(
     timeout: float | None = None,
     record: bool = False,
     project: str | None = None,
-    workload: str = DEFAULT_WORKLOAD,
+    workload: str | None = None,
+    data_boundary: str | None = None,
 ) -> HarnessResult:
     """Run one attempt synchronously; never retries or selects a fallback.
 
-    ``record=True`` writes the finished attempt to the somm ledger.
+    ``record=True`` writes the finished attempt to the somm ledger (under
+    ``workload``, default ``harness_attempt``). When ``record`` is set or a
+    ``workload``/``data_boundary`` is given, the harness's data tier is checked
+    against that workload's boundary before launch; outside it,
+    ``SommPrivacyViolation`` is raised and nothing runs.
     """
 
     validate_request(name, request)
+    if record or workload is not None or data_boundary is not None:
+        check_boundary(
+            name,
+            request,
+            workload=workload or DEFAULT_WORKLOAD,
+            project=project,
+            data_boundary=data_boundary,
+        )
+    workload = workload or DEFAULT_WORKLOAD
     adapter = get(name)
     handle = adapter.start(request)
     started_at = getattr(handle, "started_at", None) or datetime.now(UTC)
@@ -333,10 +363,12 @@ __all__ = [
     "PiHarness",
     "available",
     "capability_profile",
+    "check_boundary",
     "decode_json_events",
     "extract_final_text",
     "extract_last_assistant_text",
     "get",
+    "harness_route",
     "infer_model_family",
     "inspect",
     "is_event_stream",

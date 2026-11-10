@@ -151,6 +151,7 @@ def _pre_call(ctx: hooks.PreCallContext) -> hooks.ShortCircuit | None:
             raw=entry.raw,
             tool_calls=entry.tool_calls,
             source="cache",
+            data_tier="local",  # in-memory, in this process
         )
     except Exception:
         return None

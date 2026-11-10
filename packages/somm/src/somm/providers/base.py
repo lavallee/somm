@@ -65,6 +65,11 @@ class SommRequest:
     # still belongs to SommLLM.generate_structured().
     response_format: dict | None = None
     claude_cli_text_only: bool = False
+    # The loosest data tier (somm_core.boundary) this request may reach, set
+    # by SommLLM from the workload. The router drops providers outside it, and
+    # a provider that picks its own model (OpenRouter's roster walk) must skip
+    # models outside it. None = no boundary (every route admissible).
+    data_boundary: str | None = None
 
 
 @dataclass(slots=True)

@@ -44,8 +44,11 @@ zero-config entry point.
 
 ### 2. Privacy as defense-in-depth
 
-Prompt bodies are not stored by default. Private workloads are
-filtered *in the router, in the shadow worker, and in a SQL view*.
+Prompt bodies are not stored by default. Every route has a data tier
+and every workload a data boundary; one `admit()` check runs before each
+egress (router, pins, streams, proxy, MCP compare, shadow eval, harnesses).
+Private workloads are bounded to `local`, and are kept out of shadow-eval
+*by `enable_shadow`, in the shadow worker, and in a SQL view*.
 Files are `chmod 0600`, dirs `0700`. The web admin binds `localhost`.
 
 *Why it's load-bearing:* privacy that depends on one guard is one
@@ -136,7 +139,8 @@ derived rollup.
 ### First-class entities (content-addressed)
 
 - **`workloads`** — `hash(name + schemas)`. Carries `privacy_class`,
-  `budget_cap_usd_daily`, `capabilities_required`.
+  `data_boundary` (not part of the hash), `budget_cap_usd_daily`,
+  `capabilities_required`.
 - **`prompts`** — `hash(body)`. Versioned per workload.
 - **`model_intel`** — pricing + context + capabilities per
   (provider, model). Refreshed from provider APIs.
@@ -235,7 +239,10 @@ Projects have heterogeneous workloads. Treating privacy as a global
 switch forces the user to pick either "everything captured" or
 "nothing captured" — neither fits a real codebase. Per-workload
 privacy lets claim-extraction egress freely while customer-data-parsing
-never does.
+never does. The data boundary generalises this to a sliding scale
+(`local` < `zdr` < `subscribed` < `unvetted`); tiers are the owner's
+declarations about contracts, so `~/.somm/boundary.toml` overrides the
+shipped, sourced defaults (docs/data-boundary.md).
 
 ### Spool is JSONL, not a binary format
 

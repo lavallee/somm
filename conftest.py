@@ -22,6 +22,9 @@ def _isolate_somm_machine_state(tmp_path_factory, monkeypatch):
     d = tmp_path_factory.mktemp("somm-home")
     monkeypatch.setenv("SOMM_REGISTRY_PATH", str(d / "registry.json"))
     monkeypatch.setenv("SOMM_PLANS_PATH", str(d / "plans.toml"))
+    # The owner's data-boundary file decides which routes a workload may
+    # use; a developer's real ~/.somm/boundary.toml must never steer a test.
+    monkeypatch.setenv("SOMM_BOUNDARY_PATH", str(d / "boundary.toml"))
     # Cross-project mirroring defaults on; without these two a test's
     # SommLLM would replicate its calls into the developer's real
     # ~/.somm/global.sqlite. Tests that exercise mirroring set their own.

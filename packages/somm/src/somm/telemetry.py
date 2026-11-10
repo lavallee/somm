@@ -470,6 +470,8 @@ def drain_spool(repo: Repository, spool_dir: Path) -> int:
                             call_site=row.get("call_site"),
                             reasoning_tokens=row.get("reasoning_tokens"),
                             client_version=row.get("client_version"),
+                            routing_json=row.get("routing_json"),
+                            data_tier=row.get("data_tier"),
                         )
                     )
             repo.write_calls_batch(calls)
