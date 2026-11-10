@@ -156,6 +156,16 @@ the router enforces and the ledger records.
 The paved-road test for all of it: a consuming project needs no wrapper
 module around somm.
 
+*Note, 10 November 2026.* The two days after this re-grounding (0.20.2 to
+0.26.0) put the foundation into code: the data boundary; outcomes, routes and
+recalls on every row; one price table with unknown costs marked; one call path
+for `generate` and `stream`; `generate_structured`, typed errors and per-call
+timeouts; a read API and a vocabulary export; `somm ledgers`, `somm fleet
+status` and `somm mirror sync`; `somm mcp install` and `somm skill install`;
+decision calls; and `somm climb`. They did not move any of the three
+north-star numbers, because those measure use, not code, and none of the
+graduation tests in `ROADMAP.md` is met.
+
 ## Non-goals
 
 - A composite "quality score" collapsing LMArena + LiveBench + HF into one
@@ -173,15 +183,18 @@ module around somm.
 ## Engine map
 
 - **library** (`somm`) — the one-line drop-in: providers, tool calling,
-  streaming, embeddings, retries/fallbacks, local telemetry capture, and the
-  data boundary that decides which routes a workload may use.
+  streaming, embeddings, decision calls, retries/fallbacks, local telemetry
+  capture, and the data boundary that decides which routes a workload may use.
 - **harnesses** (`somm.harnesses`) — one provider-neutral coding-agent attempt:
   executable discovery, arguments and permissions, native-event normalization,
   session identity, final output, usage, and portable termination.
 - **sommelier** — the ranking brain: cross-project model memory, prior-decision
   recall, shadow-eval + intel signals → a recommended model with reasons.
-- **service** (`somm-service`) — scheduled workers (intel refresh, graders) +
-  the web admin (usage / cost / quality by project/workload/time).
+- **loop** (`somm loop`) — the workers (intel refresh, shadow grading,
+  recommendations), run as one pass or on a timer with no resident process.
+- **service** (`somm-service`) — the web admin (usage / cost / quality by
+  project/workload/time), the HTTP read API, the provider-compatible proxy and
+  OTLP ingest; it can also host the loop's scheduler.
 - **MCP** (`somm-mcp`, 14 tools) — lets a coding agent query real telemetry and
   collaborate on model selection from inside the harness.
 - **skill** (`somm-skill`) — steers coding agents to use somm instead of rolling
