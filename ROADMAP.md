@@ -84,9 +84,10 @@ graduates.
 
 ### 4. Surfaces
 
-- The proxy on the engine, `/v1/responses`, streaming on chat completions, and
-  LiteLLM removed from `somm-service`. Absorbs "The proxy on somm's own
-  providers".
+- Done: the proxy on `SommLLM`, `/v1/responses`, streaming on chat
+  completions, LiteLLM removed from `somm-service`. Left: incremental proxy
+  streams and provider machine fields on proxy errors, which need the client's
+  `stream()` to take `messages`/`tools` and a failed result to carry its error.
 - The CLI as a package with one flag grammar and a documented exit-code
   contract.
 - `somm mcp install` and a distributed skill.
@@ -167,16 +168,6 @@ eval promotion, and placement assessment stay guesses.
 - **Boundary:** somm reports the gap and never fabricates a schema from
   observed responses — an inferred contract that looks declared is worse than
   an honest absence.
-
-### The proxy on somm's own providers
-
-`/v1/messages` and `/v1/chat/completions` call LiteLLM directly, so proxy
-traffic bypasses routing, cooldowns, pins, the `SOMM_*` taxonomy,
-`reasoning_effort`, and the structured-output ladder — a second provider stack
-with its own translation code. Dispatch through `SommLLM.generate(messages=…)`
-and keep only the wire-format shims; drop the `litellm` dependency from
-`somm-service`. Add streaming to `/v1/chat/completions` and a `/v1/responses`
-route (Codex-era OpenAI models are Responses-only).
 
 ### Harness receipts, continued
 
