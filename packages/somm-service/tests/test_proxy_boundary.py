@@ -1,12 +1,10 @@
 """Data boundary at the proxy: /v1/messages and /v1/chat/completions refuse a
 target outside the workload's boundary with 403 SOMM_PRIVACY_VIOLATION,
-record a refusal row, and never invoke litellm."""
+record a refusal row (written by the client), and never call a provider."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 
 from somm_core.config import Config
 from somm_core.models import PrivacyClass
@@ -28,87 +26,72 @@ def _headers(app, **extra):
     return {"authorization": f"Bearer {app.state.service_token.value}", **extra}
 
 
-def _anthropic_resp():
-    return SimpleNamespace(
-        id="msg_1", model="claude-x",
-        choices=[SimpleNamespace(message={"role": "assistant", "content": "hi"},
-                                 finish_reason="stop")],
-        usage={"prompt_tokens": 1, "completion_tokens": 1},
-    )
+_ROWS = "SELECT provider, model, outcome, error_kind, data_tier FROM calls ORDER BY ts"
 
 
-def _rows(repo):
-    with repo._open() as conn:
-        return conn.execute(
-            "SELECT provider, model, outcome, error_kind, data_tier FROM calls ORDER BY ts"
-        ).fetchall()
-
-
-def test_private_workload_messages_refused_without_calling_litellm(tmp_path):
+def test_private_workload_messages_refused_without_calling_a_provider(
+    tmp_path, fake_provider, ledger
+):
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
     repo.register_workload(name="secret", project=cfg.project, privacy_class=PrivacyClass.PRIVATE)
-    app = create_app(cfg)
+    fake = fake_provider("anthropic")
+    app = create_app(cfg, providers=[fake])
     client = TestClient(app)
     body = {"model": "claude-x", "messages": [{"role": "user", "content": "x"}], "max_tokens": 8}
-    with patch("somm_service.proxy.litellm.completion") as completion:
-        r = client.post("/v1/messages", json=body,
-                        headers=_headers(app, **{"x-somm-workload": "secret"}))
-        streamed = client.post("/v1/messages", json={**body, "stream": True},
-                               headers=_headers(app, **{"x-somm-workload": "secret"}))
+    r = client.post("/v1/messages", json=body, headers=_headers(app, **{"x-somm-workload": "secret"}))
+    streamed = client.post("/v1/messages", json={**body, "stream": True},
+                           headers=_headers(app, **{"x-somm-workload": "secret"}))
     assert r.status_code == 403 and streamed.status_code == 403
     assert r.json()["error"]["type"] == "permission_error"
     assert r.json()["error"]["message"].startswith("SOMM_PRIVACY_VIOLATION")
-    completion.assert_not_called()
-    assert _rows(repo) == [("", "claude-x", "unknown", "SommPrivacyViolation", None)] * 2
+    assert r.headers["x-should-retry"] == "false"
+    assert fake.requests == []
+    assert ledger(app, _ROWS) == [("", "claude-x", "unknown", "SommPrivacyViolation", None)] * 2
 
 
-def test_chat_completions_refused_with_code_and_no_retry(tmp_path):
+def test_chat_completions_refused_with_code_and_no_retry(tmp_path, fake_provider):
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
     repo.register_workload(name="secret", project=cfg.project, privacy_class=PrivacyClass.PRIVATE)
-    app = create_app(cfg)
-    client = TestClient(app)
-    with patch("somm_service.proxy.litellm.completion") as completion:
-        r = client.post(
-            "/v1/chat/completions",
-            json={"model": "gpt-x", "messages": [{"role": "user", "content": "x"}]},
-            headers=_headers(app, **{"x-somm-workload": "secret"}),
-        )
+    fake = fake_provider("openai")
+    app = create_app(cfg, providers=[fake])
+    r = TestClient(app).post(
+        "/v1/chat/completions",
+        json={"model": "gpt-x", "messages": [{"role": "user", "content": "x"}]},
+        headers=_headers(app, **{"x-somm-workload": "secret"}),
+    )
     assert r.status_code == 403
     err = r.json()["error"]
     assert err["code"] == "SOMM_PRIVACY_VIOLATION" and err["retryable"] is False
     assert err["data_boundary"] == "local" and err["refused"][0]["provider"] == "openai"
     assert r.headers["x-should-retry"] == "false"
-    completion.assert_not_called()
+    assert fake.requests == []
 
 
-def test_local_target_is_admitted_and_tier_recorded(tmp_path):
+def test_local_target_is_admitted_and_tier_recorded(tmp_path, fake_provider, ledger):
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
     repo.register_workload(name="secret", project=cfg.project, privacy_class=PrivacyClass.PRIVATE)
-    app = create_app(cfg)
-    client = TestClient(app)
-    with patch("somm_service.proxy.litellm.completion", return_value=_anthropic_resp()):
-        r = client.post(
-            "/v1/chat/completions",
-            json={"model": "ollama/qwen3:8b", "messages": [{"role": "user", "content": "x"}]},
-            headers=_headers(app, **{"x-somm-workload": "secret"}),
-        )
+    app = create_app(cfg, providers=[fake_provider("ollama", base_url=cfg.ollama_url)])
+    r = TestClient(app).post(
+        "/v1/chat/completions",
+        json={"model": "ollama/qwen3:8b", "messages": [{"role": "user", "content": "x"}]},
+        headers=_headers(app, **{"x-somm-workload": "secret"}),
+    )
     assert r.status_code == 200
-    assert _rows(repo)[-1][-1] == "local"
+    assert ledger(app, _ROWS)[-1][-1] == "local"
 
 
-def test_default_boundary_leaves_the_proxy_unchanged(tmp_path):
+def test_default_boundary_leaves_the_proxy_unchanged(tmp_path, fake_provider, ledger):
     cfg = _cfg(tmp_path)
     repo = Repository(cfg.db_path)
     repo.register_workload(name="open", project=cfg.project)
-    app = create_app(cfg)
-    client = TestClient(app)
+    fake = fake_provider("anthropic")
+    app = create_app(cfg, providers=[fake])
     msg = {"model": "anthropic/claude-x", "messages": [{"role": "user", "content": "x"}]}
-    with patch("somm_service.proxy.litellm.completion", return_value=_anthropic_resp()) as c:
-        ok = client.post("/v1/chat/completions", json=msg,
-                         headers=_headers(app, **{"x-somm-workload": "open"}))
+    ok = TestClient(app).post("/v1/chat/completions", json=msg,
+                              headers=_headers(app, **{"x-somm-workload": "open"}))
     assert ok.status_code == 200
-    assert c.call_count == 1
-    assert _rows(repo)[0][-1] == "subscribed"
+    assert len(fake.requests) == 1
+    assert ledger(app, _ROWS)[0][-1] == "subscribed"

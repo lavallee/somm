@@ -16,6 +16,7 @@ HTTP surface:
   POST /v1/traces              Alias for OTLP JSON trace ingest
   POST /v1/messages            Anthropic Messages-compatible LLM proxy
   POST /v1/chat/completions    OpenAI Chat Completions-compatible LLM proxy
+  POST /v1/responses           OpenAI Responses-compatible LLM proxy (common subset)
 
 Design tokens and the a11y spec are applied inline in the HTML shell.
 
@@ -64,6 +65,7 @@ from somm_service.proxy import (
     _openai_error,
     chat_completions_endpoint,
     messages_endpoint,
+    responses_endpoint,
     routing_decision_endpoint,
 )
 
@@ -256,7 +258,9 @@ class LocalSecurityMiddleware:
         )
         protected_admin = method == "POST" and path.startswith("/api/recommendations/")
         protected_messages = method == "POST" and path == "/v1/messages"
-        protected_chat = method == "POST" and path in {"/v1/chat/completions", "/api/routing/decide"}
+        protected_chat = method == "POST" and path in {
+            "/v1/chat/completions", "/v1/responses", "/api/routing/decide",
+        }
         protected_otlp = method == "POST" and path in (
             "/api/otlp/v1/traces",
             "/v1/traces",
@@ -1469,7 +1473,9 @@ async def _api_spend_today(request: Request) -> JSONResponse:
     return JSONResponse({"project": cfg.project, "rows": rows})
 
 
-def create_app(config: Config | None = None) -> Starlette:
+def create_app(config: Config | None = None, providers: list | None = None) -> Starlette:
+    """``providers`` replaces the proxy's provider chain (tests inject fakes);
+    None builds the configured chain, as ``SommLLM`` does."""
     cfg = config or load_config()
     repo = Repository(cfg.db_path)
     service_token = load_service_token(cfg)
@@ -1491,8 +1497,10 @@ def create_app(config: Config | None = None) -> Starlette:
             Route("/v1/traces", _api_otlp_traces, methods=["POST"]),
             Route("/v1/messages", messages_endpoint, methods=["POST"]),
             Route("/v1/chat/completions", chat_completions_endpoint, methods=["POST"]),
+            Route("/v1/responses", responses_endpoint, methods=["POST"]),
             Route("/api/routing/decide", routing_decision_endpoint, methods=["POST"]),
         ],
+        lifespan=_close_proxy_clients,
     )
     app.add_middleware(
         LocalSecurityMiddleware,
@@ -1502,7 +1510,16 @@ def create_app(config: Config | None = None) -> Starlette:
     app.state.config = cfg
     app.state.repo = repo
     app.state.service_token = service_token
+    app.state.providers = providers
+    app.state.llm_clients = {}  # project -> SommLLM, built by the proxy on first use
     return app
+
+
+@contextlib.asynccontextmanager
+async def _close_proxy_clients(app):
+    yield
+    for client in app.state.llm_clients.values():
+        client.close()
 
 
 # Lives in somm.workers.inprocess (workers-only import weight, no
