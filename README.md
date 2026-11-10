@@ -904,6 +904,8 @@ model-intel worker then refreshes live from [models.dev](https://models.dev)
   workers do and how to run them
 - 📖 [**Reading the ledger**](./docs/read-api.md) — the supported read
   API and column-stability contract
+- [**Ledgers on this machine**](./docs/ledgers.md) — `somm ledgers`,
+  `somm fleet status`, `somm mirror sync`, and retention
 - 🧱 [**Data boundary**](./docs/data-boundary.md) — route tiers and per-workload limits on where data may go
 - 🔀 [**Adaptive routing**](./docs/adaptive-routing.md) — `somm/auto` and subscription conservation
 - 🔧 [**Tool calling**](./docs/tool-calling.md) — neutral schema + per-provider adapters
