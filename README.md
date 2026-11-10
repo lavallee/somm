@@ -154,10 +154,10 @@ code stay yours (sources: [why build this](https://lavallee.github.io/somm/why.h
 - **No commercial dependency on the hot path.** The library's only
   third-party dependency is `httpx`. Model pricing intel comes from free,
   keyless, redistributable sources; anything gated lives behind an opt-in
-  feature flag. One open-source dependency remains in the service:
-  `somm-service` requires LiteLLM, which its proxy routes call directly,
-  and the bundled price snapshot is derived from LiteLLM's price file.
-  The roadmap removes LiteLLM from the service.
+  feature flag. The service adds only `starlette` and `uvicorn`; its proxy
+  routes call somm's own client. The bundled price snapshot is derived from
+  LiteLLM's public price file, fetched as data by a release script, not
+  imported.
 - **No server between you and your data.** Everything is SQLite files
   you own, queryable with plain SQL.
 
@@ -710,18 +710,33 @@ are set.
 prefix workloads. `somm bench latency` and `somm bench throughput` run normal
 instrumented calls and summarize latency, TTFT, TPOT, and token throughput.
 
-The service also exposes authenticated, budget-gated provider-compatible
-proxy routes for clients that need an HTTP base URL:
+The service also exposes authenticated provider-compatible proxy routes for
+clients that need an HTTP base URL:
 
 ```text
-POST /v1/messages            # Anthropic Messages, including stream:true SSE
-POST /v1/chat/completions    # OpenAI Chat Completions, non-streaming
+POST /v1/messages            # Anthropic Messages, stream:true supported
+POST /v1/chat/completions    # OpenAI Chat Completions, stream:true supported
+POST /v1/responses           # OpenAI Responses, common subset
 ```
+
+Each route translates the request into one `SommLLM.generate(messages=...)`
+call and translates the answer back, so a proxied call is routed, pinned,
+cooled, boundary-checked, budget-gated, priced and recorded exactly like a
+library call. The model string picks the route: `somm/auto` uses the
+workload's adaptive policy, `provider/model` pins a somm provider
+(`openrouter/openai/gpt-4o-mini`), and a bare model pins the route's default
+provider (`anthropic` for `/v1/messages`, `openai` for the OpenAI routes). Only
+providers somm has configured are reachable.
 
 Use `X-Somm-Workload` to bind calls to a pre-registered workload and
 `X-Somm-Project` when a service instance needs to write under a project other
-than its default. Calls share the same budget gate, timeout, body-size limit,
-cost accounting, and `calls.sqlite` ledger as `somm.llm()`.
+than its default. Streams are buffered: the answer is complete before the
+first event, then replayed in the wire's own event format, tool calls and usage
+included. Routine fields the client cannot apply yet (`stop`/`stop_sequences`,
+`top_p`, `top_k`, `parallel_tool_calls`, `truncation`, non-adaptive `thinking`)
+are accepted, not applied, and listed in an `x-somm-ignored` response header. A
+field that would change what comes back in kind (`n` > 1, logprobs, server tools,
+`previous_response_id`, reasoning input items) is refused with a 400 naming it.
 
 Polyglot apps can send OpenTelemetry JSON traces without importing the
 Python SDK:

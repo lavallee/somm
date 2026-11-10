@@ -72,8 +72,9 @@ configured a provider key or local provider endpoint.
   are truncated, and malformed spans are skipped rather than failing the whole
   batch.
 - The local proxy bounds request bodies, runs provider dispatch off the event
-  loop with service-controlled timeouts, and rejects unknown explicit proxy
-  workloads so authenticated clients cannot bypass pre-registered caps.
+  loop through `SommLLM` (provider timeouts, boundary and budget gates
+  included), refuses wire fields it cannot honor, and rejects unknown explicit
+  proxy workloads so authenticated clients cannot bypass pre-registered caps.
 - `somm_compare` caps model fanout and per-call `max_tokens`; callers must set
   `allow_expensive=true` for the elevated cap, and that elevated cap remains a
   hard ceiling.

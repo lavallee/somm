@@ -16,7 +16,6 @@ classifiers = [
 dependencies = [
     "somm-core==0.23.0",
     "somm==0.23.0",
-    "litellm>=1.40",
     "starlette>=0.40",
     "uvicorn>=0.30",
 ]
