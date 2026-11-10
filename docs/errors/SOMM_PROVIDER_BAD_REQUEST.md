@@ -27,7 +27,10 @@ is more useful than burning through the whole chain.
 **Fix.**
 
 1. Read the exception detail — it includes the provider's raw error
-   body (truncated) which usually names the exact problem.
+   body (truncated) which usually names the exact problem. For code,
+   `e.provider_param` names the field the provider blamed (OpenAI's
+   `param`), `e.provider_code` / `e.provider_type` its error code and
+   type, and `e.provider_request_id` the id its support will ask for.
 
 2. If it's a missing model, pull it or fix the model name:
    ```bash

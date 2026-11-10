@@ -291,10 +291,26 @@ change. A failed result says so plainly: `result.ok` is False and
 `result.error` gives the reason. `somm.describe_error(e)` returns a JSON-safe
 description with a `retryable` flag.
 
+**What the provider said.** An error from a provider's HTTP answer also
+carries the provider's own detail, the same way for every HTTP adapter, each
+`None` when the provider did not say: `e.status_code` is the exact upstream
+status (a 403 stays 403), `e.retry_after_s` the wait it asked for
+(`Retry-After`, or its rate-limit reset headers on a 429),
+`e.provider_code`, `e.provider_type` and `e.provider_param` the `code`,
+`type` and `param` of its error object, and `e.provider_request_id` the id
+its support will ask for. The provider's error message is never copied into
+these fields, since it can echo your prompt. Exhausted credit
+(`SommInsufficientCredit`, including any 402) still lets the router fall
+through to another provider, but `describe_error` marks it not retryable:
+retrying the same provider fails until it is topped up. See
+[docs/errors/SOMM_ERROR.md](docs/errors/SOMM_ERROR.md).
+
 **Timeouts.** `timeout=` (seconds) on `generate`, `stream`,
 `generate_structured`, `extract_structured` and their async forms bounds that
 one call at every provider adapter. It overrides `SOMM_HTTP_TIMEOUT`, which is
-the default for every HTTP provider.
+the default for every HTTP provider. Connecting gets at most 10 s of it;
+reading the answer gets all of it. Each HTTP provider keeps its connections
+open between calls; `provider.close()` releases them.
 
 **Retries and fallback** belong to the workload, not to a loop around each
 call. `llm.set_workload_policy("brief", {"retry": {"max": 3, "backoff_s": 2,

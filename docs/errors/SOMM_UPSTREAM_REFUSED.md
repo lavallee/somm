@@ -9,8 +9,14 @@ the answer was withheld or cut short.
 **Behavior.** The call is recorded as delivered, with `stop_reason` on the
 result and the row. `somm.SommRefused` is raised only when the caller passed
 `raise_on_failure=True`; it carries `stop_reason`, `provider`, `model` and
-`call_id`. It is not a parsing or schema problem, so a JSON repair pass will
-not help.
+`call_id`, and has room for the partial answer: `text`, `tokens_in` and
+`tokens_out` (each `None` when the client did not attach it). It is not a
+parsing or schema problem, so a JSON repair pass will not help.
+
+Through the proxy a refusal is an answer, not a failed request: `/v1/messages`
+returns 200 with `stop_reason: "refusal"`, and `/v1/chat/completions` returns
+200 with `finish_reason: "content_filter"`, each with the call id and
+whatever text and usage the error carries. Through 0.24 both returned a 400.
 
 **Fix.**
 
