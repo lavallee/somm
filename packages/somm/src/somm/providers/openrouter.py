@@ -56,9 +56,10 @@ if TYPE_CHECKING:
 # SommRequest.metadata key carrying the upstream endpoints to pin one attempt to.
 _PIN_KEY = "openrouter_only"
 
+# Pruned 2026-11-10 — nvidia/nemotron-3-super-120b-a12b:free is no longer in
+# OpenRouter's catalog and had been answering 404 since October.
 DEFAULT_FREE_ROSTER: list[str] = [
     "google/gemma-4-31b-it:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
 ]
 
 
