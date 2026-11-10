@@ -147,6 +147,9 @@ def _cmd_workload_list(args: argparse.Namespace) -> int:
     cfg = _common.load_config(project=args.project)
     repo = Repository(cfg.db_path)
     rows = _workload_rows(repo, cfg.project)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
     if not rows:
         print(f"No workloads registered for project {cfg.project!r}.")
         print("Register one with `somm workload add <name>`.")
@@ -286,6 +289,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 
     pwl = pw_sub.add_parser("list", help="list registered workloads")
     _common.add_project(pwl)
+    pwl.add_argument("--json", action="store_true", help="emit JSON instead of the table")
     pwl.set_defaults(func=_cmd_workload_list)
 
     pws = pw_sub.add_parser("show", help="show one registered workload")

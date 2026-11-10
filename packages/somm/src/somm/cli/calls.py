@@ -569,6 +569,9 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         llm.close()
     _mark_cost_known(getattr(llm, "repo", None), results)
 
+    if args.json:
+        print(json.dumps(results, indent=2, default=str))
+        return 0
     _print_comparison(results, truncate=args.truncate)
     return 0
 
@@ -622,6 +625,9 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
         return 2
 
     rows = repo.workload_frontier(wl.id, since_days=args.since)
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str))
+        return 0
     if not rows:
         print(
             f"No calls for workload {wl.name!r} in the last {args.since}d. "
@@ -765,6 +771,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         default=240,
         help="truncate response text at N chars (0 = no truncate)",
     )
+    pc.add_argument("--json", action="store_true", help="emit JSON instead of the table")
     pc.set_defaults(func=_cmd_compare)
 
     pf = sub.add_parser(
@@ -774,4 +781,5 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     pf.add_argument("--workload", required=True, help="workload name to inspect")
     _common.add_project(pf)
     pf.add_argument("--since", type=int, default=30, help="window in days (default 30)")
+    pf.add_argument("--json", action="store_true", help="emit JSON instead of the table")
     pf.set_defaults(func=_cmd_frontier)

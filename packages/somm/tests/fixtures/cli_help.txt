@@ -208,6 +208,7 @@ options:
 ===== somm compare =====
 usage: somm compare [-h] --models MODELS [--project PROJECT] [--workload WORKLOAD]
                     [--max-tokens MAX_TOKENS] [--temperature TEMPERATURE] [--truncate TRUNCATE]
+                    [--json]
                     prompt
 
 positional arguments:
@@ -221,15 +222,17 @@ options:
   --max-tokens MAX_TOKENS
   --temperature TEMPERATURE
   --truncate TRUNCATE   truncate response text at N chars (0 = no truncate)
+  --json                emit JSON instead of the table
 
 ===== somm frontier =====
-usage: somm frontier [-h] --workload WORKLOAD [--project PROJECT] [--since SINCE]
+usage: somm frontier [-h] --workload WORKLOAD [--project PROJECT] [--since SINCE] [--json]
 
 options:
   -h, --help           show this help message and exit
   --workload WORKLOAD  workload name to inspect
   --project PROJECT
   --since SINCE        window in days (default 30)
+  --json               emit JSON instead of the table
 
 ===== somm workload =====
 usage: somm workload [-h] [--project PROJECT] {add,create,list,show,set-constraints} ...
@@ -275,11 +278,12 @@ options:
                         loosest route tier this workload's data may reach (default: derive)
 
 ===== somm workload list =====
-usage: somm workload list [-h] [--project PROJECT]
+usage: somm workload list [-h] [--project PROJECT] [--json]
 
 options:
   -h, --help         show this help message and exit
   --project PROJECT
+  --json             emit JSON instead of the table
 
 ===== somm workload show =====
 usage: somm workload show [-h] [--project PROJECT] name
@@ -378,11 +382,12 @@ options:
   --project PROJECT
 
 ===== somm prompt list =====
-usage: somm prompt list [-h] --workload WORKLOAD [--project PROJECT]
+usage: somm prompt list [-h] --workload WORKLOAD [--json] [--project PROJECT]
 
 options:
   -h, --help           show this help message and exit
   --workload WORKLOAD
+  --json               emit JSON instead of the table
   --project PROJECT
 
 ===== somm prompt show =====

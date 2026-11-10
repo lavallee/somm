@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import sys
 from pathlib import Path
 
@@ -150,6 +151,17 @@ def _cmd_prompt_list(args: argparse.Namespace) -> int:
     labels_by_prompt: dict[str, list[str]] = {}
     for label, meta in labels.items():
         labels_by_prompt.setdefault(meta["prompt_id"], []).append(label)
+
+    if args.json:
+        out = [
+            {
+                **{k: v for k, v in row.items() if k != "body"},
+                "labels": sorted(labels_by_prompt.get(row["id"], [])),
+            }
+            for row in prompts
+        ]
+        print(json.dumps(out, indent=2))
+        return 0
 
     print(f"Workload: {args.workload}")
     if labels:
@@ -376,6 +388,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 
     pplst = pprompt_sub.add_parser("list", help="list prompt versions for a workload")
     pplst.add_argument("--workload", required=True)
+    pplst.add_argument("--json", action="store_true", help="emit JSON instead of the table")
     _common.add_project(pplst)
     pplst.set_defaults(func=_cmd_prompt_list)
 
