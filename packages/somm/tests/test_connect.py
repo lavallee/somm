@@ -155,3 +155,20 @@ def test_doctor_reports_agent_connections(env, capsys):
     out = capsys.readouterr().out
     assert "agent claude: mcp NOT configured" in out
     assert "skill missing" in out
+
+
+def test_a_skill_linked_from_another_environment_is_current(tmp_path, monkeypatch):
+    """`somm doctor` runs from many environments; the skill is installed from one."""
+    from somm import connect
+
+    other = tmp_path / "other-env" / "somm_skill"
+    other.mkdir(parents=True)
+    (other / "SKILL.md").write_text("# somm\n")
+    target = tmp_path / "home" / ".claude" / "skills" / "somm"
+    target.parent.mkdir(parents=True)
+    target.symlink_to(other)
+    monkeypatch.setattr(connect, "skill_target", lambda harness: target)
+    assert connect.skill_status("claude") == "current"
+
+    (other / "SKILL.md").unlink()
+    assert connect.skill_status("claude") == "stale"

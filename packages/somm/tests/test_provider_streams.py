@@ -255,3 +255,39 @@ def test_stream_records_the_providers_usage(monkeypatch, tmp_path):
         row = dict(conn.execute("SELECT tokens_in, tokens_out, routing_json FROM calls").fetchone())
     assert (row["tokens_in"], row["tokens_out"]) == (12, 5)
     assert json.loads(row["routing_json"])["stream"] == {"usage": "provider"}
+
+
+def test_exact_max_tokens_sends_the_cap_as_given():
+    """Ollama and MiniMax raise the outbound cap for thinking tokens unless told not to."""
+    from somm.providers.base import SommRequest
+    from somm.providers.minimax import MinimaxProvider
+    from somm.providers.ollama import OllamaProvider
+
+    sent = {}
+
+    class Reply:
+        status_code = 200
+        headers: dict = {}
+        text = ""
+
+        def json(self):
+            return {"done": True, "message": {"content": "ok"}, "model": "m"}
+
+    class Client:
+        def post(self, url, *, json, **kwargs):
+            sent["payload"] = json
+            return Reply()
+
+    ollama = OllamaProvider()
+    ollama._client = lambda: Client()  # the documented seam for wrapping requests
+    ollama.generate(SommRequest(prompt="x", model="m", max_tokens=50))
+    assert sent["payload"]["options"]["num_predict"] == 1024
+    ollama.generate(SommRequest(prompt="x", model="m", max_tokens=50, exact_max_tokens=True))
+    assert sent["payload"]["options"]["num_predict"] == 50
+
+    minimax = MinimaxProvider(api_key="k")
+    loose = minimax._build_payload(SommRequest(prompt="x", max_tokens=50), "MiniMax-M3")
+    exact = minimax._build_payload(
+        SommRequest(prompt="x", max_tokens=50, exact_max_tokens=True), "MiniMax-M3"
+    )
+    assert loose["max_tokens"] == 1024 and exact["max_tokens"] == 50

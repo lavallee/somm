@@ -126,13 +126,21 @@ def skill_target(harness: str) -> Path:
 
 
 def skill_status(harness: str) -> str:
-    """missing | current | stale (link elsewhere or broken) | foreign (real directory)."""
+    """missing | current | stale (broken link) | foreign (real directory).
+
+    A link into another somm environment is current too: the skill is usually
+    installed once, from the `somm` tool, and `somm doctor` is run from many
+    project environments that each carry their own copy of the package.
+    """
     t = skill_target(harness)
     if t.is_symlink():
         try:
-            return "current" if t.resolve() == skill_source().resolve() else "stale"
-        except RuntimeError:
-            return "stale"
+            resolved = t.resolve()
+            if resolved == skill_source().resolve() or (resolved / "SKILL.md").is_file():
+                return "current"
+        except (RuntimeError, OSError):
+            pass
+        return "stale"
     return "foreign" if t.exists() else "missing"
 
 
@@ -172,7 +180,7 @@ def status_lines(harnesses: list[str]) -> list[str]:
         skill = skill_status(h)
         hint = {
             "missing": " (run `somm skill install`)",
-            "stale": " (link is behind or broken; run `somm skill install`)",
+            "stale": " (link is broken; run `somm skill install`)",
             "foreign": " (real directory, not managed by somm)",
         }.get(skill, "")
         lines.append(f"{h}: mcp {mcp}; skill {skill}{hint}")

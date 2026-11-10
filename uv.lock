@@ -1439,7 +1439,7 @@ wheels = [
 
 [[package]]
 name = "somm"
-version = "0.26.1"
+version = "0.26.2"
 source = { editable = "packages/somm" }
 dependencies = [
     { name = "httpx" },
@@ -1487,12 +1487,12 @@ provides-extras = ["chatgpt", "tokenizers", "otel", "pydantic", "jsonschema", "p
 
 [[package]]
 name = "somm-core"
-version = "0.26.1"
+version = "0.26.2"
 source = { editable = "packages/somm-core" }
 
 [[package]]
 name = "somm-langchain"
-version = "0.26.1"
+version = "0.26.2"
 source = { editable = "packages/somm-langchain" }
 dependencies = [
     { name = "langchain-core" },
@@ -1509,7 +1509,7 @@ requires-dist = [
 
 [[package]]
 name = "somm-mcp"
-version = "0.26.1"
+version = "0.26.2"
 source = { editable = "packages/somm-mcp" }
 dependencies = [
     { name = "mcp" },
@@ -1526,7 +1526,7 @@ requires-dist = [
 
 [[package]]
 name = "somm-service"
-version = "0.26.1"
+version = "0.26.2"
 source = { editable = "packages/somm-service" }
 dependencies = [
     { name = "somm" },
@@ -1552,12 +1552,12 @@ provides-extras = ["otlp"]
 
 [[package]]
 name = "somm-skill"
-version = "0.26.1"
+version = "0.26.2"
 source = { editable = "packages/somm-skill" }
 
 [[package]]
 name = "somm-workspace"
-version = "0.26.1"
+version = "0.26.2"
 source = { virtual = "." }
 
 [package.dev-dependencies]

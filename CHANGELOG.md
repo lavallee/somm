@@ -5,6 +5,25 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.26.2] — 2026-11-10
+
+### Added
+- **`SommRequest.exact_max_tokens`.** The Ollama and MiniMax adapters raise the
+  outbound token cap to leave room for thinking tokens. A caller that has turned
+  thinking off, or must hold a hard cap, sets this and the cap is sent as given.
+
+### Fixed
+- **Wrapping the Ollama provider's client stopped working in 0.25.0.** Connection
+  reuse removed `OllamaProvider._client()`, which callers wrap to fake HTTP in tests
+  or to adjust a request on its way out. It is back as the one method every request
+  goes through, returning the provider's reusable client.
+- **The default free OpenRouter roster named a model that no longer exists.**
+  `nvidia/nemotron-3-super-120b-a12b:free` left OpenRouter's catalog and had been
+  answering 404 for every project that sets no roster of its own.
+- **`somm doctor` called an installed skill stale when run from another
+  environment.** A skill linked from the `somm` tool is current wherever doctor
+  runs; only a broken link is stale.
+
 ## [0.26.1] — 2026-11-10
 
 ### Fixed
