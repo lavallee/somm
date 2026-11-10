@@ -70,6 +70,9 @@ class SommRequest:
     # a provider that picks its own model (OpenRouter's roster walk) must skip
     # models outside it. None = no boundary (every route admissible).
     data_boundary: str | None = None
+    # Seconds this one call may take, overriding the adapter's configured
+    # timeout (SOMM_HTTP_TIMEOUT). None = use the adapter's own.
+    timeout: float | None = None
 
 
 @dataclass(slots=True)

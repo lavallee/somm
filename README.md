@@ -240,6 +240,120 @@ routes past a provider whose key is rejected: that provider is cooled and
 reported through `on_fallback` (see
 [`SOMM_PROVIDER_AUTH`](./docs/errors/SOMM_PROVIDER_AUTH.md)).
 
+### JSON, failures and timeouts: the calls to use
+
+**JSON.** There is one call for it:
+
+```python
+value, result = llm.generate_structured(
+    "Extract the wine and vintage from: ...",
+    schema=WineNote,        # Pydantic model, JSON Schema dict, or callable;
+    workload="wine_extract",  # omit schema to use the workload's output_schema
+    timeout=60,
+)
+value.vintage                                   # validated object
+result.parsed                                   # the JSON as a dict/list
+result.provider, result.model, result.call_id, result.cost_usd   # who served it
+```
+
+It puts the schema in the prompt and, where the adapter has a native
+structured-output mode (the table below), in `response_format` too. Every
+answer goes through the `extract_json` repair ladder (code fences, prose
+around the JSON, quote and newline quirks). An answer that still fails to
+parse or validate is marked `bad_json` on the ledger and retried with the
+error fed back. With no schema at all it accepts any JSON object or array.
+After the last retry it raises `somm.SommStructuredError`, which carries
+`provider`, `model`, `call_id`, `last_raw` and `delivery_failure` (True
+when the model never answered, so back off rather than loosen the schema).
+`extract_structured()` still works and still returns its
+`{"_somm_parse_err": True}` sentinel; new code should use
+`generate_structured`.
+
+**Failures.** Pass `raise_on_failure=True` to `generate()`/`agenerate()`
+(recommended). A failed call is still recorded, then raised as a typed error
+that carries `provider`, `model` and `call_id`:
+
+| Catch | When |
+|---|---|
+| `somm.SommProviderNotConfigured` | a pinned provider has no key or binary here (also a `ValueError`) |
+| `somm.SommTimeout` | the provider did not answer within the timeout |
+| `somm.SommRateLimited` | throttled; `retry_after_s` says how long |
+| `somm.SommProvidersExhausted` | every route in the chain is cooled or failed |
+| `somm.SommAuthError`, `somm.SommModelNotFound` | a bad key; a model the provider does not serve |
+| `somm.SommEmptyResponse` | blank answer (not raised with `allow_empty=True`) |
+| `somm.SommRefused` | the model or a content filter declined (`stop_reason`) |
+| `somm.SommPrivacyViolation` | no route lies within the workload's data boundary |
+| `somm.SommStructuredError` | `generate_structured` got no valid JSON |
+| `somm.SommError` | the base of all of them |
+
+The default stays `raise_on_failure=False`, so existing callers see no
+change. A failed result says so plainly: `result.ok` is False and
+`result.error` gives the reason. `somm.describe_error(e)` returns a JSON-safe
+description with a `retryable` flag.
+
+**Timeouts.** `timeout=` (seconds) on `generate`, `stream`,
+`generate_structured`, `extract_structured` and their async forms bounds that
+one call at every provider adapter. It overrides `SOMM_HTTP_TIMEOUT`, which is
+the default for every HTTP provider.
+
+**Retries and fallback** belong to the workload, not to a loop around each
+call. `llm.set_workload_policy("brief", {"retry": {"max": 3, "backoff_s": 2,
+"deadline_s": 60}, "fallback": [{"provider": "minimax"}, {"provider":
+"openrouter"}], "timeout_s": 120})` applies to every unpinned call on that
+workload.
+
+**Health.** `llm.health()` returns, per provider, whether it is configured,
+whether it is cooled and until when, and its last delivery failure. It reads
+state somm already keeps and makes no network call.
+
+#### Leaving your wrapper behind
+
+Hand-rolled JSON parsing and re-asking:
+
+```python
+# Before
+r = llm.generate(prompt, workload="triage")
+text = re.sub(r"^```(json)?|```$", "", r.text.strip())
+try:
+    data = json.loads(text[text.index("{"): text.rindex("}") + 1])
+except ValueError:
+    r = llm.generate(prompt + "\nReturn ONLY valid JSON.", workload="triage")
+    data = json.loads(r.text)
+# After
+data, r = llm.generate_structured(prompt, schema=Triage, workload="triage")
+```
+
+Detecting a failed pinned call by inspecting the result or matching strings:
+
+```python
+# Before
+r = llm.generate(prompt, provider="minimax", workload="brief")
+if r.outcome != somm.Outcome.OK or not r.text:
+    if "not configured" in (r.error_detail or "") or "429" in (r.error_detail or ""):
+        ...
+# After
+try:
+    r = llm.generate(prompt, provider="minimax", workload="brief", raise_on_failure=True)
+except somm.SommRateLimited as e:
+    retry_later(e.retry_after_s)
+except somm.SommError as e:
+    log.warning("llm failed: %s (call %s)", e, e.call_id)
+```
+
+Timeout overrides and retry loops:
+
+```python
+# Before: SOMM_HTTP_TIMEOUT=600 in a unit file, or provider.timeout = 600, plus
+for delay in (2, 5, 15):
+    r = llm.generate(prompt, workload="brief")
+    if r.outcome == somm.Outcome.OK:
+        break
+    time.sleep(delay)
+# After
+llm.set_workload_policy("brief", {"retry": {"max": 3, "backoff_s": 5}})   # once
+r = llm.generate(prompt, workload="brief", timeout=600, raise_on_failure=True)
+```
+
 ### Tool calling — one neutral shape, every provider
 
 ```python
@@ -806,7 +920,7 @@ provider is opt-in via its own env var.
 | `SOMM_OPENAI_BASE_URL` | `https://api.openai.com/v1` | for OpenAI-compatible gateways |
 | `PERPLEXITY_API_KEY` | — | enables Perplexity (meant to be pinned for grounded answers; with a key set it also joins the default chain, after OpenAI) |
 | `SOMM_PERPLEXITY_MODEL` | `sonar` | |
-| `SOMM_HTTP_TIMEOUT` | `180` | seconds, OpenAI-compat providers |
+| `SOMM_HTTP_TIMEOUT` | `180` | seconds, every HTTP provider; `timeout=` overrides it per call |
 | `SOMM_BUDGET_FAIL_CLOSED` | `0` | `1` blocks calls once a workload's daily cap is reached |
 | `SOMM_BUDGET_DEFAULT_CAP_USD_DAILY` | — | daily cap for workloads without an explicit one (fail-closed mode) |
 | `SOMM_INPROCESS_WORKERS` | `0` | `1` runs the intelligence-loop scheduler inside a long-lived process; short-lived ones use `somm loop install` |

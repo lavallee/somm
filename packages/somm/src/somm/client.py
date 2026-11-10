@@ -52,9 +52,14 @@ from somm import hooks
 from somm._redaction import scrub_text
 from somm.errors import (
     SommAuthError,
+    SommEmptyResponse,
+    SommError,
     SommFatalError,
+    SommProviderError,
+    SommProviderNotConfigured,
     SommProvidersExhausted,
     SommRateLimited,
+    SommRefused,
     SommStructuredError,
     SommTimeout,
     SommTransientError,
@@ -84,6 +89,7 @@ from somm.routing import (
     Router,
     _auth_chain_error,
     _classify_unknown,
+    _parse_ts,
     _record_health,
     reasoning_ate_budget,
 )
@@ -140,6 +146,8 @@ def _looks_like_pydantic_model(schema: Any) -> bool:
 
 
 def _classify_structured_schema(schema: Any) -> tuple[str, Any | None]:
+    if schema is None:
+        return "any", None
     if _looks_like_pydantic_model(schema):
         base_model = _pydantic_base_model()
         if base_model is None:
@@ -273,6 +281,37 @@ def _mark_bad_json(result: SommResult, error: str) -> None:
     result.error_kind = "SommStructuredError"
     result.error_detail = f"structured output: {_scrub_secrets(error)}"[:512]
     result.mark(Outcome.BAD_JSON)
+
+
+# Stop reasons meaning the model or the provider's filter declined to answer.
+_REFUSAL_STOP_REASONS = frozenset({"refusal", "content_filter"})
+
+
+def _failure_error(
+    result: SommResult, exc: BaseException | None, *, allow_empty: bool
+) -> SommError | None:
+    """The typed error ``raise_on_failure=True`` raises for ``result``, or None
+    when the call delivered. It names the route and the ledger row."""
+    if result.stop_reason in _REFUSAL_STOP_REASONS:
+        err: SommError = SommRefused(
+            f"{result.provider}/{result.model} declined to answer "
+            f"(stop_reason={result.stop_reason})",
+            stop_reason=result.stop_reason,
+        )
+    elif result.outcome == Outcome.OK or (result.outcome == Outcome.EMPTY and allow_empty):
+        return None
+    elif result.outcome == Outcome.EMPTY:
+        err = SommEmptyResponse(result.error_detail or "empty response")
+    elif isinstance(exc, SommError):
+        err = exc
+    else:
+        detail = result.error_detail or result.outcome.value
+        err = SommTimeout(detail) if isinstance(exc, TimeoutError) else SommProviderError(detail)
+        err.__cause__ = exc
+    err.provider = err.provider or result.provider or None
+    err.model = err.model or result.model or None
+    err.call_id = result.call_id
+    return err
 
 
 def _register_project_once(project: str, db_path: Path) -> None:
@@ -500,14 +539,18 @@ def _fire_call_hooks(event: dict) -> None:
 def build_default_providers(config: Config, tracker=None, full: bool = False) -> list[SommProvider]:
     """Build the provider chain from config.
 
-    Default order (sovereign-first): ollama → openrouter → deepseek →
-    minimax → anthropic → gemini → openai → perplexity. Override with
-    SOMM_PROVIDER_ORDER env var (comma-separated, e.g.
+    Default order is each built-in's ``default_order_rank`` in
+    ``providers/registry.py``: minimax → openrouter → deepseek → anthropic
+    → gemini → openai → perplexity → ollama, keeping only the configured
+    ones. Hosted providers lead; local Ollama is the last fallback, not the
+    first choice. The seat executors (claude-cli, codex-cli, chatgpt) have
+    no rank and are reachable only by pin. Override with the
+    SOMM_PROVIDER_ORDER env var (comma-separated, exclusive, e.g.
     "openrouter,minimax,ollama").
 
-    Every commercial-API provider is opt-in via its env var. Library
-    works offline with just ollama. Shared by SommLLM and the MCP
-    server so both expose the identical chain.
+    Every commercial-API provider is opt-in via its env var; with none set
+    the chain is just Ollama, so the library still works offline. Shared by
+    SommLLM and the MCP server so both expose the identical chain.
 
     ``full=True`` returns EVERY available provider, ignoring both
     SOMM_PROVIDER_ORDER and the pinned-only exclusions (CLI executors).
@@ -579,7 +622,7 @@ def build_default_providers(config: Config, tracker=None, full: bool = False) ->
         chain = [available[p] for p in config.provider_order if p in available]
         return chain if chain else list(available.values())
 
-    # Default order — sovereign-first, then strong-paid (deepseek now in slot 3).
+    # Default order: ascending default_order_rank (see the docstring).
     builtin_order = [
         spec.name
         for spec in sorted(
@@ -1519,8 +1562,22 @@ class SommLLM:
         source_call_id: str | None = None,
         claude_cli_text_only: bool = False,
         data_boundary: str | None = None,
+        timeout: float | None = None,
+        raise_on_failure: bool = False,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
+
+        **Recommended: ``raise_on_failure=True``.** A failed call is recorded
+        and then raised as a typed error — ``SommTimeout``,
+        ``SommRateLimited``, ``SommProvidersExhausted``, ``SommAuthError``,
+        ``SommModelNotFound``, ``SommEmptyResponse`` (unless
+        ``allow_empty``), ``SommRefused`` (the model or a content filter
+        declined) — carrying ``provider``, ``model`` and ``call_id``. The
+        default (False) returns the failed result, as it always has; check
+        ``result.ok`` and ``result.error``.
+
+        ``timeout`` (seconds) bounds this call at every provider adapter,
+        overriding ``SOMM_HTTP_TIMEOUT`` / the adapter's own default.
 
         demo mode: auto-registers unknown workloads as 'ad_hoc' equivalents.
         strict mode: raises SommStrictMode if workload isn't registered.
@@ -1657,6 +1714,7 @@ class SommLLM:
             response_format=response_format,
             reasoning_effort=reasoning_effort,
             claude_cli_text_only=claude_cli_text_only,
+            timeout=timeout,
         )
 
         short_circuit: hooks.ShortCircuit | None = None
@@ -1714,6 +1772,7 @@ class SommLLM:
                 response_format=response_format,
                 reasoning_effort=reasoning_effort,
                 claude_cli_text_only=claude_cli_text_only,
+                timeout=timeout,
             )
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
@@ -1802,6 +1861,8 @@ class SommLLM:
         # only on the narrow "pinned failed + chain saved us" window.
         fallback_info: dict | None = None
         raise_after_record: Exception | None = None
+        # What ended the call when no route answered (raise_on_failure).
+        failure_exc: Exception | None = None
         # The route, for routing_json: first choice, candidates skipped and
         # why, whether any route answered, and the max_tokens it was sent.
         route_first: list | None = None
@@ -1852,6 +1913,7 @@ class SommLLM:
                     # comparison, and replay runs. Surface the original error
                     # with the pinned attribution intact.
                     fallback_info = None
+                    failure_exc = exc
                     outcome = _failure_outcome(exc)
                     error_kind = type(exc).__name__
                     error_detail = _pinned_error_detail(exc, chosen.name, model)
@@ -1893,6 +1955,7 @@ class SommLLM:
                         # Total failure — clear fallback_info so on_fallback
                         # doesn't fire; on_error handles final-failure signal.
                         fallback_info = None
+                        failure_exc = chain_exc
                         outcome = _failure_outcome(chain_exc)
                         error_kind = type(chain_exc).__name__
                         error_detail = _format_error_detail(chain_exc, chosen.name, model)
@@ -1938,6 +2001,7 @@ class SommLLM:
                 sent_max_tokens = router_result.response.max_tokens_sent
                 fallback_info = _routed_past_info(router_result, model)
             except Exception as exc:
+                failure_exc = exc
                 if hasattr(exc, "model") and exc.model:
                     actual_model = exc.model
                 outcome = _failure_outcome(exc)
@@ -2161,6 +2225,11 @@ class SommLLM:
                 f"swallow. Detail: {error_detail}"
             )
 
+        if raise_on_failure:
+            failure = _failure_error(result, failure_exc, allow_empty=allow_empty)
+            if failure is not None:
+                raise failure
+
         return result
 
     async def agenerate(
@@ -2190,6 +2259,8 @@ class SommLLM:
         source_call_id: str | None = None,
         claude_cli_text_only: bool = False,
         data_boundary: str | None = None,
+        timeout: float | None = None,
+        raise_on_failure: bool = False,
     ) -> SommResult:
         """Await :meth:`generate` without blocking the caller's event loop.
 
@@ -2227,6 +2298,8 @@ class SommLLM:
             observation_role=observation_role,
             source_call_id=source_call_id,
             data_boundary=data_boundary,
+            timeout=timeout,
+            raise_on_failure=raise_on_failure,
         )
 
     # ------------------------------------------------------------------
@@ -2490,6 +2563,73 @@ class SommLLM:
         """The routing chain, then the pin-only executors behind it."""
         return [*self.providers, *self._pinned_only_providers().values()]
 
+    def health(self) -> dict[str, dict]:
+        """Every known provider's state, read from what somm already records.
+
+        No network call: this reads the cooldown table and the ledger, so it
+        is cheap enough to call before every batch. Keyed by provider name:
+
+        - ``configured``: built on this machine (key set, binary found);
+          ``in_chain``: in the routing order rather than reachable by pin only.
+        - ``cooled`` / ``cooled_until``: the whole provider is sitting out
+          until that UTC time; ``cooled_models`` maps models cooling on their
+          own to theirs. ``consecutive_failures`` and ``last_ok_at`` as kept.
+        - ``last_error_kind`` / ``last_error_at``: the newest delivery
+          failure (empty, timeout, rate limit, upstream error, exhaustion)
+          among its last 100 recorded calls, or None.
+        """
+        now = datetime.now(UTC)
+        built = self.all_providers()
+        chain = {p.name for p in self.providers}
+        configured = {p.name for p in built}
+        names = dict.fromkeys(
+            [*(p.name for p in built), *(spec.name for spec in BUILTIN_PROVIDER_SPECS)]
+        )
+        report = {
+            name: {
+                "configured": name in configured,
+                "in_chain": name in chain,
+                "cooled": False,
+                "cooled_until": None,
+                "cooled_models": {},
+                "consecutive_failures": 0,
+                "last_ok_at": None,
+                "last_error_kind": None,
+                "last_error_at": None,
+            }
+            for name in names
+        }
+        with self.repo._open() as conn:
+            for name, model, last_ok, until, failures in conn.execute(
+                "SELECT provider, model, last_ok_at, cooldown_until, consecutive_failures "
+                "FROM provider_health"
+            ):
+                entry = report.get(name)
+                if entry is None:
+                    continue
+                cooling_until = _parse_ts(until)
+                cooling = cooling_until is not None and cooling_until > now
+                if model == "":
+                    entry["cooled"] = cooling
+                    entry["cooled_until"] = cooling_until.isoformat() if cooling else None
+                    entry["consecutive_failures"] = failures or 0
+                    entry["last_ok_at"] = last_ok
+                elif cooling:
+                    entry["cooled_models"][model] = cooling_until.isoformat()
+            for name in configured:
+                row = conn.execute(
+                    "SELECT error_kind, outcome, ts FROM ("
+                    "  SELECT error_kind, outcome, ts FROM calls WHERE provider = ?"
+                    "  ORDER BY ts DESC LIMIT 100"
+                    ") WHERE outcome IN ('empty', 'timeout', 'rate_limit', 'upstream_error', "
+                    "'exhausted') ORDER BY ts DESC LIMIT 1",
+                    (name,),
+                ).fetchone()
+                if row:
+                    report[name]["last_error_kind"] = row[0] or row[1]
+                    report[name]["last_error_at"] = row[2]
+        return report
+
     def _pick_provider(self, name: str | None) -> SommProvider:
         if name:
             for p in self.providers:
@@ -2507,8 +2647,10 @@ class SommLLM:
             if reason:
                 # Say where somm looked: "not configured" alone reads as "not
                 # installed" when the unit's PATH is the real problem.
-                raise ValueError(f"provider {name!r} not configured: {reason}")
-            raise ValueError(f"provider {name!r} not configured")
+                raise SommProviderNotConfigured(
+                    f"provider {name!r} not configured: {reason}", provider=name
+                )
+            raise SommProviderNotConfigured(f"provider {name!r} not configured", provider=name)
         return self.providers[0]
 
     # ------------------------------------------------------------------
@@ -2527,9 +2669,13 @@ class SommLLM:
         session_id: str | None = None,
         parent_call_id: str | None = None,
         data_boundary: str | None = None,
+        timeout: float | None = None,
     ) -> Iterator[str]:
         """Stream text deltas from the LLM. Yields user-visible text chunks
         (with `<think>` blocks stripped across chunk boundaries).
+
+        A stream raises its failures (a typed ``SommError``); ``timeout``
+        overrides the adapter's configured timeout for this call.
 
         Telemetry is written after the stream completes. An unpinned stream
         falls back along the chain until the first visible text reaches the
@@ -2551,7 +2697,7 @@ class SommLLM:
             yield self.generate(prompt, system=system, workload=workload, max_tokens=max_tokens,
                                 temperature=temperature, model=model, provider=provider, wait=wait,
                                 session_id=session_id, parent_call_id=parent_call_id,
-                                data_boundary=data_boundary).text
+                                data_boundary=data_boundary, timeout=timeout).text
             return
 
         from somm.providers.base import SommRequest
@@ -2568,6 +2714,7 @@ class SommLLM:
             max_tokens=max_tokens,
             temperature=temperature,
             model=model,
+            timeout=timeout,
         )
 
         short_circuit: hooks.ShortCircuit | None = None
@@ -2611,6 +2758,7 @@ class SommLLM:
                 tools=ctx.tools or [],
                 messages=messages,
                 tool_choice=ctx.tool_choice,
+                timeout=timeout,
             )
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
@@ -2957,6 +3105,7 @@ class SommLLM:
         session_id: str | None = None,
         parent_call_id: str | None = None,
         data_boundary: str | None = None,
+        timeout: float | None = None,
     ) -> AsyncIterator[str]:
         """Asynchronously iterate over :meth:`stream` without blocking the loop.
 
@@ -2979,6 +3128,7 @@ class SommLLM:
             session_id=session_id,
             parent_call_id=parent_call_id,
             data_boundary=data_boundary,
+            timeout=timeout,
         )
         try:
             while True:
@@ -3004,7 +3154,7 @@ class SommLLM:
         self,
         prompt,
         *,
-        schema,
+        schema=None,
         workload: str = "default",
         system: str = "",
         max_tokens: int = 512,
@@ -3020,18 +3170,72 @@ class SommLLM:
         observation_role: str = "production",
         source_call_id: str | None = None,
         data_boundary: str | None = None,
+        timeout: float | None = None,
     ) -> tuple[Any, SommResult]:
-        """Generate JSON, validate it, and return (validated_object, result).
+        """Ask for JSON. Returns ``(value, result)``; raises on failure.
 
-        Unlike extract_structured(), this is strict: it retries with corrective
-        feedback and raises SommStructuredError instead of returning a sentinel
-        dict when the model never produces a valid object.
+        This is somm's one way to get JSON from a model. ``schema`` may be a
+        Pydantic model, a JSON Schema dict or a callable validator; omit it
+        to use the workload's registered ``output_schema``, and with neither
+        any JSON object or array is accepted. The schema goes in the system
+        prompt and, where the adapter has a native structured-output mode,
+        in ``response_format`` too. Each answer runs the ``extract_json``
+        repair ladder (fences, prose around the JSON, quote and newline
+        quirks); an answer that still does not parse or validate is marked
+        ``bad_json`` on the ledger and retried with the error fed back.
+
+        ``value`` is the validated object (a model instance for Pydantic);
+        ``result`` says who served it (``provider``, ``model``, ``call_id``,
+        ``cost_usd``, ``outcome``) and carries the JSON as ``result.parsed``.
+        When no attempt succeeds this raises ``SommStructuredError``, which
+        carries ``provider``, ``model``, ``call_id`` and ``last_result``;
+        ``delivery_failure`` is True when the model never answered at all.
 
         A pinned ``provider``/``model`` is sticky, exactly as in generate():
         every retry goes back to the same target rather than wandering onto
         another model mid-schedule. Pass ``allow_fallback=True`` to let a
         failed pin be rescued by the router chain.
         """
+        if schema is None:
+            wl = self.repo.workload_by_name(workload, self.config.project)
+            schema = wl.output_schema if wl is not None else None
+        return self._structured(
+            prompt,
+            schema=schema,
+            system=system,
+            temperature=temperature,
+            retries=retries,
+            corrective=True,
+            workload=workload,
+            max_tokens=max_tokens,
+            model=model,
+            provider=provider,
+            allow_fallback=allow_fallback,
+            reasoning_effort=reasoning_effort,
+            wait=wait,
+            session_id=session_id,
+            parent_call_id=parent_call_id,
+            observation_role=observation_role,
+            source_call_id=source_call_id,
+            data_boundary=data_boundary,
+            timeout=timeout,
+        )
+
+    def _structured(
+        self,
+        prompt,
+        *,
+        schema,
+        system: str,
+        temperature: float,
+        retries: int,
+        corrective: bool,
+        temperature_jitter: float = _STRUCTURED_TEMPERATURE_JITTER,
+        **generate_kwargs,
+    ) -> tuple[Any, SommResult]:
+        """The structured-output loop behind generate_structured and
+        extract_structured. ``corrective`` feeds the last raw answer and its
+        error back on a retry; extract_structured has always retried without."""
         schema_kind, schema_doc = _classify_structured_schema(schema)
         base_system = _structured_system(system, schema_doc)
         response_format = _json_schema_response_format(schema_doc)
@@ -3042,7 +3246,7 @@ class SommLLM:
 
         for attempt in range(retries + 1):
             attempt_system = base_system
-            if attempt > 0:
+            if corrective and attempt > 0:
                 attempt_system = _structured_retry_system(
                     base_system,
                     last_raw,
@@ -3051,20 +3255,9 @@ class SommLLM:
             result = self.generate(
                 prompt=prompt,
                 system=attempt_system,
-                workload=workload,
-                max_tokens=max_tokens,
-                temperature=temperature + (attempt * _STRUCTURED_TEMPERATURE_JITTER),
-                model=model,
-                provider=provider,
-                allow_fallback=allow_fallback,
+                temperature=temperature + (attempt * temperature_jitter),
                 response_format=response_format,
-                reasoning_effort=reasoning_effort,
-                wait=wait,
-                session_id=session_id,
-                parent_call_id=parent_call_id,
-                observation_role=observation_role,
-                source_call_id=source_call_id,
-                data_boundary=data_boundary,
+                **generate_kwargs,
             )
             last_result = result
             last_raw = result.text
@@ -3095,7 +3288,9 @@ class SommLLM:
                 continue
 
             try:
-                if schema_kind == "pydantic":
+                if schema_kind == "any":
+                    validated = parsed
+                elif schema_kind == "pydantic":
                     validated = schema.model_validate(parsed)
                 elif schema_kind == "json_schema":
                     validated = _validate_structured_json_schema(parsed, schema)
@@ -3106,9 +3301,10 @@ class SommLLM:
                 _mark_bad_json(result, last_error)
                 continue
 
+            result.parsed = parsed
             return validated, result
 
-        raise SommStructuredError(
+        error = SommStructuredError(
             _format_structured_failure(last_raw, last_error, delivery_failure=delivery_failure),
             last_raw=last_raw,
             last_error=last_error,
@@ -3116,12 +3312,17 @@ class SommLLM:
             delivery_failure=delivery_failure,
             last_result=last_result,
         )
+        if last_result is not None:
+            error.provider = last_result.provider or None
+            error.model = last_result.model or None
+            error.call_id = last_result.call_id
+        raise error
 
     async def agenerate_structured(
         self,
         prompt,
         *,
-        schema,
+        schema=None,
         workload: str = "default",
         system: str = "",
         max_tokens: int = 512,
@@ -3137,6 +3338,7 @@ class SommLLM:
         observation_role: str = "production",
         source_call_id: str | None = None,
         data_boundary: str | None = None,
+        timeout: float | None = None,
     ) -> tuple[Any, SommResult]:
         """Await :meth:`generate_structured` using the same strict pipeline."""
         import asyncio
@@ -3160,6 +3362,7 @@ class SommLLM:
             observation_role=observation_role,
             source_call_id=source_call_id,
             data_boundary=data_boundary,
+            timeout=timeout,
         )
 
     def extract_structured(
@@ -3177,6 +3380,7 @@ class SommLLM:
         reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
         with_result: bool = False,
+        timeout: float | None = None,
     ) -> dict | list | tuple[dict | list, SommResult]:
         """Call the LLM and extract JSON from the response.
 
@@ -3198,35 +3402,34 @@ class SommLLM:
         ``allow_fallback=True`` to let a failed pin fall through the chain.
         ``with_result=True`` returns ``(parsed, result)`` so the caller can
         read which provider and model served the parse, the ``call_id``, and
-        the cost, instead of re-reading the ledger to find out.
+        the cost, instead of re-reading the ledger to find out; on failure
+        ``result.ok`` is False and ``result.error`` says why.
+
+        Kept for existing callers: it is the schema-less, sentinel-returning
+        form of :meth:`generate_structured`, which new code should use.
         """
-        last_text = ""
-        result: SommResult | None = None
-        for attempt in range(retries + 1):
-            temp = temperature + (attempt * temperature_jitter)
-            result = self.generate(
-                prompt=prompt,
+        try:
+            value, result = self._structured(
+                prompt,
+                schema=None,
                 system=system,
+                temperature=temperature,
+                retries=retries,
+                corrective=False,
+                temperature_jitter=temperature_jitter,
                 workload=workload,
                 max_tokens=max_tokens,
-                temperature=temp,
                 model=model,
                 provider=provider,
                 allow_fallback=allow_fallback,
                 reasoning_effort=reasoning_effort,
                 wait=wait,
+                timeout=timeout,
             )
-            last_text = result.text
-            parsed = extract_json(result.text)
-            if parsed is not None:
-                return (parsed, result) if with_result else parsed
-            if result.outcome == Outcome.OK:
-                # A delivery failure (empty, errored) already says what happened.
-                _mark_bad_json(
-                    result, "response did not contain a parseable JSON object or array"
-                )
-        failed = {"raw": last_text, "_somm_parse_err": True}
-        return (failed, result) if with_result else failed
+        except SommStructuredError as exc:
+            failed = {"raw": exc.last_raw, "_somm_parse_err": True}
+            return (failed, exc.last_result) if with_result else failed
+        return (value, result) if with_result else value
 
     async def aextract_structured(
         self,
@@ -3243,6 +3446,7 @@ class SommLLM:
         reasoning_effort: str | None = None,
         wait: float | None = _WAIT_UNSET,
         with_result: bool = False,
+        timeout: float | None = None,
     ) -> dict | list | tuple[dict | list, SommResult]:
         """Await :meth:`extract_structured` using the same retry pipeline."""
         import asyncio
@@ -3262,6 +3466,7 @@ class SommLLM:
             reasoning_effort=reasoning_effort,
             wait=wait,
             with_result=with_result,
+            timeout=timeout,
         )
 
     # ------------------------------------------------------------------

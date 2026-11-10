@@ -58,15 +58,16 @@ class CodexCLIProvider:
         # Seat-billing, same rationale as claude-cli: an ambient
         # OPENAI_API_KEY would flip the CLI to API-key billing.
         env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
+        timeout = request.timeout or self.timeout
         t0 = time.monotonic()
         try:
             with tempfile.TemporaryDirectory(prefix="somm-codex-cli-") as cwd:
                 proc = subprocess.run(
                     cmd, input=self._prompt_text(request), capture_output=True, text=True,
-                    timeout=self.timeout, cwd=cwd, env=env,
+                    timeout=timeout, cwd=cwd, env=env,
                 )
         except subprocess.TimeoutExpired as e:
-            raise SommTimeout(f"codex exec timed out after {self.timeout:.0f}s") from e
+            raise SommTimeout(f"codex exec timed out after {timeout:.0f}s") from e
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         if proc.returncode != 0:
