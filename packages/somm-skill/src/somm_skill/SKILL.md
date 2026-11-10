@@ -284,6 +284,15 @@ with cross-project decision memory.
   r.verdict("auth")  # when you learn the right label; feeds calibration
   ```
 
+  Several questions about the same input go in one request with
+  `llm.decide_many(text, questions={name: {"ask": ..., "labels" | "scale":
+  ..., "min_p": ...}})`, which returns `{name: DecisionResult}` and writes one
+  row (one round trip, one bill). To check the decision model against an
+  LLM, opt the workload in with `llm.enable_shadow(workload, provider, model,
+  sample_rate=0.05)`, run `somm.decide.grade_decisions(llm, workload)` now
+  and then, and read `somm_core.read.decision_economics(...)` for agreement
+  and cost per 1,000 inputs with and without the decision model in front.
+
   See `docs/decisions.md`.
 
 ### 8. Turn the intelligence loop on
