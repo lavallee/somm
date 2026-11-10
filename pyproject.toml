@@ -1,6 +1,6 @@
 [project]
 name = "somm-workspace"
-version = "0.23.0"
+version = "0.24.0"
 description = "somm — self-hosted LLM telemetry, routing, and intelligence loop (workspace root)"
 requires-python = ">=3.12"
 
@@ -19,6 +19,8 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
     "mypy>=1.10",
+    # The proxy's wire-format tests parse its responses with the real SDK.
+    "openai>=2.0",
 ]
 
 [tool.ruff]

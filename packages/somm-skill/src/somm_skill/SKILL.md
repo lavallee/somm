@@ -114,18 +114,63 @@ row["llm_provenance"] = {
 
 This lets you later answer "which model generated this row" without guessing.
 
-### 5. Check outcomes
+### 5. JSON, failures and timeouts: use somm's, write none of your own
 
-`somm.Outcome` is a typed enum. Use `result.mark()` to tag quality signals:
+**Need JSON? Make one call.** Do not write a parser, a fence stripper, a
+brace slicer or a "return only JSON" re-ask:
 
 ```python
-data = somm.extract_json(result.text)
-if data is None:
-    result.mark(somm.Outcome.BAD_JSON)
-elif not data.get("contacts"):
+contacts, result = llm.generate_structured(
+    prompt,
+    schema=Contacts,             # Pydantic model, JSON Schema dict, or callable;
+    workload="contact_extract",  # omit to use the workload's output_schema
+    timeout=60,
+)
+# result.provider / .model / .call_id / .cost_usd say who served it;
+# result.parsed is the JSON as a dict or list.
+```
+
+It sends the schema natively where the provider supports it and in the
+prompt everywhere, repairs common JSON damage, marks `bad_json` on the
+ledger and retries with the error fed back. When every attempt fails it
+raises `somm.SommStructuredError`; `e.delivery_failure` True means the model
+never answered (back off), False means it answered badly.
+
+**Failures: pass `raise_on_failure=True` and catch types.** Never match on
+error message strings or test `result.text` for emptiness:
+
+```python
+try:
+    result = llm.generate(prompt, workload="brief", raise_on_failure=True, timeout=120)
+except somm.SommRateLimited as e:       # e.retry_after_s
+    ...
+except somm.SommProviderNotConfigured:  # pinned provider has no key/binary here
+    ...
+except somm.SommError as e:             # everything else; e.provider, e.model, e.call_id
+    ...
+```
+
+Other types: `SommTimeout`, `SommProvidersExhausted`, `SommAuthError`,
+`SommModelNotFound`, `SommEmptyResponse`, `SommRefused` (the model or a
+content filter declined), `SommPrivacyViolation`. Without the flag a failed
+call returns a result with `result.ok == False` and `result.error` saying
+why; that default exists for old callers, so new code should set the flag.
+
+**Timeouts: `timeout=` per call.** It reaches every adapter. Do not set
+`SOMM_HTTP_TIMEOUT` in a unit file for one slow workload or assign
+`provider.timeout`.
+
+**Retries: a workload policy, not a loop.**
+`llm.set_workload_policy("brief", {"retry": {"max": 3, "backoff_s": 5},
+"timeout_s": 120})` covers every unpinned call on that workload. Check
+`llm.health()` (configured, cooled until, last error per provider; no
+network call) instead of probing providers yourself.
+
+Tag quality signals the code can judge with `result.mark()`:
+
+```python
+if not contacts.items:
     result.mark(somm.Outcome.OFF_TASK)
-else:
-    result.mark(somm.Outcome.OK)
 ```
 
 ### 6. Before choosing a model, ask somm — and respect billing mode
@@ -176,16 +221,18 @@ with cross-project decision memory.
   (`<think>` blocks stripped).
 - `llm.embed(text, workload=...)` for embeddings (telemetry row like
   any call).
-- `llm.extract_structured(prompt, workload=...)` returns `dict | list`,
-  handling markdown fences, brace extraction, and provider quirks.
-  Do **not** implement your own JSON repair loop.
+- **Structured output** is `llm.generate_structured(...)` (rule 5).
+  `extract_structured` is its older, schema-less form that returns a
+  `{"_somm_parse_err": True}` sentinel on failure; keep it where it is
+  already used, but do not reach for it in new code.
 - **Async** — `agenerate`, `astream`, `aembed`, `agenerate_structured` and
   `aextract_structured` are native. Do not wrap the sync calls in
   `asyncio.to_thread` yourself; the async path keeps the same routing,
   fallback, budget gate, hooks and telemetry.
 - **Pins are sticky** — `provider=` and/or `model=` means "serve this call
   with that". If the pinned target fails, the call comes back
-  `outcome=UPSTREAM_ERROR` with the pinned attribution intact; somm never
+  `outcome=UPSTREAM_ERROR` (or raises, with `raise_on_failure=True`) with
+  the pinned attribution intact; somm never
   answers from a model the caller did not name. Pass `allow_fallback=True`
   (or set `SOMM_PINNED_FALLBACK=1`) when an answer from some healthy model
   beats no answer — e.g. batch workers that must not lose a run when one
@@ -276,7 +323,11 @@ These are guardrails, not style preferences — DO NOT weaken or remove them.
 - NEVER import **raw provider SDKs** (`from anthropic import ...`) in project code.
 - NEVER hardcode **model names** outside config — route via workload + provider preference.
 - NEVER write **inline retry loops** — routing handles cooldowns, fallback, and
-  metered-plan pacing.
+  metered-plan pacing; a workload policy sets retries and backoff.
+- NEVER write **your own JSON parser or repair pass** — use
+  `generate_structured` (rule 5).
+- NEVER detect failure by **matching error strings** — pass
+  `raise_on_failure=True` and catch the typed `somm.Somm*` errors.
 - DO NOT concatenate **prompts as strings** for long-lived prompts — use
   `llm.register_prompt(...)` / `llm.prompt(workload)` so versions are tracked.
 - NEVER put **API keys in code or logs** — somm's adapters strip auth headers before

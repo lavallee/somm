@@ -141,7 +141,8 @@ def apply_recommendation(
     if rec is None:
         raise ValueError(f"recommendation {recommendation_id!r} not found")
     if rec.dismissed_at is not None:
-        raise ValueError(f"recommendation {recommendation_id!r} is dismissed")
+        state = "expired" if rec.evidence.get("closed_as") == "expired" else "dismissed"
+        raise ValueError(f"recommendation {recommendation_id!r} is {state}")
     if rec.applied_at is not None:
         raise ValueError(f"recommendation {recommendation_id!r} is already applied")
 

@@ -166,8 +166,8 @@ response names it. With none, the route is refused like any other; a roster
 walk moves to its next model. With fallbacks off, a pinned request fails
 (and the roster or chain moves on) when none of its endpoints can serve it,
 rather than reaching one that retains. The tier is `zdr` only when the pin is on the
-wire, so streams (which are not pinned) and the proxy (which goes through
-litellm) are not promoted.
+wire, so streams (which are not pinned) are not promoted. The proxy dispatches
+through `generate`, so its calls are promoted like any other.
 
 Under the default boundary nothing here runs: requests are unchanged and the
 lists are never fetched. Otherwise they are fetched on first need, at most
@@ -193,7 +193,7 @@ Every place a request can leave the process calls the same `admit()` check:
 | Workload handlers | A handler outside the boundary is not called |
 | `enable_shadow`, shadow-eval worker | The gold route must be admissible (private workloads stay banned outright); the worker skips a workload whose gold route is not, counting it in `boundary_skipped` |
 | Judges | Shadow-eval: an inadmissible judge is refused and noted in the receipt, never called. `somm eval run`: the judge call goes through `generate`, so the item records the refusal as its error |
-| Proxy `/v1/messages`, `/v1/chat/completions` | `403` with `SOMM_PRIVACY_VIOLATION`; litellm is never invoked |
+| Proxy `/v1/messages`, `/v1/chat/completions`, `/v1/responses` | Go through `generate`; `403` with `SOMM_PRIVACY_VIOLATION`, and no provider is called |
 | MCP `somm_compare`, CLI `compare` | The model is listed as refused, not silently skipped |
 | CLI `bench`, `eval run`, MCP `somm_replay` | Go through `generate`, so the same checks apply |
 | Harness attempts (`harnesses.run` or `start` given a `workload` or `data_boundary`, or `run(record=True)`) | Raises before the agent is launched |

@@ -2,8 +2,9 @@
 
 Adaptive routing is opt-in per workload. Use `model="somm/auto"` with a validated
 `policy.adaptive` object; existing explicit provider/model pins retain their meaning.
-The library (`generate`, `agenerate`, buffered `stream`) and the OpenAI-compatible
-`POST /v1/chat/completions` proxy share the same decision function.
+The library (`generate`, `agenerate`, buffered `stream`) and the proxy routes
+(`/v1/chat/completions`, `/v1/messages`, `/v1/responses`) share the same path: the
+proxy calls `generate`.
 
 ```json
 {
@@ -92,7 +93,7 @@ It supports function tools, multimodal input, and encrypted reasoning replay thr
 the public Responses API, while preserving the proxy's Chat Completions wire shape.
 HTTP 200 is insufficient: only `response.completed` completes a call. Interrupted,
 failed, incomplete, unauthorized, and rate-limited streams remain failures. Proxy
-streaming is not supported; library adaptive streaming buffers one completed answer.
+and library adaptive streaming both buffer one completed answer.
 The SIWC preview requires developer instructions and additional-tools input items;
 the adapter translates system messages and flat function declarations accordingly.
 The route rejects `max_output_tokens`, so Chat Completions `max_tokens` is an
@@ -133,20 +134,22 @@ Primary sources reviewed 2026-11-09:
 
 ## Failure and recovery contract
 
-The Chat Completions proxy preserves typed provider failures instead of converting
-all of them into HTTP 502. Invalid input returns 400, authentication failures 401
-(or a preserved upstream denial such as 403), rate limits 429, transport timeouts
-504, and transient upstream failures 502. `error.code` is Somm's canonical code;
+The proxy routes preserve typed provider failures instead of converting all of
+them into HTTP 502. Invalid input returns 400, authentication failures 401, a data
+boundary refusal 403, rate limits and budget refusals 429, transport timeouts 504,
+and transient upstream failures 502. `error.code` is Somm's canonical code;
 `error.retryable` and optional `error.retry_after_s` are the runner contract.
 `x-should-retry` mirrors retryability for compatible SDKs. A 429 deferral or API
 budget refusal explicitly says `retryable: false`; waiting and sending the identical
 request repeatedly will not repair it.
 
-A failed inference response identifies its `call_id`, provider, selected model,
-and adaptive route when present. The same ID appears in `x-somm-call-id` and the
-ledger. Safe machine fields (`provider_code`, `provider_type`, `provider_param`,
-`provider_request_id`) survive translation when the adapter supplies them. Clients
-should use these fields rather than parsing provider prose.
+A failed inference response identifies its `call_id`, provider and model. The same
+ID appears in `x-somm-call-id` and the ledger, whose `routing_json` holds the
+route. The proxy calls the client with `raise_on_failure=True` and maps the
+adapter's own typed error, so `Retry-After`, an upstream status such as 403, and
+safe machine fields (`provider_code`, `provider_type`, `provider_param`,
+`provider_request_id`) survive when the adapter supplies them. Clients should use
+these fields rather than parsing provider prose.
 
 This HTTP boundary neither retries inference nor chooses another model. Resume a
 transient failure with the original conversation, including completed tool results;

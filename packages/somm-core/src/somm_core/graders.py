@@ -133,6 +133,7 @@ def parse_binary_judge_response(
                     by_name[name] = item
 
     rows = []
+    missing = []
     for criterion in criteria:
         raw = by_name.get(criterion.name)
         passed = False
@@ -140,7 +141,19 @@ def parse_binary_judge_response(
         if isinstance(raw, Mapping):
             passed = _coerce_bool(raw.get("pass", raw.get("passed")))
             reason = str(raw.get("reason") or "").strip() or reason
+        else:
+            missing.append(criterion.name)
         rows.append({"name": criterion.name, "pass": passed, "reason": reason})
+    # A reply that does not answer every criterion is no verdict at all.
+    # Until 0.24 it scored as a fail on each missing criterion, so a judge
+    # that answered in prose looked like a collapse in the graded model.
+    if missing:
+        error = (
+            "unparseable judge reply"
+            if len(missing) == len(criteria)
+            else f"judge reply missing criteria: {', '.join(missing)}"
+        )
+        return {"criteria": rows, "score": None, "error": error}
     score = sum(1 for row in rows if row["pass"]) / len(rows)
     return {"criteria": rows, "score": score}
 

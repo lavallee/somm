@@ -74,7 +74,7 @@ class Config:
     gemini_model: str = "gemini-3.8-flash"
     perplexity_api_key: str | None = None
     perplexity_model: str = "sonar"  # search-grounded; only used when pinned
-    http_timeout: float = 180.0  # seconds; used by openai-compat providers
+    http_timeout: float = 180.0  # seconds; every HTTP provider (CLI seats use max(this, 600))
     provider_order: list[str] | None = None  # e.g. ["minimax", "openrouter", "ollama"]
     # Local-only replication of calls/workloads into ~/.somm/global.sqlite so
     # cross-project features (sommelier, fleet rollups) have data. The raw

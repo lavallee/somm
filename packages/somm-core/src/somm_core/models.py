@@ -425,10 +425,26 @@ class SommResult:
     # included in tokens_out.
     reasoning_tokens: int | None = None
     citations: list | None = None
+    # The JSON value read from ``text`` by the structured-output path
+    # (generate_structured / extract_structured): a plain dict or list, or
+    # None when the call was not structured or no JSON was found.
+    parsed: Any = None
     # Set by the client that recorded this call so mark() reaches its row.
     # Wrapped in MarkHook so copying, pickling or ``asdict()``-ing a result
     # never drags the client along: the copy simply has no hook.
     _on_mark: MarkHook | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def ok(self) -> bool:
+        """True when the call delivered what was asked (outcome ``ok``)."""
+        return self.outcome == Outcome.OK
+
+    @property
+    def error(self) -> str | None:
+        """Why the call failed, in one string; None when it succeeded."""
+        if self.ok:
+            return None
+        return self.error_detail or self.error_kind or self.outcome.value
 
     def mark(self, outcome: Outcome) -> SommResult:
         """Post-tag a call's outcome. Returns self for chaining.

@@ -79,12 +79,12 @@ def test_binary_judge_prompt_and_parse_response():
     assert parsed["criteria"][1]["reason"] == "missing detail"
 
 
-def test_binary_judge_missing_criterion_counts_as_false():
+def test_binary_judge_missing_criterion_is_no_verdict():
     criteria = normalize_binary_criteria(["correctness", "completeness"])
     parsed = parse_binary_judge_response(
         '{"criteria": [{"name": "correctness", "pass": "yes"}]}',
         criteria,
     )
-    assert parsed["score"] == 0.5
-    assert parsed["criteria"][1]["pass"] is False
+    assert parsed["score"] is None
+    assert parsed["error"] == "judge reply missing criteria: completeness"
     assert parsed["criteria"][1]["reason"] == "missing judge result"

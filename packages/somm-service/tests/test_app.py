@@ -649,7 +649,8 @@ def test_local_header_path_is_refused_through_a_proxy(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "path", ["/v1/messages", "/v1/chat/completions", "/api/routing/decide", "/v1/traces"]
+    "path",
+    ["/v1/messages", "/v1/chat/completions", "/v1/responses", "/api/routing/decide", "/v1/traces"],
 )
 def test_spend_and_ingest_routes_always_need_the_token(tmp_path, path):
     app = create_app(_tmp_config(tmp_path))

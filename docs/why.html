@@ -123,16 +123,14 @@
 
         <dt>"You depend on LiteLLM anyway."</dt>
         <dd>
-          Partly, yes. <code>somm-service</code> depends on
-          <code>litellm</code> and its proxy routes call it directly
-          (<code>packages/somm-service/pyproject.toml</code>,
-          <code>proxy.py</code>), and the bundled price snapshot is derived
-          from LiteLLM's price file (<code>scripts/update_pricing_bundle.py</code>).
-          The library, <code>somm</code> plus <code>somm-core</code>, does not
-          import it; its only third-party dependency is <code>httpx</code>.
-          ROADMAP phase 4 moves the proxy onto somm's own router and removes
-          LiteLLM from <code>somm-service</code>. Until then, installing the
-          service installs LiteLLM; pin a release you have checked.
+          Not as code, since 0.24.0. Until then <code>somm-service</code>
+          depended on <code>litellm</code> and its proxy routes called it
+          directly; the proxy now runs on somm's own client and nothing in
+          somm imports LiteLLM (CHANGELOG.md, 0.24.0). One use remains, as
+          data: the bundled price snapshot is generated from LiteLLM's
+          published price file, fetched as JSON by a maintainer script
+          (<code>scripts/update_pricing_bundle.py</code>). The library's only
+          third-party dependency is <code>httpx</code>.
         </dd>
 
         <dt>"SQLite won't scale."</dt>
@@ -195,7 +193,7 @@
       <h3>When to use something else</h3>
       <ul class="plain">
         <li><strong>A team</strong> that needs a shared hosted dashboard, single sign-on or annotation queues: use a tracing platform. somm is built for one person.</li>
-        <li><strong>A production gateway</strong> for many services at high request rates: use a dedicated gateway. somm's proxy is not yet on its own router and has no published load numbers.</li>
+        <li><strong>A production gateway</strong> for many services at high request rates: use a dedicated gateway. somm's proxy has no published load numbers and replays a finished answer as a stream rather than streaming tokens as they arrive.</li>
         <li><strong>One project, one provider, no grading:</strong> the provider's own SDK is enough.</li>
         <li><strong>Only a searchable log of prompts</strong> in SQLite: Simon Willison's <code>llm</code> keeps one (<a href="https://simonwillison.net/tags/llm/" rel="noopener">simonwillison.net</a>).</li>
         <li><strong>A trace viewer for local use:</strong> Arize Phoenix runs locally under the Elastic License 2.0 (<a href="https://github.com/Arize-ai/phoenix" rel="noopener">GitHub</a>); somm's traces can be exported to a viewer like it.</li>
@@ -203,7 +201,7 @@
 
       <h3>What somm still depends on, and has not proven</h3>
       <ul class="plain">
-        <li><strong>Depends on:</strong> LiteLLM in <code>somm-service</code> and for the price snapshot; models.dev and OpenRouter's catalogue for model intel; the providers' own terms for every tier above <code>local</code>.</li>
+        <li><strong>Depends on:</strong> LiteLLM's published price file, as data, for the price snapshot; models.dev and OpenRouter's catalogue for model intel; the providers' own terms for every tier above <code>local</code>.</li>
         <li><strong>Not proven:</strong> that decisions are recalled across projects (unmeasured); that a recommendation gets applied because of its evidence (none yet); that coding agents use the MCP server and skill (installed in none at the November audit); that most of a climb is visible to the ledger (it is not yet).</li>
         <li><strong>Not published:</strong> load numbers, dashboard screenshots, a recorded demo.</li>
       </ul>

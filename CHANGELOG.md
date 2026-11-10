@@ -5,6 +5,96 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.24.0] — 2026-11-10
+
+### Added
+- **Getting JSON or a failure out of somm needs no wrapper.** `generate_structured`
+  became the one documented JSON call: its schema is optional (falling back to the
+  workload's `output_schema`, then any JSON), `result.parsed` carries the JSON, and
+  `SommStructuredError` names the provider, model and call id. `extract_structured`
+  runs the same loop and keeps its sentinel. `generate(raise_on_failure=True)` raises
+  a recorded failure as a typed, exported error carrying `provider`, `model` and
+  `call_id`; the new types are `SommProviderNotConfigured`, which is still a
+  `ValueError`, and `SommRefused`. `SommResult` gained `ok` and `error`. A per-call
+  `timeout=` reaches every adapter, and `client.health()` reports each provider's
+  configuration, cooldown and last failure without a network call.
+- **A supported read API for the ledger.** `somm_core.read` gains `schema_status`,
+  `provider_health` (ok rate, p50/p95 latency, last ok and last error per provider
+  and model), `rollup` (per-day/project/workload/provider/model/outcome totals;
+  unknown-cost calls are counted, never summed as free), `get_calls`, `table_rows`
+  and `across_ledgers` (any read over every registered ledger, with missing ledgers
+  reported). `search_calls` rows add `error_detail`, `cost_known`, `route_source`
+  and `route`. Reads on an older ledger return `None` for a column it predates
+  instead of failing. `somm_core.vocabulary.vocabulary()` returns the outcome, tier,
+  route-source, cost-source and meter-unit sets with a version stamp, so a mapping
+  can be checked at start-up. `docs/read-api.md` has a "replace this SQL with that
+  call" table.
+- **`somm ledgers` shows every ledger on the machine.** Names, size, schema, rows,
+  oldest and last call, recent client versions, and how far the mirror has each
+  project, flagged missing, shared, temp, or behind the mirror. `--scan DIR` lists
+  unregistered ledgers. `somm ledgers forget` and `adopt` edit the registry only,
+  with `--dry-run`; the registry now keeps every path a project writes to.
+- **`somm fleet status`**, also printed by `somm doctor --global`: one line per
+  project, problems first.
+- **`somm mirror sync [--project X] [--dry-run]`** copies call rows the mirror
+  lacks, in batches, safe to rerun.
+- **`somm gpu spend`** reads gipper's receipt files (read-only, no gipper
+  dependency) and reports rented-GPU spend by day and workload, with failed and
+  capped jobs and what they cost, and pairs a workload with the ledger's spend when
+  the names match exactly. `somm doctor` prints a one-line total when a receipts
+  directory exists. New page: `docs/rented-gpus.md`.
+- **Proxy streaming and `/v1/responses`.** `/v1/chat/completions` streams
+  (tool-call deltas, `include_usage`, `[DONE]`); `/v1/messages` streams carry tool
+  use; `POST /v1/responses` covers the common subset. Streams replay the finished
+  answer.
+- **Harness attempts export an `invoke_agent` span.** See `docs/otel.md`.
+
+### Changed
+- **The proxy runs on somm's own client.** `/v1/messages` and
+  `/v1/chat/completions` translate each request into one
+  `SommLLM.generate(messages=…, raise_on_failure=True)` call, so proxied calls are
+  routed, pinned, cooled, boundary-checked, budget-gated, priced and recorded like
+  library calls. The LiteLLM and direct ChatGPT paths are gone; only providers somm
+  has configured are reachable. Typed failures keep their status, `retryable`,
+  `Retry-After` and safe provider fields. Routine fields the client cannot apply yet
+  (`stop`, `top_p`, `top_k`, `parallel_tool_calls`, `truncation`, non-adaptive
+  `thinking`) are accepted and named in `x-somm-ignored`; `n` > 1, logprobs, server
+  tools and `previous_response_id` return 400.
+- **The intelligence loop's output can be acted on.** `switch_model` needs 20 grades
+  in each arm within 30 days against one gold model, and a 95% interval on the
+  difference that excludes zero; its evidence records n per arm, the interval, the
+  window and the cost per passing answer. `new_model_landed` says it is a catalog
+  fact, not a quality finding. Recommendations expire after 30 days and are closed
+  as expired, not applied. The shadow replay sends captured messages as messages
+  with the production temperature and `max_tokens`.
+- **OpenTelemetry export follows the GenAI semantic conventions** (commit-pinned;
+  the conventions are still marked Development). Spans are named `chat {model}` and
+  nest under the caller's span with real start and end times. They carry
+  `gen_ai.provider.name`, response id, conversation id and `error.type`; the
+  deprecated `gen_ai.system` is gone.
+- **Anthropic, Gemini, OpenRouter and Ollama honour `SOMM_HTTP_TIMEOUT`**, so their
+  default rose to 180 s from 60 s (120 s for Ollama).
+
+### Fixed
+- **Global views credit calls to the project that made them.** Two projects
+  declaring the same workload shared one mirror row, so `doctor --global` credited
+  one project's calls to the other.
+- **The mirror write retries a busy mirror** and reports a batch it cannot write
+  instead of dropping it silently.
+- **Two workers could both claim a grading sample** and both pay for its gold call;
+  claiming is now one atomic statement.
+- **A judge reply that could not be parsed scored 0.0.** It now has no score, is
+  counted, and the loop warns when most judge replies for a workload were unusable.
+- **A gold route that was not configured, was outside the data boundary or kept
+  failing used up samples.** The samples stay eligible, and after three failures in
+  a row the loop reports the workload's shadow config as broken and retries a day
+  later.
+
+### Removed
+- **`litellm`** from `somm-service` and the `somm[litellm]` extra. Importing the
+  service drops from about 2 s to about 0.1 s. The bundled price snapshot is still
+  generated from LiteLLM's published price file, as data.
+
 ## [0.23.0] — 2026-11-10
 
 ### Added

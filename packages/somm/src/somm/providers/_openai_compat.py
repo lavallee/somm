@@ -145,7 +145,7 @@ class OpenAICompatProvider:
         while True:
             payload = self._build_payload(request, model)
             try:
-                with httpx.Client(timeout=self.timeout) as client:
+                with httpx.Client(timeout=request.timeout or self.timeout) as client:
                     resp = client.post(
                         self._chat_url(),
                         headers=self._headers(),
@@ -257,7 +257,7 @@ class OpenAICompatProvider:
         payload["stream"] = True
 
         with (
-            httpx.Client(timeout=self.timeout) as client,
+            httpx.Client(timeout=request.timeout or self.timeout) as client,
             client.stream(
                 "POST",
                 self._chat_url(),

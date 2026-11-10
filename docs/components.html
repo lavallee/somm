@@ -557,10 +557,10 @@
         <dl>
           <dt>What it is</dt>
           <dd>
-            Two HTTP routes in the service: <code>POST /v1/messages</code>
-            (Anthropic Messages, with streaming) and
-            <code>POST /v1/chat/completions</code> (OpenAI Chat Completions,
-            no streaming). A header, <code>X-Somm-Workload</code>, names the
+            Three HTTP routes in the service: <code>POST /v1/messages</code>
+            (Anthropic Messages), <code>POST /v1/chat/completions</code>
+            (OpenAI Chat Completions) and <code>POST /v1/responses</code>
+            (OpenAI Responses, the common subset), each with streaming. A header, <code>X-Somm-Workload</code>, names the
             workload. Calls share the library's budget gate, data boundary and
             ledger.
           </dd>
@@ -574,13 +574,12 @@
           <dd>Writes ledger rows under the named workload and project.</dd>
           <dt>Proof</dt>
           <dd class="proof none">
-            A known limit rather than evidence. The proxy makes its calls
-            through LiteLLM, so it bypasses somm's routing, cooldowns, pins and
-            error codes; <code>somm/auto</code> requests choose their tier with
-            somm's decision function but are still sent through LiteLLM
-            (<code>packages/somm-service/src/somm_service/proxy.py</code>).
-            ROADMAP phase 4 moves the proxy onto somm's own router and removes
-            the dependency.
+            No usage evidence yet. Since 0.24.0 each route translates the
+            request into one call on somm's own client, so proxied calls are
+            routed, cooled, boundary-checked, priced and recorded like library
+            calls (<code>packages/somm-service/src/somm_service/proxy.py</code>,
+            CHANGELOG.md). A known limit: a stream replays the finished answer
+            rather than delivering tokens as they arrive.
           </dd>
         </dl>
       </div>
