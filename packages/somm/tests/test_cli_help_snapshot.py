@@ -52,7 +52,12 @@ def test_cli_help_matches_snapshot():
         FIXTURE.parent.mkdir(exist_ok=True)
         FIXTURE.write_text(text)
     assert FIXTURE.exists(), "run once with UPDATE_CLI_SNAPSHOT=1"
-    assert text == FIXTURE.read_text(), (
+    # argparse wraps usage lines differently from one Python version to the
+    # next, so compare the words, not the line breaks.
+    def words(t: str) -> list[str]:
+        return t.split()
+
+    assert words(text) == words(FIXTURE.read_text()), (
         "a command's --help changed; if deliberate, regenerate with "
         "UPDATE_CLI_SNAPSHOT=1 and review the diff"
     )
