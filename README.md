@@ -1,30 +1,39 @@
 # somm
 
-**Self-hosted LLM telemetry, routing, and intelligence loop.**
-Zero-config. Privacy-first. No commercial dependencies on the hot path.
+**The meter and the memory for your model calls.**
 
 [![CI](https://github.com/lavallee/somm/actions/workflows/ci.yml/badge.svg)](https://github.com/lavallee/somm/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-Every LLM observability pitch in 2026 says "telemetry + evals +
-prompts." Here's what none of them can say: **your agents learn which
-model to use from your own call history, across all your projects, and
-your coding agent can ask.** somm records every call locally, grades
-production samples against a gold model (online evaluation, no
-platform), and remembers every model decision you make — so the next
-project starts where the last one left off.
+somm is a Python library that records every call your projects make to a
+language model in a SQLite file on your own machine, and remembers which
+model you chose for which job, so the next project starts from what the
+last one learned.
 
-Built for **one developer with a dozen projects and no ops budget** —
-the exact scope where cross-project memory pays off and a hosted
-platform doesn't.
+- **The meter:** every call, failures included, writes one row to a
+  per-project ledger: workload, provider, model, tokens, latency, cost and
+  its basis, outcome, and how far the data travelled.
+- **The memory:** a sample of real calls is graded against a stronger
+  model, rules turn the grades into recommendations you apply or dismiss,
+  and every model decision you record is kept machine-wide, where any
+  project and your coding agent can find it. Pick once, remember
+  everywhere.
+
+Built for **one developer with a dozen projects and no ops budget**.
+Self-hosted, no account, nothing sent to the somm project. The site
+explains [the components](https://lavallee.github.io/somm/components.html),
+[the terms](https://lavallee.github.io/somm/glossary.html), and
+[why build this instead of adopting a gateway and a tracing product](https://lavallee.github.io/somm/why.html),
+including what is not yet proven.
 
 - 🟢 **Works offline** with just `ollama` running locally
 - 🟢 **No phone-home**, no cloud account, no hosted service
 - 🟢 **One-line drop-in** for codebases with an existing LLM wrapper
-- 🟢 **Ten providers** — ollama, OpenRouter, DeepSeek, Minimax,
-  Anthropic, Gemini, OpenAI, Perplexity, `claude`/`codex` CLI seats, and
-  any OpenAI-compatible gateway; see the capability matrix below for
-  what each one honors
+- 🟢 **Eleven built-in providers** — eight APIs (ollama, OpenRouter,
+  DeepSeek, Minimax, Anthropic, Gemini, OpenAI, Perplexity) and three
+  subscription seats (`claude-cli`, `codex-cli`, `chatgpt`), plus any
+  OpenAI-compatible gateway; see the capability matrix below for what each
+  one honors
 - 🟢 **Tool calling** on every API provider — neutral schema in, native
   format out, `ToolCall`s back
 - 🟢 **Streaming, embeddings, multimodal** — image prompts routed only
@@ -130,20 +139,25 @@ LLM-using Python projects all grow along the same axes. You end up with:
 
 ### What's NOT here
 
-The self-hosted LLM-tooling space has a pattern: open-source today,
-acquired or gated tomorrow. The 2026 scorecard: Langfuse was acquired by
-ClickHouse (January), Helicone by Mintlify and put in maintenance mode
-(March), Traceloop by ServiceNow (March), Portkey by Palo Alto Networks
-(May); TensorZero archived its repository in June; Arize Phoenix ships
-under the Elastic License; Braintrust's "self-hosting" keeps a hosted
-control plane. somm is structured so that can't happen to you:
+The LLM-tooling field moves quickly. Checked on 2026-11-09 against each
+project's own pages: Langfuse joined ClickHouse in January 2026 (both say
+the MIT core and self-hosting are unchanged); Traceloop joined ServiceNow
+in March; promptfoo joined OpenAI in March and says it stays MIT;
+TensorZero archived its repository on 12 June; OpenAI Evals shuts down on
+30 November. None of that makes those tools bad, but a single developer
+cannot re-platform every year. somm is structured so the data and the
+code stay yours (sources: [why build this](https://lavallee.github.io/somm/why.html)):
 
 - **No `ee/` directory.** Every feature in this repo is MIT, forever.
 - **No license keys, no feature flags tied to a vendor account.**
 - **No beacon telemetry.** The somm project receives nothing about you.
-- **No commercial dependency on the hot path.** Model pricing intel
-  comes from free, keyless, redistributable sources; anything gated
-  lives behind an opt-in feature flag.
+- **No commercial dependency on the hot path.** The library's only
+  third-party dependency is `httpx`. Model pricing intel comes from free,
+  keyless, redistributable sources; anything gated lives behind an opt-in
+  feature flag. One open-source dependency remains in the service:
+  `somm-service` requires LiteLLM, which its proxy routes call directly,
+  and the bundled price snapshot is derived from LiteLLM's price file.
+  The roadmap removes LiteLLM from the service.
 - **No server between you and your data.** Everything is SQLite files
   you own, queryable with plain SQL.
 
@@ -364,8 +378,10 @@ Opt a workload in and a background worker samples N% of production
 calls, re-runs them through a gold-standard model of your choice, and
 grades both with structural + text-similarity scorers — the pattern
 hosted platforms call "online evaluation," running locally at zero
-platform cost. The resulting data feeds the agent worker, which emits
-concrete recommendations:
+platform cost. Without a declared output schema the score measures
+similarity to the gold answer, not correctness. The resulting data feeds
+the agent worker, which emits recommendations with their evidence. An
+illustration of the shape (the numbers are invented, not from a ledger):
 
 > **`switch_model`** — claim_extract currently on minimax/MiniMax-M3
 > (score 0.4, 500ms). Shadow evals show ollama/gemma3:27b scoring 0.85
@@ -409,7 +425,7 @@ memory without changing agent-framework call sites — including
 ### Autonomous coding-agent harnesses
 
 Somm also provides a neutral one-attempt execution API for Claude Code,
-Codex, and OpenCode. It normalizes invocation, streamed native events,
+Codex, OpenCode, and Pi. It normalizes invocation, streamed native events,
 session/resume IDs, final text, usage, and termination reasons without taking
 over a task runner's queue or retry policy:
 
@@ -478,7 +494,24 @@ tracebacks or provider-specific messages.
 | `somm_record_decision` | persist the outcome of a sommelier conversation (cross-project) |
 | `somm_search_decisions` | recall prior decisions — globally by default |
 
-Add to Claude Code / Cursor / Windsurf:
+#### Connect your coding agent
+
+```bash
+somm mcp install      # register the MCP server (Claude Code, Codex)
+somm skill install    # link the somm skill so agents write somm-aware code
+somm mcp status       # and `somm skill status`; `somm doctor` shows both too
+```
+
+Each takes `--harness claude|codex` (default: every one found on PATH),
+`--print` to show what would run without changing anything, and
+`uninstall` reverses it. `mcp install` hands off to `claude mcp add` /
+`codex mcp add` (`--scope project` for Claude's `.mcp.json`), using the
+absolute path of the current Python so the harness can launch it; if the
+harness CLI is missing it prints the snippet to paste. `skill install`
+symlinks the installed `somm-skill` package into `~/.claude/skills/somm` and
+`~/.agents/skills/somm` (Codex), so upgrading the package updates the skill;
+`status` reports a link that has gone stale. Needs `somm-mcp` / `somm-skill`
+installed in the same environment. For Cursor, Windsurf and others, paste:
 
 ```json
 {
@@ -503,6 +536,9 @@ somm tail [--workload NAME] [--poll-interval S]    # live call stream
 somm compare <prompt> --models p/m,p/m             # side-by-side N-model comparison
 somm frontier --workload NAME [--since N]          # adequacy frontier per (provider, model)
 somm loop run|install|status|uninstall             # the intelligence loop, one pass or a timer
+somm inbox list|show|apply|dismiss                 # recommendations and their evidence
+somm plugin ...                                    # list and inspect plugins, hooks, and providers
+somm chatgpt ...                                   # somm-owned ChatGPT subscription connection
 somm spend [--json]                                # today's spend vs daily budget cap
 somm plans [--json] [--project-only]               # metered-plan quota usage + pacing (fleet-wide)
 somm boundary routes [--json]                      # every route's data tier and why
@@ -748,7 +784,7 @@ provider is opt-in via its own env var.
 |---|---|---|
 | `SOMM_PROJECT` | `default` | project name tagged on every call |
 | `SOMM_MODE` | `observe` | `observe` (auto-registers workloads) or `strict` |
-| `SOMM_PROVIDER_ORDER` | sovereign-first | comma-sep chain override (e.g. `openrouter,minimax,ollama`) |
+| `SOMM_PROVIDER_ORDER` | minimax, openrouter, deepseek, anthropic, gemini, openai, perplexity, ollama (those with keys) | comma-sep chain override (e.g. `openrouter,minimax,ollama`); exclusive when set |
 | `SOMM_PINNED_FALLBACK` | `0` | `1` lets a failed `provider=`/`model=` pin be rescued by the router chain |
 | `SOMM_OLLAMA_URL` | `http://localhost:11434` | local ollama endpoint |
 | `SOMM_OLLAMA_MODEL` | `qwen3:8b` | explicit/local-fallback ollama model |
@@ -768,7 +804,7 @@ provider is opt-in via its own env var.
 | `OPENAI_API_KEY` | — | enables OpenAI |
 | `SOMM_OPENAI_MODEL` | `gpt-6-luna` | |
 | `SOMM_OPENAI_BASE_URL` | `https://api.openai.com/v1` | for OpenAI-compatible gateways |
-| `PERPLEXITY_API_KEY` | — | enables Perplexity (pinned-only; never a routine fallback) |
+| `PERPLEXITY_API_KEY` | — | enables Perplexity (meant to be pinned for grounded answers; with a key set it also joins the default chain, after OpenAI) |
 | `SOMM_PERPLEXITY_MODEL` | `sonar` | |
 | `SOMM_HTTP_TIMEOUT` | `180` | seconds, OpenAI-compat providers |
 | `SOMM_BUDGET_FAIL_CLOSED` | `0` | `1` blocks calls once a workload's daily cap is reached |
@@ -784,7 +820,7 @@ provider is opt-in via its own env var.
 | `SOMM_SERVICE_PROXY_MAX_BODY_BYTES` | `1048576` | proxy request body cap |
 | `SOMM_SERVICE_OTLP_MAX_BODY_BYTES` / `_MAX_SPANS` / `_MAX_ATTR_CHARS` | `1048576` / `1000` / `2048` | OTLP ingest caps |
 | `SOMM_MCP_COMPARE_MAX_MODELS` / `_MAX_TOKENS` | `5` / `1024` | `somm_compare` ceilings (`_ALLOW_EXPENSIVE_*` variants: `10` / `4096` when the caller opts in) |
-| `SOMM_CROSS_PROJECT` | `0` | `1` mirrors telemetry to `~/.somm/global.sqlite` |
+| `SOMM_CROSS_PROJECT` | `1` | mirrors calls and workloads to `~/.somm/global.sqlite` (local only); `0` turns it off. Decisions are always mirrored |
 | `SOMM_GLOBAL_PATH` | `~/.somm/global.sqlite` | mirror file location |
 | `SOMM_KEY_PROFILE` | — | named key profile; see below |
 | `SOMM_ENABLE_HF_INTEL` | `0` | `1` enables the opt-in HuggingFace intel worker |
@@ -804,7 +840,9 @@ is on PATH, but never join the default routing order — reach them via
 works even when it is not in your chain, which is the point: you pin a
 seat precisely to move a workload off the metered path.
 
-Pin the seat's model and flags per project:
+The seat runs `claude-haiku-5-5` unless you pin another model, and calls are
+lean by default (no tools, MCP servers, settings sources or saved session).
+Pin the seat's model and flags per project (extra args replace the lean flags):
 
 ```toml
 [tool.somm]
@@ -866,6 +904,8 @@ model-intel worker then refreshes live from [models.dev](https://models.dev)
   workers do and how to run them
 - 📖 [**Reading the ledger**](./docs/read-api.md) — the supported read
   API and column-stability contract
+- 🧱 [**Data boundary**](./docs/data-boundary.md) — route tiers and per-workload limits on where data may go
+- 🔀 [**Adaptive routing**](./docs/adaptive-routing.md) — `somm/auto` and subscription conservation
 - 🔧 [**Tool calling**](./docs/tool-calling.md) — neutral schema + per-provider adapters
 - 🤖 [**Coding-agent harnesses**](./docs/agent-harnesses.md) — one-attempt Claude Code, Codex, OpenCode, and Pi execution, recorded in the ledger
 - [**Plugins and hooks**](./docs/plugins.md) — hook phases, reference plugins, and provider entry points
@@ -895,7 +935,7 @@ internal names or personal paths.
 
 ## Status
 
-**v0.17.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
+**v0.22.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
 the public API, MCP tools, service contracts, and migration semantics are not
 yet declared stable. See [CHANGELOG](./CHANGELOG.md) for the release log and
 [ROADMAP.md](./ROADMAP.md) for where things are headed.

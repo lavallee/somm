@@ -795,6 +795,7 @@ def _decision_as_dict(d: Decision) -> dict:
         "agent": d.agent,
         "superseded_by": d.superseded_by,
         "outcome_note": d.outcome_note,
+        "recalled_from": d.recalled_from,
     }
 
 
@@ -812,6 +813,7 @@ def build_decision(
     workload_id: str | None = None,
     constraints: AdviseConstraints | dict | None = None,
     agent: str | None = None,
+    recalled_from: str | None = None,
 ) -> Decision:
     """Assemble a Decision ready for `Repository.record_decision`.
 
@@ -848,7 +850,30 @@ def build_decision(
         workload_name=workload,
         constraints=cons_dict,
         agent=agent,
+        recalled_from=recalled_from,
     )
+
+
+def recall_mismatch(
+    prior: Decision | None,
+    chosen_provider: str | None,
+    chosen_model: str | None,
+) -> str | None:
+    """Why a cited prior decision does not count as a recall, or None if it does.
+
+    A recall is a recorded decision that cites a prior decision and chooses the
+    same provider and model it chose. Citing a decision that does not exist, or
+    one whose choice the new decision departs from, is not a recall."""
+    if prior is None:
+        return "no prior decision with that id"
+    if not prior.chosen_provider or not prior.chosen_model:
+        return "the prior decision chose no provider and model"
+    if (prior.chosen_provider, prior.chosen_model) != (chosen_provider, chosen_model):
+        return (
+            f"the prior decision chose {prior.chosen_provider}/{prior.chosen_model}, "
+            f"not {chosen_provider}/{chosen_model}"
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------

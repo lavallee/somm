@@ -190,7 +190,10 @@ def test_default_boundary_leaves_the_request_unchanged_and_fetches_nothing(
         assert "provider" not in body
         assert set(body) == {"model", "messages", "temperature", "max_tokens", "stream", "usage"}
     row = _last_call(llm)
-    assert row["data_tier"] == "unvetted" and row["routing_json"] is None
+    # Every row carries its route; an unpinned-upstream call carries no
+    # "upstream" record.
+    assert row["data_tier"] == "unvetted"
+    assert "upstream" not in json.loads(row["routing_json"])
     llm.close()
 
 

@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>somm · self-hosted LLM telemetry, routing, and intelligence loop</title>
-<meta name="description" content="somm is a self-hosted LLM substrate for Python: telemetry, routing, shadow-eval, and agent-driven recommendations — all local. Zero commercial dependencies. Privacy-first.">
-<meta property="og:title" content="somm">
-<meta property="og:description" content="Self-hosted LLM telemetry, routing, and intelligence loop. Zero-config. Privacy-first. No commercial dependencies on the hot path.">
+<title>somm · the meter and the memory for your model calls</title>
+<meta name="description" content="somm is a self-hosted Python library that records every model call your projects make in a SQLite file you own, and remembers which model you chose for which job, across all your projects.">
+<meta property="og:title" content="somm · the meter and the memory">
+<meta property="og:description" content="Record every model call in a file you own. Remember every model decision across projects. Self-hosted, MIT, no account.">
 <meta property="og:type" content="website">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -20,10 +20,10 @@
       <span class="mark-sub">/ v0.22.0 beta</span>
     </a>
     <nav>
-      <a href="#why">why</a>
+      <a href="components.html">components</a>
+      <a href="glossary.html">glossary</a>
+      <a href="why.html">why</a>
       <a href="#install">install</a>
-      <a href="#graft">graft</a>
-      <a href="#privacy">privacy</a>
       <a href="errors/" aria-label="Error codes">errors</a>
       <a class="gh" href="https://github.com/lavallee/somm" rel="noopener">GitHub</a>
     </nav>
@@ -33,12 +33,18 @@
 <main>
   <section class="hero">
     <div class="wrap">
-      <h1>Self-hosted LLM<br>telemetry, routing,<br>intelligence loop.</h1>
+      <h1>The meter and the memory for your model calls.</h1>
       <p class="lede">
-        Wrap your LLM calls once. Get provider fallback, streaming,
-        cost tracking, shadow-eval, and agent-driven recommendations —
-        all running locally on your own SQLite. Zero phone-home. Zero
-        cloud account. Zero commercial dependencies on the hot path.
+        somm is a Python library that records every call your projects make
+        to a language model in a SQLite file on your own machine, and
+        remembers which model you chose for which job, so the next project
+        starts from what the last one learned.
+      </p>
+      <p class="section-lede">
+        Self-hosted and MIT-licensed. No account, no hosted service, nothing
+        sent to the somm project. It works offline with only
+        <a href="https://ollama.com" rel="noopener">Ollama</a> running.
+        Built for one developer with many projects.
       </p>
 
 <pre class="code"><span class="prompt">$</span> pip install somm
@@ -46,294 +52,249 @@
 import somm
 llm = somm.llm(project='my_app')
 r = llm.generate('Reply: pong', workload='ping')
-print(r.text, r.provider, r.cost_usd)
+print(r.text, r.provider, r.call_id)
 "</span>
-<span class="c">→ pong ollama 0.0</span></pre>
+<span class="prompt">$</span> somm status --project my_app   <span class="c"># the row that call just wrote</span></pre>
 
       <div class="hero-cta">
-        <a class="btn" href="#install">Get started</a>
-        <a class="btn btn-ghost" href="https://github.com/lavallee/somm" rel="noopener">Read the code</a>
+        <a class="btn" href="components.html">See the components</a>
+        <a class="btn btn-ghost" href="why.html">Why build this?</a>
       </div>
     </div>
   </section>
 
-  <section id="why" class="section">
+  <section id="idea" class="section">
     <div class="wrap">
-      <h2>Why somm</h2>
-      <p class="section-lede">
-        Every LLM-using Python project grows along the same axes. You
-        end up with tangled provider SDKs, inline retry loops, drifting
-        prompts, and no idea which model wrote what. somm is the shared
-        substrate you wish you'd started with.
-      </p>
-
-      <div class="row-list">
-        <div class="row">
-          <h3>Router across ten providers</h3>
+      <h2>The idea</h2>
+      <div class="two-col">
+        <div>
+          <h3>The meter</h3>
           <p>
-            ollama, OpenRouter, DeepSeek, Minimax, Anthropic, Gemini,
-            OpenAI, Perplexity, plus <code>claude</code>/<code>codex</code>
-            CLI executors and any OpenAI-compatible gateway (Groq,
-            Together, Fireworks, vLLM, LM Studio, custom).
-            Preference-ordered fallback overridable via
-            <code>SOMM_PROVIDER_ORDER</code>, per-model cooldowns
-            persisted to SQLite, circuit breaker. Free-tier rate limits
-            stop being a problem.
-          </p>
-          <p>
-            And a pin is a pin: name a <code>provider</code> or
-            <code>model</code> and somm serves that or fails, with the
-            failure recorded against the model you asked for. It never
-            quietly answers from a substitute &mdash; that is
-            unexplainable in production and silently invalidates every
-            benchmark, eval, comparison, and replay. Pass
-            <code>allow_fallback=True</code> when an answer from some
-            healthy model beats none.
+            Every call writes one row to the
+            <a class="term" href="glossary.html#ledger">ledger</a>, a SQLite
+            file in your project: which
+            <a class="term" href="glossary.html#workload">workload</a> asked,
+            which provider and model answered, the tokens, the latency, the
+            cost and how that cost was worked out, the outcome, and how far
+            the data travelled. Failures get a row too. You can read it with
+            plain SQL.
           </p>
         </div>
-        <div class="row">
-          <h3>Builds its own eval dataset</h3>
+        <div>
+          <h3>The memory</h3>
           <p>
-            Opt a workload in to shadow-eval and a background worker
-            samples N% of your calls, re-runs them through a gold model,
-            grades with structural + text-similarity scorers. No hand-
-            written evals. Budget-capped per workload. Skipped entirely
-            on private workloads.
-          </p>
-        </div>
-        <div class="row">
-          <h3>Agent that points at the wins</h3>
-          <p>
-            The agent worker analyzes calls + eval results + model intel
-            and emits concrete recommendations with evidence. Not "here
-            are some models" — specifically
-            <em>switch claim_extract to gemma3:27b: +45% quality, -80%
-            latency, same cost, 47 shadow calls.</em>
-          </p>
-        </div>
-        <div class="row">
-          <h3>MCP for your coding agent</h3>
-          <p>
-            Ten stdio tools. Your Claude Code / Cursor / Windsurf
-            session can query actual telemetry: "what did claim_extract
-            cost this week?" → real answer. "Compare gemma3 and llama3
-            on this prompt" → real side-by-side. "Replay call X against
-            a cheaper model" → real delta.
-          </p>
-        </div>
-        <div class="row">
-          <h3>One contract for coding-agent harnesses</h3>
-          <p>
-            Execute one Claude Code, Codex, or OpenCode attempt through
-            <code>somm.harnesses</code>. Native event streams, session resume,
-            final output, usage, and termination reasons become one portable
-            result contract, while your task runner keeps its queue and policy.
-            <a href="agent-harnesses.md">Read the boundary and API.</a>
-          </p>
-        </div>
-        <div class="row">
-          <h3>Sommelier: cross-project model memory</h3>
-          <p>
-            Ask in one project: <em>good free vision models on
-            openrouter?</em> Get a ranked list with capability + price
-            reasoning. Pick one. Next week in a different project, ask
-            the same thing — somm remembers what you picked and why,
-            across every project on your machine. As of 0.2.2 prior
-            decisions also <em>weigh</em> into the ranking: models
-            you've used before get a small bonus; models a prior flagged
-            as unreliable take a soft penalty, both decaying with age.
-            Output-modality filters, meta-router exclusion, and
-            HuggingFace <code>pipeline_tag</code> enrichment keep the
-            top of the list honest.
-          </p>
-        </div>
-        <div class="row">
-          <h3>Multimodal-native routing</h3>
-          <p>
-            Pass text + image content blocks to any provider that
-            accepts them. The router auto-filters to vision-capable
-            models before the network call. No surprise 400s on
-            text-only endpoints, no bespoke branching in your code.
-          </p>
-        </div>
-        <div class="row">
-          <h3>Loud failures, quiet success</h3>
-          <p>
-            Every non-OK outcome writes a bounded error body (status +
-            server message + exception class) to
-            <code>calls.error_detail</code> AND fires an inline
-            <code>on_error</code> callback — default: a one-line stderr
-            warning so crashes never hide in the telemetry table. Pass
-            your own callable to forward to logging / Slack / PagerDuty,
-            or <code>lambda _: None</code> to silence.
+            Rows alone are a log. somm turns them into memory three ways: a
+            sample of real calls is graded against a stronger model
+            (<a class="term" href="glossary.html#shadow-evaluation">shadow evaluation</a>);
+            rules turn the grades into
+            <a class="term" href="glossary.html#recommendation">recommendations</a>
+            you apply or dismiss; and each model choice you make is kept, with
+            its reason, in a machine-wide store that every project and your
+            coding agent can search.
           </p>
         </div>
       </div>
+
+      <h3 class="sub">Pick once, remember everywhere</h3>
+      <p>
+        The demonstration of the memory. Your coding agent talks to somm
+        through its <a class="term" href="glossary.html#mcp">MCP server</a>.
+        In one project you ask which model to use and record why you chose
+        it; weeks later, in another project, the agent finds that
+        <a class="term" href="glossary.html#decision">decision</a> before it
+        suggests anything.
+      </p>
+      <span class="label">Illustration, not a recorded session</span>
+<pre class="code"><span class="c"># project A, week 1, in your coding agent</span>
+you   &gt; which local model for pulling dates out of emails?
+agent → somm_advise(question=...)          <span class="c"># ranks candidates: model intel + your history</span>
+you   &gt; qwen3:14b. gemma kept missing dates in long threads.
+agent → somm_record_decision(...)          <span class="c"># stored with the reason, machine-wide</span>
+
+<span class="c"># project B, week 3</span>
+agent → somm_search_decisions(question="date extraction")
+        <span class="c"># 1 prior decision: qwen3:14b, from project A, with the reason</span></pre>
+      <p>
+        The three tools are real (<code>packages/somm-mcp</code>); the
+        conversation above is an example of their use. How often this
+        actually happens is the number somm is judged by, and it is
+        <a href="#status">not measured yet</a>.
+      </p>
     </div>
   </section>
 
-  <section id="install" class="section section-alt">
+  <section id="loop" class="section">
+    <div class="wrap">
+      <h2>The loop</h2>
+      <p class="section-lede">
+        Five steps, each reading and writing the same ledger. Select a step
+        to read about the part of somm that does it.
+      </p>
+      <figure class="diagram loop">
+        <svg viewBox="0 0 440 410" role="img" aria-labelledby="loop-title loop-desc" xmlns="http://www.w3.org/2000/svg">
+          <title id="loop-title">The somm loop</title>
+          <desc id="loop-desc">Five steps in a ring around the ledger: record every call, grade a sample of calls against a stronger model, recommend a change, apply it, and remember the decision so the next project starts from it.</desc>
+          <defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 L10 5 L0 10 z"/></marker></defs>
+          <path class="e" marker-end="url(#ah)" d="M295.1 98.2 A150 150 0 0 1 347.9 149.6"/>
+          <path class="e" marker-end="url(#ah)" d="M369.3 213.9 A150 150 0 0 1 340.5 317.3"/>
+          <path class="e" marker-end="url(#ah)" d="M232.7 377.5 A150 150 0 0 1 207.3 377.5"/>
+          <path class="e" marker-end="url(#ah)" d="M99.5 317.3 A150 150 0 0 1 70.7 213.9"/>
+          <path class="e" marker-end="url(#ah)" d="M92.1 149.6 A150 150 0 0 1 144.9 98.2"/>
+          <a href="glossary.html#ledger"><g class="n core"><circle cx="220" cy="228" r="60"/>
+            <text class="t" x="220" y="224" text-anchor="middle">the ledger</text>
+            <text class="s" x="220" y="242" text-anchor="middle">SQLite you own</text></g></a>
+          <a href="glossary.html#call"><g class="n"><rect x="152.0" y="53.0" width="136" height="50" rx="6"/>
+            <text class="t" x="220.0" y="75.0" text-anchor="middle">Record</text>
+            <text class="s" x="220.0" y="93.0" text-anchor="middle">one row per call</text></g></a>
+          <a href="components.html#shadow"><g class="n"><rect x="294.7" y="156.6" width="136" height="50" rx="6"/>
+            <text class="t" x="362.7" y="178.6" text-anchor="middle">Grade</text>
+            <text class="s" x="362.7" y="196.6" text-anchor="middle">shadow evaluation</text></g></a>
+          <a href="components.html#inbox"><g class="n"><rect x="240.2" y="324.4" width="136" height="50" rx="6"/>
+            <text class="t" x="308.2" y="346.4" text-anchor="middle">Recommend</text>
+            <text class="s" x="308.2" y="364.4" text-anchor="middle">rules fill the inbox</text></g></a>
+          <a href="components.html#inbox"><g class="n"><rect x="63.8" y="324.4" width="136" height="50" rx="6"/>
+            <text class="t" x="131.8" y="346.4" text-anchor="middle">Apply</text>
+            <text class="s" x="131.8" y="364.4" text-anchor="middle">you, or your agent</text></g></a>
+          <a href="components.html#sommelier"><g class="n"><rect x="9.3" y="156.6" width="136" height="50" rx="6"/>
+            <text class="t" x="77.3" y="178.6" text-anchor="middle">Remember</text>
+            <text class="s" x="77.3" y="196.6" text-anchor="middle">decisions, all projects</text></g></a>
+        </svg>
+        <figcaption>Record &#8594; grade &#8594; recommend &#8594; apply &#8594; remember, then the next call starts from what was remembered.</figcaption>
+      </figure>
+      <ul class="plain">
+        <li><strong>Record.</strong> The client writes one row per call, including failures.</li>
+        <li><strong>Grade.</strong> For workloads you opt in, a background worker re-runs a sample on a <a class="term" href="glossary.html#gold-model">gold model</a> and scores the match.</li>
+        <li><strong>Recommend.</strong> Rules read grades, costs and failures and write proposals, each with its evidence, to the <a class="term" href="glossary.html#inbox">inbox</a>.</li>
+        <li><strong>Apply.</strong> You, or your coding agent, apply or dismiss each one. The only change somm makes by itself is raising a <code>max_tokens</code> floor, and only for a workload that opts in.</li>
+        <li><strong>Remember.</strong> An applied change, or a choice made in conversation, is stored as a decision every project can recall.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="components" class="section section-alt">
+    <div class="wrap">
+      <h2>The components</h2>
+      <p class="section-lede">
+        One sentence each. The <a href="components.html">components page</a>
+        tells the problem each one solves, how it connects, and the evidence
+        for it.
+      </p>
+      <dl class="terms">
+        <dt><a href="components.html#client">Client and providers</a></dt>
+        <dd><code>somm.llm()</code> returns one client that talks to eleven built-in providers (eight APIs and three subscription seats) and any OpenAI-compatible server.</dd>
+        <dt><a href="components.html#routing">Routing, cooldowns and pins</a></dt>
+        <dd>Tries providers in order, rests a failing model for a while, and serves a call that names its model with exactly that model or fails.</dd>
+        <dt><a href="components.html#ledger">Ledger and mirror</a></dt>
+        <dd>One SQLite file per project, plus a machine-wide copy so one query can span every project.</dd>
+        <dt><a href="components.html#workloads">Workloads</a></dt>
+        <dd>A named job your code asks for, such as <code>claim_extract</code>; cost, failures, rules and recommendations all attach to it.</dd>
+        <dt><a href="components.html#boundary">Data boundary</a></dt>
+        <dd>How far a workload's data may travel, on a four-step scale, enforced before any request leaves the process.</dd>
+        <dt><a href="components.html#shadow">Shadow evaluation and judges</a></dt>
+        <dd>Grades a sample of real calls against a stronger model, so you learn whether a cheaper one is good enough.</dd>
+        <dt><a href="components.html#inbox">Recommendations and the inbox</a></dt>
+        <dd>Rule-made proposals with their evidence, waiting for you to apply or dismiss.</dd>
+        <dt><a href="components.html#sommelier">The sommelier</a></dt>
+        <dd>Decision memory: ranks candidate models and remembers which you chose, and why, across projects.</dd>
+        <dt><a href="components.html#mcp">MCP server and skill</a></dt>
+        <dd>Fourteen tools a coding agent can call, plus instructions that teach it to use somm instead of writing its own wrapper.</dd>
+        <dt><a href="components.html#service">Service and dashboard</a></dt>
+        <dd>A local web app (<code>somm serve</code>) with a dashboard, a JSON API and the scheduler for the loop.</dd>
+        <dt><a href="components.html#proxy">The proxy</a></dt>
+        <dd>Anthropic- and OpenAI-shaped HTTP routes so a program you cannot edit can send its calls through somm.</dd>
+        <dt><a href="components.html#plans">Plans and quota pacing</a></dt>
+        <dd>Knows that a subscription runs out by the window, not by the dollar, and slows down before it does.</dd>
+        <dt><a href="components.html#harnesses">Harnesses</a></dt>
+        <dd>Runs one Claude Code, Codex, OpenCode or Pi attempt and records it in the same ledger as API calls.</dd>
+        <dt><a href="components.html#handlers">Workload handlers and the climb</a></dt>
+        <dd>Lets a rule or other component serve part of a workload instead of a model, measured under the same name.</dd>
+        <dt><a href="components.html#read-api">Read API</a></dt>
+        <dd>Supported read-only functions over the ledger, so other tools stop writing their own SQL.</dd>
+        <dt><a href="components.html#cli">The CLI</a></dt>
+        <dd>The <code>somm</code> command: status, health, plans, inbox, loop, boundary and more.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section id="install" class="section">
     <div class="wrap">
       <h2>Install</h2>
 
-<pre class="code"><span class="c"># library only — fine for drop-in replacement:</span>
+<pre class="code"><span class="c"># the library: enough to record and route</span>
 <span class="prompt">$</span> pip install somm
 
-<span class="c"># + web admin, scheduler, background workers, MCP:</span>
+<span class="c"># + the local web service and the MCP server</span>
 <span class="prompt">$</span> pip install somm somm-service somm-mcp</pre>
 
       <p class="section-lede">
-        Python 3.12+. Requires no API keys out of the box — just point
-        somm at a local ollama and go. Every commercial provider is
-        opt-in via its own env var (<code>ANTHROPIC_API_KEY</code>,
-        <code>OPENAI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>,
-        <code>GEMINI_API_KEY</code>, <code>MINIMAX_API_KEY</code>,
-        <code>DEEPSEEK_API_KEY</code>, <code>PERPLEXITY_API_KEY</code>).
+        Python 3.12 or later. With no API keys set, somm uses a local Ollama.
+        Each commercial provider is turned on by its own environment variable
+        (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>,
+        <code>OPENROUTER_API_KEY</code>, <code>GEMINI_API_KEY</code>,
+        <code>MINIMAX_API_KEY</code>, <code>DEEPSEEK_API_KEY</code>,
+        <code>PERPLEXITY_API_KEY</code>).
       </p>
 
-      <h3 class="sub">Spin up the dashboard</h3>
-
-<pre class="code"><span class="prompt">$</span> somm serve --project my_app
-<span class="c">→ listening on http://localhost:7878
-   scheduler started (poll=30.0s)
-   model_intel: refreshing (345 + 6 + 6 models cached)</span></pre>
-
-      <h3 class="sub">Compare models on a real prompt</h3>
-
-<pre class="code"><span class="prompt">$</span> somm compare <span class="str">"Summarize this article in one sentence"</span> \
-    --models minimax/MiniMax-M3,openrouter/llama-3.3-70b:free,openai/gpt-4o-mini
-<span class="c">provider    model                      lat_ms  tok_i  tok_o  cost     response
-minimax     MiniMax-M3                  2140     124      18  token plan  A research team ...
-openrouter  meta-llama/llama-3.3-70b:free 3820     124      22  $0.0000  Scientists at ...
-openai      gpt-4o-mini                  920     124      20  $0.0000  Researchers find ...</span></pre>
-    </div>
-  </section>
-
-  <section class="section">
-    <div class="wrap">
-      <h2>Adaptive subscription routing</h2>
-      <p>Opt workloads into <code>somm/auto</code>: simple requests take a fast model;
-      uncertain work takes a stronger model. At the weekly conservation threshold,
-      simple work uses the configured fallback and stronger work is explicitly deferred.</p>
-      <p><a href="https://github.com/lavallee/somm/blob/main/docs/adaptive-routing.md">Policy, ChatGPT connection, and application deferral contract</a></p>
-    </div>
-  </section>
-
-  <section id="graft" class="section">
-    <div class="wrap">
-      <h2>Grafting into an existing project</h2>
-      <p class="section-lede">
-        If you already have an LLM wrapper class in your codebase, swap
-        it with <code>somm.compat.GenericLLMCompat</code>. One line
-        changes; call sites don't.
-      </p>
-
-<pre class="code"><span class="c"># before:</span>
+      <h3 class="sub">Already have an LLM wrapper?</h3>
+<pre class="code"><span class="c"># before</span>
 <span class="kw">from</span> myproject.llm <span class="kw">import</span> FooLLM
+<span class="c"># after: call sites stay the same</span>
+<span class="kw">from</span> somm.compat <span class="kw">import</span> GenericLLMCompat <span class="kw">as</span> FooLLM</pre>
 
-<span class="c"># after:</span>
-<span class="kw">from</span> somm.compat <span class="kw">import</span> GenericLLMCompat <span class="kw">as</span> FooLLM
+      <h3 class="sub">Run the loop and the dashboard</h3>
+<pre class="code"><span class="prompt">$</span> somm loop install --project my_app   <span class="c"># a systemd user timer; no resident process</span>
+<span class="prompt">$</span> somm serve --project my_app          <span class="c"># dashboard on http://localhost:7878</span>
+<span class="prompt">$</span> somm doctor --global                 <span class="c"># health of every project on this machine</span></pre>
 
-llm = FooLLM(project=<span class="str">"my_app"</span>)
-result = llm.generate(prompt, system=sys, max_tokens=256)
-print(result.text, result.provider, result.model)  <span class="c"># legacy fields still work</span>
-print(result.call_id, result.cost_usd)             <span class="c"># somm extras</span></pre>
-
-      <p>If your project calls the raw OpenAI SDK directly, there's an
-      <code>openai_chat_completions</code> shim that mirrors
-      <code>openai.OpenAI().chat.completions.create()</code>. See the
-      <a href="https://github.com/lavallee/somm/tree/main/examples">examples</a>
-      directory for runnable patterns:</p>
-
-      <ul class="file-list">
-        <li><code>drop_in_wrapper.py</code> — single-import swap for existing classes</li>
-        <li><code>openai_swap_in.py</code> — OpenAI SDK replacement</li>
-        <li><code>private_workload.py</code> — <code>privacy_class=PRIVATE</code> defense-in-depth</li>
-      </ul>
-    </div>
-  </section>
-
-  <section id="privacy" class="section section-alt">
-    <div class="wrap">
-      <h2>Privacy posture</h2>
-      <p class="section-lede">
-        somm is built for workloads you'd be uncomfortable egressing.
-        Every defense is enforced at more than one layer — not one thing
-        to remember, many things to forget.
+      <p>
+        The <a href="https://github.com/lavallee/somm#readme">README</a> is the
+        reference: every CLI command, environment variable and provider
+        capability. <a href="https://github.com/lavallee/somm/blob/main/docs/BLUEPRINT.md">BLUEPRINT.md</a>
+        is the design document.
       </p>
-
-      <ul class="bulleted">
-        <li><strong>No body capture by default.</strong> Prompt and
-          response <em>hashes</em> go to SQLite; full text only lands
-          in a separate <code>samples</code> table if you opt in per
-          workload.</li>
-        <li><strong>Per-workload privacy class.</strong>
-          <code>PRIVATE</code> workloads never egress to any non-local
-          provider. Enforced in the router, in the shadow-eval worker,
-          <em>and</em> in the <code>shadow_candidates</code> SQL view.</li>
-        <li><strong>File perms.</strong> SQLite files created
-          <code>0600</code>; parent dir <code>0700</code>.
-          <code>somm doctor</code> warns on drift.</li>
-        <li><strong>Localhost-only web.</strong> The admin binds
-          <code>127.0.0.1</code> by default. Exposing via
-          <code>--bind 0.0.0.0</code> prints a loud warning.</li>
-        <li><strong>Zero beacon.</strong> The somm project learns
-          nothing about your install or usage. There is no upstream
-          service.</li>
-      </ul>
     </div>
   </section>
 
-  <section class="section">
-    <div class="wrap">
-      <h2>Architecture</h2>
-<pre class="code diagram">   library (sensor) ──► local store ◄── service (brain)
-       ▲                    ▲                  │
-       │                    │                  ├─► shadow-eval worker
-       │                    │                  ├─► model-intel worker
-       │                    │                  ├─► agent worker
-       │                    │                  └─► web admin
-       │                    │
-       └── skill (onboarding) ─── MCP (interface for coding agents)</pre>
-
-      <p>Six packages:</p>
-      <table class="pkg-tbl">
-        <tbody>
-          <tr><th>somm-core</th><td>schema v19, migrations, repository, config, parse helpers</td></tr>
-          <tr><th>somm</th><td>library — <code>SommLLM</code>, providers, routing, coding-agent harnesses, streaming, compat shims, CLI</td></tr>
-          <tr><th>somm-service</th><td>starlette web admin + HTTP API + scheduler + three workers</td></tr>
-          <tr><th>somm-mcp</th><td>stdio MCP server with 14 tools</td></tr>
-          <tr><th>somm-langchain</th><td><code>SommChatModel</code> adapter for LangChain/LangGraph/deepagents</td></tr>
-          <tr><th>somm-skill</th><td>onboarding templates for Claude / Codex / Cursor / Windsurf</td></tr>
-        </tbody>
-      </table>
-
-      <p><a href="https://github.com/lavallee/somm/blob/main/docs/BLUEPRINT.md">BLUEPRINT.md</a>
-      is the design doc — the load-bearing forces and the data model
-      behind somm.</p>
-    </div>
-  </section>
-
-  <section class="section section-alt">
+  <section id="status" class="section section-alt">
     <div class="wrap">
       <h2>Status</h2>
       <p class="section-lede">
         v0.22.0 beta / pre-1.0 — see the
         <a href="https://github.com/lavallee/somm/blob/main/CHANGELOG.md">CHANGELOG</a>
         for the release log; 1,330 tests pass with four live Ollama checks skipped when no local server is available.
-        The test suite runs in CI on every push. somm is
-        published for real-world dogfooding, but its public API, MCP tools,
-        service contracts, and migration semantics are not yet declared stable.
-        Recent releases added multimodal routing (0.1.1), the sommelier
-        (0.2.0), Gemini + error visibility (0.2.1), sommelier quality
-        (0.2.2), tool calling + the LangChain adapter, eval gates, the recommendation loop, OTLP ingest, authenticated service APIs, serving-performance rollups, benchmark/cache-advice CLIs, Anthropic/OpenAI-compatible proxy routes, reusable Claude/Codex/OpenCode harness execution, a native async client API, workload handlers, per-request reasoning budgets (0.15.0), sticky provider/model pins (0.16.0), and the runnable intelligence loop, harness attempts in the ledger, the read API, and the current model lineup (0.17.0), and a fail-closed Codex harness with typed sandbox scope (0.18.0), and in-sandbox network access (0.19.0), correct Claude CLI attribution for short replies with auxiliary passes (0.19.1), and image prompts on every provider plus routing past a rejected key (0.19.2), and stream fallback (0.19.3), and seat-CLI discovery under service managers plus MiniMax plan-exhaustion classification (0.19.4), and opt-in adaptive routing with weekly subscription conservation and a Somm-owned ChatGPT connection (0.20.0), and same-model normalized tool replay recovery with explicit retryability (0.20.1), and a hardened hot path: a telemetry writer that survives bad rows, paid answers that survive a locked ledger, locked migrations, and cooldowns for withdrawn models (0.20.2), and the data boundary: an ordered scale of where a workload's data may go, enforced on every route and recorded on every call (0.21.0), and OpenRouter tiers deduced per upstream endpoint from its published zero-retention list (0.22.0).
-        MIT licensed. Upcoming work is tracked in
-        <a href="https://github.com/lavallee/somm/blob/main/ROADMAP.md">ROADMAP.md</a>;
-        if you want to build your own take, the
-        <a href="https://github.com/lavallee/somm/blob/main/docs/BLUEPRINT.md">BLUEPRINT</a>
-        distills the six design forces.
+        The test suite runs in CI on every push. The public API, MCP tools,
+        service contracts and migration semantics are not yet declared
+        stable. MIT licensed.
       </p>
-      <p><a class="btn" href="https://github.com/lavallee/somm" rel="noopener">Star on GitHub →</a></p>
+      <div class="two-col">
+        <div>
+          <h3>Works today</h3>
+          <ul class="plain">
+            <li>Recording every call, failures included, in a local SQLite ledger with a machine-wide mirror.</li>
+            <li>Routing with persisted cooldowns and exact pins across eleven built-in providers, with streaming, tool calling, embeddings, structured output and async calls.</li>
+            <li>The data boundary, checked on every path that leaves the process (0.21.0).</li>
+            <li>Plan pacing for subscriptions and metered quotas.</li>
+            <li>The loop as a command or a timer: model intel, shadow grading, recommendations.</li>
+            <li>Coding-agent attempts recorded beside API calls; a supported read API.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Not yet proven</h3>
+          <ul class="plain">
+            <li><strong>The memory.</strong> The north-star number, decisions recalled across projects, is not recorded: recalls are not stored yet, and nearly every decision in the shared ledger was written by a test fixture (VISION.md, November 2026).</li>
+            <li><strong>The loop closing.</strong> Fifty-four recommendations had been created and none applied (same source).</li>
+            <li><strong>Agent use.</strong> At that audit the MCP server and the skill were installed in no coding-agent harness.</li>
+            <li><strong>The proxy</strong> still sends calls through LiteLLM, bypassing somm's own router (ROADMAP.md).</li>
+            <li>No published load numbers and no dashboard screenshots yet.</li>
+          </ul>
+        </div>
+      </div>
+      <p>
+        <a href="https://github.com/lavallee/somm/blob/main/ROADMAP.md">ROADMAP.md</a>
+        orders the work that closes these gaps, starting with a record you can
+        trust. <a href="why.html">Why build this</a> makes the case and says
+        when you should use something else.
+      </p>
     </div>
   </section>
 </main>
@@ -344,9 +305,10 @@ print(result.call_id, result.cost_usd)             <span class="c"># somm extras
       somm · <a href="https://github.com/lavallee/somm" rel="noopener">source</a> ·
       <a href="https://github.com/lavallee/somm/blob/main/LICENSE">MIT license</a> ·
       <a href="https://github.com/lavallee/somm/blob/main/CHANGELOG.md">changelog</a> ·
+      <a href="glossary.html">glossary</a> ·
       <a href="errors/">error reference</a>
     </p>
-    <p class="tiny">Built for sovereignty. No beacon, no cloud, no lock-in.</p>
+    <p class="tiny">No beacon, no cloud account, no lock-in.</p>
   </div>
 </footer>
 

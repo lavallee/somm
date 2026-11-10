@@ -30,9 +30,9 @@ def test_missing_default_model_names_fix():
 @pytest.mark.parametrize("text_only", [False, True])
 def test_claude_text_only_argv(monkeypatch, text_only):
     def run(cmd, **kwargs):
-        assert cmd == ["claude", "-p", "--output-format", "json"] + (
-            ["--tools", "", "--strict-mcp-config", "--setting-sources", ""] if text_only else []
-        )
+        assert cmd == ["claude", "-p", "--output-format", "json", "--model", "claude-haiku-5-5",
+                       "--tools", "", "--strict-mcp-config", "--setting-sources", "",
+                       "--no-session-persistence"]
         assert kwargs["input"] == "untrusted input"
         return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": "answer"}), "")
     monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", run)

@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from somm_core.parse import extract_reasoning_tokens
 from somm_core.repository import Repository
 
 from somm.capabilities import provider_can_serve
@@ -328,8 +329,17 @@ class Router:
         wait: float | None = None,
         retry_max: int | None = None,
         retry_backoff_s: float | None = None,
+        route: dict | None = None,
     ) -> RouterResult:
         """Try each provider. Return the first successful response.
+
+        ``route``, when given, is filled in as the chain runs, and stays
+        filled when dispatch raises: ``route["first"]`` is the first
+        candidate as ``[provider, model]`` and ``route["skipped"]`` lists
+        ``[provider, model, reason]`` for every candidate passed over —
+        ``boundary``, ``capability`` or ``plan_blocked`` when it was never a
+        candidate, ``cooled``, ``empty``/``empty_reasoning``, or the error
+        class it raised. The client records it on the call row.
 
         Raises:
             SommNoCapableProvider: no provider in the chain has a model that
@@ -346,9 +356,13 @@ class Router:
                 provider in the chain. Raised before any network call, and
                 never retried.
         """
-        chain = self._boundary_filter(request)
+        if route is None:
+            route = {}
+        trail = route.setdefault("skipped", [])
+        chain = self._boundary_filter(request, trail)
         required = list(getattr(request, "capabilities_required", None) or [])
         capable_providers, skipped = self._capability_filter(required, chain)
+        trail.extend([name, model, "capability"] for name, model, _ in skipped)
         if required and not capable_providers:
             raise SommNoCapableProvider(
                 f"no provider in chain can serve capabilities={required}",
@@ -358,6 +372,11 @@ class Router:
         active = capable_providers if required else chain
         pre_plan = list(active)
         active = self._apply_plan_governor(active)
+        trail.extend(
+            [p.name, _slot(request, p), "plan_blocked"] for p in pre_plan if p not in active
+        )
+        if active:
+            route.setdefault("first", [active[0].name, _slot(request, active[0])])
         if not active:
             raise SommProvidersExhausted(
                 "all providers blocked by enforced metered-plan limits: "
@@ -395,6 +414,7 @@ class Router:
                 transient_cooldown_s=retry_cooldown_s,
                 auth_failures=auth_failures,
                 not_found=not_found,
+                trail=trail,
             )
             if attempt is not None:
                 return attempt
@@ -460,7 +480,9 @@ class Router:
 
     # ------------------------------------------------------------------
 
-    def _boundary_filter(self, request: SommRequest) -> list[SommProvider]:
+    def _boundary_filter(
+        self, request: SommRequest, trail: list | None = None
+    ) -> list[SommProvider]:
         """Drop providers outside ``request.data_boundary`` before the loop.
 
         A refusal is raised here, never retried, and never falls through to
@@ -472,6 +494,8 @@ class Router:
         from somm.boundary import ResolvedBoundary, admissible_providers, parse_tier, refuse
 
         ok, refused = admissible_providers(self.providers, request.model, boundary)
+        if trail is not None:
+            trail.extend([r.provider, r.model or "", "boundary"] for r in refused)
         if not ok:
             raise refuse(
                 workload=request.metadata.get("somm_workload") if request.metadata else None,
@@ -520,20 +544,24 @@ class Router:
         transient_cooldown_s: float | None = None,
         auth_failures: list[tuple[str, Exception]] | None = None,
         not_found: list[tuple[str, Exception]] | None = None,
+        trail: list | None = None,
     ) -> RouterResult | None:
         skipped = auth_failures if auth_failures is not None else []
         missing = not_found if not_found is not None else []
+        trail = trail if trail is not None else []
         for provider in (providers if providers is not None else self.providers):
-            health = self.tracker.get(provider.name)
-            if health.is_cooling():
-                continue
             # The (provider, model) slot this attempt would use. A slot the
             # provider said it does not serve is cooled on its own, so the
             # same provider can still serve other models (a policy fallback
             # across two models of one provider).
-            slot = request.model or getattr(provider, "default_model", "") or ""
+            slot = _slot(request, provider)
+            health = self.tracker.get(provider.name)
+            if health.is_cooling():
+                trail.append([provider.name, slot, "cooled"])
+                continue
             slot_health = self.tracker.get(provider.name, slot) if slot else None
             if slot_health is not None and slot_health.is_cooling():
+                trail.append([provider.name, slot, "cooled"])
                 continue
             # Only the provider call itself decides whether this provider
             # failed. Health bookkeeping (a synchronous ledger write) runs
@@ -553,6 +581,7 @@ class Router:
                     self.tracker.mark_failure, provider.name, cooldown_s=AUTH_COOLDOWN_S
                 )
                 skipped.append((provider.name, e))
+                trail.append([provider.name, slot, type(e).__name__])
                 logging.getLogger("somm.routing").warning(
                     "%s failed authentication; routing past it for %.0fs: %s",
                     provider.name,
@@ -571,6 +600,7 @@ class Router:
                     cooldown_s=e.cooldown_s,
                 )
                 missing.append((provider.name, e))
+                trail.append([provider.name, slot, type(e).__name__])
                 logging.getLogger("somm.routing").warning(
                     "%s does not serve model %r; cooling that slot and routing on: %s",
                     provider.name,
@@ -578,12 +608,14 @@ class Router:
                     str(e)[:200],
                 )
                 continue
-            except (SommFatalError, SommPrivacyViolation):
+            except (SommFatalError, SommPrivacyViolation) as e:
                 # A boundary refusal from inside a provider (the OpenRouter
                 # roster had no admissible model) must not be read as a
                 # transient failure and routed past.
+                trail.append([provider.name, slot, type(e).__name__])
                 raise
             except SommTransientError as e:
+                trail.append([provider.name, slot, type(e).__name__])
                 cooldown_s = e.cooldown_s if transient_cooldown_s is None else transient_cooldown_s
                 rec = _record_health(
                     self.tracker.mark_failure, provider.name, cooldown_s=cooldown_s
@@ -596,6 +628,7 @@ class Router:
                     )
                 continue
             except Exception as exc:
+                trail.append([provider.name, slot, type(exc).__name__])
                 cooldown_s, transient = _classify_unknown(exc)
                 if not transient:
                     raise
@@ -612,6 +645,7 @@ class Router:
                 # Tool-only responses (empty text + tool_calls) are the
                 # expected shape for tool-use turns — NOT empty.
                 _record_health(self.tracker.mark_failure, provider.name, cooldown_s=15)
+                trail.append([provider.name, resp.model or slot, empty_reason(resp)])
                 continue
             _record_health(self.tracker.mark_ok, provider.name)
             if slot_health is not None and slot_health.consecutive_failures:
@@ -621,6 +655,28 @@ class Router:
 
 
 # ---------------------------------------------------------------------------
+
+
+def _slot(request: SommRequest, provider: SommProvider) -> str:
+    """The model a request would use on ``provider``."""
+    return request.model or getattr(provider, "default_model", "") or ""
+
+
+def reasoning_ate_budget(resp: SommResponse) -> bool:
+    """True when an empty reply spent (nearly) all its output on reasoning.
+
+    The provider must report reasoning tokens; 90% of the output total is
+    the line, because the visible remainder is then a token or two of
+    whitespace, not an answer.
+    """
+    reasoning = resp.reasoning_tokens
+    if reasoning is None:
+        reasoning = extract_reasoning_tokens(resp.raw)
+    return bool(resp.tokens_out and reasoning and reasoning >= 0.9 * resp.tokens_out)
+
+
+def empty_reason(resp: SommResponse) -> str:
+    return "empty_reasoning" if reasoning_ate_budget(resp) else "empty"
 
 
 def _valid_retry_max(value: object) -> bool:

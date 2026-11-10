@@ -45,7 +45,7 @@ from somm_core.boundary import TIER_NAMES
 from somm_core.config import load as _load_config
 from somm_core.cost import cost_is_known, known_cost_sql
 from somm_core.models import Outcome, PrivacyClass
-from somm_core.read import fleet_summary, search_calls, spend_today
+from somm_core.read import fleet_summary, north_star, search_calls, spend_today
 from somm_core.repository import Repository
 
 from somm.providers.ollama import OllamaProvider
@@ -2392,6 +2392,25 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_connect(args: argparse.Namespace) -> int:
+    from somm import connect
+
+    targets = [args.harness] if args.harness else connect.found_harnesses()
+    if not targets:
+        print("no supported harness (claude, codex) on PATH; pass --harness")
+        return 1
+    if args.connect_cmd == "status":
+        print("\n".join(connect.status_lines(targets)))
+        return 0
+    action = "add" if args.connect_cmd == "install" else "remove"
+    for h in targets:
+        if args.connect_group == "mcp":
+            print(connect.mcp_apply(h, action, args.scope, dry_run=args.print))
+        else:
+            print(connect.skill_apply(h, action, dry_run=args.print))
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     cfg = load_config(project=args.project)
     global_view = bool(getattr(args, "global_view", False))
@@ -2409,6 +2428,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(f"db perms: {mode} {'(ok)' if ok else '(WARN — expect 600)'}")
 
     ok_overall = True
+
+    from somm import connect
+
+    for line in connect.status_lines(connect.found_harnesses()):
+        print(f"agent {line}")
 
     # Ollama
     p = OllamaProvider(base_url=cfg.ollama_url, default_model=cfg.ollama_model)
@@ -2549,7 +2573,68 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
     _print_fleet_section(db_path)
 
+    _print_north_star(db_path, global_view=global_view)
+
     return 0 if ok_overall else 1
+
+
+def _print_north_star(db_path: Path, *, global_view: bool) -> None:
+    """VISION.md's three numbers with their denominators, or why one cannot be
+    measured. A mirror carries decisions and calls but never recommendations,
+    so `--global` totals that one over the registered project ledgers."""
+    try:
+        ns = north_star(db_path)
+        if global_view:
+            from somm_core.registry import registered_ledgers
+
+            keys = ("acted", "eligible", "pending", "applied")
+            total = dict.fromkeys(keys, 0)
+            for _project, path in registered_ledgers():
+                if Path(path).resolve() == Path(db_path).resolve() or not Path(path).exists():
+                    continue
+                rec = north_star(Path(path))["recommendations_applied"]
+                for k in keys:
+                    total[k] += rec.get(k, 0)
+            total["window_days"] = ns["recommendations_applied"]["window_days"]
+            total["measurable"] = total["eligible"] > 0
+            if not total["measurable"]:
+                total["reason"] = "no project ledger has a recommendation closed or 14 days old"
+            ns["recommendations_applied"] = total
+    except Exception as exc:  # noqa: BLE001 - a doctor must not crash on a report
+        print(f"north star: unavailable ({exc})")
+        return
+
+    def pct(n: int, d: int) -> str:
+        return f"{n / d:.1%}" if d else "—"
+
+    rec, route, recs = (
+        ns["decisions_recalled"], ns["evidence_routed"], ns["recommendations_applied"]
+    )
+    print("north star:" + ("  (recommendations totalled over project ledgers)" if global_view else ""))
+    if rec["measurable"]:
+        print(
+            f"  decisions recalled       {rec['recalled']} of {rec['decisions']} decisions"
+            f"  ({rec['excluded']} excluded: workload has no calls here)"
+        )
+    else:
+        print(f"  decisions recalled       not measurable yet: {rec['reason']}")
+    if route["measurable"]:
+        print(
+            f"  evidence-routed share    {pct(route['evidence'], route['marked'])}  "
+            f"({route['evidence']} of {route['marked']} production calls, "
+            f"{route['window_days']}d; {route['unmarked']} unknown)"
+        )
+    else:
+        print(f"  evidence-routed share    not measurable yet: {route['reason']}")
+    if recs["measurable"]:
+        print(
+            f"  recommendations applied  {pct(recs['acted'], recs['eligible'])}  "
+            f"({recs['acted']} of {recs['eligible']} applied or dismissed within "
+            f"{recs['window_days']}d; {recs['applied']} applied ever; "
+            f"{recs['pending']} younger and open)"
+        )
+    else:
+        print(f"  recommendations applied  not measurable yet: {recs['reason']}")
 
 
 def _print_loop_state(loop: dict, ledgers: list[dict], *, is_mirror: bool) -> None:
@@ -3694,6 +3779,37 @@ def build_parser() -> argparse.ArgumentParser:
     ppi = pp_sub.add_parser("info", help="show one reference plugin")
     ppi.add_argument("name", help="reference plugin name")
     ppi.set_defaults(func=_cmd_plugin_info)
+
+    for group, noun, helptext in (
+        ("mcp", "the somm MCP server", "register the somm MCP server with coding agents"),
+        ("skill", "the somm skill", "link the somm skill into coding agents' skill directories"),
+    ):
+        pg = sub.add_parser(group, help=helptext)
+        pg_sub = pg.add_subparsers(dest="connect_cmd", required=True)
+        for name, text in (
+            ("install", f"install {noun}"),
+            ("uninstall", f"remove {noun}"),
+            ("status", f"show whether {noun} is set up"),
+        ):
+            pc = pg_sub.add_parser(name, help=text)
+            pc.add_argument(
+                "--harness",
+                choices=["claude", "codex"],
+                default=None,
+                help="default: every supported harness found on PATH",
+            )
+            if name != "status":
+                pc.add_argument(
+                    "--print", action="store_true", help="show what would be done; change nothing"
+                )
+            if name != "status" and group == "mcp":
+                pc.add_argument(
+                    "--scope",
+                    choices=["user", "project"],
+                    default="user",
+                    help="claude only (codex is user-level); default: user",
+                )
+            pc.set_defaults(func=_cmd_connect, connect_group=group)
 
     pd = sub.add_parser("doctor", help="check config + ollama + db + intel + workers + cooldowns")
     pd.add_argument("--project", default=None)

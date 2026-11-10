@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>somm · components</title>
+<meta name="description" content="Every part of somm: what it is, the problem it solves, how it connects to the others, and the evidence for it.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="./">
+      <span class="mark">somm</span>
+      <span class="mark-sub">/ components</span>
+    </a>
+    <nav>
+      <a href="./">home</a>
+      <a href="glossary.html">glossary</a>
+      <a href="why.html">why</a>
+      <a class="gh" href="https://github.com/lavallee/somm" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="section">
+    <div class="wrap">
+      <h2>The components</h2>
+      <p class="section-lede">
+        Each part of somm in the same four parts: what it is, the problem it
+        solves, how it connects to the rest, and the proof. Proof is a number
+        or an incident from this repository, cited by file, or the words
+        <em>no evidence yet</em>. Terms link to the
+        <a href="glossary.html">glossary</a>.
+      </p>
+
+      <figure class="diagram map">
+        <svg viewBox="0 0 400 608" role="img" aria-labelledby="map-title map-desc" xmlns="http://www.w3.org/2000/svg">
+          <title id="map-title">How somm's components fit</title>
+          <desc id="map-desc">Work enters through the client, the proxy, a harness, or a coding agent using the MCP server. Each call passes through routing: workload, data boundary, pins and policy, plan pacing, cooldowns. A provider or a workload handler serves it. Every call writes one row to the project ledger, copied to a machine-wide mirror. The loop (model intel, shadow evaluation, recommendations, the sommelier) reads those rows and writes back. The read API, the CLI and the service read the result.</desc>
+          <defs><marker id="mh" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 L10 5 L0 10 z"/></marker></defs>
+          <text class="g" x="8" y="12">WHERE WORK COMES FROM</text>
+          <a href="#client"><g class="n"><rect x="6" y="20" width="190" height="48" rx="6"/>
+            <text class="t" x="101" y="41" text-anchor="middle">Client</text>
+            <text class="s" x="101" y="58" text-anchor="middle">somm.llm() in Python</text></g></a>
+          <a href="#proxy"><g class="n"><rect x="204" y="20" width="190" height="48" rx="6"/>
+            <text class="t" x="299" y="41" text-anchor="middle">Proxy</text>
+            <text class="s" x="299" y="58" text-anchor="middle">HTTP for other apps</text></g></a>
+          <a href="#harnesses"><g class="n"><rect x="6" y="76" width="190" height="48" rx="6"/>
+            <text class="t" x="101" y="97" text-anchor="middle">Harnesses</text>
+            <text class="s" x="101" y="114" text-anchor="middle">coding-agent attempts</text></g></a>
+          <a href="#mcp"><g class="n"><rect x="204" y="76" width="190" height="48" rx="6"/>
+            <text class="t" x="299" y="97" text-anchor="middle">MCP server + skill</text>
+            <text class="s" x="299" y="114" text-anchor="middle">your coding agent asks</text></g></a>
+          <path class="e" marker-end="url(#mh)" d="M200 130 L200 152"/>
+          <text class="g" x="8" y="145">EACH CALL</text>
+          <a href="#routing"><g class="n"><rect x="6" y="156" width="388" height="74" rx="6"/>
+            <text class="t" x="200" y="178" text-anchor="middle">Routing</text>
+            <text class="s" x="200" y="198" text-anchor="middle">workload &#8594; data boundary &#8594; pins and policy</text>
+            <text class="s" x="200" y="216" text-anchor="middle">&#8594; plan pacing &#8594; cooldowns &#8594; next route</text></g></a>
+          <path class="e" marker-end="url(#mh)" d="M200 234 L200 256"/>
+          <text class="g" x="8" y="249">SERVED BY</text>
+          <a href="#client"><g class="n"><rect x="6" y="260" width="190" height="48" rx="6"/>
+            <text class="t" x="101" y="281" text-anchor="middle">Providers</text>
+            <text class="s" x="101" y="298" text-anchor="middle">APIs, local models, seats</text></g></a>
+          <a href="#handlers"><g class="n"><rect x="204" y="260" width="190" height="48" rx="6"/>
+            <text class="t" x="299" y="281" text-anchor="middle">Handlers</text>
+            <text class="s" x="299" y="298" text-anchor="middle">rules, chips: the climb</text></g></a>
+          <path class="e" marker-end="url(#mh)" d="M200 312 L200 334"/>
+          <text class="g" x="8" y="327">ONE ROW PER CALL</text>
+          <a href="#ledger"><g class="n core"><rect x="6" y="338" width="190" height="48" rx="6"/>
+            <text class="t" x="101" y="359" text-anchor="middle">Ledger</text>
+            <text class="s" x="101" y="376" text-anchor="middle">.somm/calls.sqlite</text></g></a>
+          <a href="#ledger"><g class="n core"><rect x="204" y="338" width="190" height="48" rx="6"/>
+            <text class="t" x="299" y="359" text-anchor="middle">Mirror</text>
+            <text class="s" x="299" y="376" text-anchor="middle">~/.somm/global.sqlite</text></g></a>
+          <path class="e soft" d="M196 362 L204 362"/>
+          <path class="e" marker-end="url(#mh)" marker-start="url(#mh)" d="M200 392 L200 414"/>
+          <text class="g" x="8" y="407">THE LOOP</text>
+          <a href="glossary.html#model-intel"><g class="n"><rect x="6" y="418" width="190" height="48" rx="6"/>
+            <text class="t" x="101" y="439" text-anchor="middle">Model intel</text>
+            <text class="s" x="101" y="456" text-anchor="middle">prices, capabilities</text></g></a>
+          <a href="#shadow"><g class="n"><rect x="204" y="418" width="190" height="48" rx="6"/>
+            <text class="t" x="299" y="439" text-anchor="middle">Shadow evaluation</text>
+            <text class="s" x="299" y="456" text-anchor="middle">gold model, judges</text></g></a>
+          <a href="#inbox"><g class="n"><rect x="6" y="474" width="190" height="48" rx="6"/>
+            <text class="t" x="101" y="495" text-anchor="middle">Recommendations</text>
+            <text class="s" x="101" y="512" text-anchor="middle">the inbox</text></g></a>
+          <a href="#sommelier"><g class="n"><rect x="204" y="474" width="190" height="48" rx="6"/>
+            <text class="t" x="299" y="495" text-anchor="middle">Sommelier</text>
+            <text class="s" x="299" y="512" text-anchor="middle">decision memory</text></g></a>
+          <path class="e" marker-end="url(#mh)" d="M200 528 L200 550"/>
+          <text class="g" x="8" y="543">READ BY</text>
+          <a href="#read-api"><g class="n"><rect x="6" y="554" width="124" height="48" rx="6"/>
+            <text class="t" x="68" y="575" text-anchor="middle">Read API</text>
+            <text class="s" x="68" y="592" text-anchor="middle">somm_core.read</text></g></a>
+          <a href="#cli"><g class="n"><rect x="138" y="554" width="124" height="48" rx="6"/>
+            <text class="t" x="200" y="575" text-anchor="middle">CLI</text>
+            <text class="s" x="200" y="592" text-anchor="middle">somm &#8230;</text></g></a>
+          <a href="#service"><g class="n"><rect x="270" y="554" width="124" height="48" rx="6"/>
+            <text class="t" x="332" y="575" text-anchor="middle">Service</text>
+            <text class="s" x="332" y="592" text-anchor="middle">dashboard, API</text></g></a>
+        </svg>
+        <figcaption>Select a box to jump to its section. Harness attempts are checked against the data boundary and recorded, but do not use the provider chain. The MCP server reads the ledger and the loop's output.</figcaption>
+      </figure>
+
+      <ol class="toc">
+        <li><a href="#client">Client and providers</a></li>
+        <li><a href="#routing">Routing, cooldowns and pins</a></li>
+        <li><a href="#ledger">Ledger and mirror</a></li>
+        <li><a href="#workloads">Workloads</a></li>
+        <li><a href="#boundary">Data boundary</a></li>
+        <li><a href="#shadow">Shadow evaluation and judges</a></li>
+        <li><a href="#inbox">Recommendations and the inbox</a></li>
+        <li><a href="#sommelier">The sommelier</a></li>
+        <li><a href="#mcp">MCP server and skill</a></li>
+        <li><a href="#service">Service and dashboard</a></li>
+        <li><a href="#proxy">The proxy</a></li>
+        <li><a href="#plans">Plans and quota pacing</a></li>
+        <li><a href="#harnesses">Harnesses</a></li>
+        <li><a href="#handlers">Workload handlers and the climb</a></li>
+        <li><a href="#read-api">Read API</a></li>
+        <li><a href="#cli">The CLI</a></li>
+      </ol>
+
+      <!-- 1 -->
+      <div class="comp" id="client">
+        <h3>Client and providers</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            <code>somm.llm(project="my_app")</code> returns a client with
+            <code>generate</code>, <code>stream</code>, <code>embed</code>,
+            structured output, tool calling and async versions of each. Behind
+            it are eleven built-in providers: eight APIs (Anthropic, DeepSeek,
+            Gemini, MiniMax, Ollama, OpenAI, OpenRouter, Perplexity) and three
+            <a class="term" href="glossary.html#seat">seats</a>
+            (<code>claude-cli</code>, <code>codex-cli</code>,
+            <code>chatgpt</code>), plus any OpenAI-compatible server reached by
+            base URL. The library's only third-party dependency is
+            <code>httpx</code>.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            A project has three places that call a model, written months apart,
+            each with its own retry loop and its own idea of which exceptions
+            matter. None of them records which model actually answered.
+            Changing one import, <code>from somm.compat import GenericLLMCompat as FooLLM</code>,
+            leaves every call site alone and gives all three fallback, a cost
+            and a readable error, written to one place.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Every call goes through <a href="#routing">routing</a> and writes
+            one row to the <a href="#ledger">ledger</a>. Hooks let other tools
+            watch calls or stamp their own job id on them
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/plugins.md">plugins.md</a>).
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            In October 2026 a census of one machine counted 1.7 million calls
+            recorded since June across nine projects (VISION.md, "Re-grounding,
+            October 2026"). Provider differences are real and handled once:
+            image prompts failed on every OpenAI-compatible provider until
+            0.19.2 translated the block shape per provider (CHANGELOG.md, #70).
+            Provider list: <code>packages/somm/src/somm/providers/registry.py</code>.
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 2 -->
+      <div class="comp" id="routing">
+        <h3>Routing, cooldowns and pins</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            The router tries the configured providers in order. With no
+            override the order is MiniMax, OpenRouter, DeepSeek, Anthropic,
+            Gemini, OpenAI, Perplexity, then Ollama last, skipping any without
+            a key; <code>SOMM_PROVIDER_ORDER</code> replaces it. A model that
+            fails is put in a
+            <a class="term" href="glossary.html#cooldown">cooldown</a> stored
+            in SQLite, so every process sees it. A call that names no provider
+            moves on to the next. A call that names one is a
+            <a class="term" href="glossary.html#pin">pin</a>: it is served by
+            what you named or it fails, and the failure is recorded against the
+            model you asked for. A workload's
+            <a class="term" href="glossary.html#policy">policy</a> can set
+            retries, timeouts or the <code>somm/auto</code> tiers.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            One rejected API key at the front of the chain used to fail every
+            call that had not named a provider. Since 0.19.2 that provider is
+            cooled and the call carries on to the next one, and
+            <code>on_fallback</code> reports that it was passed over. The
+            opposite failure matters as much: an answer quietly served by a
+            substitute model makes every benchmark and comparison you run
+            wrong, which is why a pin never substitutes unless you pass
+            <code>allow_fallback=True</code>.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Before each attempt it checks the <a href="#boundary">data boundary</a>,
+            the workload's policy and <a href="#plans">plan pacing</a>. After
+            it, it writes provider health and the call row.
+            <a href="#inbox">Recommendations</a> read those failures.
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            A withdrawn OpenRouter model was retried every two minutes for six
+            months and reached 68,166 consecutive failures in one ledger,
+            because cooldowns had a fixed length. Since 0.17.2 the cooldown
+            doubles every ten consecutive failures, to at most a day
+            (CHANGELOG.md, 0.17.2).
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 3 -->
+      <div class="comp" id="ledger">
+        <h3>Ledger and mirror</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            The <a class="term" href="glossary.html#ledger">ledger</a> is a
+            SQLite file per project, <code>.somm/calls.sqlite</code>. Each call
+            is one row: workload, provider, model, tokens, latency, cost and
+            where the cost came from, outcome, a bounded error message and the
+            data tier it reached. The
+            <a class="term" href="glossary.html#mirror">mirror</a>,
+            <code>~/.somm/global.sqlite</code>, receives copies of calls and
+            workloads from every project (on by default;
+            <code>SOMM_CROSS_PROJECT=0</code> turns it off). Decisions are
+            always written there. Graded samples, evaluations and
+            recommendations stay in the project's own ledger.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            "What did I spend on MiniMax across all my projects this month?"
+            should be one query, not a dozen. And a telemetry failure must
+            never break the call it describes, or make you pay for it twice.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Everything else reads it. The <a href="#read-api">read API</a> is
+            the supported way to do so; plain SQL works too.
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            The October census read the mirror, saw zero evaluations and zero
+            recommendations, and first concluded the loop had never run. The
+            truth, 7,281 graded samples and 21 recommendations, was in one
+            project's own ledger, because the mirror does not carry those
+            tables (CHANGELOG.md, 0.17.0). In November one bad row was found to
+            kill the telemetry writer for the life of the process, and a locked
+            ledger could discard a paid answer and buy it again; 0.20.2 fixed
+            both (CHANGELOG.md, 0.20.2).
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 4 -->
+      <div class="comp" id="workloads">
+        <h3>Workloads</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            A <a class="term" href="glossary.html#workload">workload</a> is a
+            named job your code asks for, such as <code>claim_extract</code>,
+            rather than a model or a provider. It can carry a privacy class, a
+            data boundary, a daily budget, required capabilities, input and
+            output schemas and a routing policy. It is the unit that cost,
+            failures, grades and recommendations attach to.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            Two jobs can use the same model: one is fine, the other fails half
+            the time and costs most of the bill. "Which of my jobs is the
+            problem?" is a question about workloads, and it cannot be answered
+            from per-model totals.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Every ledger row names one. Shadow evaluation, handlers,
+            recommendations and decisions are all keyed on it.
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof none">
+            The evidence so far is about what is still hard. In August 2026, 26
+            of 29 workloads could not be matched to the code that called them,
+            including every one of the busiest (VISION.md); schema 23 added the
+            call site. Only 3 of 214 workloads declare an output schema, so
+            grading most of them is a similarity guess (ROADMAP.md, "Output-contract
+            adoption").
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 5 -->
+      <div class="comp" id="boundary">
+        <h3>Data boundary</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            Every <a class="term" href="glossary.html#route">route</a> (a
+            provider, a model, an endpoint) gets a
+            <a class="term" href="glossary.html#data-boundary">tier</a>, from
+            strictest to loosest: <code>local</code>, <code>zdr</code>,
+            <code>subscribed</code>, <code>unvetted</code>. A workload may
+            declare a boundary; any route looser than it is refused before a
+            request leaves the process, and every served call records its tier.
+            Unknown routes are <code>unvetted</code>; the classifier never
+            guesses upward. Your own <code>~/.somm/boundary.toml</code>
+            overrides the shipped defaults.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            A workload that reads medical notes is marked private. Before
+            0.21, a pinned call, a stream, the proxy or an MCP comparison could
+            still send it to a cloud provider, although three documents said
+            the router prevented that.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Checked by routing, pins, streams, the proxy, MCP compare, shadow
+            evaluation and harnesses. <code>somm boundary audit</code> reads
+            the ledger and reports the loosest tier that served each workload.
+            Details: <a href="https://github.com/lavallee/somm/blob/main/docs/data-boundary.md">data-boundary.md</a>.
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            0.21.0 fixed the leak above and a documented shadow-evaluation
+            privacy guard that did not exist (CHANGELOG.md, 0.21.0, "Fixed").
+            0.22.0 admits an OpenRouter model as <code>zdr</code> only when
+            OpenRouter's own zero-retention list names qualifying upstreams;
+            on 2026-11-09 neither of the two free models in the default roster
+            had one, so both are still refused under that boundary
+            (CHANGELOG.md, 0.22.0).
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 6 -->
+      <div class="comp" id="shadow">
+        <h3>Shadow evaluation and judges</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            Opt a workload in and somm stores a sample of its successful calls
+            (for example 3%). A background worker re-runs each one on a
+            <a class="term" href="glossary.html#gold-model">gold model</a> and
+            scores how closely the production answer matches. An optional
+            <a class="term" href="glossary.html#judge">judge</a> panel scores
+            answers against a rubric. Gold and judge requests are ordinary
+            ledger rows, so grading shows up in your costs, and a daily budget
+            caps it.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            You picked a cheap model on day one without knowing whether it was
+            good enough. Two weeks of graded samples from your real prompts
+            show how close it gets to the stronger model, without writing a
+            test set by hand.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Reads stored samples; writes evaluation results. Feeds
+            <code>somm frontier</code>, <a href="#inbox">recommendations</a>,
+            the <a href="#sommelier">sommelier</a>'s ranking and
+            <code>somm eval promote-call</code>, which turns a graded call into
+            a fixture for CI. Private workloads are never sampled. Runs with
+            <code>somm loop run</code> or on a timer with
+            <code>somm loop install</code>
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/intelligence-loop.md">intelligence-loop.md</a>).
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            One project's grader ran inside its web process, graded 7,281
+            samples, and stopped on 2026-09-19 when that process did; nobody
+            noticed for three weeks (CHANGELOG.md, 0.17.0). That is why the loop
+            became a command and a timer in 0.17. Without an output schema,
+            grading measures similarity to the gold answer, not correctness
+            (ROADMAP.md).
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 7 -->
+      <div class="comp" id="inbox">
+        <h3>Recommendations and the inbox</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            A weekly worker applies four rules and writes each finding with its
+            evidence: <code>switch_model</code> (another graded model scores at
+            least 10% higher at no more cost), <code>new_model_landed</code>
+            (a newer same-provider model is at least 20% cheaper),
+            <code>chronic_cooldown</code> (at least 10% of a workload's calls
+            to a provider fail) and <code>adaptive_param_bump</code> (a
+            reasoning model keeps spending its whole output budget thinking).
+            These are rules, not a language model. The
+            <a class="term" href="glossary.html#inbox">inbox</a>
+            (<code>somm inbox list|show|apply|dismiss</code>, or the MCP tools)
+            is where you act on them.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            Grades in a table change nothing. Someone has to see "this workload
+            would do as well on a cheaper model, here are the scores" and
+            decide.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Reads evaluations, calls, provider health and model intel. Applying
+            one records a <a href="#sommelier">decision</a>.
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof none">
+            The evidence so far is unflattering. Triage of 49 open
+            recommendations in October found 40 came from one rule misreading
+            one column; 0.17.2 fixed it (CHANGELOG.md, 0.17.2). By November, 54
+            recommendations had been created and none applied (VISION.md). No
+            recommendation has yet been applied on a real fleet because the
+            evidence said so; that is the graduation test for ROADMAP phase 6.
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 8 -->
+      <div class="comp" id="sommelier">
+        <h3>The sommelier</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            Decision memory. <code>somm_advise</code> ranks candidate models
+            using <a class="term" href="glossary.html#model-intel">model intel</a>,
+            shadow scores, plan headroom and your earlier decisions.
+            <code>somm_record_decision</code> stores the choice and the reason,
+            always in the machine-wide store. <code>somm_search_decisions</code>
+            finds earlier decisions from any project. The name is a metaphor:
+            it suggests, and remembers what you liked.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            In one project you tried a free vision model and found it flaky. A
+            month later, in another project, your coding agent suggests the
+            same model from its training data. With the decision recorded, the
+            agent finds it first (see the
+            <a href="./#idea">illustration on the home page</a>).
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Reads model intel, evaluations, plans and decisions; written to
+            from the <a href="#mcp">MCP server</a> and when an inbox item is
+            applied.
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof none">
+            No evidence yet that it works in practice. In October 87 decisions
+            had been recorded, nearly all from one session; in November,
+            recalls had never been stored, and nearly every decision in the
+            shared ledger had been written by a test fixture (VISION.md). 0.20.2
+            stopped the test suite writing there (CHANGELOG.md). Storing
+            recalls is ROADMAP phase 1; until then the north-star number cannot
+            be counted.
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 9 -->
+      <div class="comp" id="mcp">
+        <h3>MCP server and skill</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            <code>somm-mcp</code> is a local
+            <a class="term" href="glossary.html#mcp">MCP</a> server with 14
+            tools: <code>somm_stats</code>, <code>somm_search_calls</code>,
+            <code>somm_recommend</code>, <code>somm_inbox</code>,
+            <code>somm_apply_recommendation</code>,
+            <code>somm_dismiss_recommendation</code>,
+            <code>somm_register_workload</code>, <code>somm_register_prompt</code>,
+            <code>somm_compare</code>, <code>somm_replay</code>,
+            <code>somm_eval_promote_call</code>, <code>somm_advise</code>,
+            <code>somm_record_decision</code> and
+            <code>somm_search_decisions</code>. <code>somm-skill</code> is a
+            set of instructions (<code>SKILL.md</code>, <code>SOMMELIER.md</code>)
+            that tells a coding agent to use <code>somm.llm()</code>, name its
+            workloads and ask the sommelier before choosing a model.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            Asked what a workload cost this week, or which model to use, a
+            coding agent answers from its training data. With the server
+            connected it answers from your ledger.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Reads the ledger, the mirror and the inbox; writes workloads,
+            prompt versions and decisions. Stored prompt and response text is
+            returned marked as untrusted, so an agent does not take it as
+            instructions
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/threat-model.md">threat-model.md</a>).
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof none">
+            No evidence yet. The November audit found both installed in no
+            coding-agent harness (VISION.md). A <code>somm mcp install</code>
+            command is planned (ROADMAP.md, phase 4).
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 10 -->
+      <div class="comp" id="service">
+        <h3>Service and dashboard</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            <code>somm-service</code>, started with <code>somm serve</code>,
+            is a local web app on <code>localhost:7878</code>: a dashboard of
+            usage, cost and quality by project and workload, a JSON read API,
+            the scheduler that runs the loop, the <a href="#proxy">proxy</a>
+            and OpenTelemetry trace ingest. It binds to loopback by default and
+            requires a bearer token for everything except the dashboard's own
+            reads and inbox actions from the same machine.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            Not every question deserves a SQL query. A browser view of the week
+            by workload answers most of them.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Reads the ledger; hosts the loop workers; the proxy and trace
+            ingest write ledger rows.
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            A security fix rather than a usage number: until 0.21.0, three
+            request headers that any client can set opened every service route,
+            including the proxy routes that spend money. The header path now
+            requires a loopback peer and covers only dashboard reads and
+            inbox actions (CHANGELOG.md, 0.21.0, "Security"). No dashboard screenshot is
+            published yet.
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 11 -->
+      <div class="comp" id="proxy">
+        <h3>The proxy</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            Two HTTP routes in the service: <code>POST /v1/messages</code>
+            (Anthropic Messages, with streaming) and
+            <code>POST /v1/chat/completions</code> (OpenAI Chat Completions,
+            no streaming). A header, <code>X-Somm-Workload</code>, names the
+            workload. Calls share the library's budget gate, data boundary and
+            ledger.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            A program you cannot edit, or one not written in Python, still
+            makes model calls. Point its base URL at somm and they are
+            recorded.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>Writes ledger rows under the named workload and project.</dd>
+          <dt>Proof</dt>
+          <dd class="proof none">
+            A known limit rather than evidence. The proxy makes its calls
+            through LiteLLM, so it bypasses somm's routing, cooldowns, pins and
+            error codes; <code>somm/auto</code> requests choose their tier with
+            somm's decision function but are still sent through LiteLLM
+            (<code>packages/somm-service/src/somm_service/proxy.py</code>).
+            ROADMAP phase 4 moves the proxy onto somm's own router and removes
+            the dependency.
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 12 -->
+      <div class="comp" id="plans">
+        <h3>Plans and quota pacing</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            <code>~/.somm/plans.toml</code> says how each provider bills:
+            <a class="term" href="glossary.html#plan">PAYG</a> (per-token
+            dollars) or <a class="term" href="glossary.html#plan">metered</a>
+            (a quota per window, such as requests per five hours).
+            <code>somm plans</code> shows usage in each window across every
+            project, the pace against the clock, a projection, and
+            <a class="term" href="glossary.html#observed-ceiling">observed ceilings</a>
+            learned from your own rate-limit errors. The router tries a
+            provider that is burning faster than its window allows only after
+            the others; with <code>enforce = true</code> it skips one that is
+            exhausted.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            A coding plan costs nothing per call and still runs out on Tuesday.
+            A meter that counts only dollars never sees it coming.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Routing reads pacing before each call; the sommelier notes
+            headroom when it ranks a metered model; adaptive routing conserves a weekly
+            subscription quota
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/adaptive-routing.md">adaptive-routing.md</a>).
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            In the week of 13 July 2026 one project made 306,734 calls and
+            91.1% failed because every provider in its chain was cooling;
+            536,862 such failures over the five-week incident. An observed
+            ceiling had been recorded in <code>plans.toml</code>, but with
+            <code>enforce = false</code> nothing throttled, and no alert fired
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/incidents/2026-07-provider-exhaustion.md">the incident write-up</a>).
+            The guard that existed was switched off.
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 13 -->
+      <div class="comp" id="harnesses">
+        <h3>Harnesses</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            <code>somm.harnesses</code> runs one
+            <a class="term" href="glossary.html#attempt">attempt</a> of a
+            coding agent (Claude Code, Codex, OpenCode or Pi) and returns one
+            result shape: outcome, final text, session id, usage, reported
+            cost, why it stopped, and when a seat limit lifts.
+            <code>record=True</code> writes the attempt to the ledger. It is
+            not a job runner: queues, retries across attempts and approvals
+            belong to the tool that calls it.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            A task runner that switches from one agent CLI to another should
+            not have to rewrite its event parsing, and an agent attempt is
+            often the most expensive call a project makes, so it belongs in
+            the same ledger as the API calls.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Writes ledger rows beside API calls, and is checked against the
+            data boundary before launch. Details:
+            <a href="https://github.com/lavallee/somm/blob/main/docs/agent-harnesses.md">agent-harnesses.md</a>.
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            Before 0.17 no agent attempt reached the ledger (CHANGELOG.md,
+            0.17.0). In 0.18 a read-only request sent to an adapter that could
+            not enforce it ran with full write access; 0.19.0 refuses such
+            requests (CHANGELOG.md, 0.19.0). No recommendation yet uses which
+            harness a model ran in (ROADMAP.md, "Harness receipts").
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 14 -->
+      <div class="comp" id="handlers">
+        <h3>Workload handlers and the climb</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            A <a class="term" href="glossary.html#handler">handler</a> serves a
+            workload with something other than the provider chain: a rule, a
+            classifier, a <a class="term" href="glossary.html#chip">chip</a>.
+            It returns an answer or declines, and a declined call goes to the
+            models as before. Its calls are recorded under the same workload
+            name, so model-served and handler-served calls compare in one
+            query. The <a class="term" href="glossary.html#climb">climb</a> is
+            the practice this allows: move each part of a workload that a rule
+            can decide out of the model, one evidenced step at a time, and
+            move it back if a model does better.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            A workload starts as a model call because that is quickest to
+            write. The ledger later shows that many inputs always get the same
+            answer. A router that only chooses between models cannot say "stop
+            calling a model here"; a handler can, and the ledger shows what it
+            saved.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            Runs before the provider chain; published by other packages through
+            the <code>somm.workload_handlers</code> entry point. The first
+            non-model kind, <code>chip</code>, is published by fab
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/workload-handlers.md">workload-handlers.md</a>).
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            The first climb is live: gabe's <code>same_event</code>, 700,000
+            calls on a 7B local model, runs as a chipsocket socket with somm as
+            its gateway and meter (VISION.md). The November audit adds the
+            limit: rules answered more than nine in ten of one workload's
+            decisions and somm saw only the rest, so most of the climb is
+            invisible to the ledger today (VISION.md). ROADMAP phase 5 counts
+            those decisions.
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 15 -->
+      <div class="comp" id="read-api">
+        <h3>Read API</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            <code>somm_core.read</code>: read-only functions over a ledger
+            (<code>search_calls</code>, <code>spend_today</code>,
+            <code>fleet_summary</code> and others) with a stability promise:
+            result fields are only ever added, never renamed or removed.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            Every tool that writes its own SQL against the ledger invents its
+            own answer to small questions, such as what to call a call with no
+            registered workload, and the dashboards stop agreeing.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>
+            The CLI, the MCP server and the service use it, and so can your
+            tools
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/read-api.md">read-api.md</a>).
+          </dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            By October 2026 seven tools in one estate each had their own rollup
+            and disagreed (read-api.md). Adoption is not finished: in November
+            ten consumers still read the ledger with their own SQL (VISION.md).
+          </dd>
+        </dl>
+      </div>
+
+      <!-- 16 -->
+      <div class="comp" id="cli">
+        <h3>The CLI</h3>
+        <dl>
+          <dt>What it is</dt>
+          <dd>
+            The <code>somm</code> command, with 25 subcommands in 0.22.0
+            (<code>somm --help</code>). The ones used most:
+            <code>status</code>, <code>doctor</code>, <code>plans</code>,
+            <code>inbox</code>, <code>loop</code>, <code>boundary</code>,
+            <code>frontier</code>, <code>compare</code>, <code>generate</code>
+            and <code>serve</code>. With <code>--json</code>, output and
+            failures have a fixed shape and stable exit codes.
+          </dd>
+          <dt>The problem</dt>
+          <dd>
+            During an incident you need one screen that says what is wrong:
+            <code>somm doctor</code> shows configuration, the ledger, active
+            cooldowns, the loop's last run and the share of calls in the last
+            24 hours that failed because every provider was cooling.
+          </dd>
+          <dt>How it connects</dt>
+          <dd>Reads through the read API; drives the loop, workloads, prompts and evaluations.</dd>
+          <dt>Proof</dt>
+          <dd class="proof">
+            <code>somm doctor --max-exhausted-rate</code> was added after the
+            July incident and exits non-zero above a threshold, so a timer can
+            alert; the write-up notes the worst week would have shown 91.1%
+            (<a href="https://github.com/lavallee/somm/blob/main/docs/incidents/2026-07-provider-exhaustion.md">incident</a>).
+          </dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      somm · <a href="./">home</a> · <a href="glossary.html">glossary</a> ·
+      <a href="why.html">why build this</a> ·
+      <a href="https://github.com/lavallee/somm" rel="noopener">source</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

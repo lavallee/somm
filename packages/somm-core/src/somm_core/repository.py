@@ -2097,9 +2097,37 @@ class Repository:
         with self._open() as conn:
             conn.execute("VACUUM")
 
-    def record_outcome_update(self, call_id: str, outcome: Outcome) -> None:
-        """Late-arriving outcome mark. Goes into call_updates, not calls."""
-        self.record_call_update(call_id, field="outcome", value=outcome.value)
+    def record_outcome_update(
+        self,
+        call_id: str,
+        outcome: Outcome,
+        *,
+        error_kind: str | None = None,
+        error_detail: str | None = None,
+    ) -> None:
+        """Late-arriving outcome mark (``SommResult.mark``).
+
+        Appends the mark to ``call_updates`` and corrects ``calls.outcome`` in
+        the same transaction, so every rollup that reads the outcome column
+        sees it. ``error_kind``/``error_detail``, when given, replace the
+        row's; None leaves them as they were.
+        """
+        with self._open() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT INTO call_updates (call_id, field, value) VALUES (?, 'outcome', ?)",
+                    (call_id, outcome.value),
+                )
+                conn.execute(
+                    "UPDATE calls SET outcome = ?, error_kind = COALESCE(?, error_kind), "
+                    "error_detail = COALESCE(?, error_detail) WHERE id = ?",
+                    (outcome.value, error_kind, error_detail, call_id),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
 
     def record_call_update(self, call_id: str, *, field: str, value: str) -> None:
         """Append one late-arriving metadata row for a call.
@@ -2432,8 +2460,8 @@ class Repository:
                     id, ts, project, workload_id, workload_name,
                     question, question_hash, constraints_json, candidates_json,
                     chosen_provider, chosen_model, rationale, agent,
-                    superseded_by, outcome_note
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    superseded_by, outcome_note, recalled_from
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     decision.id,
@@ -2451,6 +2479,7 @@ class Repository:
                     decision.agent,
                     decision.superseded_by,
                     decision.outcome_note,
+                    decision.recalled_from,
                 ),
             )
 
@@ -2489,7 +2518,7 @@ class Repository:
             "SELECT id, ts, project, workload_id, workload_name, question, "
             "       question_hash, constraints_json, candidates_json, "
             "       chosen_provider, chosen_model, rationale, agent, "
-            "       superseded_by, outcome_note "
+            "       superseded_by, outcome_note, recalled_from "
             f"FROM decisions {where} ORDER BY ts DESC LIMIT ?"
         )
         params.append(limit)
@@ -2503,7 +2532,7 @@ class Repository:
                 "SELECT id, ts, project, workload_id, workload_name, question, "
                 "       question_hash, constraints_json, candidates_json, "
                 "       chosen_provider, chosen_model, rationale, agent, "
-                "       superseded_by, outcome_note FROM decisions WHERE id = ?",
+                "       superseded_by, outcome_note, recalled_from FROM decisions WHERE id = ?",
                 (decision_id,),
             ).fetchone()
         return _row_to_decision(row) if row else None
@@ -2759,4 +2788,5 @@ def _row_to_decision(row) -> Decision:
         agent=row[12],
         superseded_by=row[13],
         outcome_note=row[14],
+        recalled_from=row[15],
     )

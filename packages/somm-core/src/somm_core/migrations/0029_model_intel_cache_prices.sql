@@ -1,4 +1,4 @@
--- Migration 0028 — prompt-cache prices beside the input and output prices.
+-- Migration 0029 — prompt-cache prices beside the input and output prices.
 --
 -- Calls already record cache-read and cache-write tokens (cache_tokens_in,
 -- cache_tokens_out), but cost_for_call priced every prompt token at the full

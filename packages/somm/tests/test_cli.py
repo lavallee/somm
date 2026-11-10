@@ -931,6 +931,48 @@ def test_doctor_reports_worker_heartbeats(tmp_path, capsys, monkeypatch):
     assert "last_success_at" in out
 
 
+def test_doctor_prints_the_north_star_numbers(tmp_path, capsys, monkeypatch):
+    cfg = _tmp_config(tmp_path)
+    cfg.cross_project_path = tmp_path / "global.sqlite"
+    repo = Repository(cfg.db_path)
+    wl = repo.register_workload(name="ns", project=cfg.project)
+    _write_call(repo, cfg, wl, ts=datetime.now(UTC), outcome=Outcome.OK)
+    with repo._open() as conn:
+        conn.execute(
+            "INSERT INTO recommendations (workload_id, action, evidence_json, created_at, "
+            "dismissed_at) VALUES (?, 'switch_model', '{}', datetime('now', '-20 days'), "
+            "datetime('now', '-19 days'))",
+            (wl.id,),
+        )
+    Repository(cfg.global_db_path).write_call(
+        Call(id=str(uuid.uuid4()), ts=datetime.now(UTC), project=cfg.project, workload_id=None,
+             prompt_id=None, provider="ollama", model="m", tokens_in=1, tokens_out=1,
+             latency_ms=1, cost_usd=0.0, outcome=Outcome.OK, error_kind=None, prompt_hash="p",
+             response_hash="r", routing_json=json.dumps({"route_source": "policy"}))
+    )
+    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr(
+        "somm.cli.OllamaProvider.health",
+        lambda self: ProviderHealth(available=True, detail="ok"),
+    )
+    monkeypatch.setattr(
+        "somm_core.registry.registered_ledgers", lambda: [(cfg.project, cfg.db_path)]
+    )
+
+    main(["doctor"])
+    out = capsys.readouterr().out
+    assert "north star:" in out
+    assert "decisions recalled       not measurable yet: no decisions recorded" in out
+    assert "evidence-routed share    not measurable yet: none of 1 production calls" in out
+    assert "recommendations applied  100.0%  (1 of 1 applied or dismissed within 14d" in out
+
+    main(["doctor", "--global"])
+    out = capsys.readouterr().out
+    assert "(recommendations totalled over project ledgers)" in out
+    assert "evidence-routed share    100.0%  (1 of 1 production calls, 30d; 0 unknown)" in out
+    assert "recommendations applied  100.0%  (1 of 1" in out
+
+
 # ---------------------------------------------------------------------------
 # doctor: trailing-24h SommProvidersExhausted regression gate
 # (docs/incidents/2026-07-provider-exhaustion.md)

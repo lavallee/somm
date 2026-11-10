@@ -276,7 +276,7 @@ def test_claude_cli_reports_whole_prompt_and_seat_cost(monkeypatch):
     )
 
     def fake_run(cmd, *, input, capture_output, text, timeout, cwd, env):
-        assert cmd[-2:] == ["--tools", ""]
+        assert cmd[-3:] == ["--tools", "", "--no-session-persistence"]
         return subprocess.CompletedProcess(cmd, 0, stdout=envelope, stderr="")
 
     monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", fake_run)
@@ -307,7 +307,7 @@ def test_claude_cli_attributes_confirmed_pin_over_auxiliary_pass(monkeypatch, pi
     }
 
     def fake_run(cmd, **kwargs):
-        assert cmd[-2:] == ["--model", "claude-opus-5-5"]
+        assert cmd[cmd.index("--model") + 1] == "claude-opus-5-5"
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(envelope), stderr="")
 
     monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", fake_run)
@@ -322,7 +322,7 @@ def test_claude_cli_attributes_confirmed_pin_over_auxiliary_pass(monkeypatch, pi
     assert response.raw == envelope
 
 
-@pytest.mark.parametrize("pin", [None, "absent-model"])
+@pytest.mark.parametrize("pin", ["absent-model"])
 @pytest.mark.parametrize("prompt_field", ["inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"])
 def test_claude_cli_attributes_main_model_by_prompt_volume(monkeypatch, pin, prompt_field):
     from somm.providers.claude_cli import ClaudeCLIProvider
@@ -344,7 +344,7 @@ def test_claude_cli_attributes_main_model_by_prompt_volume(monkeypatch, pin, pro
     ({"claude-opus-5-5": {"inputTokens": 2, "outputTokens": 4}}, None, "claude-opus-5-5"),
     ({"aux": {"outputTokens": 1}, "main": {"outputTokens": 4}}, None, "main"),
     ({}, "pinned", "pinned"),
-    ({}, None, "claude-cli"),
+    ({}, None, "claude-haiku-5-5"),  # no pin: the provider default, never the CLI's
 ])
 def test_claude_cli_usage_fallbacks(monkeypatch, model_usage, pin, expected):
     from somm.providers.claude_cli import ClaudeCLIProvider
@@ -554,3 +554,36 @@ def test_pinned_only_construction_happens_once(tmp_path, cli_on_path):
     second = llm._pinned_only_providers()
     llm.close()
     assert first is second
+
+
+def test_claude_cli_default_call_is_lean_pinned_and_leaves_no_session(monkeypatch):
+    from somm.providers.claude_cli import ClaudeCLIProvider
+
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"result":"ok"}', stderr="")
+
+    monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", fake_run)
+    ClaudeCLIProvider().generate(SommRequest(prompt="ping"))
+    cmd = seen[0]
+    assert cmd[cmd.index("--model") + 1] == "claude-haiku-5-5"
+    assert cmd[-6:] == ["--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"]
+
+
+def test_claude_cli_retries_without_flag_unknown_to_an_old_cli(monkeypatch):
+    from somm.providers.claude_cli import ClaudeCLIProvider
+
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        if "--no-session-persistence" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="error: unknown option '--no-session-persistence'")
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"result":"ok"}', stderr="")
+
+    monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", fake_run)
+    assert ClaudeCLIProvider().generate(SommRequest(prompt="ping")).text == "ok"
+    assert len(seen) == 2 and "--no-session-persistence" not in seen[1]
