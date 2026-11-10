@@ -5,6 +5,19 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.24.1] — 2026-11-10
+
+### Fixed
+- **A runner that launches Claude itself got an empty prompt.** Since 0.20.2 the
+  `claude-cli` harness adapter always left the prompt out of argv and returned it
+  from `stdin_data()`, whatever the request said. A runner that calls `build_argv`
+  and writes stdin only when `request.prompt_via_stdin` is set therefore ran
+  `claude -p` with nothing on stdin. The adapter follows the request again, like the
+  other adapters: the prompt is `-p`'s argument unless `prompt_via_stdin` is set. A
+  prompt that starts with `-` gets a leading space in argv so it cannot be read as an
+  option, and somm's own launch moves such a prompt, or one too long for a single
+  argument, to stdin.
+
 ## [0.24.0] — 2026-11-10
 
 ### Added
