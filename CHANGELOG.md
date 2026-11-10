@@ -5,6 +5,14 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.26.1] — 2026-11-10
+
+### Fixed
+- **A fresh install of `somm-mcp` could not start.** Its dependency was `mcp>=1.30.0`
+  with no upper bound, so a new environment resolved the 2.x SDK, where `FastMCP`
+  was renamed, and importing the server failed. The dependency is now
+  `mcp>=1.30.0,<2`. Moving the server to the 2.x SDK stays on the roadmap.
+
 ## [0.26.0] — 2026-11-10
 
 ### Added
