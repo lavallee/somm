@@ -83,7 +83,7 @@ _CALL_COLUMNS = (
     "latency_ms", "cost_usd", "outcome", "error_kind", "error_detail", "prompt_hash", "response_hash",
     "session_id", "parent_call_id", "correlation_id", "ttft_ms", "cache_tokens_in",
     "cache_tokens_out", "reasoning_tokens", "origin", "call_site", "client_version", "routing_json",
-    "data_tier", "cost_source",
+    "data_tier", "cost_source", "kind", "label", "p_top", "abstained", "result_json",
 )
 
 
@@ -871,3 +871,71 @@ def across_ledgers(
         for row in [got] if isinstance(got, dict) else got:
             rows.append({**row, "ledger_project": project})
     return {"rows": rows, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# Decision calibration — decide rows (calls.kind = 'decide') against verdicts.
+
+VERDICT_FIELD = "verdict"
+
+
+def decision_calibration(
+    conn_or_path,
+    project: str,
+    workload: str,
+    *,
+    since_days: int | None = None,
+    model: str | None = None,
+    bins: int = 10,
+) -> dict:
+    """Brier score and ECE for one workload's decisions that have a verdict.
+
+    A verdict is a ``call_updates`` row with field ``verdict`` whose value is
+    the label that was right (``DecisionResult.verdict``). A decision counts
+    as correct when that value equals the row's ``label``; the latest verdict
+    wins. Abstained rows are included: calibration is the model's, not the
+    threshold's. ``workload`` matches the registered name or the workload id.
+
+    Returns ``somm_core.calibration.calibration`` (``n``, ``brier``, ``ece``,
+    ``accuracy``, ``bins``) plus ``workload``, ``model``, ``decisions`` (all
+    successful decide rows in scope) and ``unverified`` (those without a
+    verdict). A ledger older than migration 0030 has no decide rows.
+    """
+    from somm_core.calibration import calibration
+
+    with _ledger(conn_or_path) as conn:
+        cols = _columns(conn, "calls")
+        pairs: list[tuple[float, bool]] = []
+        total = 0
+        if {"kind", "label", "p_top"} <= cols:
+            clauses = [
+                "c.project = ?",
+                "c.kind = 'decide'",
+                "c.outcome = 'ok'",
+                "(w.name = ? OR c.workload_id = ?)",
+            ]
+            params: list[object] = [project, workload, workload]
+            if since_days is not None:
+                clauses.append("c.ts >= datetime('now', ?)")
+                params.append(f"-{int(since_days)} days")
+            if model:
+                clauses.append("c.model = ?")
+                params.append(model)
+            rows = conn.execute(
+                f"""
+                SELECT c.label, c.p_top,
+                       (SELECT u.value FROM call_updates u
+                         WHERE u.call_id = c.id AND u.field = ?
+                         ORDER BY u.id DESC LIMIT 1) AS truth
+                FROM calls c LEFT JOIN workloads w ON w.id = c.workload_id
+                WHERE {" AND ".join(clauses)}
+                """,
+                [VERDICT_FIELD, *params],
+            ).fetchall()
+            total = len(rows)
+            pairs = [
+                (p, truth == label) for label, p, truth in rows if truth is not None and p is not None
+            ]
+    out = calibration(pairs, bins=bins)
+    out.update(workload=workload, model=model, decisions=total, unverified=total - out["n"])
+    return out

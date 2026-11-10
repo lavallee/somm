@@ -303,6 +303,13 @@ class Call:
     # rows written before the column existed and on boundary refusals, which
     # reached no route; the audit classifies those from provider/model.
     data_tier: str | None = None
+    # 0030: decision calls (SommLLM.decide). kind is None for an ordinary
+    # call and "decide" for a decision; the rest are None unless kind is set.
+    kind: str | None = None
+    label: str | None = None
+    p_top: float | None = None
+    abstained: bool | None = None
+    result_json: str | None = None
 
 
 @dataclass(slots=True)

@@ -262,6 +262,26 @@ with cross-project decision memory.
   result = llm.generate(prompt=..., workload="triage", reasoning_effort="low")
   ```
 
+- **Decisions (classification-shaped work)** — when the answer is a yes/no,
+  one of a fixed set of labels, or a level on a scale, use `llm.decide`
+  instead of prompting an LLM and parsing its text. It calls a decision
+  model (TypeSafe System One, key in `TYPESAFE_API_KEY`) and returns a label
+  with a probability, recorded and priced on the ledger like any call. Do
+  not call the decision API directly: a direct call has no cost row, no
+  boundary or budget gate, and no calibration.
+
+  ```python
+  r = llm.decide(ticket, ask="Is this about billing?", workload="ticket_billing")
+  r = llm.decide(ticket, ask="Which team owns this?", labels=["billing", "auth", "other"],
+                 workload="ticket_route", min_p=0.8)
+  if r.abstained:  # not sure enough: escalate, same workload
+      value, _ = llm.generate_structured(ticket, schema=Route, workload="ticket_route",
+                                         parent_call_id=r.call_id)
+  r.verdict("auth")  # when you learn the right label; feeds calibration
+  ```
+
+  See `docs/decisions.md`.
+
 ### 8. Turn the intelligence loop on
 
 A project that only records calls gets half of somm. The loop — model-intel
