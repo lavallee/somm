@@ -172,6 +172,8 @@ The reference plugins live in `packages/somm/src/somm/plugins/`.
 
 ### OpenTelemetry export
 
+Span shape, attributes and the pinned convention version are in [otel.md](otel.md).
+
 Set `SOMM_OTEL_ENDPOINT` to the full OTLP HTTP/protobuf traces endpoint before
 constructing the first `SommLLM`:
 
@@ -181,7 +183,7 @@ export SOMM_OTEL_ENDPOINT="https://collector.example.com/v1/traces"
 
 Somm's built-in `somm.plugins` entry point then creates an SDK
 `TracerProvider`, an OTLP HTTP/protobuf span exporter, and a
-`BatchSpanProcessor`. Completed calls become `gen_ai` spans through the same
+`BatchSpanProcessor`. Completed calls become GenAI spans through the same
 `post_process` hook used by manual registration. The endpoint is used exactly
 as configured; Somm does not append `/v1/traces`.
 

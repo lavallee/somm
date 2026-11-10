@@ -55,11 +55,13 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextlib
+import contextvars
 import inspect
 import logging
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable, MutableSequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -457,6 +459,9 @@ def fire_post_process(event: dict[str, Any]) -> None:
     if not hooks:
         return
     executor = _get_post_process_executor()
+    # Stamp when the call finished, and carry the caller's contextvars (so an
+    # exporter's spans nest under the caller's active span) onto the worker.
+    event = {**event, "emitted_at_ns": event.get("emitted_at_ns") or time.time_ns()}
     # Per-hook shallow copy: the caller's event dict must not be read on the
     # worker thread (the caller keeps running and post_call already touched
     # it), and one background hook must not mutate another's view.
@@ -474,7 +479,8 @@ def fire_post_process(event: dict[str, Any]) -> None:
                 continue
             _bump_pending(1)
         try:
-            executor.submit(_run_post_process_job, hook.fn, dict(event))
+            executor.submit(
+                contextvars.copy_context().run, _run_post_process_job, hook.fn, dict(event))
         except Exception:
             with _post_process_pending_lock:
                 _bump_pending(-1)

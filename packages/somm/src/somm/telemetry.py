@@ -41,8 +41,10 @@ class WriterQueue:
     """Per-process async writer. One queue, one draining thread, one DB connection.
 
     Optional cross-project mirror: if `mirror_repo` is supplied, every
-    successful batch insert is replicated there. Mirror failures are logged
-    and spilled to a separate mirror_spool but do not block the primary write.
+    successful batch insert is replicated there. A busy mirror is retried like
+    the primary; a batch that still fails is counted in ``mirror_failures``
+    and reported once on stderr, never spilled (the rows are safe in the
+    project ledger, and ``somm mirror sync`` copies them across later).
     """
 
     _STOP = object()
@@ -70,6 +72,9 @@ class WriterQueue:
         # Rows the ledger rejected as bad data, kept under spool/quarantine/.
         self.quarantined = 0
         self.restarts = 0
+        # Batches the mirror never took (see _mirror).
+        self.mirror_failures = 0
+        self._mirror_warned = False
 
     @property
     def healthy(self) -> bool:
@@ -309,12 +314,38 @@ class WriterQueue:
         Failures are isolated from the primary write — never raise upward."""
         if self._mirror_repo is None:
             return
-        try:
-            self._mirror_repo.write_calls_batch(batch)
-        except Exception:  # noqa: BLE001 — mirror must not poison primary path
-            # Don't spill mirror failures (they'd duplicate the primary spool).
-            # Just drop; re-run with SOMM_CROSS_PROJECT=1 so future calls mirror.
-            pass
+        # Every project writes to the one mirror, so it is busy far more often
+        # than a project ledger: retry it the way _drain retries the primary.
+        # It used to drop the batch on the first error without a trace.
+        for attempt in range(_MAX_BUSY_RETRIES):
+            try:
+                self._mirror_repo.write_calls_batch(batch)
+                return
+            except sqlite3.OperationalError as e:
+                if _is_busy(e) and attempt + 1 < _MAX_BUSY_RETRIES:
+                    time.sleep(0.05 * (2**attempt))
+                    continue
+                self._mirror_failed(batch, e)
+                return
+            except Exception as e:  # noqa: BLE001 — mirror must not poison primary path
+                self._mirror_failed(batch, e)
+                return
+
+    def _mirror_failed(self, batch: list[Call], exc: BaseException) -> None:
+        """Count a batch the mirror refused and say so once per writer. Not
+        spilled: the spool replays into the project ledger, which already has
+        these rows. ``somm mirror sync`` copies them to the mirror later."""
+        self.mirror_failures += 1
+        if self._mirror_warned:
+            return
+        self._mirror_warned = True
+        with contextlib.suppress(Exception):
+            print(
+                f"[somm] mirror write failed ({type(exc).__name__}: {exc}); "
+                f"{len(batch)} row(s) are in the project ledger only. "
+                "`somm ledgers` shows the gap; `somm mirror sync` closes it.",
+                file=sys.stderr,
+            )
 
     def _spill(self, batch: list[Call], reason: str) -> None:
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")

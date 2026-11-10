@@ -225,7 +225,7 @@ class ChatGPTProvider:
         self.auth = auth or ChatGPTAuth()
         self.timeout = timeout
 
-    def complete_chat(self, body: dict) -> dict:
+    def complete_chat(self, body: dict, timeout: float | None = None) -> dict:
         items, recovery = prepare_response_input(body["messages"])
         payload = {"model": body["model"], "input": items,
                    "store": False, "stream": True, "include": ["reasoning.encrypted_content"]}
@@ -259,7 +259,7 @@ class ChatGPTProvider:
         except ChatGPTAuthError as exc:
             raise SommAuthError(str(exc)) from exc
         try:
-            with httpx.Client(timeout=self.timeout) as client, client.stream(
+            with httpx.Client(timeout=timeout or self.timeout) as client, client.stream(
                 "POST", RESOURCE + "/responses", json=payload,
                 headers={"Authorization": "Bearer " + token, "User-Agent": "somm"},
             ) as response:
@@ -312,7 +312,7 @@ class ChatGPTProvider:
 
             body["tool_choice"] = _translate_tool_choice_to_openai(request.tool_choice)
         started = time.monotonic()
-        result = self.complete_chat(body)
+        result = self.complete_chat(body, timeout=request.timeout)
         message = result["choices"][0]["message"]
         calls = []
         for call in message.get("tool_calls", []):

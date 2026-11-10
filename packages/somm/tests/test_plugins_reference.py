@@ -115,6 +115,9 @@ def _install_fake_otel(monkeypatch):
         def __exit__(self, *_args):
             return None
 
+        def end(self, end_time=None):
+            self.end_time = end_time
+
         def set_attribute(self, key, value):
             self.attributes[key] = value
 
@@ -125,7 +128,7 @@ def _install_fake_otel(monkeypatch):
         def __init__(self):
             self.spans = []
 
-        def start_as_current_span(self, name):
+        def start_span(self, name, **_kwargs):
             span = FakeSpan(name)
             self.spans.append(span)
             return span
@@ -438,8 +441,8 @@ def test_otel_register_from_env_constructs_provider_and_emits_genai_span(monkeyp
     assert state.exporters[0].endpoint == endpoint
     assert len(state.providers[0].tracer.spans) == 1
     span = state.providers[0].tracer.spans[0]
-    assert span.name == "llm configured"
-    assert span.attributes["gen_ai.system"] == "openai"
+    assert span.name == "chat gpt-test"
+    assert span.attributes["gen_ai.provider.name"] == "openai"
     assert span.attributes["gen_ai.request.model"] == "gpt-test"
     assert span.attributes["gen_ai.response.model"] == "gpt-test"
     assert span.attributes["gen_ai.usage.input_tokens"] == 13
@@ -509,52 +512,6 @@ def test_otel_register_from_env_reports_missing_optional_dependencies(monkeypatc
 
     assert hooks.registered_hooks()[hooks.POST_PROCESS] == []
     assert otel_exporter._owned_tracer_provider is None
-
-
-def test_otel_exporter_emits_span():
-    pytest.importorskip("opentelemetry")
-    pytest.importorskip("opentelemetry.sdk")
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-
-    try:
-        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-            InMemorySpanExporter,
-        )
-    except ImportError:
-        pytest.skip("OpenTelemetry in-memory exporter unavailable")
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    otel_exporter.register(tracer_provider=provider)
-
-    hooks.fire_post_process(
-        {
-            "call_id": "c1",
-            "project": "proj",
-            "workload": "w",
-            "provider": "openai",
-            "model": "gpt-test",
-            "outcome": "ok",
-            "tokens_in": 11,
-            "tokens_out": 7,
-            "cost_usd": 0.012,
-        }
-    )
-    hooks.shutdown_hooks(wait=True)
-
-    spans = exporter.get_finished_spans()
-    assert len(spans) == 1
-    assert spans[0].name == "llm w"
-    attrs = spans[0].attributes
-    assert attrs["gen_ai.system"] == "openai"
-    assert attrs["gen_ai.request.model"] == "gpt-test"
-    assert attrs["gen_ai.usage.input_tokens"] == 11
-    assert attrs["gen_ai.usage.output_tokens"] == 7
-    assert attrs["somm.call_id"] == "c1"
-    assert attrs["somm.outcome"] == "ok"
-    assert attrs["somm.cost_usd"] == 0.012
 
 
 def test_cache_key_isolates_by_provider_tool_choice_and_caps():

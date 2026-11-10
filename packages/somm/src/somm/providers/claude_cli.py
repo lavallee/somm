@@ -117,13 +117,14 @@ class ClaudeCLIProvider:
             if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY")
         }
         prompt = self._prompt_text(request)
+        timeout = request.timeout or self.timeout
         t0 = time.monotonic()
         try:
             with tempfile.TemporaryDirectory(prefix="somm-claude-cli-") as cwd:
                 def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
                     return subprocess.run(
                         argv, input=prompt, capture_output=True, text=True,
-                        timeout=self.timeout, cwd=cwd, env=env,
+                        timeout=timeout, cwd=cwd, env=env,
                     )
 
                 # A provider call is a one-shot: leave no session transcript behind.
@@ -131,7 +132,7 @@ class ClaudeCLIProvider:
                 if proc.returncode != 0 and f"unknown option '{_NO_PERSIST}'" in (proc.stderr or ""):
                     proc = run(cmd)  # CLI too old to know the flag
         except subprocess.TimeoutExpired as e:
-            raise SommTimeout(f"claude -p timed out after {self.timeout:.0f}s") from e
+            raise SommTimeout(f"claude -p timed out after {timeout:.0f}s") from e
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         if proc.returncode != 0:

@@ -16,9 +16,16 @@ from typing import Any
 
 
 class SommError(Exception):
-    """Base for all somm exceptions."""
+    """Base for all somm exceptions.
+
+    ``provider``, ``model`` and ``call_id`` say which route failed and which
+    ledger row recorded it, when somm knows; they are None otherwise.
+    """
 
     code: str = "SOMM_ERROR"
+    provider: str | None = None
+    model: str | None = None
+    call_id: str | None = None
 
 
 class SommProviderError(SommError):
@@ -124,6 +131,36 @@ _MODEL_NOT_FOUND_SIGNALS = (
 def _looks_like_model_not_found(body: str) -> bool:
     low = body.lower()
     return any(sig in low for sig in _MODEL_NOT_FOUND_SIGNALS)
+
+
+class SommProviderNotConfigured(SommError, ValueError):
+    """A call pinned a provider this machine has not configured.
+
+    Raised before any network call. Still a ``ValueError``, which is what
+    this case raised before it had a name, so existing handlers keep working.
+    """
+
+    code = "SOMM_PROVIDER_NOT_CONFIGURED"
+
+    def __init__(self, detail: str = "", *, provider: str | None = None) -> None:
+        super().__init__(detail)
+        self.provider = provider
+
+
+class SommRefused(SommProviderError):
+    """The model or the provider's filter declined to answer.
+
+    Seen as a ``stop_reason`` of ``refusal`` (Anthropic) or
+    ``content_filter`` (OpenAI-compatible). The call itself was delivered and
+    is recorded as such; this is raised only for ``raise_on_failure=True``.
+    Retrying the same prompt on the same model rarely helps.
+    """
+
+    code = "SOMM_UPSTREAM_REFUSED"
+
+    def __init__(self, detail: str = "", *, stop_reason: str = "") -> None:
+        super().__init__(detail)
+        self.stop_reason = stop_reason
 
 
 class SommBudgetExceeded(SommFatalError):
@@ -272,7 +309,9 @@ def describe_error(error: SommError) -> dict[str, Any]:
         description["retry_after_s"] = float(retry_after_s)
 
     for field in (
+        "provider",
         "model",
+        "call_id",
         "workload",
         "spent_usd",
         "cap_usd",
