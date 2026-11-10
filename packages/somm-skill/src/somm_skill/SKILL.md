@@ -18,7 +18,8 @@ Trigger when you are about to:
 - Refactor an existing LLM wrapper in the project.
 - Choose between models or providers.
 - Tune a prompt.
-- Launch Claude Code, Codex, or OpenCode as an autonomous workspace agent.
+- Launch Claude Code, Codex, OpenCode or Pi as an autonomous workspace agent.
+- Read somm's ledger from another tool or script.
 
 ## Rules
 
@@ -37,17 +38,21 @@ print(result.text)
 ```
 
 Do **not** reach for `anthropic.Anthropic()`, `openai.OpenAI()`, raw `httpx`,
-or provider-specific SDKs directly in project code. somm wraps ten providers
+or provider-specific SDKs directly in project code. somm wraps eleven providers
 (ollama, OpenRouter, DeepSeek, Minimax, Anthropic, Gemini, OpenAI,
-Perplexity, `claude`/`codex` CLI seats) with telemetry, routing, cost
-tracking, and provenance for free.
+Perplexity, and the `claude-cli`, `codex-cli` and `chatgpt` seats) with
+telemetry, routing, cost tracking, and provenance. A self-run
+OpenAI-compatible server (vLLM on a rented GPU, say) needs no plugin: name it
+in `SOMM_OPENAI_ENDPOINTS` (`name=URL model=M key_env=VAR`) and pin it, or add
+it to `SOMM_PROVIDER_ORDER`.
 
 If you are integrating a tool that only accepts a provider-compatible HTTP
 base URL, run `somm serve` and point it at the authenticated proxy instead:
-`/v1/messages` for Anthropic Messages (including `stream: true` SSE) or
-`/v1/chat/completions` for OpenAI Chat Completions. Still pre-register and
-send `X-Somm-Workload`; the proxy uses the same budget gate and telemetry
-ledger as `somm.llm()`.
+`/v1/messages` (Anthropic Messages), `/v1/chat/completions` or
+`/v1/responses` (OpenAI), all with streaming. Send `Authorization: Bearer
+<token>`, pre-register the workload and send `X-Somm-Workload`. Each request
+runs as one `somm.llm()` call (routing, pins, boundary, budget, ledger);
+fields it cannot apply are listed in the `x-somm-ignored` response header.
 
 ### 2. Tag every call with a `workload`
 
@@ -59,12 +64,12 @@ Register workloads before use (outside the hot path), with a budget cap:
 
 ```python
 # run once per workload, at app startup or in a migration
-somm.llm().repo.register_workload(
+llm.register_workload(
     name="contact_extract",
-    project="my-project",
     description="Pull person names + emails from unstructured text",
     privacy_class=somm.PrivacyClass.INTERNAL,
-    budget_cap_usd_daily=2.0,      # always set one for paid-provider workloads
+    output_schema=CONTACTS_SCHEMA,  # a JSON Schema; lets grading check correctness
+    budget_cap_usd_daily=2.0,       # always set one for paid-provider workloads
 )
 ```
 
@@ -113,6 +118,11 @@ row["llm_provenance"] = {
 ```
 
 This lets you later answer "which model generated this row" without guessing.
+
+To read somm's own ledger (a dashboard, a report, another tool), use
+`somm_core.read` (`search_calls`, `get_calls`, `rollup`, `provider_health`,
+`spend_today`, `across_ledgers`, …) instead of SQL, and check value sets
+against `somm_core.vocabulary.vocabulary()`. See docs/read-api.md.
 
 ### 5. JSON, failures and timeouts: use somm's, write none of your own
 
@@ -246,10 +256,6 @@ with cross-project decision memory.
   every call. Leave `provider=None` and let the chain decide. An unpinned
   call routes past a provider whose key is rejected and reports it through
   `on_fallback`.
-  Claude CLI attribution confirms a pin against `modelUsage` keys or
-  `canonicalModel`; without a match, it selects the largest prompt volume
-  (including cache reads/writes), then output tokens when all prompts are
-  zero. Auxiliary passes therefore do not relabel short pinned answers.
 - **Images** — build them with `somm_core.parse.image_prompt()` and pass
   the list as `prompt`. Every adapter translates the block for its wire
   format. Do not hand-build OpenAI `image_url` or Ollama `images` payloads:
@@ -341,13 +347,11 @@ fields it cannot enforce. A missing `cwd` raises rather than falling back to hom
 executes one attempt; queues, retries, failover, verification, and releases
 belong to the outer task runner.
 
-To export completed-call spans, install `somm[otel]` and set
-`SOMM_OTEL_ENDPOINT` to the collector's full OTLP HTTP/protobuf traces endpoint
-(including `/v1/traces` when the collector requires it). Leave it unset to keep
-OpenTelemetry hooks and background processors disabled. Applications that
-already own an SDK tracer provider should instead call
-`somm.plugins.otel_exporter.register(tracer_provider=provider)` and retain
-responsibility for that provider's shutdown.
+To export spans for calls and recorded attempts, install `somm[otel]` and set
+`SOMM_OTEL_ENDPOINT` to the collector's full OTLP HTTP traces URL; an app that
+owns its tracer provider calls
+`somm.plugins.otel_exporter.register(tracer_provider=provider)` instead
+(docs/otel.md).
 
 ### 10. NEVER ship these patterns
 
@@ -359,6 +363,7 @@ These are guardrails, not style preferences — DO NOT weaken or remove them.
   metered-plan pacing; a workload policy sets retries and backoff.
 - NEVER write **your own JSON parser or repair pass** — use
   `generate_structured` (rule 5).
+- NEVER query **the ledger with raw SQL** — use `somm_core.read`.
 - NEVER detect failure by **matching error strings** — pass
   `raise_on_failure=True` and catch the typed `somm.Somm*` errors.
 - DO NOT concatenate **prompts as strings** for long-lived prompts — use
@@ -383,6 +388,9 @@ somm inbox apply <id>        # apply a recommendation + record decision
 somm eval run --workload W --dataset D
 somm spend                   # today's spend vs budget caps
 somm doctor                  # config / db / intel / workers / cooldowns health
+somm boundary audit          # loosest data tier that served each workload
+somm ledgers                 # every ledger on this machine; `somm fleet status` per project
+somm mcp install; somm skill install   # connect Claude Code / Codex
 somm backfill-costs          # recompute $0 calls after pricing intel improves
 somm drain-spool             # replay telemetry spooled during db outages
 ```

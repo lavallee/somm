@@ -39,7 +39,8 @@ somm_search_decisions(
 
 Do not treat past decisions as authoritative — model intel changes. But
 *do* acknowledge them: "Last time in `captionapp` (2026-04-10) we picked
-`openrouter/gemma-3-27b-it:free` because … — still relevant?"
+`openrouter/gemma-3-27b-it:free` because … — still relevant?" Keep the
+prior decision's `id`: if the user follows it, you pass it on in step 3.
 
 ### 2. Advise
 
@@ -63,8 +64,7 @@ human-readable factors the sommelier weighed. Candidates also include a
 `canonical_id` and `score_breakdown`; use those when explaining why two
 provider-specific model IDs are really the same underlying model, or
 why price, capability, plan headroom, evals, and priors moved the rank.
-Present reasons verbatim rather than restating in your own words; the
-reasons are tokenisation-light and calibrated.
+Present reasons verbatim rather than restating them in your own words.
 
 **Constraint knobs (all optional):**
 
@@ -137,8 +137,15 @@ somm_record_decision(
     workload="critique_visual",
     constraints=<constraints dict from somm_advise response>,
     agent="claude-code",
+    recalled_from=<prior decision id>,   # only when the choice follows one
 )
 ```
+
+Pass `recalled_from` with the `id` of the prior decision (from
+`somm_search_decisions` or `somm_advise`'s `prior_decisions`) whenever the
+user chooses what that decision chose. somm keeps it only when the provider
+and model match, and that is the recall `somm doctor` counts toward somm's
+north-star number. Without it, reusing a decision looks like a fresh guess.
 
 Rationale is the single most valuable field. Keep it short (≤ 3
 sentences) and capture the *reason* (not just the summary — "picked X
@@ -160,11 +167,13 @@ because Y beats Z on …"). Future sessions read this.
 ## Retrospectives
 
 If the user reports back later ("the gemma-3 pick wasn't great — kept
-missing colour contrasts"), search for the original decision and call
-`mark_decision_outcome` (surfaced via `somm_record_decision` with
-`supersedes=<id>` once that lands, or via the repository directly in
-the interim). A retrospective note on a decision is how the memory
-self-corrects.
+missing colour contrasts"), find the original decision with
+`somm_search_decisions` and record a new decision whose rationale says what
+went wrong. There is no MCP tool for annotating an old decision; from Python,
+`Repository.mark_decision_outcome(decision_id, note)` on the store that holds
+it (decisions are always in the machine-wide `~/.somm/global.sqlite`)
+attaches the note.
+A retrospective note on a decision is how the memory self-corrects.
 
 ## Example conversation shape
 
@@ -197,32 +206,8 @@ self-corrects.
 > Recorded. Decision id: `<uuid>`. This will surface next time
 > anyone — in this project or another — asks a similar question.
 
+## Subscription routing
 
-## Adaptive subscription routing (0.20)
-
-Opt in with `model="somm/auto"` and a workload `policy.adaptive` containing
-`fast`, `strong`, `fallback` targets plus application-specific `fast_patterns`.
-Unknown/biographical/research work selects strong; tool results and short confirmations
-do not demote the task. At 90% weekly ChatGPT usage (or unknown/stale usage), only simple
-work uses the non-ChatGPT fallback; strong work raises `SommDeferred` or returns proxy
-HTTP 429 `SOMM_WORK_DEFERRED`. The caller must retain/resume it; Somm does not enqueue.
-Explicit model pins remain explicit. Inspect `routing_json` and actual served models.
-
-Use `somm chatgpt login`, `status`, `models`, `quota`; install `somm[chatgpt]` first.
-Somm owns its OAuth file (`SOMM_CHATGPT_AUTH_FILE`), public Responses inference and
-rotating refresh. Never borrow another app's credential file or use private endpoints.
-Weekly metadata comes separately from supported Codex account RPC (10080-minute window,
-not an assumed primary/secondary position). Only weekly percentage gates subscription
-routing; API dollar caps still apply to fallback calls. Model catalog visibility is
-not a successful inference test. See `docs/adaptive-routing.md` for the full contract.
-
-
-### Recovery and retries (0.20.1)
-
-ChatGPT replay repairs expanded/normalized tool batches before inference using the
-same model and completed results. Inspect `routing_json.recovery`; never rerun a tool
-merely to rebuild LLM context. Missing/orphan results require caller repair, not guessed
-success. HTTP proxy errors preserve canonical code, retryable, retry timing, and call/
-provider/model provenance. Honor `x-should-retry:false` for fatal, deferred and budget
-refusals; retry only transient failures with the supplied delay. Do not downgrade a
-strong-model task or bypass weekly conservation as a recovery strategy.
+For `model="somm/auto"` and ChatGPT weekly-quota conservation, see the
+"Adaptive subscription routing" section of the main somm skill (SKILL.md) and
+`docs/adaptive-routing.md`.
