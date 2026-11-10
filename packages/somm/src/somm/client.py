@@ -1804,6 +1804,14 @@ class SommLLM:
             routing_metadata = json.loads(routing_json) if routing_json else {}
             routing_metadata["recovery"] = raw_out["somm_recovery"]
             routing_json = json.dumps(routing_metadata)
+        # A provider that pinned the request (OpenRouter under a strict
+        # boundary) says so on the response: the tier it put on the wire, the
+        # upstreams it allowed, and which one served when the response names it.
+        pinned_route = raw_out.get("somm_route") if isinstance(raw_out, dict) else None
+        if isinstance(pinned_route, dict):
+            routing_metadata = json.loads(routing_json) if routing_json else {}
+            routing_metadata["upstream"] = pinned_route
+            routing_json = json.dumps(routing_metadata)
         call = Call(
             routing_json=routing_json,
             id=call_id,
@@ -1850,7 +1858,8 @@ class SommLLM:
             data_tier=(
                 getattr(short_circuit, "data_tier", None)
                 if short_circuit is not None
-                else self._served_tier(actual_provider, actual_model)
+                else (pinned_route or {}).get("data_tier")
+                or self._served_tier(actual_provider, actual_model)
             ),
         )
         self._finish_call(

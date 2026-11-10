@@ -5,6 +5,26 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [Unreleased]
+
+### Added
+- **OpenRouter tiers from evidence.** Under a data boundary of `zdr` or
+  `subscribed`, an OpenRouter model is admitted as `zdr` when OpenRouter's public
+  ZDR endpoint list names upstreams for that exact model id that keep no data
+  (`safety_retention` false) and are headquartered in an allowed country (`US` by
+  default; `[defaults] zdr_headquarters` in `boundary.toml`). The request is pinned
+  to exactly those endpoints (`provider.only`, fallbacks off), the call records
+  `data_tier = 'zdr'`, and `routing_json.upstream` keeps the pin and, when the
+  response names it, the upstream that served. A model with no qualifying upstream
+  (both default-roster `:free` models on 2026-11-09) is refused as before, and a
+  roster walk moves on. The lists are fetched only under such a boundary, at most daily, and kept as
+  `openrouter-evidence.json` beside `boundary.toml`; a failed fetch keeps the last
+  good copy, and no copy promotes nothing. Under the default boundary OpenRouter
+  requests are unchanged and nothing is fetched. Streams and the proxy are not
+  promoted.
+- `somm boundary routes openrouter/<model-id>` lists each upstream endpoint with its
+  headquarters, ZDR-list membership, safety retention, and whether it qualifies.
+
 ## [0.21.0] — 2026-11-09
 
 ### Security

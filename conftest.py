@@ -30,3 +30,14 @@ def _isolate_somm_machine_state(tmp_path_factory, monkeypatch):
     # ~/.somm/global.sqlite. Tests that exercise mirroring set their own.
     monkeypatch.setenv("SOMM_GLOBAL_PATH", str(d / "global.sqlite"))
     monkeypatch.setenv("SOMM_CROSS_PROJECT", "0")
+    # OpenRouter's ZDR evidence is fetched live under a strict boundary. No
+    # test reaches the network: the fetch fails (no evidence) unless a test
+    # supplies its own, and each test starts with an empty in-process memo.
+    from somm.providers import openrouter_evidence
+
+    monkeypatch.setattr(openrouter_evidence, "_memo", {"evidence": None, "next_check": 0.0})
+
+    def _no_network():
+        raise OSError("tests do not fetch OpenRouter evidence")
+
+    monkeypatch.setattr(openrouter_evidence, "_fetch", _no_network)

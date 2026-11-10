@@ -229,6 +229,9 @@ class BoundaryPolicy:
     owner_projects: dict[str, DataTier] = field(default_factory=dict)
     owner_path: Path | None = None
     owner_error: str | None = None  # the owner file exists but could not be read
+    # Where an OpenRouter upstream must be headquartered for live ZDR evidence
+    # to promote it ([defaults] zdr_headquarters). Empty promotes nothing.
+    zdr_headquarters: tuple[str, ...] = ("US",)
 
     # -- classification ------------------------------------------------
 
@@ -488,6 +491,7 @@ def load_policy(path: Path | None = None) -> BoundaryPolicy:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 — reported, and fails closed
             policy.owner_error = f"{type(exc).__name__}: {exc}"[:200]
+            policy.zdr_headquarters = ()
         else:
             policy.owner_rules = _parse_rules(data, "owner")
             defaults_tbl = data.get("defaults") or {}
@@ -496,6 +500,10 @@ def load_policy(path: Path | None = None) -> BoundaryPolicy:
                     policy.owner_default = parse_tier(defaults_tbl["boundary"])
                 except ValueError:
                     policy.owner_default = DataTier.LOCAL
+            if isinstance(defaults_tbl, dict) and "zdr_headquarters" in defaults_tbl:
+                hq = defaults_tbl["zdr_headquarters"]
+                ok = isinstance(hq, list) and all(isinstance(h, str) for h in hq)
+                policy.zdr_headquarters = tuple(h.strip().upper() for h in hq) if ok else ()
             projects = data.get("projects") or {}
             if isinstance(projects, dict):
                 for name, tbl in projects.items():

@@ -648,7 +648,10 @@ def build_server(
 
                     wl = repo.workload_by_name(workload, cfg.project)
                     boundary = llm._resolve_boundary(wl, None)
-                    route = provider_tier(provider_map[provider_name], model or None)
+                    route = provider_tier(
+                        provider_map[provider_name], model or None,
+                        boundary=None if boundary.is_default else boundary.tier,
+                    )
                     if not boundary.is_default and not admit(route, boundary.tier):
                         out.append(
                             {
