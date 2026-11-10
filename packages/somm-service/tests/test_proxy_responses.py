@@ -90,6 +90,33 @@ def test_responses_stream_events_parse_in_the_sdk(tmp_path, fake_provider):
     assert events[-1].response.output_text == "streamed"
 
 
+@pytest.mark.parametrize("stop", ["refusal", "content_filter"])
+def test_a_refusal_is_a_refusal_content_part(tmp_path, fake_provider, stop):
+    fake = fake_provider("openai", text="I can't help with that.", stop_reason=stop)
+    app = create_app(_cfg(tmp_path), providers=[fake])
+    response = _sdk(app).responses.create(model="gpt-4o-mini", input="x")
+    assert response.status == "completed"
+    (message,) = response.output
+    (part,) = message.content
+    assert (part.type, part.refusal) == ("refusal", "I can't help with that.")
+    assert response.output_text == ""
+
+
+def test_a_streamed_refusal_sends_the_refusal_events(tmp_path, fake_provider):
+    fake = fake_provider("openai", text="", stop_reason="refusal")
+    app = create_app(_cfg(tmp_path), providers=[fake])
+    events = list(_sdk(app).responses.create(model="gpt-4o-mini", input="x", stream=True))
+    kinds = [e.type for e in events]
+    assert kinds == [
+        "response.created", "response.output_item.added", "response.content_part.added",
+        "response.refusal.done", "response.content_part.done", "response.output_item.done",
+        "response.completed",
+    ]
+    assert [e.sequence_number for e in events] == list(range(len(events)))
+    (message,) = events[-1].response.output
+    assert [p.type for p in message.content] == ["refusal"]
+
+
 @pytest.mark.parametrize("extra", [
     {"previous_response_id": "resp_1"},
     {"tools": [{"type": "web_search"}]},
