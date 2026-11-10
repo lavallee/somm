@@ -3226,8 +3226,13 @@ def _cmd_loop(args: argparse.Namespace) -> int:
             for r in reports:
                 print(f"{r.project}  ({r.db_path})")
                 for name, summary in r.ran.items():
-                    brief = {k: v for k, v in summary.items() if k != "errors"}
+                    brief = {
+                        k: v for k, v in summary.items()
+                        if k not in ("errors", "warnings", "shadow_broken")
+                    }
                     print(f"  ran      {name:<12} {json.dumps(brief, default=str)[:140]}")
+                    for w in summary.get("warnings") or []:
+                        print(f"           warning: {w}")
                     for e in summary.get("errors") or []:
                         print(f"           error: {e}")
                 for name, why in r.skipped.items():

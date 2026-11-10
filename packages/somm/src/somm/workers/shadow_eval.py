@@ -15,8 +15,13 @@ Design:
   hits the cap.
 - Graders (v0.3b): structural (JSON field overlap) + text similarity
   (word-bigram Jaccard). Judge model is opt-in + deferred to v0.3b+1.
-- Crash-safe: each eval_results row has `grading_started_at` lease.
-  Worker picks rows where it's NULL or expired >10 min.
+- Crash-safe: a sample is claimed by one atomic insert of a 'pending'
+  eval_results row; placeholders older than the lease window are swept at
+  the start of each run so a dead worker's samples resurface.
+- Failure is missing evidence, never a score: an unparseable judge reply has
+  no judge score and is counted; a gold route that is not configured, is
+  outside the boundary, or keeps failing leaves its samples ungraded and is
+  reported in ``shadow_broken``.
 
 Shadow config shape (stored as JSON on workloads.shadow_config_json):
 
@@ -56,6 +61,11 @@ if TYPE_CHECKING:
     from somm.providers.base import SommProvider
 
 _log = logging.getLogger("somm.workers.shadow_eval")
+
+GOLD_FAILURE_LIMIT = 3
+"""Consecutive failed gold attempts after which a workload's shadow config is
+reported broken and not retried until ``GOLD_COOLDOWN`` has passed."""
+GOLD_COOLDOWN = timedelta(hours=24)
 
 
 @dataclass(slots=True)
@@ -106,13 +116,22 @@ class ShadowEvalWorker:
         self.lease_window_s = lease_window_s
 
     def run_once(self) -> dict:
-        """Grade a batch of un-graded sampled calls. Returns a summary dict."""
+        """Grade a batch of un-graded sampled calls. Returns a summary dict.
+
+        ``shadow_broken`` maps a workload name to why its gold route cannot
+        grade (not configured, outside the data boundary, or failing
+        ``GOLD_FAILURE_LIMIT`` times in a row); its samples stay ungraded
+        and eligible. ``warnings`` holds lines the loop prints as-is."""
         summary: dict = {
             "workloads_considered": 0,
             "calls_graded": 0,
             "budget_skipped": 0,
             "private_skipped": 0,
             "boundary_skipped": 0,
+            "judge_attempts": 0,
+            "judge_unusable": 0,
+            "shadow_broken": {},
+            "warnings": [],
             "errors": [],
         }
 
@@ -127,6 +146,7 @@ class ShadowEvalWorker:
 
         for workload_id, calls in by_workload.items():
             summary["workloads_considered"] += 1
+            name = calls[0].get("workload_name") or workload_id[:10]
             try:
                 cfg_raw = self.repo.get_shadow_config(workload_id)
                 if not cfg_raw:
@@ -145,10 +165,19 @@ class ShadowEvalWorker:
                     boundary, cfg.gold_provider, cfg.gold_model
                 ):
                     summary["boundary_skipped"] += len(calls)
-                    _log.warning(
-                        "shadow: gold route %s/%s is outside data boundary %s for workload %s",
-                        cfg.gold_provider, cfg.gold_model, boundary.tier.value, workload_id,
+                    summary["shadow_broken"][name] = (
+                        f"gold route {cfg.gold_provider}/{cfg.gold_model} is outside "
+                        f"data boundary {boundary.tier.value}"
                     )
+                    continue
+                if cfg.gold_provider not in self.providers:
+                    summary["shadow_broken"][name] = (
+                        f"gold_provider {cfg.gold_provider!r} not configured"
+                    )
+                    continue
+                broken = self._gold_streak(workload_id, cfg)
+                if broken is not None:
+                    summary["shadow_broken"][name] = broken
                     continue
                 self._boundary = boundary
 
@@ -163,6 +192,7 @@ class ShadowEvalWorker:
                 # Candidates already passed the capture-time sample gate
                 # (rate applied once, in the library) — here we only cap
                 # the per-run batch, deterministically ordered.
+                attempts = unusable = 0
                 sampled = _deterministic_sample(calls, 1.0, cfg.max_grades_per_run)
                 for call_row in sampled:
                     eval_result_id = self._claim_lease(call_row["call_id"])
@@ -171,20 +201,67 @@ class ShadowEvalWorker:
                     try:
                         outcome = self._grade_call(call_row, cfg, eval_result_id)
                     except Exception as e:
+                        # The gold route failed: the sample goes back to the
+                        # pool and this workload waits for the next run, so a
+                        # dead route costs one attempt per run, not one per
+                        # sample. The streak decides when it counts as broken.
                         _log.warning("shadow: grade failed for %s: %s", call_row["call_id"], e)
-                        summary["errors"].append(f"{call_row['call_id']}: {e}")
+                        summary["errors"].append(f"{name}: {e}")
                         self._release_lease(call_row["call_id"])
-                        continue
+                        broken = self._gold_streak(workload_id, cfg)
+                        if broken is not None:
+                            summary["shadow_broken"][name] = broken
+                        break
                     self._write_result(call_row, cfg, outcome, eval_result_id)
                     summary["calls_graded"] += 1
+                    tried, failed = _judge_tally(outcome.judge_reason)
+                    attempts += tried
+                    unusable += failed
                     spent = self._shadow_spent_today(workload_id)
                     if spent >= cfg.budget_usd_daily:
                         break
+                summary["judge_attempts"] += attempts
+                summary["judge_unusable"] += unusable
+                if attempts and unusable * 2 > attempts:
+                    summary["warnings"].append(
+                        f"{name}: {unusable} of {attempts} judge replies could not be "
+                        "used (unparseable, failed or refused); those samples have no "
+                        "judge score, which is missing evidence, not low quality"
+                    )
             except Exception as e:
                 _log.warning("shadow: workload %s failed: %s", workload_id, e)
                 summary["errors"].append(f"{workload_id}: {e}")
 
+        for name, why in summary["shadow_broken"].items():
+            summary["warnings"].append(f"{name}: shadow config broken: {why}")
         return summary
+
+    def _gold_streak(self, workload_id: str, cfg: ShadowConfig) -> str | None:
+        """Why this workload's gold route counts as broken, or None.
+
+        Read from the ledger, not kept in memory: the gold attempts are
+        already ``shadow_gold`` call rows. ``GOLD_FAILURE_LIMIT`` failures in
+        a row with no success between them is broken; it is probed again
+        once the latest failure is ``GOLD_COOLDOWN`` old, and one success
+        ends the streak."""
+        with self.repo._open() as conn:
+            rows = conn.execute(
+                "SELECT outcome, ts, error_detail FROM calls "
+                "WHERE workload_id = ? AND observation_role = 'shadow_gold' "
+                "AND provider = ? AND (outcome = 'ok' OR model = ?) "
+                "ORDER BY ts DESC LIMIT ?",
+                (workload_id, cfg.gold_provider, cfg.gold_model, GOLD_FAILURE_LIMIT),
+            ).fetchall()
+        if len(rows) < GOLD_FAILURE_LIMIT or any(r[0] == "ok" for r in rows):
+            return None
+        latest = _parse_ts(rows[0][1])
+        if latest is not None and datetime.now(UTC) - latest >= GOLD_COOLDOWN:
+            return None
+        return (
+            f"gold route {cfg.gold_provider}/{cfg.gold_model} failed "
+            f"{GOLD_FAILURE_LIMIT} consecutive times (last: {rows[0][2] or rows[0][0]}); "
+            f"retried after {int(GOLD_COOLDOWN.total_seconds() // 3600)}h"
+        )
 
     # ------------------------------------------------------------------
     # Privacy and data boundary
@@ -420,30 +497,19 @@ class ShadowEvalWorker:
                 notes=["samples not captured — shadow needs per-workload sample opt-in"],
             )
 
+        # run_once checks both before claiming; these guards keep the
+        # method safe on its own. Raising releases the lease, so a sample is
+        # never finalized with no gold answer.
         provider = self.providers.get(cfg.gold_provider)
         if provider is None:
-            return EvalOutcome(
-                call_id=call_row["call_id"],
-                structural_score=None,
-                text_similarity_score=None,
-                judge_score=None,
-                gold_response_hash=None,
-                notes=[f"gold_provider {cfg.gold_provider!r} not configured"],
-            )
+            raise RuntimeError(f"gold_provider {cfg.gold_provider!r} not configured")
         boundary = self._boundary
         if (
             boundary is not None
             and not boundary.is_default
             and not self._admits(boundary, cfg.gold_provider, cfg.gold_model)
         ):
-            return EvalOutcome(
-                call_id=call_row["call_id"],
-                structural_score=None,
-                text_similarity_score=None,
-                judge_score=None,
-                gold_response_hash=None,
-                notes=[f"refused: gold route outside data boundary {boundary.tier.value}"],
-            )
+            raise RuntimeError(f"refused: gold route outside data boundary {boundary.tier.value}")
         gold_request = SommRequest(
             prompt=prompt, model=cfg.gold_model, temperature=0.0, max_tokens=1024
         )
@@ -626,13 +692,24 @@ class ShadowEvalWorker:
                     }
                 )
 
-        usable = [r for r in receipts if isinstance(r.get("result"), dict)]
+        # A reply that could not be parsed carries score None: it is no
+        # verdict, never a fail, and it is counted rather than averaged in.
+        usable = [
+            r for r in receipts
+            if isinstance(r.get("result"), dict) and r["result"].get("score") is not None
+        ]
+        unusable = len(receipts) - len(usable)
         if not usable:
-            return None, {"criteria": [c.name for c in criteria], "judges": receipts}, notes
+            return None, {
+                "criteria": [c.name for c in criteria],
+                "judges": receipts,
+                "unusable": unusable,
+            }, notes
 
         aggregate = _aggregate_judge_votes(criteria, usable)
         aggregate["mode"] = "panel" if len(usable) > 1 else "single"
         aggregate["judges"] = receipts
+        aggregate["unusable"] = unusable
         return float(aggregate["score"]), aggregate, notes
 
     def _record_auxiliary_call(
@@ -760,6 +837,16 @@ def _deterministic_sample(calls: list[dict], rate: float, cap: int) -> list[dict
             if len(picked) >= cap:
                 break
     return picked
+
+
+def _judge_tally(judge_reason: dict | None) -> tuple[int, int]:
+    """(judge replies attempted, replies that gave no usable verdict)."""
+    if not judge_reason:
+        return 0, 0
+    judges = judge_reason.get("judges")
+    if not isinstance(judges, list):
+        return 1, 1  # the judge config itself was invalid
+    return len(judges), int(judge_reason.get("unusable", 0))
 
 
 def _judge_specs(judge_cfg: dict) -> list[dict]:
