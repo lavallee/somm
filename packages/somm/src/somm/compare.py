@@ -1,6 +1,7 @@
 """Run one prompt through several explicitly named models, side by side.
 
-The one implementation behind ``somm compare`` (CLI). Each model is a
+The one implementation behind ``somm compare`` (CLI) and the MCP server's
+``somm_compare``, which adds its token caps and marks ``text`` untrusted. Each model is a
 (provider, model) pin: nothing is routed and nothing falls back, because an
 answer from a substituted model is not a comparison. Every pin is checked
 against the workload's data boundary before any call is made.
@@ -101,7 +102,8 @@ def compare_models(
                         "tier": route.tier.value,
                         "data_boundary": boundary.tier.value,
                         "error": (
-                            f"REFUSED: route tier {route.tier.value} is outside data boundary "
+                            f"REFUSED (SOMM_PRIVACY_VIOLATION): route tier {route.tier.value} "
+                            "is outside data boundary "
                             f"{boundary.tier.value} (from {boundary.source})"
                         ),
                     }
