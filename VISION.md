@@ -4,18 +4,34 @@
 bets) and `CHANGELOG.md` (what shipped). Re-ground this against reality each
 cycle — a vision you never re-ground rots.*
 
-**North star:** somm is the self-hosted intelligence loop that lets one
-developer with a dozen projects use LLMs well everywhere — recording every call
-locally, grading production samples against a gold model, and remembering every
-model decision so the next project starts where the last one left off.
+**North star:** somm is the self-hosted meter and memory that lets one
+developer with a dozen projects put every model-shaped piece of work in the
+right place — a frontier model, a small local one, a decision model, a rule, a
+coding-agent harness, a subscription seat, a rented GPU — by recording every
+attempt locally, grading production samples, and remembering every placement
+decision so the next project starts where the last one left off.
 
 **North-star metric:** cross-project decisions recalled — the number of times a
-project's model choice is answered by somm's accumulated memory instead of a
-fresh guess. If somm isn't making the *next* workload faster to get right, it
+project's placement choice is answered by somm's accumulated memory instead of
+a fresh guess. If somm isn't making the *next* workload faster to get right, it
 isn't earning its keep.
+
+Two companions keep that number honest, because a memory nobody acts on is
+not a loop:
+
+- **Evidence-routed share** — the fraction of calls whose route was decided by
+  a recommendation, a learned override, or a workload policy rather than a
+  caller's hard-coded pin.
+- **Recommendations applied** — the fraction applied or dismissed within
+  fourteen days of being created.
 
 ## Strategy bets
 
+- **The record is complete and the hot path never lies.** Everything else is
+  built on the ledger, so it comes first. Every attempt is recorded with its
+  true outcome, the route it took, and the basis of its cost; a telemetry
+  failure never breaks a call or buys it twice; and a guarantee the
+  documentation makes is enforced in code or removed from the documentation.
 - **Cross-project memory is the moat.** Every observability tool does
   telemetry + evals + prompts. Only somm learns which model to use from *your
   own* call history *across all your projects*, and lets the coding agent ask.
@@ -48,6 +64,14 @@ isn't earning its keep.
   served by one. Because every rung records against the same workload id, the
   climb is evidence-driven rather than taste-driven, and reversible when a
   stronger model reclaims ground.
+
+  The rungs are not all LLMs. A decision model that returns a typed label and
+  a probability, an embedding with a linear head, a reranker, a rule, a chip:
+  each is a kind of serving with its own unit of cost and its own notion of
+  being right, and each belongs on the same ledger under the same workload id,
+  compared by what it costs to get a correct answer. The same holds for where
+  the work runs — a metered API, a subscription seat, a local model, or a GPU
+  rented for the job.
 
   Somm's job in that loop is what it has always been: be the meter and the
   memory. The first climb is live: gabe's `same_event` — 700,000 calls on a
@@ -88,6 +112,50 @@ projects write with a current client; the ledger now records which version
 wrote each row so the skew is a finding, not a mystery. The metric stands.
 The honest reading of it today is low, and that is the point of having one.
 
+## Re-grounding, November 2026
+
+A second look, this time at the code, the consumers, the agents' session logs
+and the field at once. The differentiators held: no tool surveyed combines
+cross-project decision memory, production shadow evaluation feeding routing, a
+local ledger and a surface a coding agent can ask. The independent gateways
+thinned over the year — acquisitions, an archived project, two compromised
+releases of the most widely used client library — which is the practical case
+for owning the provider layer.
+
+What did not hold was the foundation under the differentiators.
+
+- The north-star metric was not low; it was unrecorded. Recalls were never
+  persisted, and nearly every decision in the shared ledger had been written
+  by a test fixture. Fifty-four recommendations had been created and none
+  applied.
+- The record had holes: structured-output failures, timeouts and rate limits
+  never reached the ledger as outcomes; fallback depth was not stored; a
+  self-hosted endpoint was priced at zero; a workload's identity omitted its
+  project.
+- The hot path broke promises: one bad row killed the telemetry writer for the
+  life of the process; a locked ledger could discard a paid answer and buy it
+  again; and a workload marked private could be routed to a cloud provider,
+  which three documents said was impossible.
+- The flagship climb was mostly invisible. Rules answered more than nine in
+  ten of one workload's decisions, and somm saw only the remainder that
+  reached a model.
+- Consumers had routed around the surface: some twenty hand-rolled JSON
+  repair, a dozen overrode the default provider order, and ten read the ledger
+  with their own SQL.
+- The agent-facing surfaces — the MCP server and the skill — were installed in
+  no harness.
+
+Three changes to the strategy follow. Trust in the record becomes the first
+bet, ahead of the moat it supports. The unit widens from "which LLM" to "what
+should serve this workload", across kinds of model and places to run. And
+privacy stops being a three-way label and becomes a **data boundary**: an
+ordered scale of where a workload's data may go — hardware you run, a
+zero-retention commitment, a provider you subscribe to, anything else — that
+the router enforces and the ledger records.
+
+The paved-road test for all of it: a consuming project needs no wrapper
+module around somm.
+
 ## Non-goals
 
 - A composite "quality score" collapsing LMArena + LiveBench + HF into one
@@ -104,8 +172,9 @@ The honest reading of it today is low, and that is the point of having one.
 
 ## Engine map
 
-- **library** (`somm`) — the one-line drop-in: ten providers, tool calling,
-  streaming, embeddings, retries/fallbacks, local telemetry capture.
+- **library** (`somm`) — the one-line drop-in: providers, tool calling,
+  streaming, embeddings, retries/fallbacks, local telemetry capture, and the
+  data boundary that decides which routes a workload may use.
 - **harnesses** (`somm.harnesses`) — one provider-neutral coding-agent attempt:
   executable discovery, arguments and permissions, native-event normalization,
   session identity, final output, usage, and portable termination.
