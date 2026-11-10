@@ -42,16 +42,18 @@ class ClaudeCLIHarness(BaseHarness):
     scrub_env = ("ANTHROPIC_API_KEY",)
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
-        # The prompt never goes in argv: `claude -p "--version"` parsed the
-        # prompt as a flag, and claude rejects a bare `--` ("unknown option
-        # '--'"), so there is no end-of-options separator to put before it.
-        # `-p` with no prompt argument reads it from stdin (see stdin_data),
-        # which is also how somm's claude-cli provider calls it, and which
-        # lifts the argv size limit on long prompts.
-        argv = [
-            request.resolved_executable(self.executable), "-p",
-            "--verbose", "--output-format", "stream-json",
-        ]
+        # Two ways to hand over the prompt, chosen by the request like every
+        # other adapter: on stdin when `prompt_via_stdin` is set (`-p` with no
+        # argument reads stdin), otherwise as `-p`'s argument. A caller that
+        # launches the process itself reads that flag to decide whether to
+        # write stdin, so the adapter must not move the prompt on its own.
+        # claude rejects a bare `--`, and a prompt starting with "-" would be
+        # parsed as an option, so in argv such a prompt gets a leading space.
+        argv = [request.resolved_executable(self.executable), "-p"]
+        if not request.prompt_via_stdin:
+            prompt = request.prompt
+            argv.append(f" {prompt}" if prompt.startswith("-") else prompt)
+        argv.extend(["--verbose", "--output-format", "stream-json"])
         if request.model:
             argv.extend(["--model", request.model])
         if request.reasoning_effort:
@@ -64,9 +66,6 @@ class ClaudeCLIHarness(BaseHarness):
             argv.extend(["--resume", request.session_id])
         argv.extend(str(arg) for arg in request.extra)
         return argv
-
-    def stdin_data(self, request: HarnessRequest) -> str | None:
-        return request.prompt
 
     # --- parsers -----------------------------------------------------
 

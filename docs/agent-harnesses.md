@@ -179,11 +179,12 @@ adapter cannot enforce. For example, `sandbox_mode="read-only"` sent to
 means "network must be blocked", so it is rejected on adapters without a
 network sandbox. Leave it `None` there.
 
-For every adapter, a `cwd` that is missing or is not a directory raises. Somm
-never falls back to the home directory. A prompt that looks like an option is
-passed as data: Codex prompts and session ids, and OpenCode and Pi prompts,
-follow a `--` separator; `claude-cli` always writes the prompt to `claude -p` on
-stdin, because `claude` rejects a bare `--`.
+A prompt that starts with `-` must reach the agent as data, never as a flag.
+OpenCode gets it after `--`. `claude` rejects a bare `--`, so the Claude adapter
+puts a leading space before such a prompt when it travels in argv. Every adapter
+follows the request's `prompt_via_stdin` for where the prompt goes; when somm
+launches the process itself it switches to stdin for a prompt that starts with
+`-` or is too long for one argument.
 
 `executable=` can pin a specific CLI path when PATH is not authoritative (for
 example, when a maintained per-user installation should win over an older

@@ -11,6 +11,7 @@ consumer can read a newer result. Native detail stays in ``terminal_event``.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -23,6 +24,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import IO, Any, Protocol, runtime_checkable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+# Linux caps one argv string at 128 KiB (MAX_ARG_STRLEN); stay well under it.
+_ARGV_PROMPT_LIMIT = 100_000
 
 ENVELOPE_VERSION = 2
 """Version of :class:`HarnessResult`. 1 was 0.14–0.16; 2 adds model,
@@ -290,7 +294,22 @@ class BaseHarness:
     def stdin_data(self, request: HarnessRequest) -> str | None:
         return request.prompt if request.prompt_via_stdin else None
 
+    def _prefer_stdin(self, request: HarnessRequest) -> HarnessRequest:
+        """Send the prompt on stdin when argv would mangle or reject it.
+
+        Applies only to somm's own launch, where the adapter also writes the
+        stdin: a prompt that starts with "-" could be read as an option, and a
+        very long one exceeds the operating system's per-argument limit.
+        """
+        if request.prompt_via_stdin or not self.capabilities.prompt_via_stdin:
+            return request
+        prompt = request.prompt or ""
+        if prompt.startswith("-") or len(prompt.encode("utf-8", "ignore")) > _ARGV_PROMPT_LIMIT:
+            return dataclasses.replace(request, prompt_via_stdin=True)
+        return request
+
     def start(self, request: HarnessRequest) -> HarnessHandle:
+        request = self._prefer_stdin(request)
         env = scrubbed_env(self.scrub_env)
         if request.env:
             env.update(request.env)
