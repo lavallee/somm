@@ -30,7 +30,7 @@ def _tmp_config(tmp_path: Path) -> Config:
 def client(tmp_path):
     cfg = _tmp_config(tmp_path)
     app = create_app(cfg)
-    return TestClient(app, base_url="http://localhost"), cfg, app
+    return TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)), cfg, app
 
 
 def _auth_headers(app, **extra: str) -> dict[str, str]:
@@ -395,7 +395,7 @@ def test_otlp_rejects_oversized_content_length_without_writes(tmp_path):
     cfg = _tmp_config(tmp_path)
     cfg.service_otlp_max_body_bytes = 8
     app = create_app(cfg)
-    c = TestClient(app, base_url="http://localhost")
+    c = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
 
     r = c.post(
         "/api/otlp/v1/traces",
@@ -416,7 +416,7 @@ def test_otlp_rejects_over_span_cap_without_partial_writes(tmp_path):
     cfg = _tmp_config(tmp_path)
     cfg.service_otlp_max_spans = 1
     app = create_app(cfg)
-    c = TestClient(app, base_url="http://localhost")
+    c = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
     payload = {"spans": []}
     for idx in range(2):
         payload["spans"].append(
@@ -439,7 +439,7 @@ def test_otlp_malformed_spans_skip_and_attrs_are_bounded(tmp_path):
     cfg = _tmp_config(tmp_path)
     cfg.service_otlp_max_attr_chars = 5
     app = create_app(cfg)
-    c = TestClient(app, base_url="http://localhost")
+    c = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
     span = _otlp_payload(trace_id="trace-bounds")["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
     span["attributes"].extend(
         [
@@ -627,3 +627,32 @@ def test_host_is_loopback_rejects_rebinding_names(host, ok):
     from somm_service.app import _host_is_loopback
 
     assert _host_is_loopback(host) is ok
+
+
+_FORGED_LOCAL = {"x-somm-local": "1", "sec-fetch-site": "same-origin", "host": "127.0.0.1:7878"}
+
+
+def test_local_header_path_needs_a_loopback_peer(tmp_path):
+    """Host, Origin and Sec-Fetch-Site are the client's to choose; the peer is not."""
+    app = create_app(_tmp_config(tmp_path))
+    remote = TestClient(app, base_url="http://127.0.0.1:7878", client=("203.0.113.9", 40000))
+    assert remote.get("/api/calls", headers=_FORGED_LOCAL).status_code == 403
+    assert remote.get("/api/calls", headers=_auth_headers(app)).status_code == 200
+
+
+def test_local_header_path_is_refused_through_a_proxy(tmp_path):
+    app = create_app(_tmp_config(tmp_path))
+    proxied = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
+    for forwarded in ("x-forwarded-for", "forwarded", "x-real-ip"):
+        r = proxied.get("/api/calls", headers={**_LOCAL_HEADERS, forwarded: "198.51.100.7"})
+        assert r.status_code == 403, forwarded
+
+
+@pytest.mark.parametrize(
+    "path", ["/v1/messages", "/v1/chat/completions", "/api/routing/decide", "/v1/traces"]
+)
+def test_spend_and_ingest_routes_always_need_the_token(tmp_path, path):
+    app = create_app(_tmp_config(tmp_path))
+    local = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
+    r = local.post(path, json={}, headers=_LOCAL_HEADERS)
+    assert r.status_code == 403

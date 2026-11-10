@@ -5,6 +5,20 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [Unreleased]
+
+### Security
+- **Three request headers opened every service route.** `X-Somm-Local: 1` with a
+  loopback `Host` and `Sec-Fetch-Site: same-origin` was accepted in place of the
+  service token, on every protected route. All three are chosen by the client, so a
+  caller reaching a service bound beyond loopback could forge them, including on the
+  proxy routes that spend money. The header path now also requires the connection's
+  peer address to be loopback, is refused when a forwarding header is present
+  (a reverse proxy or tunnel makes every request arrive from loopback), and covers
+  only dashboard reads and the recommendation actions. `/v1/messages`,
+  `/v1/chat/completions`, `/api/routing/decide` and OTLP ingest always need
+  `Authorization: Bearer <token>`.
+
 ## [0.20.2] — 2026-11-09
 
 ### Fixed

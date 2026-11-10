@@ -26,7 +26,7 @@ def client_with_rec(tmp_path):
     app = create_app(cfg)
     # Loopback base_url so the X-Somm-Local dashboard path is honored — the
     # header path is gated on a loopback Host to defeat DNS rebinding.
-    c = TestClient(app, base_url="http://localhost")
+    c = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
 
     # Seed a workload + recommendation
     repo = app.state.repo
@@ -146,7 +146,7 @@ def test_xss_in_recommendation_evidence_is_escaped(tmp_path):
     """Workload names + evidence fields render safely even with <script> payloads."""
     cfg = _tmp_config(tmp_path)
     app = create_app(cfg)
-    c = TestClient(app, base_url="http://localhost")
+    c = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
     repo = app.state.repo
     from somm_core.models import PrivacyClass
 
