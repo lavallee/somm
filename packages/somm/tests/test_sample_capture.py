@@ -93,6 +93,9 @@ def test_private_workload_never_captured(tmp_path):
          "budget_usd_daily": 1.0},
     )
     llm._shadow_cfg_cache.clear()
+    # A private workload may only reach a local route (0.21 data boundary),
+    # so serve it from a loopback endpoint: the call runs, nothing is captured.
+    llm.providers[0].base_url = "http://127.0.0.1:11434"
     llm.generate(prompt="hi", workload="secret")
     assert _samples(llm) == []
 

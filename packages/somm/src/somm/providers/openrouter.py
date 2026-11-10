@@ -88,9 +88,25 @@ class OpenRouterProvider(OpenAICompatProvider):
         if request.model:
             return self._call_single(request, request.model)
 
+        roster = self.roster
+        if request.data_boundary:
+            # A :free model and a paid one can sit in different tiers, so the
+            # boundary is checked per roster model, before any is tried.
+            from somm.boundary import ResolvedBoundary, admit, classify, parse_tier, refuse
+
+            routes = [classify(self.name, m, base_url=self.base_url) for m in self.roster]
+            roster = [r.model for r in routes if admit(r, request.data_boundary)]
+            if not roster:
+                raise refuse(
+                    workload=None,
+                    boundary=ResolvedBoundary(parse_tier(request.data_boundary), "request"),
+                    refused=routes,
+                    context="the openrouter roster",
+                )
+
         last_exc: Exception | None = None
         tried_any = False
-        for model in self.roster:
+        for model in roster:
             if self.tracker and self.tracker.get(self.name, model).is_cooling():
                 continue
             tried_any = True

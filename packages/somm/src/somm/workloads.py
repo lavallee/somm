@@ -113,6 +113,19 @@ class WorkloadHandler(Protocol):
     def serve(self, request: WorkloadRequest) -> WorkloadResult | None: ...
 
 
+def handler_tier(handler: WorkloadHandler):
+    """A handler's data tier: its declared ``data_tier`` attribute (``local``,
+    ``zdr``, ``subscribed`` or ``unvetted``), unless the owner's boundary.toml
+    names ``handler:<kind>``. Undeclared is ``unvetted``."""
+    from somm_core.boundary import classify
+
+    return classify(
+        getattr(handler, "kind", ""),
+        kind="handler",
+        declared_tier=getattr(handler, "data_tier", None),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _Binding:
     kind: str
@@ -129,6 +142,11 @@ def register(handler: WorkloadHandler, *, replace: bool = False) -> None:
     Raises :class:`ValueError` on a duplicate kind unless ``replace`` is set —
     two packages silently fighting over one kind is the kind of ambiguity that
     is much easier to prevent than to debug.
+
+    A handler may declare ``data_tier`` (``local`` | ``zdr`` | ``subscribed``
+    | ``unvetted``): where the data it is handed goes. Undeclared is
+    ``unvetted``, so a workload with a data boundary never consults it until
+    it says (or the owner's boundary.toml says, as ``handler:<kind>``).
     """
     kind = getattr(handler, "kind", "")
     if not kind or not isinstance(kind, str):
@@ -224,12 +242,16 @@ def clear() -> None:
 # -- dispatch ---------------------------------------------------------------
 
 
-def resolve(request: WorkloadRequest) -> WorkloadResult | None:
+def resolve(
+    request: WorkloadRequest, *, data_boundary: str | None = None
+) -> WorkloadResult | None:
     """Serve ``request`` through its bound handler, or return None.
 
     None means the provider chain answers — because the workload is unbound, its
     binding is disabled, no handler is registered for its kind, the handler
-    declined, or the handler raised.
+    declined, or the handler raised. With a ``data_boundary``, a handler whose
+    tier lies outside it is never called (the chain, which is itself
+    boundary-checked, answers instead).
     """
     _load_entry_points()
     with _lock:
@@ -239,6 +261,17 @@ def resolve(request: WorkloadRequest) -> WorkloadResult | None:
         handler = _handlers.get(binding.kind)
     if handler is None:
         return None
+    if data_boundary:
+        from somm_core.boundary import admit
+
+        tier = handler_tier(handler)
+        if not admit(tier, data_boundary):
+            _logger.warning(
+                "workload handler %r (tier %s) is outside data boundary %s for %r; "
+                "not consulted",
+                binding.kind, tier.tier.value, data_boundary, request.workload,
+            )
+            return None
     try:
         result = handler.serve(request)
     except Exception:
@@ -280,9 +313,12 @@ def _pre_call(ctx: hooks.PreCallContext) -> hooks.ShortCircuit | None:
         response_format=ctx.response_format,
         config=dict(binding.config),
     )
-    result = resolve(request)
+    result = resolve(request, data_boundary=getattr(ctx, "data_boundary", None))
     if result is None:
         return None
+    with _lock:
+        handler = _handlers.get(binding.kind)
+    tier = handler_tier(handler).tier.value if handler is not None else None
     return hooks.ShortCircuit(
         text=result.text,
         provider=binding.kind,
@@ -293,6 +329,7 @@ def _pre_call(ctx: hooks.PreCallContext) -> hooks.ShortCircuit | None:
         raw=result.raw,
         tool_calls=result.tool_calls,
         source=binding.kind,
+        data_tier=tier,
     )
 
 

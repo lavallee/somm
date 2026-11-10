@@ -790,3 +790,44 @@ async def test_replay_truncates_untrusted_bodies(tmp_path):
     assert "x" * 4000 in original
     assert "x" * 4001 not in original
     assert "[recorded content truncated to 4000 chars before envelope]" in original
+
+
+# ---------------------------------------------------------------------------
+# data boundary
+
+
+@pytest.mark.asyncio
+async def test_compare_refuses_models_outside_the_boundary(tmp_path):
+    """The audit probe for MCP: a private workload's compare must not reach
+    a cloud provider; refused models are reported, not silently skipped."""
+    from somm_mcp.server import build_server
+
+    cfg = _tmp_cfg(tmp_path)
+    local = FakeProvider("ollama", "from-ollama")
+    local.base_url = "http://127.0.0.1:11434"
+    cloud = FakeProvider("openai", "from-openai")
+    server = build_server(cfg, providers=[local, cloud])
+    reg = await _call(server, "somm_register_workload", name="secret", privacy_class="private")
+    assert reg["effective_data_boundary"] == "local" and reg["data_boundary"] is None
+    res = await _call(
+        server, "somm_compare", prompt="ping", models=["ollama/x", "openai/y"], workload="secret"
+    )
+    by_provider = {r["provider"]: r for r in res["results"]}
+    assert by_provider["openai"]["refused"] is True
+    assert "SOMM_PRIVACY_VIOLATION" in by_provider["openai"]["error"]
+    assert cloud.calls == 0 and local.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_register_workload_accepts_data_boundary(tmp_path):
+    from somm_mcp.server import build_server
+
+    cfg = _tmp_cfg(tmp_path)
+    server = build_server(cfg)
+    res = await _call(server, "somm_register_workload", name="w", data_boundary="subscribed")
+    assert res["data_boundary"] == "subscribed"
+    assert res["effective_data_boundary"] == "subscribed"
+    bad = await _call(server, "somm_register_workload", name="w", data_boundary="private")
+    assert "error" in bad
+    rec = await _call(server, "somm_recommend", workload="w")
+    assert rec["data_boundary"] == "subscribed"

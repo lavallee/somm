@@ -164,9 +164,89 @@ def record_attempt(
         origin="harness",
         call_site=hooks.current_call_site(),
         client_version=VERSION,
+        data_tier=harness_route(result.harness, model).tier.value,
     )
     repo.write_call(call)
     return call
 
 
-__all__ = ["DEFAULT_WORKLOAD", "record_attempt"]
+def harness_route(name: str, model: str | None = None):
+    """The data tier a harness attempt runs at: the seat's provider entry
+    (claude-cli, codex-cli) or ``unvetted`` for multi-provider agents."""
+    from somm_core.boundary import HARNESS_PROVIDERS, classify
+
+    return classify(HARNESS_PROVIDERS.get(name, name), model)
+
+
+def check_boundary(
+    name: str,
+    request: HarnessRequest,
+    *,
+    workload: str | None = None,
+    project: str | None = None,
+    data_boundary: str | None = None,
+    config: Config | None = None,
+    repo: Repository | None = None,
+):
+    """Refuse a harness attempt outside the workload's data boundary.
+
+    Resolves the boundary of ``workload`` (when given) in ``project``, tightened
+    by ``data_boundary``; raises ``SommPrivacyViolation`` after recording a
+    refusal row when the harness's tier is outside it. Returns the resolved
+    boundary. Nothing is launched by this function.
+    """
+    from somm_core.boundary import admit, resolve_boundary
+
+    from somm.boundary import refuse
+
+    wl = None
+    if workload is not None:
+        cfg = config or load_config(
+            project=project, cwd=Path(request.cwd) if request is not None else None
+        )
+        repo = repo or Repository(cfg.db_path)
+        wl = repo.workload_by_name(workload, cfg.project)
+        project = cfg.project
+    boundary = resolve_boundary(wl, per_call=data_boundary, project=project)
+    route = harness_route(name, request.model if request is not None else None)
+    if boundary.is_default or admit(route, boundary.tier):
+        return boundary
+    exc = refuse(
+        workload=workload, boundary=boundary, refused=[route], context=f"harness {name!r}"
+    )
+    if wl is not None and repo is not None:
+        try:
+            repo.write_call(
+                Call(
+                    id=str(uuid.uuid4()),
+                    ts=datetime.now(UTC),
+                    project=project or "",
+                    workload_id=wl.id,
+                    prompt_id=None,
+                    provider="",
+                    model=(request.model if request is not None else None) or "",
+                    tokens_in=0,
+                    tokens_out=0,
+                    latency_ms=0,
+                    cost_usd=0.0,
+                    outcome=Outcome.UNKNOWN,
+                    error_kind="SommPrivacyViolation",
+                    error_detail=(
+                        f"refused: data_boundary={boundary.tier.value} (from {boundary.source}) "
+                        f"| refused routes: {route.route}={route.tier.value}"
+                    )[:512],
+                    prompt_hash=stable_hash(request.prompt) if request is not None else "",
+                    response_hash=stable_hash(""),
+                    cost_accuracy="actual",
+                    cost_source=None,
+                    budget_eligible=False,
+                    origin="harness",
+                    client_version=VERSION,
+                )
+            )
+        except Exception:  # noqa: BLE001 — the refusal itself must still raise
+            pass
+    raise exc
+
+
+__all__ = ["DEFAULT_WORKLOAD", "check_boundary", "harness_route", "record_attempt"]

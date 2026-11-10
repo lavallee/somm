@@ -944,6 +944,18 @@ class SommLLM:
                 pass
         return wl
 
+    def set_data_boundary(self, workload: str, data_boundary: str | None) -> None:
+        """Set (or clear with None) a workload's stored data boundary."""
+        wl = self._require_workload(workload)
+        self.repo.set_workload_data_boundary(wl.id, data_boundary)
+        if self._mirror_repo is not None:
+            try:
+                mirror_wl = self._mirror_repo.workload_by_name(workload, self.config.project)
+                if mirror_wl is not None:
+                    self._mirror_repo.set_workload_data_boundary(mirror_wl.id, data_boundary)
+            except Exception:  # noqa: BLE001
+                pass
+
     def set_workload_policy(self, workload: str, policy: dict | None) -> None:
         """Attach or clear a workload routing policy."""
         wl = self._require_workload(workload)
@@ -1082,6 +1094,155 @@ class SommLLM:
             default_cap_usd_daily=self.config.budget_default_cap_usd_daily,
         )
 
+    # ------------------------------------------------------------------
+    # Data boundary
+
+    def _resolve_boundary(self, wl, per_call: str | None):
+        """The boundary this call runs under (see somm_core.boundary)."""
+        from somm.boundary import resolve_boundary
+
+        return resolve_boundary(wl, per_call=per_call, project=self.config.project)
+
+    def _boundary_chain(self, providers: list, model: str | None, boundary, *, stream: bool):
+        from somm.boundary import admissible_providers
+
+        ok, _ = admissible_providers(providers, model, boundary.tier, roster=not stream)
+        return ok
+
+    def _served_tier(self, provider_name: str, model: str | None) -> str | None:
+        """calls.data_tier for the route that served (or was attempted)."""
+        from somm.boundary import served_tier
+
+        if not provider_name:
+            return None
+        obj = None
+        for p in self.providers:
+            if p.name == provider_name:
+                obj = p
+                break
+        if obj is None and self._pinned_only_cache:
+            obj = self._pinned_only_cache.get(provider_name)
+        try:
+            return served_tier(obj, provider_name, model)
+        except Exception:  # noqa: BLE001 — recording must not break the call
+            return None
+
+    def _admit_or_refuse(
+        self,
+        wl,
+        workload: str,
+        boundary,
+        *,
+        pinned: str | None,
+        model: str | None,
+        policy: dict | None,
+        stream: bool,
+        prompt_hash: str,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        """Raise SommPrivacyViolation (after recording a refusal row) when no
+        route within ``boundary`` remains for this call. A pin is checked
+        as-is: it does not override a boundary."""
+        from somm.boundary import admissible_providers, refuse
+
+        if pinned:
+            candidates = [self._pick_provider(pinned)]
+            context = f"pinned provider {pinned!r}"
+        else:
+            candidates = (
+                _policy_providers(self.providers, policy, explicit_model=model is not None)
+                if policy
+                else list(self.providers)
+            )
+            context = "the stream chain" if stream else "the routing chain"
+        ok, refused = admissible_providers(candidates, model, boundary.tier, roster=not stream)
+        if ok:
+            return
+        exc = refuse(workload=workload, boundary=boundary, refused=refused, context=context)
+        self._record_refusal(
+            wl,
+            workload,
+            exc,
+            model=model,
+            prompt_hash=prompt_hash,
+            observation_role=observation_role,
+            source_call_id=source_call_id,
+            session_id=session_id,
+            parent_call_id=parent_call_id,
+            correlation_id=correlation_id,
+        )
+        raise exc
+
+    def _record_refusal(
+        self,
+        wl,
+        workload: str,
+        exc,
+        *,
+        model: str | None,
+        prompt_hash: str,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        """One calls row for demand the boundary turned away.
+
+        outcome is ``unknown`` (an existing value: consumers that switch on
+        outcome must not meet a new one), error_kind ``SommPrivacyViolation``,
+        and error_detail starts ``refused: data_boundary``. No provider was
+        contacted, so provider is empty, cost is zero, data_tier is NULL, and
+        the row is not budget-eligible.
+        """
+        refused = ", ".join(f"{r['provider']}/{r['model'] or '-'}={r['tier']}" for r in exc.refused)
+        detail = (
+            f"refused: data_boundary={exc.data_boundary} (from {exc.boundary_source}) "
+            f"| refused routes: {refused or 'none'}"
+        )[:512]
+        try:
+            call = Call(
+                id=str(uuid.uuid4()),
+                ts=datetime.now(UTC),
+                project=self.config.project,
+                workload_id=wl.id,
+                prompt_id=None,
+                provider="",
+                model=model or "",
+                tokens_in=0,
+                tokens_out=0,
+                latency_ms=0,
+                cost_usd=0.0,
+                outcome=Outcome.UNKNOWN,
+                error_kind="SommPrivacyViolation",
+                error_detail=detail,
+                prompt_hash=prompt_hash,
+                response_hash=stable_hash(""),
+                correlation_id=(
+                    correlation_id if correlation_id is not None else hooks.current_correlation_id()
+                ),
+                session_id=session_id,
+                parent_call_id=parent_call_id,
+                cost_basis="computed",
+                cost_kind="unknown",
+                cost_accuracy="actual",
+                cost_source=None,
+                observation_role=observation_role or "production",
+                source_call_id=source_call_id,
+                budget_eligible=False,
+                call_site=hooks.current_call_site(),
+                client_version=_CLIENT_VERSION,
+            )
+            self._finish_call(call, workload=workload, short_circuited=None)
+        except Exception:  # noqa: BLE001 — the refusal itself must still raise
+            logging.getLogger("somm.client").warning(
+                "could not record boundary refusal for workload %r", workload, exc_info=True
+            )
+
     def _resolve_wait_on_exhausted(self, wait) -> float | None:
         if wait is _WAIT_UNSET:
             wait = self.config.wait_on_exhausted
@@ -1209,6 +1370,7 @@ class SommLLM:
         observation_role: str = "production",
         source_call_id: str | None = None,
         claude_cli_text_only: bool = False,
+        data_boundary: str | None = None,
     ) -> SommResult:
         """Run one LLM call. Writes telemetry synchronously at the row level.
 
@@ -1264,6 +1426,13 @@ class SommLLM:
         ``source_call_id`` naming that call. Non-production rows are kept out
         of serving rollups, budgets, and recommendations, exactly as the
         shadow-eval worker's own rows are.
+
+        ``data_boundary`` (``local`` | ``zdr`` | ``subscribed`` |
+        ``unvetted``) may only tighten the workload's boundary for this call;
+        a looser value is ignored. Routes outside the boundary are never
+        tried, whether routed or pinned. When none remain the call records a
+        refusal row and raises ``SommPrivacyViolation`` (never retried, never
+        rescued by a looser route). See docs/data-boundary.md.
         """
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
@@ -1280,6 +1449,8 @@ class SommLLM:
                     f"Docs: docs/errors/SOMM_WORKLOAD_UNREGISTERED.md"
                 )
             wl = self.register_workload(name=workload)
+
+        boundary = self._resolve_boundary(wl, data_boundary)
 
         # Self-healing: apply any learned parameter override for this
         # (workload, model). The agent worker writes these when it detects a
@@ -1355,6 +1526,7 @@ class SommLLM:
                 tool_choice=tool_choice,
                 project=self.config.project,
                 response_format=response_format,
+                data_boundary=None if boundary.is_default else boundary.tier.value,
             )
             short_circuit = hooks.fire_pre_call(ctx)
             prompt_text = ctx.prompt
@@ -1412,6 +1584,31 @@ class SommLLM:
 
                 req.messages = fallback_messages(req.messages)
             allow_fallback_resolved = False
+
+        # Data boundary: refuse before any provider call when no route within
+        # the workload's boundary remains. A pin does not override it.
+        if short_circuit is None and not boundary.is_default:
+            req.data_boundary = boundary.tier.value
+            req.metadata = {
+                **(req.metadata or {}),
+                "somm_workload": workload,
+                "somm_boundary_source": boundary.source,
+            }
+            self._admit_or_refuse(
+                wl,
+                workload,
+                boundary,
+                pinned=provider,
+                model=model,
+                policy=wl.policy,
+                stream=False,
+                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
+                observation_role=observation_role,
+                source_call_id=source_call_id,
+                session_id=session_id,
+                parent_call_id=parent_call_id,
+                correlation_id=correlation_id,
+            )
 
         # Fail-closed budget gate: refuse before any provider call once the
         # workload's daily cap is reached (inert unless budget_fail_closed).
@@ -1650,6 +1847,11 @@ class SommLLM:
             client_version=_CLIENT_VERSION,
             observation_role=observation_role or "production",
             source_call_id=source_call_id,
+            data_tier=(
+                getattr(short_circuit, "data_tier", None)
+                if short_circuit is not None
+                else self._served_tier(actual_provider, actual_model)
+            ),
         )
         self._finish_call(
             call,
@@ -1766,6 +1968,7 @@ class SommLLM:
         observation_role: str = "production",
         source_call_id: str | None = None,
         claude_cli_text_only: bool = False,
+        data_boundary: str | None = None,
     ) -> SommResult:
         """Await :meth:`generate` without blocking the caller's event loop.
 
@@ -1802,6 +2005,7 @@ class SommLLM:
             correlation_id=correlation_id,
             observation_role=observation_role,
             source_call_id=source_call_id,
+            data_boundary=data_boundary,
         )
 
     # ------------------------------------------------------------------
@@ -2101,6 +2305,7 @@ class SommLLM:
         wait: float | None = _WAIT_UNSET,
         session_id: str | None = None,
         parent_call_id: str | None = None,
+        data_boundary: str | None = None,
     ) -> Iterator[str]:
         """Stream text deltas from the LLM. Yields user-visible text chunks
         (with `<think>` blocks stripped across chunk boundaries).
@@ -2124,12 +2329,14 @@ class SommLLM:
         if model == "somm/auto":
             yield self.generate(prompt, system=system, workload=workload, max_tokens=max_tokens,
                                 temperature=temperature, model=model, provider=provider, wait=wait,
-                                session_id=session_id, parent_call_id=parent_call_id).text
+                                session_id=session_id, parent_call_id=parent_call_id,
+                                data_boundary=data_boundary).text
             return
 
         from somm.providers.base import SommRequest
 
         wl = self._require_workload(workload)
+        boundary = self._resolve_boundary(wl, data_boundary)
         wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
         messages = None
@@ -2158,6 +2365,7 @@ class SommLLM:
                 tools=[],
                 tool_choice=None,
                 project=self.config.project,
+                data_boundary=None if boundary.is_default else boundary.tier.value,
             )
             short_circuit = hooks.fire_pre_call(ctx)
             prompt_text = ctx.prompt
@@ -2186,6 +2394,24 @@ class SommLLM:
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
 
+        # Data boundary before any provider is touched: a pinned stream
+        # outside it raises; an unpinned one only ever sees admissible
+        # candidates.
+        if short_circuit is None and not boundary.is_default:
+            self._admit_or_refuse(
+                wl,
+                workload,
+                boundary,
+                pinned=provider,
+                model=model,
+                policy=None,
+                stream=True,
+                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
+                session_id=session_id,
+                parent_call_id=parent_call_id,
+            )
+            req.data_boundary = boundary.tier.value
+
         # Budget gate after pre_call — a short-circuit spends nothing, so a
         # capped workload may still stream from cache; a real call is refused.
         if short_circuit is None:
@@ -2195,9 +2421,15 @@ class SommLLM:
         stream_candidates: list = []
         if short_circuit is None and wait_on_exhausted is not None:
             candidates = [self._pick_provider(provider)] if provider else list(self.providers)
+            if not boundary.is_default:
+                candidates = self._boundary_chain(candidates, model, boundary, stream=True)
             self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
         if short_circuit is None:
             stream_candidates = self._stream_candidates(provider)
+            if not boundary.is_default:
+                stream_candidates = self._boundary_chain(
+                    stream_candidates, model, boundary, stream=True
+                )
             chosen = stream_candidates[0] if stream_candidates else None
         routed_past: list[tuple[str, Exception]] = []
         call_id = str(uuid.uuid4())
@@ -2393,6 +2625,11 @@ class SommLLM:
                 pricing_version=pricing_version,
                 provider_request_id=provider_request_id,
                 billing_id=billing_id,
+                data_tier=(
+                    getattr(short_circuit, "data_tier", None)
+                    if short_circuit is not None
+                    else (self._served_tier(provider_name, model_name) if chosen else None)
+                ),
             )
             self._finish_call(
                 call,
@@ -2431,6 +2668,7 @@ class SommLLM:
         wait: float | None = _WAIT_UNSET,
         session_id: str | None = None,
         parent_call_id: str | None = None,
+        data_boundary: str | None = None,
     ) -> AsyncIterator[str]:
         """Asynchronously iterate over :meth:`stream` without blocking the loop.
 
@@ -2452,6 +2690,7 @@ class SommLLM:
             wait=wait,
             session_id=session_id,
             parent_call_id=parent_call_id,
+            data_boundary=data_boundary,
         )
         try:
             while True:
@@ -2492,6 +2731,7 @@ class SommLLM:
         wait: float | None = _WAIT_UNSET,
         observation_role: str = "production",
         source_call_id: str | None = None,
+        data_boundary: str | None = None,
     ) -> tuple[Any, SommResult]:
         """Generate JSON, validate it, and return (validated_object, result).
 
@@ -2536,6 +2776,7 @@ class SommLLM:
                 parent_call_id=parent_call_id,
                 observation_role=observation_role,
                 source_call_id=source_call_id,
+                data_boundary=data_boundary,
             )
             last_result = result
             last_raw = result.text
@@ -2609,6 +2850,7 @@ class SommLLM:
         wait: float | None = _WAIT_UNSET,
         observation_role: str = "production",
         source_call_id: str | None = None,
+        data_boundary: str | None = None,
     ) -> tuple[Any, SommResult]:
         """Await :meth:`generate_structured` using the same strict pipeline."""
         import asyncio
@@ -2631,6 +2873,7 @@ class SommLLM:
             wait=wait,
             observation_role=observation_role,
             source_call_id=source_call_id,
+            data_boundary=data_boundary,
         )
 
     def extract_structured(
@@ -2831,7 +3074,29 @@ class SommLLM:
                 f"Problem: workload {workload!r} is privacy_class=private; shadow-eval forbidden.\n"
                 f"Cause: shadow-eval re-sends prompt/response to gold-model provider.\n"
                 f"Fix: downgrade privacy_class OR keep shadow off for this workload.\n"
-                f"Docs: docs/errors/SOMM_PRIVACY_VIOLATION.md"
+                f"Docs: docs/errors/SOMM_PRIVACY_VIOLATION.md",
+                workload=workload,
+                data_boundary="local",
+                boundary_source="privacy_class=private",
+            )
+        # Shadow-eval re-sends captured prompts to the gold route, so the gold
+        # route must be inside the workload's boundary like any other.
+        boundary = self._resolve_boundary(wl, None)
+        if not boundary.is_default:
+            from somm.boundary import base_url_of, check_route
+
+            gold = None
+            for p in self.all_providers():
+                if p.name == gold_provider:
+                    gold = p
+                    break
+            check_route(
+                provider=gold_provider,
+                model=gold_model,
+                boundary=boundary,
+                workload=workload,
+                base_url=base_url_of(gold) if gold is not None else None,
+                context="the shadow-eval gold route",
             )
         self.repo.set_shadow_config(
             wl.id,
@@ -3009,7 +3274,7 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
                 "SELECT id, name, project, description, input_schema_json, "
                 "output_schema_json, quality_criteria_json, budget_cap_usd_daily, "
                 "privacy_class, created_at, shadow_config_json, "
-                "capabilities_required_json, policy_json FROM workloads"
+                "capabilities_required_json, policy_json, data_boundary FROM workloads"
             ).fetchall()
         if not rows:
             return
@@ -3020,10 +3285,16 @@ def _mirror_workloads(src: Repository, dst: Repository) -> None:
                     (id, name, project, description,
                      input_schema_json, output_schema_json, quality_criteria_json,
                      budget_cap_usd_daily, privacy_class, created_at, shadow_config_json,
-                     capabilities_required_json, policy_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     capabilities_required_json, policy_json, data_boundary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
+            )
+            # The mirror's boundary follows the project's (it is read by
+            # fleet tooling, never enforced from), so refresh it on start.
+            d_conn.executemany(
+                "UPDATE workloads SET data_boundary = ? WHERE id = ? AND project = ?",
+                [(r[13], r[0], r[2]) for r in rows],
             )
     except Exception:  # noqa: BLE001 — best-effort mirror
         pass

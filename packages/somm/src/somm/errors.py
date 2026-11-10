@@ -191,9 +191,32 @@ class SommStrictMode(SommError):
 
 
 class SommPrivacyViolation(SommError):
-    """Attempted upstream call on a privacy_class=private workload."""
+    """A request was refused because no route lies within its data boundary.
+
+    Raised before any provider call for a ``privacy_class=private`` workload
+    (boundary ``local``) or any workload whose ``data_boundary`` excludes
+    every candidate route. Never retried; never falls through to a looser
+    route. ``data_boundary`` is the tier that applied, ``boundary_source``
+    where it came from, and ``refused`` the routes turned away, each as
+    ``{"provider", "model", "tier", "basis", "origin"}``.
+    """
 
     code = "SOMM_PRIVACY_VIOLATION"
+
+    def __init__(
+        self,
+        detail: str = "",
+        *,
+        workload: str | None = None,
+        data_boundary: str | None = None,
+        boundary_source: str | None = None,
+        refused: list[dict] | None = None,
+    ) -> None:
+        super().__init__(detail)
+        self.workload = workload
+        self.data_boundary = data_boundary
+        self.boundary_source = boundary_source
+        self.refused = list(refused or [])
 
 
 class SommStructuredError(SommError):
@@ -257,6 +280,9 @@ def describe_error(error: SommError) -> dict[str, Any]:
         "skipped",
         "last_outcome",
         "delivery_failure",
+        "data_boundary",
+        "boundary_source",
+        "refused",
     ):
         value = getattr(error, field, None)
         if value not in (None, "", [], ()):

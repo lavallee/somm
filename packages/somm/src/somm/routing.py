@@ -30,6 +30,7 @@ from somm.errors import (
     SommFatalError,
     SommModelNotFound,
     SommNoCapableProvider,
+    SommPrivacyViolation,
     SommProvidersExhausted,
     SommTransientError,
 )
@@ -341,16 +342,20 @@ class Router:
                 cooled and routed past; the error is raised only when nothing
                 else in the chain answered.
             SommFatalError: any provider raised another fatal error.
+            SommPrivacyViolation: ``request.data_boundary`` excludes every
+                provider in the chain. Raised before any network call, and
+                never retried.
         """
+        chain = self._boundary_filter(request)
         required = list(getattr(request, "capabilities_required", None) or [])
-        capable_providers, skipped = self._capability_filter(required)
+        capable_providers, skipped = self._capability_filter(required, chain)
         if required and not capable_providers:
             raise SommNoCapableProvider(
                 f"no provider in chain can serve capabilities={required}",
                 required=required,
                 skipped=skipped,
             )
-        active = capable_providers if required else self.providers
+        active = capable_providers if required else chain
         pre_plan = list(active)
         active = self._apply_plan_governor(active)
         if not active:
@@ -455,8 +460,32 @@ class Router:
 
     # ------------------------------------------------------------------
 
+    def _boundary_filter(self, request: SommRequest) -> list[SommProvider]:
+        """Drop providers outside ``request.data_boundary`` before the loop.
+
+        A refusal is raised here, never retried, and never falls through to
+        a looser route: the providers it drops are simply not candidates.
+        """
+        boundary = getattr(request, "data_boundary", None)
+        if not boundary:
+            return list(self.providers)
+        from somm.boundary import ResolvedBoundary, admissible_providers, parse_tier, refuse
+
+        ok, refused = admissible_providers(self.providers, request.model, boundary)
+        if not ok:
+            raise refuse(
+                workload=request.metadata.get("somm_workload") if request.metadata else None,
+                boundary=ResolvedBoundary(
+                    parse_tier(boundary),
+                    (request.metadata or {}).get("somm_boundary_source") or "request",
+                ),
+                refused=refused,
+                context="the routing chain",
+            )
+        return ok
+
     def _capability_filter(
-        self, required: list[str]
+        self, required: list[str], providers: list[SommProvider] | None = None
     ) -> tuple[list[SommProvider], list[tuple[str, str, str]]]:
         """Filter providers by model capability.
 
@@ -464,17 +493,18 @@ class Router:
         (provider, model, reason) triples — surfaced via SommNoCapableProvider
         so operators can see why a provider was passed over.
         """
+        pool = list(self.providers if providers is None else providers)
         if not required:
-            return list(self.providers), []
+            return pool, []
 
         repo = getattr(self.tracker, "_repo", None)
         if repo is None:
             # No repo access → defensive allow.
-            return list(self.providers), []
+            return pool, []
 
         capable: list[SommProvider] = []
         skipped: list[tuple[str, str, str]] = []
-        for provider in self.providers:
+        for provider in pool:
             model = getattr(provider, "default_model", "") or ""
             ok, reason = provider_can_serve(repo, provider.name, model, required)
             if ok:
@@ -548,7 +578,10 @@ class Router:
                     str(e)[:200],
                 )
                 continue
-            except SommFatalError:
+            except (SommFatalError, SommPrivacyViolation):
+                # A boundary refusal from inside a provider (the OpenRouter
+                # roster had no admissible model) must not be read as a
+                # transient failure and routed past.
                 raise
             except SommTransientError as e:
                 cooldown_s = e.cooldown_s if transient_cooldown_s is None else transient_cooldown_s

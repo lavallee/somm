@@ -18,6 +18,7 @@ Commands:
   somm prune           delete calls older than a retention window
   somm alias           canonical model identities (list, seed, set)
   somm workload        register, constrain, and inspect project workloads
+  somm boundary        data boundary: route tiers, audit, per-workload boundary
   somm prompt          manage prompt versions, labels, and A/B variants
   somm eval            promote calls to datasets and run eval gates
   somm optimize        propose a prompt fork from failing graded calls
@@ -40,6 +41,7 @@ from pathlib import Path
 
 from somm_core import VERSION, list_intel
 from somm_core.aliases import needs_alias
+from somm_core.boundary import TIER_NAMES
 from somm_core.config import load as _load_config
 from somm_core.models import Outcome, PrivacyClass
 from somm_core.read import fleet_summary, search_calls, spend_today
@@ -124,9 +126,14 @@ def _cmd_workload_add(args: argparse.Namespace) -> int:
         max_tpot_ms=args.max_tpot_ms,
         max_capability_failure_rate=args.max_capability_failure_rate,
         max_cost_per_call_usd=args.max_cost_per_call_usd,
+        data_boundary=args.data_boundary,
     )
+    from somm_core.boundary import resolve_boundary
+
+    effective = resolve_boundary(wl, project=cfg.project)
     print(f"registered workload {wl.name!r} for project {cfg.project!r}")
     print(f"privacy_class: {wl.privacy_class.value}")
+    print(f"data_boundary: {effective.tier.value} (from {effective.source})")
     print(f"input_schema: {'yes' if wl.input_schema else 'no'}")
     print(f"output_schema: {'yes' if wl.output_schema else 'no'}")
     return 0
@@ -152,7 +159,8 @@ def _workload_rows(repo: Repository, project: str) -> list[dict]:
                 w.max_capability_failure_rate,
                 w.max_cost_per_call_usd,
                 w.created_at,
-                COUNT(c.id) AS call_count
+                COUNT(c.id) AS call_count,
+                w.data_boundary
             FROM workloads w
             LEFT JOIN calls c ON c.workload_id = w.id AND c.project = w.project
             WHERE w.project = ?
@@ -179,6 +187,7 @@ def _workload_rows(repo: Repository, project: str) -> list[dict]:
             "max_cost_per_call_usd": r[13],
             "created_at": r[14],
             "call_count": r[15],
+            "data_boundary": r[16],
         }
         for r in rows
     ]
@@ -193,9 +202,12 @@ def _cmd_workload_list(args: argparse.Namespace) -> int:
         print("Register one with `somm workload add <name>`.")
         return 0
     print(f"Project: {cfg.project}")
-    print(f"{'name':<28} {'privacy':<10} {'calls':>8}")
+    print(f"{'name':<28} {'privacy':<10} {'boundary':<11} {'calls':>8}")
     for row in rows:
-        print(f"{row['name'][:27]:<28} {row['privacy_class']:<10} {row['call_count']:>8}")
+        print(
+            f"{row['name'][:27]:<28} {row['privacy_class']:<10} "
+            f"{(row['data_boundary'] or '-'):<11} {row['call_count']:>8}"
+        )
     return 0
 
 
@@ -212,6 +224,14 @@ def _cmd_workload_show(args: argparse.Namespace) -> int:
     print(f"id: {row['id']}")
     print(f"description: {row['description'] or '—'}")
     print(f"privacy_class: {row['privacy_class']}")
+    wl = repo.workload_by_name(args.name, cfg.project)
+    from somm_core.boundary import resolve_boundary
+
+    effective = resolve_boundary(wl, project=cfg.project)
+    print(
+        f"data_boundary: {row['data_boundary'] or '—'} "
+        f"(effective {effective.tier.value}, from {effective.source})"
+    )
     print(f"call_count: {row['call_count']}")
     print(f"created_at: {row['created_at']}")
     print(
@@ -277,6 +297,229 @@ def _cmd_workload_set_constraints(args: argparse.Namespace) -> int:
     )
     print(f"updated constraints for workload {wl.name!r}")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# somm boundary
+
+
+def _parse_since_days(raw: str | None, default: float = 30.0) -> float:
+    """'30d', '12h', '90m' or a bare number of days."""
+    if raw is None or raw == "":
+        return default
+    text = str(raw).strip().lower()
+    units = {"d": 1.0, "h": 1 / 24, "m": 1 / 1440, "w": 7.0}
+    if text and text[-1] in units:
+        return float(text[:-1]) * units[text[-1]]
+    return float(text)
+
+
+def _boundary_base_urls(cfg) -> dict[str, str]:
+    """Endpoints to assume when classifying historic rows (no base URL stored)."""
+    urls = {"ollama": cfg.ollama_url}
+    if getattr(cfg, "openai_base_url", None):
+        urls["openai"] = cfg.openai_base_url
+    return urls
+
+
+def _cmd_boundary_routes(args: argparse.Namespace) -> int:
+    from somm_core.boundary import boundary_path, load_policy
+
+    from somm.boundary import provider_routes
+    from somm.client import build_default_providers
+    from somm.providers.registry import build_pinned_only_providers
+
+    cfg = load_config(project=args.project)
+    policy = load_policy()
+    providers = build_default_providers(cfg, full=True)
+    names = {p.name for p in providers}
+    providers += list(build_pinned_only_providers(cfg, exclude=names).values())
+    configured: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for p in providers:
+        for route in provider_routes(p):
+            seen.add((route.provider, route.model))
+            configured.append({"configured": True, **route.as_dict()})
+    if cfg.db_path.exists():
+        repo = Repository(cfg.db_path)
+        with repo._open() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT provider, model FROM calls WHERE project = ? "
+                "AND provider != '' AND ts >= datetime('now', '-30 days') "
+                "ORDER BY provider, model",
+                (cfg.project,),
+            ).fetchall()
+        base_urls = _boundary_base_urls(cfg)
+        for provider, model in rows:
+            if (provider, model) in seen:
+                continue
+            route = policy.classify(provider, model, base_url=base_urls.get(provider))
+            configured.append({"configured": False, **route.as_dict()})
+    default, default_source = policy.project_default(cfg.project)
+    payload = {
+        "boundary_file": str(boundary_path()),
+        "boundary_file_error": policy.owner_error,
+        "project": cfg.project,
+        "project_default": default.value if default else None,
+        "project_default_source": default_source or None,
+        "routes": configured,
+        "rules": policy.routes(),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(f"boundary file: {payload['boundary_file']}"
+          + (f"  (UNREADABLE: {policy.owner_error})" if policy.owner_error else ""))
+    print(
+        f"project default: {payload['project_default'] or 'unvetted (fleet default)'}"
+        + (f"  (from {default_source})" if default_source else "")
+    )
+    print()
+    print(f"{'route':<52} {'tier':<11} {'origin':<8} basis")
+    for r in configured:
+        route = f"{r['provider']}/{r['model']}" if r["model"] else r["provider"]
+        mark = "" if r["configured"] else " (seen in ledger)"
+        print(f"{(route + mark)[:51]:<52} {r['tier']:<11} {r['origin']:<8} {r['basis'][:90]}")
+    return 0
+
+
+def _cmd_boundary_audit(args: argparse.Namespace) -> int:
+    from somm_core.boundary import audit
+
+    cfg = load_config(project=args.project)
+    try:
+        since_days = _parse_since_days(args.since)
+    except ValueError:
+        print(f"invalid --since {args.since!r}; use e.g. 30d, 12h", file=sys.stderr)
+        return 2
+    if not cfg.db_path.exists():
+        print(f"no ledger at {cfg.db_path}", file=sys.stderr)
+        return 2
+    repo = Repository(cfg.db_path)
+    with repo._open() as conn:
+        rows = audit(
+            conn, cfg.project, since_days=since_days, base_urls=_boundary_base_urls(cfg)
+        )
+    violations = [r for r in rows if r["violation"]]
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "project": cfg.project,
+                    "since_days": since_days,
+                    "violations": len(violations),
+                    "workloads": rows,
+                },
+                indent=2,
+            )
+        )
+        return 1 if violations else 0
+    print(f"Data-boundary audit — project {cfg.project!r}, last {args.since or '30d'}")
+    print(
+        f"{'workload':<28} {'declared':<11} {'effective':<11} {'worst served':<13} "
+        f"{'calls':>7} {'refused':>8}"
+    )
+    for r in rows:
+        flag = "  VIOLATION" if r["violation"] else ("  assumed" if r["assumed"] else "")
+        print(
+            f"{r['workload'][:27]:<28} {(r['declared_boundary'] or '-'):<11} "
+            f"{r['effective_boundary']:<11} {(r['worst_tier'] or '-'):<13} "
+            f"{r['calls']:>7} {r['refusals']:>8}{flag}"
+        )
+        if r["violation"] or args.verbose:
+            for route in r["routes"]:
+                note = "" if route["recorded"] else "  (classified now)"
+                print(
+                    f"    {route['provider']}/{route['model']}"[:60].ljust(62)
+                    + f"{route['tier']:<11} {route['origin']:<8} {route['calls']:>7}{note}"
+                )
+    print()
+    if any(r["assumed"] for r in rows):
+        print(
+            "assumed: the worst tier came from a seat whose real tier depends on an account "
+            "setting somm cannot see (e.g. a training toggle). Declare it in boundary.toml."
+        )
+    if violations:
+        print(
+            f"{len(violations)} workload(s) were served beyond their boundary in the window "
+            "(rows written before enforcement, or a boundary set after the fact)."
+        )
+    else:
+        print("No workload was served beyond its effective boundary in the window.")
+    print(
+        "Tighten from evidence: `somm boundary set <workload> <tier>` once the worst "
+        "served tier is within it."
+    )
+    return 1 if violations else 0
+
+
+def _cmd_boundary_set(args: argparse.Namespace) -> int:
+    from somm_core.boundary import resolve_boundary
+
+    cfg = load_config(project=args.project)
+    repo = Repository(cfg.db_path)
+    wl = repo.workload_by_name(args.workload, cfg.project)
+    if wl is None:
+        print(
+            f"No workload {args.workload!r} registered for project {cfg.project!r}.",
+            file=sys.stderr,
+        )
+        return 2
+    tier = None if args.tier in ("none", "clear", "derive") else args.tier
+    try:
+        repo.set_workload_data_boundary(wl.id, tier, created_by="somm boundary set")
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    wl = repo.workload_by_name(args.workload, cfg.project)
+    effective = resolve_boundary(wl, project=cfg.project)
+    print(
+        f"workload {wl.name!r}: data_boundary={wl.data_boundary or '(derive)'} "
+        f"→ effective {effective.tier.value} (from {effective.source})"
+    )
+    return 0
+
+
+def _print_boundary_section(cfg, repo: Repository, *, global_view: bool) -> None:
+    from somm_core.boundary import audit, boundary_path, load_policy
+
+    policy = load_policy()
+    path = boundary_path()
+    owner = len(policy.owner_rules)
+    if policy.owner_error:
+        state = f"UNREADABLE ({policy.owner_error}) — every project default is local"
+    elif path.exists():
+        state = f"{owner} owner rule(s)"
+    else:
+        state = "absent (shipped defaults only)"
+    print(f"boundary: {path}  {state}")
+    default, source = policy.project_default(cfg.project)
+    print(
+        f"  project default: {default.value if default else 'unvetted (fleet default)'}"
+        + (f" (from {source})" if source else "")
+    )
+    if global_view:
+        return
+    try:
+        with repo._open() as conn:
+            rows = audit(conn, cfg.project, since_days=7, base_urls=_boundary_base_urls(cfg))
+    except Exception as exc:  # noqa: BLE001 — doctor reports, never crashes
+        print(f"  audit: unavailable ({type(exc).__name__}: {exc})")
+        return
+    bounded = [r for r in rows if r["boundary_source"] != "fleet default"]
+    violations = [r for r in rows if r["violation"]]
+    refusals = sum(r["refusals"] for r in rows)
+    print(
+        f"  workloads with a boundary: {len(bounded)}/{len(rows)}   "
+        f"refusals (7d): {refusals}   violations (7d): {len(violations)}"
+    )
+    for r in violations[:5]:
+        print(
+            f"    {r['workload'][:30]:<32} boundary {r['effective_boundary']}, "
+            f"served {r['worst_tier']}"
+        )
+    if violations:
+        print("  see `somm boundary audit --since 7d`")
 
 
 # ---------------------------------------------------------------------------
@@ -1872,6 +2115,25 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                     }
                 )
                 continue
+            from somm.boundary import admit, provider_tier
+
+            boundary = llm._resolve_boundary(
+                llm.repo.workload_by_name(args.workload, llm.config.project), None
+            )
+            provider_obj = next(p for p in llm.providers if p.name == provider_name)
+            route = provider_tier(provider_obj, model or None)
+            if not boundary.is_default and not admit(route, boundary.tier):
+                results.append(
+                    {
+                        "provider": provider_name,
+                        "model": model,
+                        "error": (
+                            f"REFUSED: route tier {route.tier.value} is outside data boundary "
+                            f"{boundary.tier.value} (from {boundary.source})"
+                        ),
+                    }
+                )
+                continue
             try:
                 r = llm.generate(
                     prompt=args.prompt,
@@ -2176,6 +2438,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             print(f"  {f'{project}.{name}'[:46]:<48} {calls:>8} calls")
         if len(undeclared) > 10:
             print(f"  ... and {len(undeclared) - 10} more")
+
+    _print_boundary_section(cfg, repo, global_view=global_view)
 
     _print_fleet_section(db_path)
 
@@ -3020,7 +3284,9 @@ def build_parser() -> argparse.ArgumentParser:
     pw = sub.add_parser("workload", help="register and inspect project workloads")
     pw_sub = pw.add_subparsers(dest="workload_cmd", required=True)
 
-    pwa = pw_sub.add_parser("add", help="register a workload in the project DB")
+    pwa = pw_sub.add_parser(
+        "add", aliases=["create"], help="register a workload in the project DB"
+    )
     pwa.add_argument("name", help="workload name")
     pwa.add_argument("--project", default=None)
     pwa.add_argument("--description", default=None)
@@ -3040,6 +3306,12 @@ def build_parser() -> argparse.ArgumentParser:
     pwa.add_argument("--max-tpot-ms", type=float, default=None)
     pwa.add_argument("--max-capability-failure-rate", type=float, default=None)
     pwa.add_argument("--max-cost-per-call-usd", type=float, default=None)
+    pwa.add_argument(
+        "--data-boundary",
+        choices=list(TIER_NAMES),
+        default=None,
+        help="loosest route tier this workload's data may reach (default: derive)",
+    )
     pwa.set_defaults(func=_cmd_workload_add)
 
     pwl = pw_sub.add_parser("list", help="list registered workloads")
@@ -3061,6 +3333,28 @@ def build_parser() -> argparse.ArgumentParser:
     pwc.add_argument("--max-cost-per-call-usd", type=float, default=None)
     pwc.add_argument("--clear", action="store_true", help="clear all workload constraints")
     pwc.set_defaults(func=_cmd_workload_set_constraints)
+
+    pbd = sub.add_parser(
+        "boundary", help="data boundary: route tiers, ledger audit, per-workload boundary"
+    )
+    pbd_sub = pbd.add_subparsers(dest="boundary_cmd", required=True)
+    pbr = pbd_sub.add_parser("routes", help="every configured route with its tier and basis")
+    pbr.add_argument("--project", default=None)
+    pbr.add_argument("--json", action="store_true")
+    pbr.set_defaults(func=_cmd_boundary_routes)
+    pba = pbd_sub.add_parser(
+        "audit", help="per workload: declared boundary vs the worst tier that served it"
+    )
+    pba.add_argument("--project", default=None)
+    pba.add_argument("--since", default="30d", help="window, e.g. 30d, 12h (default 30d)")
+    pba.add_argument("--json", action="store_true")
+    pba.add_argument("-v", "--verbose", action="store_true", help="list routes per workload")
+    pba.set_defaults(func=_cmd_boundary_audit)
+    pbs = pbd_sub.add_parser("set", help="set a workload's data boundary")
+    pbs.add_argument("workload")
+    pbs.add_argument("tier", choices=[*TIER_NAMES, "none"], help="tier, or none to derive")
+    pbs.add_argument("--project", default=None)
+    pbs.set_defaults(func=_cmd_boundary_set)
 
     pprompt = sub.add_parser("prompt", help="manage prompt versions, labels, and A/B variants")
     pprompt_sub = pprompt.add_subparsers(dest="prompt_cmd", required=True)

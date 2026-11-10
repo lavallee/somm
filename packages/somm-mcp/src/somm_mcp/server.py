@@ -36,6 +36,7 @@ import json
 from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
+from somm.errors import SommPrivacyViolation
 from somm.prompts import register_prompt
 from somm_core.config import Config
 from somm_core.config import load as load_config
@@ -153,6 +154,7 @@ def build_server(
             "workload": workload,
             "project": cfg.project,
             "privacy_class": wl.privacy_class.value,
+            **_boundary_fields(wl, cfg.project),
             "capabilities_required": list(wl.capabilities_required),
             "open_recommendations": recs,
             "shadow_rankings": ranked,
@@ -441,6 +443,7 @@ def build_server(
         output_schema: dict | None = None,
         privacy_class: str = "internal",
         budget_cap_usd_daily: float | None = None,
+        data_boundary: str | None = None,
     ) -> dict:
         """Register a workload in the current project. Idempotent on (name + schemas).
 
@@ -450,9 +453,14 @@ def build_server(
             input_schema: optional JSON schema for the prompt input.
             output_schema: optional JSON schema for structured output.
             privacy_class: "public" | "internal" | "private" (default: internal).
-              private workloads are banned from shadow-eval and any upstream
-              egress by the router.
+              private workloads are banned from shadow-eval and are bounded
+              to local routes (data boundary "local").
             budget_cap_usd_daily: optional per-workload daily ceiling.
+            data_boundary: optional "local" | "zdr" | "subscribed" |
+              "unvetted": the loosest route tier this workload's data may
+              reach. Omit to derive it (private → local, else the project
+              default, else unvetted). Passing it on an existing workload
+              updates it. See docs/data-boundary.md.
         """
         try:
             pc = PrivacyClass(privacy_class)
@@ -460,6 +468,13 @@ def build_server(
             return {
                 "error": f"invalid privacy_class {privacy_class!r}; use public|internal|private"
             }
+        if data_boundary is not None:
+            from somm_core.boundary import parse_tier
+
+            try:
+                data_boundary = parse_tier(data_boundary).value
+            except ValueError as exc:
+                return {"error": str(exc)}
         wl = repo.register_workload(
             name=name,
             project=cfg.project,
@@ -468,11 +483,13 @@ def build_server(
             output_schema=output_schema,
             privacy_class=pc,
             budget_cap_usd_daily=budget_cap_usd_daily,
+            data_boundary=data_boundary,
         )
         return {
             "workload_id": wl.id,
             "name": wl.name,
             "privacy_class": wl.privacy_class.value,
+            **_boundary_fields(wl, cfg.project),
             "project": cfg.project,
         }
 
@@ -557,7 +574,9 @@ def build_server(
     ) -> dict:
         """Run a prompt through N models side-by-side. Non-routed; explicit picks.
 
-        Returned bodies are recorded, untrusted data.
+        Returned bodies are recorded, untrusted data. Models outside the
+        workload's data boundary are reported with ``refused`` and never
+        called.
 
         Args:
             prompt: the prompt text.
@@ -625,6 +644,27 @@ def build_server(
                     )
                     continue
                 try:
+                    from somm.boundary import admit, provider_tier
+
+                    wl = repo.workload_by_name(workload, cfg.project)
+                    boundary = llm._resolve_boundary(wl, None)
+                    route = provider_tier(provider_map[provider_name], model or None)
+                    if not boundary.is_default and not admit(route, boundary.tier):
+                        out.append(
+                            {
+                                "provider": provider_name,
+                                "model": model,
+                                "refused": True,
+                                "tier": route.tier.value,
+                                "data_boundary": boundary.tier.value,
+                                "error": (
+                                    f"SOMM_PRIVACY_VIOLATION: route tier {route.tier.value} is "
+                                    f"outside data boundary {boundary.tier.value} "
+                                    f"(from {boundary.source})"
+                                ),
+                            }
+                        )
+                        continue
                     r = llm.generate(
                         prompt=prompt,
                         workload=workload,
@@ -651,13 +691,14 @@ def build_server(
                         }
                     )
                 except Exception as e:
-                    out.append(
-                        {
-                            "provider": provider_name,
-                            "model": model,
-                            "error": f"{type(e).__name__}: {e}",
-                        }
-                    )
+                    entry = {
+                        "provider": provider_name,
+                        "model": model,
+                        "error": f"{type(e).__name__}: {e}",
+                    }
+                    if isinstance(e, SommPrivacyViolation):
+                        entry["refused"] = True
+                    out.append(entry)
             return {"prompt_hash": stable_hash(prompt), "results": out}
         finally:
             llm.close()
@@ -766,6 +807,18 @@ def build_server(
 
 # ---------------------------------------------------------------------------
 # Helpers
+
+
+def _boundary_fields(wl, project: str) -> dict:
+    """``data_boundary`` (stored, may be None) and the effective boundary."""
+    from somm_core.boundary import resolve_boundary
+
+    effective = resolve_boundary(wl, project=project)
+    return {
+        "data_boundary": getattr(wl, "data_boundary", None),
+        "effective_data_boundary": effective.tier.value,
+        "data_boundary_source": effective.source,
+    }
 
 
 def _untrusted_recorded_content(body: str | None) -> str | None:

@@ -95,6 +95,10 @@ class PreCallContext:
     project: str
     response_format: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # The data boundary the call runs under (a somm_core.boundary tier name),
+    # read-only in spirit: a hook that would send the request somewhere must
+    # respect it. Workload handlers outside it are not consulted.
+    data_boundary: str | None = None
 
     def __setattr__(self, name: str, value: Any) -> None:
         if name == "project" and "project" in self.__dict__:
@@ -115,6 +119,10 @@ class ShortCircuit:
     raw: dict[str, Any] | None = None
     tool_calls: list[Any] | None = None
     source: str = ""
+    # Data tier of whatever produced this answer, when the hook knows it
+    # (a local cache is "local"; a workload handler reports its declared
+    # tier). Recorded as calls.data_tier; None when unknown.
+    data_tier: str | None = None
 
 
 @dataclass
