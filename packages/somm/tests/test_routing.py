@@ -618,3 +618,144 @@ def test_router_clears_cooldown_after_success(tmp_path):
     result = r.dispatch(SommRequest(prompt="hi2"))
     assert result.provider == "p1"
     assert tr.get("p1").consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
+# Health bookkeeping after a success is best-effort. Before the fix, a
+# `database is locked` from mark_ok() was raised inside the try that decides
+# provider failure: the healthy provider was cooled for 60 s, the next
+# provider was called and paid for, and the first answer was discarded.
+
+
+def _locked(*_args, **_kwargs):
+    import sqlite3
+
+    raise sqlite3.OperationalError("database is locked")
+
+
+def test_health_write_failure_after_success_returns_the_answer(tmp_path, monkeypatch):
+    tr = ProviderHealthTracker(_tmp_repo(tmp_path))
+    p1 = ScriptedProvider("p1", [_ok(text="paid answer")])
+    p2 = ScriptedProvider("p2", [_ok(text="second purchase")])
+    monkeypatch.setattr(tr, "mark_ok", _locked)
+
+    result = Router([p1, p2], tr).dispatch(SommRequest(prompt="hi"))
+
+    assert result.provider == "p1"
+    assert result.response.text == "paid answer"
+    assert (p1.calls, p2.calls) == (1, 0)
+    assert not tr.get("p1").is_cooling()
+
+
+def test_health_write_failure_after_empty_response_still_moves_on(tmp_path, monkeypatch):
+    tr = ProviderHealthTracker(_tmp_repo(tmp_path))
+    p1 = ScriptedProvider("p1", [_ok(text="")])
+    p2 = ScriptedProvider("p2", [_ok(text="real")])
+    monkeypatch.setattr(tr, "mark_failure", _locked)
+
+    result = Router([p1, p2], tr).dispatch(SommRequest(prompt="hi"))
+
+    assert result.provider == "p2"
+    assert (p1.calls, p2.calls) == (1, 1)
+
+
+def test_agenerate_health_write_failure_returns_the_answer(tmp_path, monkeypatch):
+    import asyncio
+
+    cfg = Config()
+    cfg.project = "rt-health"
+    cfg.mode = "observe"
+    cfg.db_dir = tmp_path / ".somm"
+    cfg.spool_dir = cfg.db_dir / "spool"
+    p1 = ScriptedProvider("p1", [_ok(text="paid answer")])
+    p2 = ScriptedProvider("p2", [_ok(text="second purchase")])
+    llm = SommLLM(config=cfg, providers=[p1, p2], on_error=lambda _e: None)
+    try:
+        monkeypatch.setattr(llm._tracker, "mark_ok", _locked)
+        result = asyncio.run(llm.agenerate("hi", workload="health_write"))
+    finally:
+        llm.close()
+    assert result.text == "paid answer"
+    assert (p1.calls, p2.calls) == (1, 0)
+
+
+class _StreamingProvider(ScriptedProvider):
+    def stream(self, request: SommRequest) -> Iterator[SommChunk]:
+        self.calls += 1
+        yield SommChunk(text="streamed ")
+        yield SommChunk(text="answer", done=True)
+
+
+def test_stream_health_write_failure_keeps_the_streamed_answer(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.project = "rt-health-stream"
+    cfg.mode = "observe"
+    cfg.db_dir = tmp_path / ".somm"
+    cfg.spool_dir = cfg.db_dir / "spool"
+    p1 = _StreamingProvider("p1", [])
+    p2 = _StreamingProvider("p2", [])
+    llm = SommLLM(config=cfg, providers=[p1, p2], on_error=lambda _e: None)
+    try:
+        monkeypatch.setattr(llm._tracker, "mark_ok", _locked)
+        text = "".join(llm.stream("hi", workload="health_write_stream"))
+        llm._writer.flush()
+        with llm.repo._open() as conn:
+            outcomes = [r[0] for r in conn.execute("SELECT outcome FROM calls")]
+    finally:
+        llm.close()
+    assert text == "streamed answer"
+    assert (p1.calls, p2.calls) == (1, 0)
+    assert outcomes == [Outcome.OK.value]
+
+
+# ---------------------------------------------------------------------------
+# A retry policy with only `backoff_s` used to loop forever (retry_max None,
+# no deadline): the audit probe was at 28 attempts after 3 s and counting.
+
+
+def _always_transient(name: str, limit: int = 50) -> ScriptedProvider:
+    return ScriptedProvider(name, [SommTransientError("flaky", cooldown_s=30)] * limit)
+
+
+def test_backoff_only_retry_policy_stops_at_the_default_cap(tmp_path):
+    from somm.routing import DEFAULT_POLICY_RETRY_MAX
+
+    tr = ProviderHealthTracker(_tmp_repo(tmp_path))
+    p1 = _always_transient("p1")
+    with pytest.raises(SommProvidersExhausted, match="policy retries"):
+        Router([p1], tr).dispatch(SommRequest(prompt="hi"), retry_backoff_s=0.0)
+    assert DEFAULT_POLICY_RETRY_MAX == 3
+    assert p1.calls == 1 + DEFAULT_POLICY_RETRY_MAX
+
+
+@pytest.mark.parametrize("bad", [-1, 1.5, "3", True])
+def test_invalid_retry_max_falls_back_to_the_default_cap(tmp_path, bad):
+    from somm.routing import DEFAULT_POLICY_RETRY_MAX
+
+    tr = ProviderHealthTracker(_tmp_repo(tmp_path))
+    p1 = _always_transient("p1")
+    with pytest.raises(SommProvidersExhausted):
+        Router([p1], tr).dispatch(SommRequest(prompt="hi"), retry_max=bad, retry_backoff_s=0.0)
+    assert p1.calls == 1 + DEFAULT_POLICY_RETRY_MAX
+
+
+def test_backoff_only_workload_policy_terminates_through_generate(tmp_path):
+    cfg = Config()
+    cfg.project = "rt-retry"
+    cfg.mode = "observe"
+    cfg.db_dir = tmp_path / ".somm"
+    cfg.spool_dir = cfg.db_dir / "spool"
+    p1 = _always_transient("p1")
+    llm = SommLLM(config=cfg, providers=[p1], on_error=lambda _e: None)
+    try:
+        wl = llm.repo.register_workload(name="retry_backoff_only", project="rt-retry")
+        llm.repo.set_workload_policy(
+            wl.id, {"fallback": [{"provider": "p1", "model": "m"}], "retry": {"backoff_s": 0.0}}
+        )
+        try:
+            llm.generate("hi", workload="retry_backoff_only")
+        except SommProvidersExhausted:
+            pass
+    finally:
+        llm.close()
+    assert 1 < p1.calls <= 4

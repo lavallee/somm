@@ -339,3 +339,32 @@ def test_openrouter_exhaustion_has_no_sentinel_model(tmp_path, monkeypatch):
         p.generate(SommRequest(prompt="hi"))
     assert exc_info.value.model == ""
     assert "cooldown" in str(exc_info.value)
+
+
+def test_roster_health_write_failure_after_success_returns_the_answer(tmp_path, monkeypatch):
+    """A locked ledger on mark_ok must not turn a paid answer into a failure."""
+    import sqlite3
+
+    tr = _tmp_tracker(tmp_path)
+    seen = []
+
+    def handler(request):
+        import json as _json
+
+        seen.append(_json.loads(request.read())["model"])
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    def locked(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    monkeypatch.setattr(tr, "mark_ok", locked)
+    p = OpenRouterProvider(api_key="k", roster=["m-a", "m-b"], tracker=tr)
+    assert p.generate(SommRequest(prompt="hi")).text == "ok"
+    assert seen == ["m-a"]

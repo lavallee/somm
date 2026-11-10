@@ -35,14 +35,21 @@ class ClaudeCLIHarness(BaseHarness):
         reports_cost=True,
         reports_model=True,
         model_families=frozenset({"anthropic"}),
+        prompt_via_stdin=True,
     )
     # The seat bills the subscription; a key in the environment would bill
     # the API account and attribute the spend to the wrong plan.
     scrub_env = ("ANTHROPIC_API_KEY",)
 
     def build_argv(self, request: HarnessRequest) -> list[str]:
+        # The prompt never goes in argv: `claude -p "--version"` parsed the
+        # prompt as a flag, and claude rejects a bare `--` ("unknown option
+        # '--'"), so there is no end-of-options separator to put before it.
+        # `-p` with no prompt argument reads it from stdin (see stdin_data),
+        # which is also how somm's claude-cli provider calls it, and which
+        # lifts the argv size limit on long prompts.
         argv = [
-            request.resolved_executable(self.executable), "-p", request.prompt,
+            request.resolved_executable(self.executable), "-p",
             "--verbose", "--output-format", "stream-json",
         ]
         if request.model:
@@ -57,6 +64,9 @@ class ClaudeCLIHarness(BaseHarness):
             argv.extend(["--resume", request.session_id])
         argv.extend(str(arg) for arg in request.extra)
         return argv
+
+    def stdin_data(self, request: HarnessRequest) -> str | None:
+        return request.prompt
 
     # --- parsers -----------------------------------------------------
 

@@ -28,6 +28,7 @@ from somm.capabilities import provider_can_serve
 from somm.errors import (
     SommAuthError,
     SommFatalError,
+    SommModelNotFound,
     SommNoCapableProvider,
     SommProvidersExhausted,
     SommTransientError,
@@ -62,6 +63,9 @@ AUTH_COOLDOWN_S = 300.0
 A bad key will not fix itself in seconds, but a rotated one should be picked
 up within minutes, and the escalation ladder lengthens this for a key that
 stays bad (issue #71)."""
+DEFAULT_POLICY_RETRY_MAX = 3
+"""Retry rounds for a workload ``retry`` policy that sets no valid ``max`` and
+no ``deadline_s``. Such a policy used to retry forever."""
 
 
 def escalated_cooldown_s(base_s: float, consecutive_failures: int) -> float:
@@ -365,6 +369,13 @@ class Router:
 
         retry_rounds = 0
         retry_policy = retry_max is not None or retry_backoff_s is not None
+        if retry_policy and not _valid_retry_max(retry_max) and (
+            retry_max is not None or deadline is None
+        ):
+            # A policy that names only ``backoff_s`` (or a malformed ``max``)
+            # used to retry forever. A deadline bounds a max-less policy;
+            # without one, cap the rounds.
+            retry_max = DEFAULT_POLICY_RETRY_MAX
         retry_cooldown_s = (
             (0.0 if retry_backoff_s is None else retry_backoff_s)
             if retry_policy
@@ -372,21 +383,27 @@ class Router:
         )
         while True:
             auth_failures: list[tuple[str, Exception]] = []
+            not_found: list[tuple[str, Exception]] = []
             attempt = self._try_once(
                 request,
                 active,
                 transient_cooldown_s=retry_cooldown_s,
                 auth_failures=auth_failures,
+                not_found=not_found,
             )
             if attempt is not None:
                 return attempt
-            if auth_failures and (
-                len(auth_failures) == len(active) or (deadline is None and not retry_policy)
+            hard_failures = len(auth_failures) + len(not_found)
+            if hard_failures and (
+                hard_failures == len(active) or (deadline is None and not retry_policy)
             ):
                 # Nothing answered and at least one provider rejected its
-                # key. Waiting will not mend a key, so say that rather than
-                # "all providers cooled", which points at the wrong fix.
-                raise _auth_chain_error(auth_failures)
+                # key or the model. Waiting will not mend either, so say that
+                # rather than "all providers cooled", which points at the
+                # wrong fix.
+                if auth_failures:
+                    raise _auth_chain_error(auth_failures)
+                raise not_found[0][1]
 
             # All providers cooled or all failed transiently this round.
             next_ok = self.tracker.next_uncool_at([p.name for p in active])
@@ -472,41 +489,39 @@ class Router:
         providers: list[SommProvider] | None = None,
         transient_cooldown_s: float | None = None,
         auth_failures: list[tuple[str, Exception]] | None = None,
+        not_found: list[tuple[str, Exception]] | None = None,
     ) -> RouterResult | None:
         skipped = auth_failures if auth_failures is not None else []
+        missing = not_found if not_found is not None else []
         for provider in (providers if providers is not None else self.providers):
             health = self.tracker.get(provider.name)
             if health.is_cooling():
                 continue
+            # The (provider, model) slot this attempt would use. A slot the
+            # provider said it does not serve is cooled on its own, so the
+            # same provider can still serve other models (a policy fallback
+            # across two models of one provider).
+            slot = request.model or getattr(provider, "default_model", "") or ""
+            slot_health = self.tracker.get(provider.name, slot) if slot else None
+            if slot_health is not None and slot_health.is_cooling():
+                continue
+            # Only the provider call itself decides whether this provider
+            # failed. Health bookkeeping (a synchronous ledger write) runs
+            # after the try and is best-effort: through 0.20.1 a "database is
+            # locked" from mark_ok() landed in the except arms below, so a
+            # paid, successful answer was thrown away, the healthy provider
+            # was cooled, and the next provider was called and paid again.
             try:
                 resp = provider.generate(request)
-                if (
-                    not resp.text.strip()
-                    and not resp.tool_calls
-                    and not request.allow_empty
-                ):
-                    # Provider returned an empty response. Don't mark it as
-                    # a hard failure (the HTTP call succeeded), but do move
-                    # on to the next provider — empty is almost never what
-                    # the caller wanted. Short cooldown so we don't hammer
-                    # a provider that's consistently returning blanks.
-                    # Tool-only responses (empty text + tool_calls) are the
-                    # expected shape for tool-use turns — NOT empty.
-                    self.tracker.mark_failure(
-                        provider.name, cooldown_s=15,
-                    )
-                    continue
-                self.tracker.mark_ok(provider.name)
-                return RouterResult(
-                    response=resp, provider=provider.name, skipped=list(skipped)
-                )
             except SommAuthError as e:
                 # One provider's bad key is that provider's problem, not the
                 # request's: cool it and route on. Before 0.19.2 this raised,
                 # so a bad key on the head of the chain failed every unpinned
                 # call even with a healthy provider behind it (issue #71).
                 # Pinned calls never reach the router, so they stay sticky.
-                self.tracker.mark_failure(provider.name, cooldown_s=AUTH_COOLDOWN_S)
+                _record_health(
+                    self.tracker.mark_failure, provider.name, cooldown_s=AUTH_COOLDOWN_S
+                )
                 skipped.append((provider.name, e))
                 logging.getLogger("somm.routing").warning(
                     "%s failed authentication; routing past it for %.0fs: %s",
@@ -515,14 +530,36 @@ class Router:
                     str(e)[:200],
                 )
                 continue
+            except SommModelNotFound as e:
+                # A withdrawn or misnamed model: cool the slot on the
+                # escalating ladder and route on. Fatal (and never cooled)
+                # before, so it aborted the chain on every call.
+                _record_health(
+                    self.tracker.mark_failure,
+                    provider.name,
+                    slot or e.model,
+                    cooldown_s=e.cooldown_s,
+                )
+                missing.append((provider.name, e))
+                logging.getLogger("somm.routing").warning(
+                    "%s does not serve model %r; cooling that slot and routing on: %s",
+                    provider.name,
+                    slot or e.model,
+                    str(e)[:200],
+                )
+                continue
             except SommFatalError:
                 raise
             except SommTransientError as e:
                 cooldown_s = e.cooldown_s if transient_cooldown_s is None else transient_cooldown_s
-                rec = self.tracker.mark_failure(provider.name, cooldown_s=cooldown_s)
-                if rec.consecutive_failures >= self.circuit_break_after:
-                    self.tracker.mark_failure(
-                        provider.name, cooldown_s=self.circuit_break_cooldown_s
+                rec = _record_health(
+                    self.tracker.mark_failure, provider.name, cooldown_s=cooldown_s
+                )
+                if rec is not None and rec.consecutive_failures >= self.circuit_break_after:
+                    _record_health(
+                        self.tracker.mark_failure,
+                        provider.name,
+                        cooldown_s=self.circuit_break_cooldown_s,
                     )
                 continue
             except Exception as exc:
@@ -531,12 +568,49 @@ class Router:
                     raise
                 if transient_cooldown_s is not None:
                     cooldown_s = transient_cooldown_s
-                self.tracker.mark_failure(provider.name, cooldown_s=cooldown_s)
+                _record_health(self.tracker.mark_failure, provider.name, cooldown_s=cooldown_s)
                 continue
+            if not resp.text.strip() and not resp.tool_calls and not request.allow_empty:
+                # Provider returned an empty response. Don't mark it as
+                # a hard failure (the HTTP call succeeded), but do move
+                # on to the next provider — empty is almost never what
+                # the caller wanted. Short cooldown so we don't hammer
+                # a provider that's consistently returning blanks.
+                # Tool-only responses (empty text + tool_calls) are the
+                # expected shape for tool-use turns — NOT empty.
+                _record_health(self.tracker.mark_failure, provider.name, cooldown_s=15)
+                continue
+            _record_health(self.tracker.mark_ok, provider.name)
+            if slot_health is not None and slot_health.consecutive_failures:
+                _record_health(self.tracker.mark_ok, provider.name, slot)
+            return RouterResult(response=resp, provider=provider.name, skipped=list(skipped))
         return None
 
 
 # ---------------------------------------------------------------------------
+
+
+def _valid_retry_max(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _record_health(write, *args, **kwargs):
+    """Run a provider-health write; a ledger error is logged, never raised.
+
+    Health rows steer routing but are not the answer. A locked or broken
+    ledger must not turn a provider's success into a failure, or a provider's
+    failure into a crash that stops the chain. Returns the write's result, or
+    None when it failed.
+    """
+    try:
+        return write(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — bookkeeping only
+        logging.getLogger("somm.routing").warning(
+            "provider health write failed; continuing without it: %s: %s",
+            type(exc).__name__,
+            str(exc)[:200],
+        )
+        return None
 
 
 def _auth_chain_error(failures: list[tuple[str, Exception]]) -> SommAuthError:

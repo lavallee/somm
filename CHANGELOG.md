@@ -5,6 +5,55 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [Unreleased]
+
+### Fixed
+- **One bad telemetry row killed the writer thread.** A row SQLite could not bind or
+  accept (`ProgrammingError`, `IntegrityError`, …) escaped `WriterQueue._drain`, the
+  daemon thread died, and the rest of its batch and every later call stayed in memory
+  and vanished at exit. A failed batch is now retried one row at a time; a row that
+  still fails is written with its error to `spool/quarantine/` (outside the replayed
+  spool) and counted in `WriterQueue.quarantined`. Unexpected loop errors are logged
+  once and the loop continues; a dead writer thread is restarted on the next submit,
+  and rows submitted after `stop()` are spilled instead of dropped.
+- **A failed health write discarded a paid answer.** `mark_ok()` ran inside the try
+  that decides whether a provider failed, so a `database is locked` there cooled the
+  healthy provider, called the next one and paid again. Health writes after a call are
+  now best-effort (logged, never raised) in the router, the stream path and the
+  OpenRouter roster walk; failure-path cooldown writes no longer stop the chain either.
+- **A retry policy with only `backoff_s` never stopped.** With no `max` and no
+  `deadline_s` the router retried forever. Such a policy, or one with an invalid `max`,
+  now stops after `DEFAULT_POLICY_RETRY_MAX` (3) retry rounds.
+- **Concurrent processes crashed while upgrading an existing ledger.** Several
+  processes opening an older ledger at once re-ran each other's migration (7 of 8
+  failed with `duplicate column name: routing_json`). The runner takes the write lock
+  with `BEGIN IMMEDIATE`, re-reads the version under it, and retries the journal-mode
+  pragma; a regression test now opens a schema N-1 ledger from 8 processes.
+- **Several processes opening a fresh ledger at once crashed.** The losers raised
+  `UNIQUE constraint failed: schema_version.version` or `database is locked` (two
+  consumers hit it building clients in parallel). The same lock-and-recheck covers
+  first open, and `Repository` now sets `busy_timeout` before switching journal mode.
+- **The test suite wrote into the developer's real global ledger.** A `Config()` built
+  by hand ignored `SOMM_GLOBAL_PATH`, so an MCP test mirrored a fixture decision into
+  `~/.somm/global.sqlite` on every run (121 rows). `Config.global_db_path` now honours
+  the variable whether or not the config came from `load()`.
+- **`somm inbox --project X` failed with "invalid choice".** Bare `somm inbox` now
+  lists, and `--project`, `--workload`, `--all` and `--json` are accepted before or
+  after the subcommand.
+- **Harness prompts starting with `-` were parsed as flags.** `claude -p "<prompt>"`
+  and `opencode run … <prompt>` read such a prompt as options. The `claude-cli` harness
+  now writes the prompt to `claude -p` on stdin (claude rejects a bare `--`; this also
+  lifts the argv size limit) and declares `prompt_via_stdin`; OpenCode puts the prompt
+  after `--`.
+- **A withdrawn or misnamed model was retried forever and aborted the chain.** A 404
+  (or a 400 saying the model is unknown) was a fatal `SommBadRequest` that never cooled
+  anything; one ledger held 458 `nemotron:free` 404s over 18 days. It is now
+  `SommModelNotFound`, still a `SommBadRequest` for pinned callers, and the router and
+  OpenRouter roster cool that (provider, model) slot on the escalating ladder from one
+  hour and try the next candidate. The router also skips a cooled slot, so a policy
+  fallback can move to another model of the same provider after a 404. When nothing
+  else answers, the not-found error is still raised.
+
 ## [0.20.1] — 2026-11-09
 
 ### Fixed

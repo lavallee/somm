@@ -617,3 +617,83 @@ def test_v25_upgrade_preserves_calls_and_adds_optional_routing(tmp_path):
         assert ensure_schema(conn) == 26
         assert conn.execute("SELECT id, routing_json FROM calls").fetchall() == [("old", None)]
         assert ensure_schema(conn) == 26
+
+
+_CONCURRENT_OPEN = """
+import sys, time
+from pathlib import Path
+from somm_core.repository import Repository
+while time.time() < float(sys.argv[2]):
+    pass
+Repository(Path(sys.argv[1]))
+"""
+
+
+def test_concurrent_first_open_migrates_once(tmp_path):
+    """Several processes opening a fresh ledger at once must all succeed.
+
+    Before the migration runner took the write lock and re-read the version,
+    the losers raised ``UNIQUE constraint failed: schema_version.version`` or
+    ``database is locked`` (two consumers hit it building clients in parallel).
+    """
+    import subprocess
+    import sys
+    import time
+
+    for attempt in range(3):
+        path = tmp_path / f"race-{attempt}" / "calls.sqlite"
+        start = str(time.time() + 1.0)
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", _CONCURRENT_OPEN, str(path), start],
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(6)
+        ]
+        failures = [err for err in (p.communicate(timeout=60)[1] for p in procs) if err.strip()]
+        assert failures == [], failures[0][-600:]
+        with sqlite3.connect(path) as conn:
+            versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
+        assert sorted(versions) == list(range(1, SCHEMA_VERSION + 1))
+
+
+def _build_ledger_at(path, last_version: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        for version, migration in _list_migrations():
+            if version > last_version:
+                continue
+            conn.executescript(migration.read_text())
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            conn.commit()
+
+
+def test_concurrent_open_of_an_older_ledger_upgrades_once(tmp_path):
+    """Several processes opening an existing ledger one schema behind.
+
+    The audit reproduced 7 of 8 processes failing with ``duplicate column
+    name: routing_json`` here (v25 → v26, 5/5 trials): each read the version
+    before a deferred BEGIN and re-ran the peer's ALTER TABLE.
+    """
+    import subprocess
+    import sys
+    import time
+
+    for attempt in range(3):
+        path = tmp_path / f"upgrade-{attempt}" / "calls.sqlite"
+        _build_ledger_at(path, SCHEMA_VERSION - 1)
+        start = str(time.time() + 1.0)
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", _CONCURRENT_OPEN, str(path), start],
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(8)
+        ]
+        failures = [err for err in (p.communicate(timeout=60)[1] for p in procs) if err.strip()]
+        assert failures == [], failures[0][-600:]
+        with sqlite3.connect(path) as conn:
+            versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
+        assert sorted(versions) == list(range(1, SCHEMA_VERSION + 1))

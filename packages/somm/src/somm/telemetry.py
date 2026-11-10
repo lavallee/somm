@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +32,7 @@ _BATCH_MS = 100
 _MAX_BUSY_RETRIES = 3
 _SPOOL_DRAIN_INTERVAL_S = 600
 _SPOOL_CLAIM_MARKER = ".claimed-"
+_QUARANTINE_DIR = "quarantine"
 _auto_drain_warned = False
 _auto_drain_warned_lock = threading.Lock()
 
@@ -62,6 +64,17 @@ class WriterQueue:
         self._stopping = False
         self._atexit_registered = False
         self._next_spool_drain_at = 0.0
+        self._inflight: list[Call] = []
+        self._loop_error_warned = False
+        self._restart_lock = threading.Lock()
+        # Rows the ledger rejected as bad data, kept under spool/quarantine/.
+        self.quarantined = 0
+        self.restarts = 0
+
+    @property
+    def healthy(self) -> bool:
+        """True while the writer thread is running (or not yet needed)."""
+        return not self._started or self._thread.is_alive()
 
     def start(self) -> None:
         if not self._started:
@@ -81,7 +94,38 @@ class WriterQueue:
     def submit(self, call: Call) -> None:
         if not self._started:
             self.start()
+        elif self._stopping:
+            # After stop() nothing drains the queue: spill so the row is
+            # replayed later instead of vanishing.
+            with contextlib.suppress(Exception):
+                self._spill([call], reason="submitted_after_writer_stop")
+            return
+        elif not self._thread.is_alive():
+            self._restart()
         self._q.put(call)
+
+    def _restart(self) -> None:
+        """Replace a writer thread that died, so later rows still land.
+
+        The rows the dead thread had taken off the queue are quarantined (they
+        may or may not have been committed, so replaying them could duplicate)
+        and marked done so ``flush()`` does not wait on them forever.
+        """
+        with self._restart_lock:
+            if self._thread.is_alive() or self._stopping:
+                return
+            lost, self._inflight = self._inflight, []
+            if lost:
+                with contextlib.suppress(Exception):
+                    self._quarantine(lost, "writer thread died with this batch in flight")
+                for _ in lost:
+                    with contextlib.suppress(ValueError):
+                        self._q.task_done()
+            self.restarts += 1
+            with contextlib.suppress(Exception):
+                print("[somm] telemetry writer thread had stopped; restarting", file=sys.stderr)
+            self._thread = threading.Thread(target=self._run, name="somm-writer", daemon=True)
+            self._thread.start()
 
     def flush(self, timeout: float = 5.0) -> None:
         """Block until queued and in-flight rows have been committed (best-effort)."""
@@ -130,22 +174,19 @@ class WriterQueue:
 
             if item is self._STOP:
                 if batch:
-                    self._drain(batch)
-                    for _ in batch:
-                        self._q.task_done()
+                    self._process(batch)
                     batch = []
                 self._q.task_done()
                 return
 
             if item is not None:
                 batch.append(item)
+                self._inflight = batch
 
             if len(batch) >= _BATCH_MAX or (
                 batch and (time.monotonic() - last_flush) * 1000 >= _BATCH_MS
             ):
-                self._drain(batch)
-                for _ in batch:
-                    self._q.task_done()
+                self._process(batch)
                 batch = []
                 last_flush = time.monotonic()
             elif not batch:
@@ -168,6 +209,35 @@ class WriterQueue:
                     )
                     _auto_drain_warned = True
 
+    def _process(self, batch: list[Call]) -> None:
+        """Drain one batch and always mark its rows done, whatever happens.
+
+        Nothing may escape into ``_run``: an exception there used to kill the
+        daemon thread, after which every later ``submit()`` piled up in memory
+        and vanished at exit.
+        """
+        self._inflight = batch
+        try:
+            self._drain(batch)
+        except Exception as exc:  # noqa: BLE001 — the writer must outlive any one batch
+            self._warn_loop_error(exc)
+            with contextlib.suppress(Exception):
+                self._quarantine(batch, f"writer loop error: {type(exc).__name__}: {exc}")
+        finally:
+            self._inflight = []
+            for _ in batch:
+                self._q.task_done()
+
+    def _warn_loop_error(self, exc: BaseException) -> None:
+        if self._loop_error_warned:
+            return
+        self._loop_error_warned = True
+        with contextlib.suppress(Exception):
+            print(
+                f"[somm] telemetry writer loop error; continuing: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
     def _drain(self, batch: list[Call]) -> None:
         for attempt in range(_MAX_BUSY_RETRIES):
             try:
@@ -175,15 +245,64 @@ class WriterQueue:
                 self._mirror(batch)
                 return
             except sqlite3.OperationalError as e:
-                if "busy" in str(e).lower() or "locked" in str(e).lower():
+                if _is_busy(e):
                     time.sleep(0.05 * (2**attempt))
                     continue
-                self._spill(batch, reason=str(e))
+                self._drain_rows(batch, reason=str(e))
                 return
             except OSError as e:
                 self._spill(batch, reason=f"disk: {e}")
                 return
+            except Exception as e:  # noqa: BLE001 — bad data: isolate the row(s)
+                self._drain_rows(batch, reason=f"{type(e).__name__}: {e}")
+                return
         self._spill(batch, reason="sqlite_busy_retries_exhausted")
+
+    def _drain_rows(self, batch: list[Call], reason: str) -> None:
+        """Fallback after a batch failed for a reason other than busy/locked.
+
+        Write rows one at a time so one bad row cannot take the good ones in
+        its batch down with it. A row that is busy again is spilled to the
+        replayable spool; a row that fails for any other reason is bad data
+        and goes to the quarantine file with its error, where auto-drain will
+        not retry it forever.
+        """
+        for call in batch:
+            try:
+                self._repo.write_calls_batch([call])
+            except sqlite3.OperationalError as e:
+                if _is_busy(e):
+                    self._spill([call], reason=f"sqlite_busy after batch failure: {reason}")
+                else:
+                    self._quarantine([call], str(e))
+                continue
+            except OSError as e:
+                self._spill([call], reason=f"disk: {e}")
+                continue
+            except Exception as e:  # noqa: BLE001
+                self._quarantine([call], f"{type(e).__name__}: {e}")
+                continue
+            self._mirror([call])
+
+    def _quarantine(self, batch: list[Call], error: str) -> None:
+        """Keep rows the ledger rejected, with the reason, beside the spool.
+
+        ``spool/quarantine/*.jsonl`` is outside the ``spool/*.jsonl`` glob that
+        ``drain_spool`` replays, so a poison row is never retried blindly.
+        """
+        self.quarantined += len(batch)
+        qdir = self._spool_dir / _QUARANTINE_DIR
+        qdir.mkdir(parents=True, exist_ok=True)
+        qdir.chmod(0o700)
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        path = qdir / f"{ts}-{uuid.uuid4().hex[:8]}.jsonl"
+        with path.open("w", encoding="utf-8") as f:
+            for call in batch:
+                row = _call_row(call)
+                row["_quarantine_error"] = error
+                f.write(json.dumps(row, default=repr))
+                f.write("\n")
+        path.chmod(0o600)
 
     def _mirror(self, batch: list[Call]) -> None:
         """Replicate the batch to the mirror repo (opt-in cross-project view).
@@ -199,16 +318,28 @@ class WriterQueue:
 
     def _spill(self, batch: list[Call], reason: str) -> None:
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
-        path = self._spool_dir / f"{ts}.jsonl"
+        # Unique suffix: the one-by-one fallback can spill several files
+        # within the same microsecond.
+        path = self._spool_dir / f"{ts}-{uuid.uuid4().hex[:8]}.jsonl"
         with path.open("w", encoding="utf-8") as f:
             for call in batch:
-                row = asdict(call)
-                row["ts"] = call.ts.isoformat()
-                row["outcome"] = call.outcome.value
+                row = _call_row(call)
                 row["_spill_reason"] = reason
                 f.write(json.dumps(row))
                 f.write("\n")
         path.chmod(0o600)
+
+
+def _is_busy(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "busy" in text or "locked" in text
+
+
+def _call_row(call: Call) -> dict:
+    row = asdict(call)
+    row["ts"] = call.ts.isoformat()
+    row["outcome"] = call.outcome.value
+    return row
 
 
 def _spool_has_files(spool_dir: Path) -> bool:

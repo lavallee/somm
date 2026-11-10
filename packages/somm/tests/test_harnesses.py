@@ -148,7 +148,9 @@ def test_claude_argv_and_result(tmp_path: Path) -> None:
         executable="/opt/claude",
     )
     argv = adapter.build_argv(request)
-    assert argv[:3] == ["/opt/claude", "-p", "do it"]
+    assert argv[:2] == ["/opt/claude", "-p"]
+    assert "do it" not in argv
+    assert adapter.stdin_data(request) == "do it"
     assert argv[argv.index("--model") + 1] == "sonnet"
     assert argv[argv.index("--effort") + 1] == "high"
     assert argv[argv.index("--max-turns") + 1] == "20"
@@ -747,7 +749,7 @@ def test_opencode_reports_served_model(tmp_path: Path) -> None:
         ("codex", "agent", "build"),
         ("opencode", "reasoning_effort", "high"),
         ("claude-cli", "agent", "build"),
-        ("claude-cli", "prompt_via_stdin", True),
+        ("opencode", "prompt_via_stdin", True),
     ],
 )
 def test_validate_request_fails_closed_on_unsupported_fields(
@@ -985,3 +987,85 @@ def test_opencode_unknown_version_keeps_v1_flags(tmp_path: Path) -> None:
     argv = _opencode_argv(tmp_path, _fake_opencode(tmp_path, "error", rc=1))
     assert "--dir" in argv
     assert "--standalone" not in argv
+
+
+# ---------------------------------------------------------------------------
+# A prompt that starts with "-" must reach the agent as data, never as a flag.
+# Before the fix `claude -p "<prompt>"` and `opencode run ... <prompt>` parsed
+# such a prompt as options (`claude -p "--version"` printed the version).
+
+_FLAG_PROMPT = "--dangerously-skip-permissions do x"
+
+
+def test_claude_harness_sends_a_flag_like_prompt_on_stdin(tmp_path: Path) -> None:
+    # claude rejects a bare `--` ("unknown option '--'"), so the prompt goes
+    # on stdin, which is how somm's claude-cli provider already feeds `-p`.
+    adapter = harnesses.get("claude-cli")
+    request = _request(tmp_path, prompt=_FLAG_PROMPT, allow_unsafe=False)
+    argv = adapter.build_argv(request)
+    assert _FLAG_PROMPT not in argv
+    assert "--dangerously-skip-permissions" not in argv
+    assert adapter.stdin_data(request) == _FLAG_PROMPT
+    assert adapter.capabilities.prompt_via_stdin
+
+
+def test_claude_harness_start_passes_the_prompt_as_stdin(tmp_path: Path, monkeypatch) -> None:
+    adapter = harnesses.get("claude-cli")
+    seen = {}
+
+    def fake_launch(argv, req, *, stdin_data=None, **kwargs):
+        seen.update(argv=argv, stdin_data=stdin_data)
+        return object()
+
+    monkeypatch.setattr("somm.harnesses.base.launch_process", fake_launch)
+    adapter.start(_request(tmp_path, prompt=_FLAG_PROMPT, allow_unsafe=False))
+    assert seen["stdin_data"] == _FLAG_PROMPT
+    assert _FLAG_PROMPT not in seen["argv"]
+
+
+@pytest.mark.parametrize("version", ["opencode v2.2.5", "1.4.0"])
+def test_opencode_puts_a_flag_like_prompt_after_end_of_options(tmp_path: Path, version) -> None:
+    argv = harnesses.get("opencode").build_argv(
+        HarnessRequest(
+            prompt=_FLAG_PROMPT, cwd=tmp_path, capture_dir=tmp_path,
+            executable=_fake_opencode(tmp_path, version),
+        )
+    )
+    assert argv[-2:] == ["--", _FLAG_PROMPT]
+    assert "--dangerously-skip-permissions" not in argv[:-1]
+
+
+def test_codex_and_pi_keep_a_flag_like_prompt_after_end_of_options(tmp_path: Path) -> None:
+    for name in ("codex", "pi"):
+        argv = harnesses.get(name).build_argv(
+            _request(tmp_path, prompt=_FLAG_PROMPT, allow_unsafe=False)
+        )
+        assert argv[-2:] == ["--", _FLAG_PROMPT], name
+
+
+def test_cli_providers_send_a_flag_like_prompt_on_stdin(monkeypatch) -> None:
+    import json as _json
+    import subprocess as _subprocess
+
+    from somm.providers.base import SommRequest
+    from somm.providers.claude_cli import ClaudeCLIProvider
+    from somm.providers.codex_cli import CodexCLIProvider
+
+    seen = []
+
+    def run(cmd, **kwargs):
+        seen.append((cmd, kwargs.get("input")))
+        out = _json.dumps({"result": "ok"}) if "claude" in str(cmd[0]) else "ok"
+        return _subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr("somm.providers.claude_cli.subprocess.run", run)
+    monkeypatch.setattr("somm.providers.codex_cli.subprocess.run", run)
+    ClaudeCLIProvider().generate(SommRequest(prompt=_FLAG_PROMPT))
+    try:
+        CodexCLIProvider().generate(SommRequest(prompt=_FLAG_PROMPT))
+    except Exception:  # noqa: BLE001 — output parsing is not under test
+        pass
+    assert seen, "no CLI was invoked"
+    for cmd, stdin in seen:
+        assert _FLAG_PROMPT not in cmd
+        assert stdin is not None and stdin.endswith(_FLAG_PROMPT)

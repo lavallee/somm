@@ -111,6 +111,13 @@ class Config:
     def global_db_path(self) -> Path:
         if self.cross_project_path is not None:
             return Path(self.cross_project_path)
+        # A Config built directly (not through ``load()``) must still honour
+        # the override: the MCP server always opens this path to mirror
+        # decisions, and a test that constructed ``Config()`` by hand wrote
+        # 121 fixture decisions into the developer's real global ledger.
+        override = os.environ.get("SOMM_GLOBAL_PATH")
+        if override:
+            return Path(override)
         return Path.home() / ".somm" / "global.sqlite"
 
 

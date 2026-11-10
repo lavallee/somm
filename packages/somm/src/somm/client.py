@@ -82,6 +82,7 @@ from somm.routing import (
     Router,
     _auth_chain_error,
     _classify_unknown,
+    _record_health,
 )
 from somm.slots import parallel_slots as _parallel_slots
 from somm.telemetry import WriterQueue
@@ -2276,17 +2277,21 @@ class SommLLM:
                         cooldown_s = _stream_failure_cooldown(exc)
                         if cooldown_s is None:
                             raise
-                        self._tracker.mark_failure(candidate.name, cooldown_s=cooldown_s)
+                        _record_health(
+                            self._tracker.mark_failure, candidate.name, cooldown_s=cooldown_s
+                        )
                         if isinstance(exc, SommAuthError):
                             routed_past.append((candidate.name, exc))
                         continue
                     if not collected and not provider and has_next:
                         # Empty stream: like the router, move on rather than
                         # hand the caller nothing, and cool briefly.
-                        self._tracker.mark_failure(candidate.name, cooldown_s=15)
+                        _record_health(self._tracker.mark_failure, candidate.name, cooldown_s=15)
                         continue
                     if collected:
-                        self._tracker.mark_ok(candidate.name)
+                        # Best-effort: the text already reached the caller, so
+                        # a locked ledger here must not turn it into an error.
+                        _record_health(self._tracker.mark_ok, candidate.name)
                     break
                 # Streaming providers don't always give token counts — estimate
                 # from length as a fallback.
