@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -330,8 +331,14 @@ class Router:
         retry_max: int | None = None,
         retry_backoff_s: float | None = None,
         route: dict | None = None,
+        attempt: Callable[[SommProvider, SommRequest], SommResponse] | None = None,
     ) -> RouterResult:
         """Try each provider. Return the first successful response.
+
+        ``attempt(provider, request)`` is the provider call; it defaults to
+        ``provider.generate(request)``. A stream passes one that opens the
+        provider's stream and reads it to its first output, so streams get
+        the same filters, cooldowns, retries and fallback as generate.
 
         ``route``, when given, is filled in as the chain runs, and stays
         filled when dispatch raises: ``route["first"]`` is the first
@@ -408,16 +415,17 @@ class Router:
         while True:
             auth_failures: list[tuple[str, Exception]] = []
             not_found: list[tuple[str, Exception]] = []
-            attempt = self._try_once(
+            answered = self._try_once(
                 request,
                 active,
                 transient_cooldown_s=retry_cooldown_s,
                 auth_failures=auth_failures,
                 not_found=not_found,
                 trail=trail,
+                attempt=attempt,
             )
-            if attempt is not None:
-                return attempt
+            if answered is not None:
+                return answered
             hard_failures = len(auth_failures) + len(not_found)
             if hard_failures and (
                 hard_failures == len(active) or (deadline is None and not retry_policy)
@@ -545,6 +553,7 @@ class Router:
         auth_failures: list[tuple[str, Exception]] | None = None,
         not_found: list[tuple[str, Exception]] | None = None,
         trail: list | None = None,
+        attempt: Callable[[SommProvider, SommRequest], SommResponse] | None = None,
     ) -> RouterResult | None:
         skipped = auth_failures if auth_failures is not None else []
         missing = not_found if not_found is not None else []
@@ -570,7 +579,7 @@ class Router:
             # paid, successful answer was thrown away, the healthy provider
             # was cooled, and the next provider was called and paid again.
             try:
-                resp = provider.generate(request)
+                resp = attempt(provider, request) if attempt else provider.generate(request)
             except SommAuthError as e:
                 # One provider's bad key is that provider's problem, not the
                 # request's: cool it and route on. Before 0.19.2 this raised,
@@ -636,7 +645,7 @@ class Router:
                     cooldown_s = transient_cooldown_s
                 _record_health(self.tracker.mark_failure, provider.name, cooldown_s=cooldown_s)
                 continue
-            if not resp.text.strip() and not resp.tool_calls and not request.allow_empty:
+            if not _answered(resp) and not request.allow_empty:
                 # Provider returned an empty response. Don't mark it as
                 # a hard failure (the HTTP call succeeded), but do move
                 # on to the next provider — empty is almost never what
@@ -660,6 +669,12 @@ class Router:
 def _slot(request: SommRequest, provider: SommProvider) -> str:
     """The model a request would use on ``provider``."""
     return request.model or getattr(provider, "default_model", "") or ""
+
+
+def _answered(resp) -> bool:
+    """Text or tool calls the caller can use. A stream that has started
+    producing output (``started``) has answered, whatever comes next."""
+    return bool(resp.text.strip() or resp.tool_calls or getattr(resp, "started", False))
 
 
 def reasoning_ate_budget(resp: SommResponse) -> bool:

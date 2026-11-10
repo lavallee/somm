@@ -371,15 +371,18 @@ def test_messages_route_streams_sse_with_tool_use_and_usage(tmp_path, fake_provi
     assert tool_start == {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {}}
     message_delta = next(d for n, d in events if n == "message_delta")
     assert message_delta["delta"]["stop_reason"] == "tool_use"
-    assert message_delta["usage"] == {"output_tokens": 2}
-    assert events[0][1]["message"]["usage"]["input_tokens"] == 5
+    # Input tokens are known when the stream ends, so they ride on message_delta.
+    assert message_delta["usage"] == {"input_tokens": 5, "output_tokens": 2}
+    assert events[0][1]["message"]["usage"]["input_tokens"] == 0
+    assert events[0][1]["message"]["id"] == "msg_" + r.headers["x-somm-call-id"].replace("-", "")
 
     assert ledger(app, "SELECT outcome, tokens_in, tokens_out FROM calls") == [("ok", 5, 2)]
 
 
 def test_messages_route_streaming_upstream_error_is_an_error_response(tmp_path, fake_provider, ledger):
-    """The answer is complete before the stream opens, so a failure arrives as
-    a normal error response the SDK raises on, not a 200 with an error event."""
+    """Nothing is sent before the first answer event, so a failure before it
+    arrives as a normal error response the SDK raises on, not a 200 with an
+    error event."""
     cfg = _cfg(tmp_path)
     Repository(cfg.db_path).register_workload(name="stream_wl", project=cfg.project)
     app = create_app(cfg, providers=[fake_provider(error=RuntimeError("provider down"))])

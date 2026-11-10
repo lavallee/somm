@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -51,10 +51,8 @@ from somm_core.version import VERSION as _CLIENT_VERSION
 from somm import hooks
 from somm._redaction import scrub_text
 from somm.errors import (
-    SommAuthError,
     SommEmptyResponse,
     SommError,
-    SommFatalError,
     SommProviderError,
     SommProviderNotConfigured,
     SommProvidersExhausted,
@@ -62,9 +60,9 @@ from somm.errors import (
     SommRefused,
     SommStructuredError,
     SommTimeout,
-    SommTransientError,
 )
 from somm.errors import SommStrictMode as _SommStrictMode
+from somm.events import ReasoningDelta, StreamDone, StreamEvent, StreamStart, TextDelta
 from somm.prompts import fork_prompt as fork_prompt_version
 from somm.prompts import (
     get_prompt,
@@ -77,6 +75,8 @@ from somm.providers.base import (
     SommEmbedRequest,
     SommProvider,
     SommRequest,
+    SommResponse,
+    ToolCallDelta,
 )
 from somm.providers.registry import (
     BUILTIN_PROVIDER_SPECS,
@@ -84,13 +84,9 @@ from somm.providers.registry import (
     load_entrypoint_provider_specs,
 )
 from somm.routing import (
-    AUTH_COOLDOWN_S,
     ProviderHealthTracker,
     Router,
-    _auth_chain_error,
-    _classify_unknown,
     _parse_ts,
-    _record_health,
     reasoning_ate_budget,
 )
 from somm.slots import parallel_slots as _parallel_slots
@@ -121,7 +117,7 @@ _WAIT_UNSET: Any = object()
 _STRUCTURED_TEMPERATURE_JITTER = 0.05
 
 
-def _next_stream_item(iterator: Iterator[str]) -> tuple[bool, str | None]:
+def _next_stream_item(iterator: Iterator) -> tuple[bool, Any]:
     """Advance a sync stream without leaking StopIteration through a Future."""
     try:
         return False, next(iterator)
@@ -297,6 +293,12 @@ def _failure_error(
             f"{result.provider}/{result.model} declined to answer "
             f"(stop_reason={result.stop_reason})",
             stop_reason=result.stop_reason,
+            text=result.text,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
+            model=result.model or None,
+            provider=result.provider or None,
+            call_id=result.call_id,
         )
     elif result.outcome == Outcome.OK or (result.outcome == Outcome.EMPTY and allow_empty):
         return None
@@ -764,6 +766,224 @@ def _served(resp, provider_name: str, max_tokens: int | None = None) -> tuple:
         error_detail,
     )
 
+@dataclass
+class _Plan:
+    """A call that was admitted: the request as it will be sent, where it
+    goes, and what its row needs to say. Built by ``SommLLM._plan_call``."""
+
+    wl: Any
+    workload: str
+    req: SommRequest
+    prompt_text: Any
+    messages: list[dict] | None
+    system: str
+    model: str | None
+    provider: str | None
+    max_tokens: int
+    temperature: float
+    call_prompt_id: str | None
+    prompt_hash: str
+    short_circuit: Any
+    short_circuited: str | None
+    route_source: str
+    route_mode: str
+    routing_metadata: dict
+    allow_fallback: bool
+    wait: Any
+    wait_on_exhausted: float | None
+    session_id: str | None
+    parent_call_id: str | None
+    correlation_id: str | None
+    observation_role: str
+    source_call_id: str | None
+    ts: datetime = field(default_factory=lambda: datetime.now(UTC))
+    call_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass
+class _Attempted:
+    """What ``SommLLM._dispatch`` got: the response (or, for a stream, the
+    opened stream) and who served it, or the failure; the route either way."""
+
+    resp: Any = None
+    provider: str = ""
+    model: str = ""
+    failure: BaseException | None = None
+    error_detail: str | None = None
+    fallback_info: dict | None = None
+    first: list | None = None
+    skipped: list = field(default_factory=list)
+    raise_after: Exception | None = None
+
+
+def _generate_attempt(provider, request):
+    return provider.generate(request)
+
+
+class _StreamStart:
+    """A provider stream opened and read up to its first output.
+
+    The dispatcher's attempt for a stream: :class:`_StreamOpener` opens one
+    and reads it until there is something to give the caller (visible text,
+    a tool-call fragment, or — for an ``events`` stream — reasoning) or the
+    stream ends. Until then nothing has reached the caller, so a failure is
+    an ordinary failed attempt the router may route past. After that the
+    caller drains :meth:`events`, and a failure can only be raised.
+
+    The router reads ``text``, ``tool_calls`` and ``started`` to tell an
+    empty answer from a real one, and ``model`` / ``tokens_out`` /
+    ``reasoning_tokens`` / ``raw`` to say why an empty one was empty.
+    """
+
+    def __init__(self, provider, request: SommRequest, *, events: bool) -> None:
+        self.provider = provider
+        self.request = request
+        self.model = request.model or getattr(provider, "default_model", "") or ""
+        self._events = events
+        self._chunks = iter(provider.stream(request))
+        self._stripper = ThinkStreamStripper()
+        self._pending: list = []
+        self.collected: list[str] = []
+        self.tool_calls: list[ToolCallDelta] = []
+        self.final: SommResponse | None = None
+        self.done = False
+        self.usage = "estimate"
+
+    # What the router reads.
+    @property
+    def text(self) -> str:
+        return "".join(self.collected)
+
+    @property
+    def started(self) -> bool:
+        return not self.done and any(self._shown(e) for e in self._pending)
+
+    @property
+    def tokens_out(self) -> int:
+        return self.final.tokens_out if self.final else 0
+
+    @property
+    def reasoning_tokens(self) -> int | None:
+        return self.final.reasoning_tokens if self.final else None
+
+    @property
+    def raw(self) -> dict | None:
+        return self.final.raw if self.final else None
+
+    def prime(self) -> _StreamStart:
+        while not self.done and not any(self._shown(e) for e in self._pending):
+            self._read()
+        return self
+
+    def _shown(self, event) -> bool:
+        return self._events or not isinstance(event, ReasoningDelta)
+
+    def events(self) -> Iterator:
+        while True:
+            while self._pending:
+                yield self._pending.pop(0)
+            if self.done:
+                return
+            self._read()
+
+    def _read(self) -> None:
+        chunk = next(self._chunks, None)
+        if chunk is None:
+            # Ended without a final chunk. Built-in adapters whose wire format
+            # has a completion marker raise when it is missing; a plugin
+            # provider may simply stop, so that still counts as the end.
+            self._finish(None)
+            return
+        if chunk.model:
+            self.model = chunk.model
+        signature = getattr(chunk, "reasoning_signature", "")
+        if getattr(chunk, "reasoning", "") or signature:
+            self._pending.append(ReasoningDelta(chunk.reasoning, signature=signature))
+        if chunk.text:
+            self._text(self._stripper.feed(chunk.text))
+        for delta in getattr(chunk, "tool_calls", None) or ():
+            self.tool_calls.append(delta)
+            self._pending.append(delta)
+        if chunk.done:
+            self._finish(getattr(chunk, "response", None))
+
+    def _text(self, visible: str) -> None:
+        if visible:
+            self.collected.append(visible)
+            self._pending.append(TextDelta(visible))
+
+    def _finish(self, response: SommResponse | None) -> None:
+        self._text(self._stripper.flush())
+        if response is not None and response.tool_calls and not self.tool_calls:
+            # An adapter that answers in one piece: its tool calls are still events.
+            for i, tc in enumerate(response.tool_calls):
+                delta = ToolCallDelta(
+                    i, id=tc.id, name=tc.name,
+                    arguments=tc.arguments_raw or json.dumps(tc.arguments),
+                )
+                self.tool_calls.append(delta)
+                self._pending.append(delta)
+        self.final = response
+        self.done = True
+        close = getattr(self._chunks, "close", None)
+        if close is not None:
+            close()
+
+    def response(self, plan: _Plan, t0: float) -> SommResponse:
+        """The answer as generate would have returned it, from the provider's
+        final chunk when it sent one, with the text the caller was given."""
+        text = self.text
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        final = self.final
+        if final is not None and (final.tokens_in or final.tokens_out):
+            self.usage = "provider"
+            return replace(
+                final, text=text, latency_ms=latency_ms, model=final.model or self.model
+            )
+        p, model = self.provider, self.model
+        if plan.req.messages is not None:
+            tokens_in = sum(
+                p.estimate_tokens(m.get("content") or "", model) for m in plan.req.messages
+            )
+        else:
+            tokens_in = p.estimate_tokens(plan.req.prompt, model)
+        tokens_in += p.estimate_tokens(plan.req.system, model) if plan.req.system else 0
+        return SommResponse(
+            text=text,
+            model=(final.model if final else "") or model,
+            tokens_in=tokens_in,
+            tokens_out=p.estimate_tokens(text, model) if text else 0,
+            latency_ms=latency_ms,
+            raw=final.raw if final else None,
+            tool_calls=final.tool_calls if final else [],
+            stop_reason=final.stop_reason if final else "",
+            reasoning_content=final.reasoning_content if final else "",
+            cost_usd=final.cost_usd if final else None,
+            max_tokens_sent=final.max_tokens_sent if final else None,
+        )
+
+
+class _StreamOpener:
+    """The attempt a stream hands :meth:`SommLLM._dispatch`. Remembers the
+    last stream that ended empty, which is a stream's answer when the chain
+    has nothing better."""
+
+    def __init__(self, events: bool) -> None:
+        self.events = events
+        self.empty: _StreamStart | None = None
+
+    def __call__(self, provider, request: SommRequest) -> _StreamStart:
+        start = _StreamStart(provider, request, events=self.events).prime()
+        if start.done and not start.text.strip() and not start.tool_calls:
+            self.empty = start
+        return start
+
+
+def _stream_extra(start: _StreamStart | None) -> dict:
+    """What a stream adds to ``routing_json``: where its token counts came from."""
+    return {"stream": {"usage": start.usage if start is not None else "provider"}}
+
+
 def _format_error_detail(exc: Exception, provider: str, model: str | None) -> str:
     """Build a bounded, operator-friendly description of an LLM call failure.
 
@@ -802,19 +1022,6 @@ def _pinned_error_detail(exc: Exception, provider: str, model: str | None) -> st
     hint = f" | pinned call ({pin} passed by the caller): no fallback (allow_fallback=True to route past it)"
     detail = _format_error_detail(exc, provider, model)
     return detail[: 512 - len(hint)] + hint
-
-
-def _stream_failure_cooldown(exc: Exception) -> float | None:
-    """Cooldown for a stream attempt that failed before any text, or None
-    when the failure is fatal and should not fall back. Mirrors the router."""
-    if isinstance(exc, SommAuthError):
-        return AUTH_COOLDOWN_S
-    if isinstance(exc, SommFatalError):
-        return None
-    if isinstance(exc, SommTransientError):
-        return exc.cooldown_s
-    cooldown_s, transient = _classify_unknown(exc)
-    return cooldown_s if transient else None
 
 
 def _routed_past_info(router_result, model: str | None) -> dict | None:
@@ -1243,12 +1450,6 @@ class SommLLM:
 
         return resolve_boundary(wl, per_call=per_call, project=self.config.project)
 
-    def _boundary_chain(self, providers: list, model: str | None, boundary, *, stream: bool):
-        from somm.boundary import admissible_providers
-
-        ok, _ = admissible_providers(providers, model, boundary.tier, roster=not stream)
-        return ok
-
     def _served_tier(self, provider_name: str, model: str | None) -> str | None:
         """calls.data_tier for the route that served (or was attempted)."""
         from somm.boundary import served_tier
@@ -1276,7 +1477,6 @@ class SommLLM:
         pinned: str | None,
         model: str | None,
         policy: dict | None,
-        stream: bool,
         prompt_hash: str,
         observation_role: str = "production",
         source_call_id: str | None = None,
@@ -1300,8 +1500,8 @@ class SommLLM:
                 if policy
                 else list(self.providers)
             )
-            context = "the stream chain" if stream else "the routing chain"
-        ok, refused = admissible_providers(candidates, model, boundary.tier, roster=not stream)
+            context = "the routing chain"
+        ok, refused = admissible_providers(candidates, model, boundary.tier)
         if ok:
             return
         exc = refuse(workload=workload, boundary=boundary, refused=refused, context=context)
@@ -1639,6 +1839,92 @@ class SommLLM:
         refusal row and raises ``SommPrivacyViolation`` (never retried, never
         rescued by a looser route). See docs/data-boundary.md.
         """
+        plan = self._plan_call(
+            prompt, system=system, workload=workload, max_tokens=max_tokens,
+            temperature=temperature, model=model, provider=provider,
+            capabilities_required=capabilities_required, allow_empty=allow_empty,
+            allow_fallback=allow_fallback, no_fallback=no_fallback, tools=tools,
+            messages=messages, tool_choice=tool_choice, response_format=response_format,
+            reasoning_effort=reasoning_effort, wait=wait, session_id=session_id,
+            parent_call_id=parent_call_id, correlation_id=correlation_id,
+            observation_role=observation_role, source_call_id=source_call_id,
+            claude_cli_text_only=claude_cli_text_only, data_boundary=data_boundary,
+            timeout=timeout,
+        )
+        att = self._dispatch(plan, _generate_attempt)
+        result = self._record(plan, att)
+        if att.raise_after is not None:
+            raise att.raise_after
+
+        # Loud-empty: when the caller explicitly set raise_on_empty=True
+        # and we ended up with an empty response (every provider returned
+        # blanks), raise rather than handing back empty text. This is the
+        # 2026-05-06 lesson: a thinking model that consumed its whole token
+        # budget on internal reasoning shouldn't silently return empty —
+        # callers who care need a typed exception so they can fall back,
+        # bump max_tokens, or pick a non-thinking model.
+        if raise_on_empty and result.outcome == Outcome.EMPTY:
+            if result.error_detail and "reasoning_exhausted" in result.error_detail:
+                cause = (
+                    "the model spent its whole output budget on reasoning; raise "
+                    "max_tokens or lower reasoning_effort"
+                )
+            else:
+                cause = (
+                    "bump max_tokens / pick a non-thinking model if a thinking "
+                    "model burned the whole budget"
+                )
+            raise SommEmptyResponse(
+                f"empty response from {result.provider}/{result.model} "
+                f"(workload={workload!r}): {cause}. Set raise_on_empty=False to "
+                f"swallow. Detail: {result.error_detail}"
+            )
+
+        if raise_on_failure:
+            failure = _failure_error(result, att.failure, allow_empty=allow_empty)
+            if failure is not None:
+                raise failure
+
+        return result
+
+    # ------------------------------------------------------------------
+    # The one call path: admit and plan, attempt, record. generate() and
+    # stream() differ only in the attempt they hand _dispatch and in how the
+    # answer reaches the caller.
+
+    def _plan_call(
+        self,
+        prompt,
+        *,
+        system: str,
+        workload: str,
+        max_tokens: int,
+        temperature: float,
+        model: str | None,
+        provider: str | None,
+        capabilities_required: list[str] | None,
+        allow_empty: bool,
+        allow_fallback: bool | None,
+        no_fallback: bool,
+        tools: list[dict] | None,
+        messages: list[dict] | None,
+        tool_choice: str | dict | None,
+        response_format: dict | None,
+        reasoning_effort: str | None,
+        wait,
+        session_id: str | None,
+        parent_call_id: str | None,
+        correlation_id: str | None,
+        observation_role: str,
+        source_call_id: str | None,
+        claude_cli_text_only: bool,
+        data_boundary: str | None,
+        timeout: float | None,
+    ) -> _Plan:
+        """Admit the call and decide where it goes, before any provider is
+        touched: workload, boundary, learned override, pre-call hooks,
+        ``somm/auto``, the boundary refusal and the budget gate. Raises when
+        the call is refused."""
         wl = self.repo.workload_by_name(workload, self.config.project)
         if wl is None:
             if self.config.mode == "strict":
@@ -1694,29 +1980,29 @@ class SommLLM:
         prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
         call_prompt_id = None if messages is not None else self._resolve_prompt_id(wl.id, prompt)
 
-        effective_caps = _merge_caps(
-            wl.capabilities_required,
-            capabilities_required,
-            infer_capabilities(prompt_text),
-        )
+        def request() -> SommRequest:
+            return SommRequest(
+                prompt=prompt_text,
+                system=system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model=model,
+                capabilities_required=_merge_caps(
+                    wl.capabilities_required,
+                    capabilities_required,
+                    infer_capabilities(prompt_text),
+                ),
+                allow_empty=allow_empty,
+                tools=tools or [],
+                messages=messages,
+                tool_choice=tool_choice,
+                response_format=response_format,
+                reasoning_effort=reasoning_effort,
+                claude_cli_text_only=claude_cli_text_only,
+                timeout=timeout,
+            )
 
-        req = SommRequest(
-            prompt=prompt_text,
-            system=system,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            model=model,
-            capabilities_required=effective_caps,
-            allow_empty=allow_empty,
-            tools=tools or [],
-            messages=messages,
-            tool_choice=tool_choice,
-            response_format=response_format,
-            reasoning_effort=reasoning_effort,
-            claude_cli_text_only=claude_cli_text_only,
-            timeout=timeout,
-        )
-
+        req = request()
         short_circuit: hooks.ShortCircuit | None = None
         short_circuited: str | None = None
         if hooks.has_hooks(hooks.PRE_CALL):
@@ -1753,27 +2039,7 @@ class SommLLM:
                 call_prompt_id = prompt.id
             else:
                 call_prompt_id = self._resolve_prompt_id(wl.id, prompt_text)
-            effective_caps = _merge_caps(
-                wl.capabilities_required,
-                capabilities_required,
-                infer_capabilities(prompt_text),
-            )
-            req = SommRequest(
-                prompt=prompt_text,
-                system=system,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                model=model,
-                capabilities_required=effective_caps,
-                allow_empty=allow_empty,
-                tools=tools or [],
-                messages=messages,
-                tool_choice=tool_choice,
-                response_format=response_format,
-                reasoning_effort=reasoning_effort,
-                claude_cli_text_only=claude_cli_text_only,
-                timeout=timeout,
-            )
+            req = request()
             if short_circuit is not None:
                 short_circuited = short_circuit.source or short_circuit.provider or "hook"
 
@@ -1806,6 +2072,7 @@ class SommLLM:
                 req.messages = fallback_messages(req.messages)
             allow_fallback_resolved = False
 
+        prompt_hash = stable_hash(messages if messages is not None else prompt_text)
         # Data boundary: refuse before any provider call when no route within
         # the workload's boundary remains. A pin does not override it.
         if short_circuit is None and not boundary.is_default:
@@ -1822,8 +2089,7 @@ class SommLLM:
                 pinned=provider,
                 model=model,
                 policy=wl.policy,
-                stream=False,
-                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
+                prompt_hash=prompt_hash,
                 observation_role=observation_role,
                 source_call_id=source_call_id,
                 session_id=session_id,
@@ -1841,198 +2107,192 @@ class SommLLM:
         if short_circuit is None and provider != "chatgpt":
             self._enforce_budget(wl)
 
-        call_id = str(uuid.uuid4())
-        ts = datetime.now(UTC)
-        outcome = Outcome.OK
-        error_kind: str | None = None
-        error_detail: str | None = None
-        tokens_in = tokens_out = latency_ms = 0
-        actual_model = model or ""
-        actual_provider = ""
-        text = ""
-        tool_calls_out: list[CoreToolCall] = []
-        stop_reason_out: str = ""
-        reasoning_content_out: str = ""
-        raw_out: dict | None = None
-        cost_usd_out: float | None = None
-        reported_cost_source: str | None = None
+        return _Plan(
+            wl=wl, workload=workload, req=req, prompt_text=prompt_text, messages=messages,
+            system=system, model=model, provider=provider, max_tokens=max_tokens,
+            temperature=temperature, call_prompt_id=call_prompt_id, prompt_hash=prompt_hash,
+            short_circuit=short_circuit, short_circuited=short_circuited,
+            route_source=route_source, route_mode=route_mode,
+            routing_metadata=routing_metadata, allow_fallback=allow_fallback_resolved,
+            wait=wait, wait_on_exhausted=wait_on_exhausted, session_id=session_id,
+            parent_call_id=parent_call_id, correlation_id=correlation_id,
+            observation_role=observation_role, source_call_id=source_call_id,
+        )
 
-        # Track whether we took the fallback path so we can fire on_fallback
-        # only on the narrow "pinned failed + chain saved us" window.
-        fallback_info: dict | None = None
-        raise_after_record: Exception | None = None
-        # What ended the call when no route answered (raise_on_failure).
-        failure_exc: Exception | None = None
-        # The route, for routing_json: first choice, candidates skipped and
-        # why, whether any route answered, and the max_tokens it was sent.
-        route_first: list | None = None
-        route_skipped: list = []
-        responded = False
-        sent_max_tokens: int | None = None
-
-        if short_circuit is not None:
-            text = short_circuit.text
-            actual_provider = short_circuit.provider
-            actual_model = short_circuit.model
-            tokens_in = short_circuit.tokens_in
-            tokens_out = short_circuit.tokens_out
-            latency_ms = 0
-            tool_calls_out = _to_core_tool_calls(short_circuit.tool_calls)
-            raw_out = short_circuit.raw
-            cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
-            route_first = [actual_provider, actual_model]
-            responded = True
-        elif provider is not None:
+    def _dispatch(self, plan: _Plan, attempt: Callable) -> _Attempted:
+        """Try the planned route: a pin (sticky unless ``allow_fallback``),
+        a workload policy, or the chain. ``attempt(provider, request)`` is
+        the one provider call; the router owns cooldowns, capability and
+        plan filters, retries and waiting. Never raises a provider failure:
+        it is returned on the attempt for :meth:`_record`."""
+        att = _Attempted(model=plan.model or "")
+        req, provider, model = plan.req, plan.provider, plan.model
+        if plan.short_circuit is not None:
+            att.first = [plan.short_circuit.provider, plan.short_circuit.model]
+            return att
+        if provider is not None:
             chosen = self._pick_provider(provider)
-            route_first = [chosen.name, model or getattr(chosen, "default_model", "") or ""]
+            att.first = [chosen.name, model or getattr(chosen, "default_model", "") or ""]
             try:
-                resp = chosen.generate(req)
-                (
-                    text, actual_provider, actual_model, tokens_in, tokens_out, latency_ms,
-                    tool_calls_out, stop_reason_out, reasoning_content_out, raw_out,
-                    cost_usd_out, reported_cost_source, outcome, error_kind, error_detail,
-                ) = _served(resp, chosen.name, max_tokens)
-                responded = True
-                sent_max_tokens = resp.max_tokens_sent
+                att.resp, att.provider = attempt(chosen, req), chosen.name
+                return att
             except Exception as exc:
-                route_skipped.append([*route_first, type(exc).__name__])
-                # The pinned target failed. Remember what the caller asked
-                # for either way — on_fallback needs pinned vs. actual, and
-                # the sticky path reports the pin as the attribution.
-                fallback_info = {
-                    "pinned_provider": provider,
-                    "pinned_model": model,
-                    "error_kind": type(exc).__name__,
-                    "error_detail": _format_error_detail(exc, chosen.name, model),
-                }
-                if not allow_fallback_resolved:
+                att.skipped.append([*att.first, type(exc).__name__])
+                att.provider = chosen.name
+                if not plan.allow_fallback:
                     # Default since v0.16: a pin is honored or the call fails.
                     # Rescuing a pinned call through the chain answers with a
                     # model the caller never asked for, which made results
                     # unexplainable — and silently invalidated evaluation,
                     # comparison, and replay runs. Surface the original error
-                    # with the pinned attribution intact.
-                    fallback_info = None
-                    failure_exc = exc
-                    outcome = _failure_outcome(exc)
-                    error_kind = type(exc).__name__
-                    error_detail = _pinned_error_detail(exc, chosen.name, model)
-                    actual_provider = chosen.name
-                    # Attribute the failure to a real model even when only
-                    # the provider was pinned: the caller still chose one
-                    # implicitly, and a blank model column hides the row from
-                    # every per-model query.
-                    actual_model = (
+                    # with the pinned attribution intact. Attribute it to a
+                    # real model even when only the provider was pinned: a
+                    # blank model column hides the row from per-model queries.
+                    att.failure = exc
+                    att.error_detail = _pinned_error_detail(exc, chosen.name, model)
+                    att.model = (
                         model
                         or getattr(exc, "model", "")
                         or getattr(chosen, "default_model", "")
                         or ""
                     )
-                else:
-                    # Opt-in rescue (allow_fallback=True /
-                    # SOMM_PINNED_FALLBACK=1): an answer from some healthy
-                    # provider beats no answer — e.g. parallel batch workers
-                    # that would otherwise all fail when one provider drops.
-                    # Clear the pinned model before chain fallback: the pin is
-                    # only meaningful to the pinned provider. Other providers
-                    # serve different model inventories, so re-using the pinned
-                    # model name (e.g. "qwen3:14b" on Minimax) guarantees a 404.
-                    req.model = None
-                    rescue_route: dict = {}
-                    try:
-                        router_result = self.router.dispatch(
-                            req, wait=wait_on_exhausted, route=rescue_route
-                        )
-                        (
-                            text, actual_provider, actual_model, tokens_in, tokens_out,
-                            latency_ms, tool_calls_out, stop_reason_out, reasoning_content_out,
-                            raw_out, cost_usd_out, reported_cost_source, outcome, error_kind,
-                            error_detail,
-                        ) = _served(router_result.response, router_result.provider, max_tokens)
-                        responded = True
-                        sent_max_tokens = router_result.response.max_tokens_sent
-                    except Exception as chain_exc:
-                        # Total failure — clear fallback_info so on_fallback
-                        # doesn't fire; on_error handles final-failure signal.
-                        fallback_info = None
-                        failure_exc = chain_exc
-                        outcome = _failure_outcome(chain_exc)
-                        error_kind = type(chain_exc).__name__
-                        error_detail = _format_error_detail(chain_exc, chosen.name, model)
-                        actual_provider = chosen.name
-                        if hasattr(chain_exc, "model") and chain_exc.model:
-                            actual_model = chain_exc.model
-                        if wait_on_exhausted is not None and isinstance(
-                            chain_exc, SommProvidersExhausted
-                        ):
-                            raise_after_record = chain_exc
-                    route_skipped.extend(rescue_route.get("skipped", []))
-        else:
-            dispatch_raise_exhausted = wait_on_exhausted is not None
-            chain_route: dict = {}
+                    return att
+                pinned_failure = {
+                    "pinned_provider": provider,
+                    "pinned_model": model,
+                    "error_kind": type(exc).__name__,
+                    "error_detail": _format_error_detail(exc, chosen.name, model),
+                }
+            # Opt-in rescue (allow_fallback=True / SOMM_PINNED_FALLBACK=1): an
+            # answer from some healthy provider beats no answer. The pinned
+            # model means nothing to other providers (re-using it guarantees
+            # a 404), so the chain runs on each provider's own default.
+            req.model = None
+            rescue_route: dict = {}
             try:
-                if wl.policy:
-                    retry_cfg = wl.policy.get("retry") or {}
-                    dispatch_raise_exhausted = retry_cfg.get("max") is not None
-                    policy_wait = wait_on_exhausted
-                    if wait is _WAIT_UNSET and retry_cfg.get("deadline_s") is not None:
-                        policy_wait = float(retry_cfg["deadline_s"])
-                    dispatch_raise_exhausted = dispatch_raise_exhausted or policy_wait is not None
-                    router_result = self._policy_router(
-                        wl.policy,
-                        explicit_model=model is not None,
-                    ).dispatch(
-                        req,
-                        wait=policy_wait,
-                        retry_max=retry_cfg.get("max"),
-                        retry_backoff_s=retry_cfg.get("backoff_s"),
-                        route=chain_route,
-                    )
-                else:
-                    router_result = self.router.dispatch(
-                        req, wait=wait_on_exhausted, route=chain_route
-                    )
-                (
-                    text, actual_provider, actual_model, tokens_in, tokens_out, latency_ms,
-                    tool_calls_out, stop_reason_out, reasoning_content_out, raw_out,
-                    cost_usd_out, reported_cost_source, outcome, error_kind, error_detail,
-                ) = _served(router_result.response, router_result.provider, max_tokens)
-                responded = True
-                sent_max_tokens = router_result.response.max_tokens_sent
-                fallback_info = _routed_past_info(router_result, model)
-            except Exception as exc:
-                failure_exc = exc
-                if hasattr(exc, "model") and exc.model:
-                    actual_model = exc.model
-                outcome = _failure_outcome(exc)
-                error_kind = type(exc).__name__
-                error_detail = _format_error_detail(exc, actual_provider, actual_model)
-                if dispatch_raise_exhausted and isinstance(exc, SommProvidersExhausted):
-                    raise_after_record = exc
-            route_first = chain_route.get("first")
-            route_skipped = chain_route.get("skipped", [])
+                routed = self.router.dispatch(
+                    req, wait=plan.wait_on_exhausted, route=rescue_route, attempt=attempt
+                )
+                att.resp, att.provider = routed.response, routed.provider
+                att.fallback_info = pinned_failure
+            except Exception as chain_exc:
+                att.failure = chain_exc
+                att.error_detail = _format_error_detail(chain_exc, chosen.name, model)
+                if getattr(chain_exc, "model", None):
+                    att.model = chain_exc.model
+                if plan.wait_on_exhausted is not None and isinstance(
+                    chain_exc, SommProvidersExhausted
+                ):
+                    att.raise_after = chain_exc
+            att.skipped.extend(rescue_route.get("skipped", []))
+            return att
 
-        if not actual_provider and route_skipped:
+        raise_exhausted = plan.wait_on_exhausted is not None
+        chain_route: dict = {}
+        try:
+            policy = plan.wl.policy
+            if policy:
+                retry_cfg = policy.get("retry") or {}
+                policy_wait = plan.wait_on_exhausted
+                if plan.wait is _WAIT_UNSET and retry_cfg.get("deadline_s") is not None:
+                    policy_wait = float(retry_cfg["deadline_s"])
+                raise_exhausted = retry_cfg.get("max") is not None or policy_wait is not None
+                routed = self._policy_router(policy, explicit_model=model is not None).dispatch(
+                    req,
+                    wait=policy_wait,
+                    retry_max=retry_cfg.get("max"),
+                    retry_backoff_s=retry_cfg.get("backoff_s"),
+                    route=chain_route,
+                    attempt=attempt,
+                )
+            else:
+                routed = self.router.dispatch(
+                    req, wait=plan.wait_on_exhausted, route=chain_route, attempt=attempt
+                )
+            att.resp, att.provider = routed.response, routed.provider
+            att.fallback_info = _routed_past_info(routed, model)
+        except Exception as exc:
+            att.failure = exc
+            if getattr(exc, "model", None):
+                att.model = exc.model
+            att.error_detail = _format_error_detail(exc, "", att.model)
+            if raise_exhausted and isinstance(exc, SommProvidersExhausted):
+                att.raise_after = exc
+        att.first = chain_route.get("first")
+        att.skipped = chain_route.get("skipped", [])
+        return att
+
+    def _record(
+        self,
+        plan: _Plan,
+        att: _Attempted,
+        *,
+        ttft_ms: int | None = None,
+        routing_extra: dict | None = None,
+    ) -> SommResult:
+        """Write the one ``calls`` row for this call and tell the listeners:
+        outcome, route, cost and provenance, mark hook, shadow sample,
+        on_fallback, the budget warning. Returns the caller's result."""
+        sc = plan.short_circuit
+        outcome = Outcome.OK
+        error_kind = error_detail = None
+        cost_usd_out = reported_cost_source = sent_max_tokens = None
+        if sc is not None:
+            text, actual_provider, actual_model = sc.text, sc.provider, sc.model
+            tokens_in, tokens_out, latency_ms = sc.tokens_in, sc.tokens_out, 0
+            tool_calls_out = _to_core_tool_calls(sc.tool_calls)
+            stop_reason_out = reasoning_content_out = ""
+            raw_out = sc.raw
+            cost_usd_out = sc.cost_usd if sc.cost_usd is not None else 0.0
+            responded = True
+        elif att.resp is not None:
+            (
+                text, actual_provider, actual_model, tokens_in, tokens_out, latency_ms,
+                tool_calls_out, stop_reason_out, reasoning_content_out, raw_out,
+                cost_usd_out, reported_cost_source, outcome, error_kind, error_detail,
+            ) = _served(att.resp, att.provider, plan.max_tokens)
+            sent_max_tokens = att.resp.max_tokens_sent
+            responded = True
+        else:
+            text, actual_provider, actual_model = "", att.provider, att.model
+            tokens_in = tokens_out = latency_ms = 0
+            tool_calls_out = []
+            stop_reason_out = reasoning_content_out = ""
+            raw_out = None
+            responded = False
+        if att.failure is not None:
+            # A stream the caller stopped reading is incomplete, not wrong.
+            abandoned = not isinstance(att.failure, Exception)
+            outcome = Outcome.UNKNOWN if abandoned else _failure_outcome(att.failure)
+            error_kind = (
+                "StreamAbandoned"
+                if isinstance(att.failure, GeneratorExit)
+                else type(att.failure).__name__
+            )
+            error_detail = att.error_detail
+
+        routing_metadata = dict(plan.routing_metadata)
+        if not actual_provider and att.skipped:
             # No route answered and none is named on the row: say what was
             # tried and why each candidate was passed over.
             error_detail = (
-                f"{error_detail or error_kind} | route: {_route_summary(route_skipped)}"
+                f"{error_detail or error_kind} | route: {_route_summary(att.skipped)}"
             )[:512]
-        routing_metadata["route_source"] = route_source
+        routing_metadata["route_source"] = plan.route_source
         routing_metadata["route"] = _route_record(
-            route_mode,
-            route_first,
+            plan.route_mode,
+            att.first,
             [actual_provider, actual_model] if responded else None,
-            route_skipped,
-            sent_max_tokens or max_tokens,
+            att.skipped,
+            sent_max_tokens or plan.max_tokens,
         )
+        routing_metadata.update(routing_extra or {})
 
         cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
         reasoning_tokens = extract_reasoning_tokens(raw_out)
         citations = extract_citations(raw_out)
-        citations_json = _citations_json(citations)
         provider_request_id, billing_id = _provider_custody(raw_out)
-
+        call_id = plan.call_id
         result = SommResult(
             text=text,
             provider=actual_provider,
@@ -2056,6 +2316,7 @@ class SommLLM:
             tool_calls=tool_calls_out,
             stop_reason=stop_reason_out,
             reasoning_content=reasoning_content_out,
+            ttft_ms=ttft_ms,
             cache_tokens_in=cache_tokens_in,
             cache_tokens_out=cache_tokens_out,
             reasoning_tokens=reasoning_tokens,
@@ -2067,7 +2328,7 @@ class SommLLM:
             actual_provider,
             actual_model,
             reported=cost_usd_out is not None,
-            source=reported_cost_source or short_circuited,
+            source=reported_cost_source or plan.short_circuited,
         )
         if raw_out and raw_out.get("somm_recovery"):
             routing_metadata["recovery"] = raw_out["somm_recovery"]
@@ -2077,14 +2338,13 @@ class SommLLM:
         pinned_route = raw_out.get("somm_route") if isinstance(raw_out, dict) else None
         if isinstance(pinned_route, dict):
             routing_metadata["upstream"] = pinned_route
-        routing_json = json.dumps(routing_metadata, default=str)
         call = Call(
-            routing_json=routing_json,
+            routing_json=json.dumps(routing_metadata, default=str),
             id=call_id,
-            ts=ts,
+            ts=plan.ts,
             project=self.config.project,
-            workload_id=wl.id,
-            prompt_id=call_prompt_id,
+            workload_id=plan.wl.id,
+            prompt_id=plan.call_prompt_id,
             provider=actual_provider,
             model=actual_model,
             tokens_in=tokens_in,
@@ -2097,18 +2357,21 @@ class SommLLM:
             # Multi-turn calls pass `messages` and a placeholder `prompt`;
             # hash the actual conversation so replay/cache/dedup keys off
             # real content rather than an ignored arg.
-            prompt_hash=stable_hash(messages if messages is not None else prompt_text),
+            prompt_hash=plan.prompt_hash,
             response_hash=stable_hash(text),
             correlation_id=(
-                correlation_id if correlation_id is not None else hooks.current_correlation_id()
+                plan.correlation_id
+                if plan.correlation_id is not None
+                else hooks.current_correlation_id()
             ),
-            temperature=temperature,
-            max_tokens=max_tokens,
-            session_id=session_id,
-            parent_call_id=parent_call_id,
+            temperature=plan.temperature,
+            max_tokens=plan.max_tokens,
+            ttft_ms=ttft_ms,
+            session_id=plan.session_id,
+            parent_call_id=plan.parent_call_id,
             cache_tokens_in=cache_tokens_in,
             cache_tokens_out=cache_tokens_out,
-            citations_json=citations_json,
+            citations_json=_citations_json(citations),
             cost_basis=cost_basis,
             cost_kind=cost_kind,
             cost_accuracy=cost_accuracy,
@@ -2119,118 +2382,84 @@ class SommLLM:
             call_site=hooks.current_call_site(),
             reasoning_tokens=reasoning_tokens,
             client_version=_CLIENT_VERSION,
-            observation_role=observation_role or "production",
-            source_call_id=source_call_id,
+            observation_role=plan.observation_role or "production",
+            source_call_id=plan.source_call_id,
             data_tier=(
-                getattr(short_circuit, "data_tier", None)
-                if short_circuit is not None
+                getattr(sc, "data_tier", None)
+                if sc is not None
                 else (pinned_route or {}).get("data_tier")
                 or self._served_tier(actual_provider, actual_model)
             ),
         )
         self._finish_call(
             call,
-            workload=workload,
-            short_circuited=short_circuited,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            workload=plan.workload,
+            short_circuited=plan.short_circuited,
+            temperature=plan.temperature,
+            max_tokens=plan.max_tokens,
         )
         result._on_mark = MarkHook(self._mark_persister(call))
-        self._maybe_capture_sample(wl, call_id, prompt_text, messages, text, outcome)
-
-        # Fire on_fallback when a pinned call got rescued by the chain
-        # AND ended up on a DIFFERENT (provider, model) than what was
-        # pinned. Same-model recovery is just a retry — useful for
-        # telemetry but not worth an on_fallback alert (it's not a
-        # structural pin-vs-actual divergence). Keeping the signal
-        # narrow prevents alert fatigue on free-tier providers that
-        # intermittently 429 or return empty responses.
-        same_provider_and_model = (
-            fallback_info is not None
-            and fallback_info["pinned_provider"] == actual_provider
-            and (fallback_info["pinned_model"] or "") == (actual_model or "")
+        self._maybe_capture_sample(
+            plan.wl, call_id, plan.prompt_text, plan.messages, text, outcome
         )
+
+        # Fire on_fallback when a pinned call got rescued by the chain AND
+        # ended up on a DIFFERENT (provider, model) than what was pinned, or
+        # when the chain routed past providers that rejected their keys.
+        # Same-model recovery is just a retry, not a pin-vs-actual
+        # divergence; keeping the signal narrow prevents alert fatigue on
+        # free-tier providers that intermittently 429 or return blanks.
+        info = att.fallback_info
         if (
             outcome == Outcome.OK
-            and fallback_info is not None
-            and not same_provider_and_model
+            and info is not None
+            and not (
+                info["pinned_provider"] == actual_provider
+                and (info["pinned_model"] or "") == (actual_model or "")
+            )
             and self._on_fallback is not None
         ):
-            try:
+            with contextlib.suppress(Exception):  # the hook must not break the caller
                 self._on_fallback(
                     {
                         "call_id": call_id,
-                        "workload": workload,
-                        "pinned_provider": fallback_info["pinned_provider"],
-                        "pinned_model": fallback_info["pinned_model"],
+                        "workload": plan.workload,
+                        "pinned_provider": info["pinned_provider"],
+                        "pinned_model": info["pinned_model"],
                         "actual_provider": actual_provider,
                         "actual_model": actual_model,
-                        "error_kind": fallback_info["error_kind"],
-                        "error_detail": fallback_info["error_detail"],
-                        "routed_past": fallback_info.get("routed_past", []),
+                        "error_kind": info["error_kind"],
+                        "error_detail": info["error_detail"],
+                        "routed_past": info.get("routed_past", []),
                     }
                 )
-            except Exception:
-                # Hook must not break the caller.
-                pass
 
-        if raise_after_record is not None:
-            raise raise_after_record
-
-        # Feature 3: warn if daily budget cap is exceeded.
-        if wl.budget_cap_usd_daily is not None and result.cost_usd > 0:
-            today = date.today()
-            budget_key = (wl.name, today)
-            if budget_key not in _warned_budget_exceeded:
-                with self.repo._open() as conn:
-                    row = conn.execute(
-                        "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
-                        "WHERE workload_id = ? AND date(ts) = date('now') "
-                        "AND budget_eligible != 0",
-                        (wl.id,),
-                    ).fetchone()
-                daily_cost = row[0] if row else 0.0
-                if daily_cost > wl.budget_cap_usd_daily:
-                    _warned_budget_exceeded.add(budget_key)
-                    print(
-                        f"[somm] WARNING: workload {wl.name!r} daily cost "
-                        f"${daily_cost:.4f} exceeds budget cap "
-                        f"${wl.budget_cap_usd_daily:.4f}.",
-                        file=sys.stderr,
-                    )
-
-        # Loud-empty: when the caller explicitly set raise_on_empty=True
-        # and we ended up with an empty response (every provider returned
-        # blanks), raise rather than handing back empty text. This is the
-        # 2026-05-06 lesson: a thinking model that consumed its whole token
-        # budget on internal reasoning shouldn't silently return empty —
-        # callers who care need a typed exception so they can fall back,
-        # bump max_tokens, or pick a non-thinking model.
-        if raise_on_empty and outcome == Outcome.EMPTY:
-            from somm.errors import SommEmptyResponse
-
-            if error_detail and "reasoning_exhausted" in error_detail:
-                cause = (
-                    "the model spent its whole output budget on reasoning; raise "
-                    "max_tokens or lower reasoning_effort"
-                )
-            else:
-                cause = (
-                    "bump max_tokens / pick a non-thinking model if a thinking "
-                    "model burned the whole budget"
-                )
-            raise SommEmptyResponse(
-                f"empty response from {actual_provider}/{actual_model} "
-                f"(workload={workload!r}): {cause}. Set raise_on_empty=False to "
-                f"swallow. Detail: {error_detail}"
-            )
-
-        if raise_on_failure:
-            failure = _failure_error(result, failure_exc, allow_empty=allow_empty)
-            if failure is not None:
-                raise failure
-
+        self._warn_if_over_budget(plan.wl, result.cost_usd)
         return result
+
+    def _warn_if_over_budget(self, wl, cost_usd: float) -> None:
+        """Warn once per workload per day when its daily cost passes its cap."""
+        if wl.budget_cap_usd_daily is None or cost_usd <= 0:
+            return
+        budget_key = (wl.name, date.today())
+        if budget_key in _warned_budget_exceeded:
+            return
+        with self.repo._open() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
+                "WHERE workload_id = ? AND date(ts) = date('now') "
+                "AND budget_eligible != 0",
+                (wl.id,),
+            ).fetchone()
+        daily_cost = row[0] if row else 0.0
+        if daily_cost > wl.budget_cap_usd_daily:
+            _warned_budget_exceeded.add(budget_key)
+            print(
+                f"[somm] WARNING: workload {wl.name!r} daily cost "
+                f"${daily_cost:.4f} exceeds budget cap "
+                f"${wl.budget_cap_usd_daily:.4f}.",
+                file=sys.stderr,
+            )
 
     async def agenerate(
         self,
@@ -2670,427 +2899,122 @@ class SommLLM:
         parent_call_id: str | None = None,
         data_boundary: str | None = None,
         timeout: float | None = None,
-    ) -> Iterator[str]:
-        """Stream text deltas from the LLM. Yields user-visible text chunks
-        (with `<think>` blocks stripped across chunk boundaries).
+        *,
+        events: bool = False,
+        messages: list[dict] | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
+        capabilities_required: list[str] | None = None,
+        allow_empty: bool = False,
+        allow_fallback: bool | None = None,
+        correlation_id: str | None = None,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
+        claude_cli_text_only: bool = False,
+    ) -> Iterator[str] | Iterator[StreamEvent]:
+        """Stream the answer as it arrives. Yields user-visible text chunks
+        (``<think>`` blocks stripped across chunk boundaries); with
+        ``events=True``, yields :mod:`somm.events` instead — ``TextDelta``,
+        ``ToolCallDelta``, ``ReasoningDelta`` — and finally one
+        ``StreamDone`` carrying the recorded ``SommResult``.
 
-        A stream raises its failures (a typed ``SommError``); ``timeout``
-        overrides the adapter's configured timeout for this call.
+        A stream is the same call as :meth:`generate`: same workload policy,
+        pins, ``somm/auto``, capability and boundary admission, budget gate,
+        cooldowns and route record, and the same arguments where they make
+        sense for a stream. One rule is its own: an attempt that fails before
+        anything reached the caller falls through to the next candidate
+        exactly as generate does; once a chunk has been yielded it cannot be
+        taken back, so a later failure is recorded and raised. A pinned
+        ``provider`` is sticky, as in generate.
 
-        Telemetry is written after the stream completes. An unpinned stream
-        falls back along the chain until the first visible text reaches the
-        caller: a provider that fails transiently, rejects its key, or
-        streams nothing is cooled and the next one is tried. Once text has
-        been yielded it cannot be taken back, so a failure after that point
-        raises. A pinned ``provider`` is sticky, as in :meth:`generate`.
-        ``prompt`` may be a string, multimodal prompt list, or registered
-        ``Prompt`` object. Passing ``Prompt`` dispatches its body and stamps
-        that prompt version on the telemetry row.
-        Omit ``wait`` to use ``SOMM_WAIT_ON_EXHAUSTED`` when set; pass
-        ``None`` or ``0`` to fail fast when all stream candidates are cooling.
+        A stream raises its failures (a typed ``SommError``); an empty answer
+        ends the stream and is recorded ``empty``. Token counts come from the
+        provider's final usage report when it sends one, otherwise from a
+        length estimate; the row's ``routing_json["stream"]["usage"]`` says
+        which. Telemetry is written when the stream ends, is abandoned, or
+        fails.
 
         Usage:
             for piece in llm.stream("tell a story", workload="story"):
                 print(piece, end="", flush=True)
         """
-        if model == "somm/auto":
-            yield self.generate(prompt, system=system, workload=workload, max_tokens=max_tokens,
-                                temperature=temperature, model=model, provider=provider, wait=wait,
-                                session_id=session_id, parent_call_id=parent_call_id,
-                                data_boundary=data_boundary, timeout=timeout).text
-            return
-
-        from somm.providers.base import SommRequest
-
-        wl = self._require_workload(workload)
-        boundary = self._resolve_boundary(wl, data_boundary)
-        wait_on_exhausted = self._resolve_wait_on_exhausted(wait)
-        prompt_text = prompt.body if isinstance(prompt, Prompt) else prompt
-        messages = None
-        call_prompt_id = self._resolve_prompt_id(wl.id, prompt)
-        req = SommRequest(
-            prompt=prompt_text,
-            system=system,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            model=model,
+        plan = self._plan_call(
+            prompt, system=system, workload=workload, max_tokens=max_tokens,
+            temperature=temperature, model=model, provider=provider,
+            capabilities_required=capabilities_required, allow_empty=allow_empty,
+            allow_fallback=allow_fallback, no_fallback=False, tools=tools,
+            messages=messages, tool_choice=tool_choice, response_format=response_format,
+            reasoning_effort=reasoning_effort, wait=wait, session_id=session_id,
+            parent_call_id=parent_call_id, correlation_id=correlation_id,
+            observation_role=observation_role, source_call_id=source_call_id,
+            claude_cli_text_only=claude_cli_text_only, data_boundary=data_boundary,
             timeout=timeout,
         )
-
-        short_circuit: hooks.ShortCircuit | None = None
-        short_circuited: str | None = None
-        if hooks.has_hooks(hooks.PRE_CALL):
-            original_prompt_text = prompt_text
-            ctx = hooks.PreCallContext(
-                workload=workload,
-                prompt=prompt_text,
-                system=system,
-                messages=None,
-                model=model,
-                provider=provider,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                tools=[],
-                tool_choice=None,
-                project=self.config.project,
-                data_boundary=None if boundary.is_default else boundary.tier.value,
-            )
-            short_circuit = hooks.fire_pre_call(ctx)
-            prompt_text = ctx.prompt
-            system = ctx.system
-            messages = ctx.messages
-            model = ctx.model
-            provider = ctx.provider
-            max_tokens = ctx.max_tokens
-            temperature = ctx.temperature
-            if messages is not None:
-                call_prompt_id = None
-            elif isinstance(prompt, Prompt) and prompt_text == original_prompt_text:
-                call_prompt_id = prompt.id
-            else:
-                call_prompt_id = self._resolve_prompt_id(wl.id, prompt_text)
-            req = SommRequest(
-                prompt=prompt_text,
-                system=system,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                model=model,
-                tools=ctx.tools or [],
-                messages=messages,
-                tool_choice=ctx.tool_choice,
-                timeout=timeout,
-            )
-            if short_circuit is not None:
-                short_circuited = short_circuit.source or short_circuit.provider or "hook"
-
-        # Data boundary before any provider is touched: a pinned stream
-        # outside it raises; an unpinned one only ever sees admissible
-        # candidates.
-        if short_circuit is None and not boundary.is_default:
-            self._admit_or_refuse(
-                wl,
-                workload,
-                boundary,
-                pinned=provider,
-                model=model,
-                policy=None,
-                stream=True,
-                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
-                session_id=session_id,
-                parent_call_id=parent_call_id,
-                max_tokens=max_tokens,
-            )
-            req.data_boundary = boundary.tier.value
-
-        # Budget gate after pre_call — a short-circuit spends nothing, so a
-        # capped workload may still stream from cache; a real call is refused.
-        if short_circuit is None:
-            self._enforce_budget(wl)
-
-        chosen = None
-        stream_candidates: list = []
-        if short_circuit is None and wait_on_exhausted is not None:
-            candidates = [self._pick_provider(provider)] if provider else list(self.providers)
-            if not boundary.is_default:
-                candidates = self._boundary_chain(candidates, model, boundary, stream=True)
-            self.router.wait_until_any_uncool(candidates, wait_on_exhausted)
-        route_skipped: list = []
-        route_first: list | None = None
-        if short_circuit is None:
-            stream_candidates = self._stream_candidates(provider)
-            pool = [self._pick_provider(provider)] if provider else list(self.providers)
-            admitted = (
-                pool
-                if boundary.is_default
-                else self._boundary_chain(pool, model, boundary, stream=True)
-            )
-            for p in pool:
-                slot = model or getattr(p, "default_model", "") or ""
-                if p not in admitted:
-                    route_skipped.append([p.name, slot, "boundary"])
-                elif p not in stream_candidates:
-                    route_skipped.append([p.name, slot, "cooled"])
-            if admitted:
-                route_first = [
-                    admitted[0].name, model or getattr(admitted[0], "default_model", "") or ""
-                ]
-            stream_candidates = [p for p in stream_candidates if p in admitted]
-            chosen = stream_candidates[0] if stream_candidates else None
-        else:
-            route_first = [short_circuit.provider, short_circuit.model]
-        route_source = _route_source(policy=False, learned_override=False, pinned=bool(provider or model))
-        routed_past: list[tuple[str, Exception]] = []
-        call_id = str(uuid.uuid4())
-        ts = datetime.now(UTC)
-        stripper = ThinkStreamStripper()
-
         t0 = time.monotonic()
-        collected = []
-        outcome = Outcome.OK
-        error_kind: str | None = None
-        error_detail: str | None = None
-        tokens_in = tokens_out = 0
-        actual_model = model or ""
-        actual_provider = short_circuit.provider if short_circuit is not None else ""
-        cost_usd_out: float | None = None
+        opener = _StreamOpener(events)
+        att = self._dispatch(plan, opener)
+        if (
+            att.resp is None
+            and opener.empty is not None
+            and att.skipped
+            and att.skipped[-1][2].startswith("empty")
+        ):
+            # The chain ended on an empty answer: for a stream that answer is
+            # the result (recorded empty), as it has always been.
+            att.resp, att.provider = opener.empty, opener.empty.provider.name
+            att.failure = att.raise_after = att.error_detail = None
+        start: _StreamStart | None = att.resp
         ttft_ms: int | None = None
-        raw_out: dict | None = None
-
+        if events and att.failure is None:
+            sc = plan.short_circuit
+            yield StreamStart(
+                call_id=plan.call_id,
+                provider=sc.provider if sc is not None else att.provider,
+                model=sc.model if sc is not None else (start.model if start else att.model),
+            )
         try:
-            if short_circuit is not None:
-                text = short_circuit.text
-                actual_model = short_circuit.model
-                tokens_in = short_circuit.tokens_in
-                tokens_out = short_circuit.tokens_out
-                cost_usd_out = short_circuit.cost_usd if short_circuit.cost_usd is not None else 0.0
-                raw_out = short_circuit.raw
-                if text:
-                    collected.append(text)
-                    ttft_ms = int((time.monotonic() - t0) * 1000)
-                    yield text
+            if plan.short_circuit is not None:
+                pending = [TextDelta(plan.short_circuit.text)] if plan.short_circuit.text else []
             else:
-                if not stream_candidates:
-                    next_ok = self._tracker.next_uncool_at([p.name for p in self.providers])
-                    wait_s = (
-                        (next_ok - datetime.now(UTC)).total_seconds() if next_ok else None
-                    )
-                    raise SommProvidersExhausted(
-                        "all stream providers cooled"
-                        + (f"; next available in {wait_s:.0f}s" if wait_s is not None else ""),
-                        next_cool_in_s=wait_s,
-                    )
-                for attempt_no, candidate in enumerate(stream_candidates):
-                    chosen = candidate
-                    has_next = attempt_no + 1 < len(stream_candidates)
-                    stripper = ThinkStreamStripper()
-                    raw_out = None
-                    actual_model = model or ""
-                    try:
-                        for chunk in candidate.stream(req):
-                            chunk_raw = getattr(chunk, "raw", None)
-                            if isinstance(chunk_raw, dict):
-                                raw_out = chunk_raw
-                            # The served model, as generate records resp.model.
-                            if getattr(chunk, "model", ""):
-                                actual_model = chunk.model
-                            if chunk.text:
-                                visible = stripper.feed(chunk.text)
-                                if visible:
-                                    collected.append(visible)
-                                    if ttft_ms is None:
-                                        ttft_ms = int((time.monotonic() - t0) * 1000)
-                                    yield visible
-                            if chunk.done:
-                                tail = stripper.flush()
-                                if tail:
-                                    collected.append(tail)
-                                    if ttft_ms is None:
-                                        ttft_ms = int((time.monotonic() - t0) * 1000)
-                                    yield tail
-                                break
-                    except Exception as exc:
-                        route_skipped.append([
-                            candidate.name,
-                            model or getattr(candidate, "default_model", "") or "",
-                            type(exc).__name__,
-                        ])
-                        # Text already reached the caller, the stream is
-                        # pinned, or this was the last candidate: nothing to
-                        # fall back to. Otherwise cool the provider and move on.
-                        if collected or provider or not has_next:
-                            if not provider and isinstance(exc, SommAuthError):
-                                routed_past.append((candidate.name, exc))
-                                if len(routed_past) > 1 and not collected:
-                                    raise _auth_chain_error(routed_past) from exc
-                            raise
-                        cooldown_s = _stream_failure_cooldown(exc)
-                        if cooldown_s is None:
-                            raise
-                        _record_health(
-                            self._tracker.mark_failure, candidate.name, cooldown_s=cooldown_s
-                        )
-                        if isinstance(exc, SommAuthError):
-                            routed_past.append((candidate.name, exc))
-                        continue
-                    if not collected and not provider and has_next:
-                        # Empty stream: like the router, move on rather than
-                        # hand the caller nothing, and cool briefly.
-                        _record_health(self._tracker.mark_failure, candidate.name, cooldown_s=15)
-                        route_skipped.append([
-                            candidate.name,
-                            model or getattr(candidate, "default_model", "") or "",
-                            "empty",
-                        ])
-                        continue
-                    if collected:
-                        # Best-effort: the text already reached the caller, so
-                        # a locked ledger here must not turn it into an error.
-                        _record_health(self._tracker.mark_ok, candidate.name)
-                    break
-                # Streaming providers don't always give token counts — estimate
-                # from length as a fallback.
-                text = "".join(collected)
-                if not actual_model:
-                    actual_model = chosen.name
-                actual_provider = chosen.name
-                tokens_in = chosen.estimate_tokens(
-                    prompt_text, actual_model
-                ) + chosen.estimate_tokens(system, actual_model)
-                tokens_out = chosen.estimate_tokens(text, actual_model)
-                if not text.strip():
-                    outcome = Outcome.EMPTY
-                    error_kind = "EmptyResponse"
-                    # Stream latency is computed in `finally`; pass what we have
-                    # so far (since we're between `try` and `finally`, t0 is set).
-                    error_detail = _format_empty_detail(
-                        provider=chosen.name,
-                        model=actual_model or chosen.name,
-                        tokens_out=tokens_out,
-                        latency_ms=int((time.monotonic() - t0) * 1000),
-                    )
-        except Exception as exc:
-            outcome = _failure_outcome(exc)
-            error_kind = type(exc).__name__
-            error_detail = _format_error_detail(
-                exc, chosen.name if chosen is not None else actual_provider, actual_model
-            )
-            text = "".join(collected)
-            raise
+                pending = start.events() if start is not None else []
+            for event in pending:
+                if ttft_ms is None:
+                    ttft_ms = int((time.monotonic() - t0) * 1000)
+                if events:
+                    yield event
+                elif isinstance(event, TextDelta):
+                    yield event.text
         except BaseException as exc:
-            # The caller stopped consuming (generator closed, task cancelled,
-            # interrupt). The answer is incomplete, so it is not OK; nothing
-            # says it was wrong either, so it is unknown.
-            outcome = Outcome.UNKNOWN
-            error_kind = "StreamAbandoned" if isinstance(exc, GeneratorExit) else type(exc).__name__
-            error_detail = (
-                f"{error_kind}: caller stopped reading after "
-                f"{sum(len(c) for c in collected)} chars"
-            )
+            # A provider failure after the first chunk, or the caller stopped
+            # reading (GeneratorExit, cancellation): record what happened.
+            att.failure = exc
+            served = start.model if start is not None else att.model
+            if isinstance(exc, Exception):
+                att.error_detail = _format_error_detail(exc, att.provider, served)
+            else:
+                kind = "StreamAbandoned" if isinstance(exc, GeneratorExit) else type(exc).__name__
+                att.error_detail = (
+                    f"{kind}: caller stopped reading after {len(start.collected) if start else 0} chars"
+                )
+            self._finish_stream(plan, att, start, t0, ttft_ms)
             raise
-        finally:
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            full_text = "".join(collected)
-            provider_name = actual_provider or (
-                chosen.name if chosen is not None else ("hook" if short_circuit is not None else "")
-            )
-            model_name = actual_model or provider_name
-            if not provider_name and route_skipped:
-                error_detail = (
-                    f"{error_detail or error_kind} | route: {_route_summary(route_skipped)}"
-                )[:512]
-            served = (
-                [
-                    provider_name,
-                    model
-                    or (getattr(chosen, "default_model", "") if chosen is not None else "")
-                    or model_name,
-                ]
-                if provider_name and (collected or outcome in (Outcome.OK, Outcome.EMPTY))
-                else None
-            )
-            stream_routing_json = json.dumps({
-                "route_source": route_source,
-                "route": _route_record(
-                    "hook" if short_circuit is not None else ("pinned" if provider else "chain"),
-                    route_first,
-                    served,
-                    route_skipped,
-                    max_tokens,
-                ),
-            })
-            cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
-            citations = extract_citations(raw_out)
-            citations_json = _citations_json(citations)
-            provider_request_id, billing_id = _provider_custody(raw_out)
-            cost_usd = (
-                cost_usd_out
-                if cost_usd_out is not None
-                else cost_for_call(
-                    self.repo,
-                    provider_name,
-                    model_name,
-                    tokens_in,
-                    tokens_out,
-                    cache_read_tokens=cache_tokens_in,
-                    cache_write_tokens=cache_tokens_out,
-                )
-            )
-            cost_basis, cost_kind, cost_accuracy, cost_source, pricing_version = (
-                _cost_provenance(
-                    self.repo,
-                    provider_name,
-                    model_name,
-                    reported=cost_usd_out is not None,
-                    source=short_circuited,
-                )
-            )
-            call = Call(
-                id=call_id,
-                ts=ts,
-                project=self.config.project,
-                workload_id=wl.id,
-                prompt_id=call_prompt_id,
-                provider=provider_name,
-                model=model_name,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                latency_ms=latency_ms,
-                cost_usd=cost_usd,
-                outcome=outcome,
-                error_kind=error_kind,
-                error_detail=error_detail,
-                prompt_hash=stable_hash(messages if messages is not None else prompt_text),
-                response_hash=stable_hash(full_text),
-                correlation_id=hooks.current_correlation_id(),
-                call_site=hooks.current_call_site(),
-                client_version=_CLIENT_VERSION,
-                reasoning_tokens=extract_reasoning_tokens(raw_out),
-                routing_json=stream_routing_json,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                ttft_ms=ttft_ms,
-                session_id=session_id,
-                parent_call_id=parent_call_id,
-                cache_tokens_in=cache_tokens_in,
-                cache_tokens_out=cache_tokens_out,
-                citations_json=citations_json,
-                cost_basis=cost_basis,
-                cost_kind=cost_kind,
-                cost_accuracy=cost_accuracy,
-                cost_source=cost_source,
-                pricing_version=pricing_version,
-                provider_request_id=provider_request_id,
-                billing_id=billing_id,
-                data_tier=(
-                    getattr(short_circuit, "data_tier", None)
-                    if short_circuit is not None
-                    else (self._served_tier(provider_name, model_name) if chosen else None)
-                ),
-            )
-            self._finish_call(
-                call,
-                workload=workload,
-                short_circuited=short_circuited,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            self._maybe_capture_sample(wl, call_id, prompt_text, None, full_text, outcome)
-            if routed_past and outcome == Outcome.OK and self._on_fallback is not None:
-                first_provider, first_exc = routed_past[0]
-                with contextlib.suppress(Exception):  # the hook must not break the caller
-                    self._on_fallback(
-                        {
-                            "call_id": call_id,
-                            "workload": workload,
-                            "pinned_provider": None,
-                            "pinned_model": model,
-                            "actual_provider": provider_name,
-                            "actual_model": model_name,
-                            "error_kind": type(first_exc).__name__,
-                            "error_detail": _format_error_detail(first_exc, first_provider, model),
-                            "routed_past": [name for name, _ in routed_past],
-                        }
-                    )
+        result = self._finish_stream(plan, att, start, t0, ttft_ms)
+        if att.failure is not None:
+            raise att.failure
+        if events:
+            yield StreamDone(result, usage=start.usage if start is not None else "provider")
+
+    def _finish_stream(self, plan, att, start, t0: float, ttft_ms: int | None) -> SommResult:
+        """Record a stream that ended, failed or was abandoned; a failure
+        raised to the caller names the row it was recorded on."""
+        if start is not None:
+            att.resp = start.response(plan, t0)
+        result = self._record(plan, att, ttft_ms=ttft_ms, routing_extra=_stream_extra(start))
+        if isinstance(att.failure, SommError):
+            _failure_error(result, att.failure, allow_empty=True)
+        return result
 
     async def astream(
         self,
@@ -3106,46 +3030,48 @@ class SommLLM:
         parent_call_id: str | None = None,
         data_boundary: str | None = None,
         timeout: float | None = None,
-    ) -> AsyncIterator[str]:
+        *,
+        events: bool = False,
+        messages: list[dict] | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
+        capabilities_required: list[str] | None = None,
+        allow_empty: bool = False,
+        allow_fallback: bool | None = None,
+        correlation_id: str | None = None,
+        observation_role: str = "production",
+        source_call_id: str | None = None,
+        claude_cli_text_only: bool = False,
+    ) -> AsyncIterator[str] | AsyncIterator[StreamEvent]:
         """Asynchronously iterate over :meth:`stream` without blocking the loop.
 
-        The existing synchronous generator still owns provider selection,
-        stream filtering, and final telemetry. Each iterator step runs off the
-        event loop, and closing this async iterator closes the sync generator so
-        its telemetry ``finally`` block runs for partially consumed streams.
+        The synchronous generator owns the whole call; each step runs off the
+        event loop, and closing this iterator closes it, so a partially read
+        stream is still recorded.
         """
         import asyncio
 
         iterator = self.stream(
-            prompt,
-            system=system,
-            workload=workload,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            model=model,
-            provider=provider,
-            wait=wait,
-            session_id=session_id,
-            parent_call_id=parent_call_id,
-            data_boundary=data_boundary,
-            timeout=timeout,
+            prompt, system=system, workload=workload, max_tokens=max_tokens,
+            temperature=temperature, model=model, provider=provider, wait=wait,
+            session_id=session_id, parent_call_id=parent_call_id,
+            data_boundary=data_boundary, timeout=timeout, events=events, messages=messages,
+            tools=tools, tool_choice=tool_choice, response_format=response_format,
+            reasoning_effort=reasoning_effort, capabilities_required=capabilities_required,
+            allow_empty=allow_empty, allow_fallback=allow_fallback,
+            correlation_id=correlation_id, observation_role=observation_role,
+            source_call_id=source_call_id, claude_cli_text_only=claude_cli_text_only,
         )
         try:
             while True:
                 done, piece = await asyncio.to_thread(_next_stream_item, iterator)
                 if done:
                     break
-                assert piece is not None
                 yield piece
         finally:
             await asyncio.to_thread(iterator.close)
-
-    def _stream_candidates(self, name: str | None) -> list:
-        """Providers a stream may use, in order. A pin is the only candidate;
-        otherwise every non-cooled provider in chain order."""
-        if name:
-            return [self._pick_provider(name)]
-        return [p for p in self.providers if not self._tracker.get(p.name).is_cooling()]
 
     # ------------------------------------------------------------------
     # Structured output
@@ -3642,9 +3568,16 @@ class SommLLM:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        """Drain the writer queue and stop the thread. Optional for short-lived processes."""
+        """Drain the writer queue, stop the thread, and close each provider's
+        HTTP connections (a closed provider reopens on its next call).
+        Optional for short-lived processes."""
         self._writer.flush()
         self._writer.stop()
+        for p in [*self.providers, *(self._pinned_only_cache or {}).values()]:
+            close = getattr(p, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):  # closing must not raise
+                    close()
 
     def __enter__(self) -> SommLLM:
         return self
@@ -3748,8 +3681,11 @@ class _PolicyProvider:
             req = replace(request, model=self._model)
         return self._provider.generate(req)
 
-    def stream(self, request):  # pragma: no cover - policy routing is generate-only
-        return self._provider.stream(request)
+    def stream(self, request: SommRequest):
+        req = request
+        if self._model is not None and not self._explicit_model:
+            req = replace(request, model=self._model)
+        return self._provider.stream(req)
 
     def health(self):
         return self._provider.health()

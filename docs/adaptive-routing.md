@@ -2,9 +2,9 @@
 
 Adaptive routing is opt-in per workload. Use `model="somm/auto"` with a validated
 `policy.adaptive` object; existing explicit provider/model pins retain their meaning.
-The library (`generate`, `agenerate`, buffered `stream`) and the proxy routes
+The library (`generate`, `agenerate`, `stream`, `astream`) and the proxy routes
 (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`) share the same path: the
-proxy calls `generate`.
+proxy calls `agenerate`, or `astream` for a streamed request.
 
 ```json
 {
@@ -92,8 +92,9 @@ The `chatgpt` provider is pinned-only and never joins the default API fallback c
 It supports function tools, multimodal input, and encrypted reasoning replay through
 the public Responses API, while preserving the proxy's Chat Completions wire shape.
 HTTP 200 is insufficient: only `response.completed` completes a call. Interrupted,
-failed, incomplete, unauthorized, and rate-limited streams remain failures. Proxy
-and library adaptive streaming both buffer one completed answer.
+failed, incomplete, unauthorized, and rate-limited streams remain failures. The
+`chatgpt` adapter still answers a stream in one piece (its final chunk carries
+the whole answer), so an adaptive stream served by it arrives at once.
 The SIWC preview requires developer instructions and additional-tools input items;
 the adapter translates system messages and flat function declarations accordingly.
 The route rejects `max_output_tokens`, so Chat Completions `max_tokens` is an

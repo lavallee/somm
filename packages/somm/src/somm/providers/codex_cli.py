@@ -89,7 +89,7 @@ class CodexCLIProvider:
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
         resp = self.generate(request)
-        yield SommChunk(text=resp.text, done=True, model=resp.model)
+        yield SommChunk(text=resp.text, done=True, model=resp.model, response=resp)
 
     def health(self) -> ProviderHealth:
         # ``binary`` is normally the path the registry resolved; a bare name

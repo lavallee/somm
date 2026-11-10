@@ -407,7 +407,7 @@ What each provider honors today — an honest matrix beats a slogan:
 | `minimax` | yes | yes | SSE | — | `response_format` | `reasoning_effort` | — |
 | `openai` and gateways | yes | yes | SSE | — | `response_format` | `reasoning_effort` | — |
 | `gemini` (OpenAI-compat) | yes | yes | SSE | — | `response_format` | `reasoning_effort` | — |
-| `anthropic` | yes | yes | one chunk | — | `output_config.format` | `output_config.effort` | — |
+| `anthropic` | yes | yes | SSE | — | `output_config.format` | `output_config.effort` | — |
 | `perplexity` | yes | yes | SSE | — | — | — | — |
 | `claude-cli` seat | — | — | one chunk | — | — | — | yes |
 | `codex-cli` seat | — | — | one chunk | — | — | — | — |
@@ -426,10 +426,35 @@ vec = llm.embed("the quick brown fox", workload="search_index")
 print(vec.dim, vec.cost_usd)             # telemetry row lands like any call
 ```
 
-An unpinned stream falls back along the chain until its first visible text.
-A provider that fails transiently, rejects its key, or streams nothing is
-cooled, and the next one is tried. Text already yielded can't be taken back,
-so a failure after the first chunk raises. A pinned stream is sticky.
+A stream is the same call as `generate`: workload policy, pins, `somm/auto`,
+capability and boundary admission, the budget gate, cooldowns and the route
+record all apply, and it takes the same arguments (`messages=`, `tools=`,
+`tool_choice=`, `response_format=`, `reasoning_effort=`, `timeout=`, …). An
+attempt that fails before anything reached the caller falls through to the
+next candidate exactly as `generate` does; text already yielded can't be taken
+back, so a failure after the first chunk is recorded and raised. A pinned
+stream is sticky. A stream cut off before the provider's completion marker is
+a failure, not an `ok` row.
+
+`events=True` yields typed events instead of strings: `StreamStart` (call id,
+provider, model), then `TextDelta`, `ToolCallDelta` (index, id, name, argument
+fragment) and `ReasoningDelta` as they arrive, and a final `StreamDone` whose
+`result` is the recorded `SommResult`:
+
+```python
+from somm.events import StreamDone, TextDelta, ToolCallDelta
+
+for ev in llm.stream("", messages=history, tools=tools, workload="agent", events=True):
+    if isinstance(ev, TextDelta):
+        print(ev.text, end="")
+    elif isinstance(ev, StreamDone):
+        print(ev.result.tokens_out, ev.usage)   # usage: "provider" or "estimate"
+```
+
+Token counts come from the provider's final usage report (OpenAI-compatible
+endpoints are asked for one with `stream_options.include_usage`); when a
+provider sends none they are estimated from the text, and the row's
+`routing_json.stream.usage` says which.
 
 ### Async callers
 
@@ -748,9 +773,11 @@ providers somm has configured are reachable.
 
 Use `X-Somm-Workload` to bind calls to a pre-registered workload and
 `X-Somm-Project` when a service instance needs to write under a project other
-than its default. Streams are buffered: the answer is complete before the
-first event, then replayed in the wire's own event format, tool calls and usage
-included. Routine fields the client cannot apply yet (`stop`/`stop_sequences`,
+than its default. Streams are forwarded as they arrive, in the wire's own
+event format (text, tool calls, usage at the end; signed thinking on
+`/v1/messages`). A failure before the first answer event is a normal error
+response; one after it is the wire's in-stream error event. Input tokens are
+known when the stream ends, so `/v1/messages` reports them on `message_delta`. Routine fields the client cannot apply yet (`stop`/`stop_sequences`,
 `top_p`, `top_k`, `parallel_tool_calls`, `truncation`, non-adaptive `thinking`)
 are accepted, not applied, and listed in an `x-somm-ignored` response header. A
 field that would change what comes back in kind (`n` > 1, logprobs, server tools,

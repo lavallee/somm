@@ -42,6 +42,7 @@ from somm.providers.base import (
     SommRequest,
     SommResponse,
     ToolCall,
+    ToolCallDelta,
 )
 
 if TYPE_CHECKING:
@@ -254,62 +255,156 @@ class OpenAICompatProvider:
 
     # ------------------------------------------------------------------
 
+    # Ask for a usage report on the last stream chunk. An endpoint that
+    # rejects the option is retried without it for the rest of the session.
+    stream_include_usage: bool = True
+
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
-        """SSE-based streaming for OpenAI-compatible endpoints.
+        """SSE streaming for OpenAI-compatible endpoints.
 
-        Parses `data: {...}\\n\\ndata: [DONE]\\n\\n` frames. `<think>` stripping
-        is the library's concern (see SommLLM.stream).
+        Yields text, reasoning and tool-call deltas as they arrive; the final
+        chunk carries the whole answer as a :class:`SommResponse` (usage when
+        the endpoint reports it, tool calls, stop reason, a raw body shaped
+        like the non-streaming one). A stream that ends with neither
+        ``[DONE]`` nor a finish reason was cut off and raises. ``<think>``
+        stripping of the deltas is the library's concern (SommLLM.stream).
         """
-        import json
-
         model = request.model or self.default_model
         if not model:
             raise SommBadRequest(f"{self.name}: no model configured or requested")
-
-        payload = self._build_payload(request, model)
-        payload["stream"] = True
-
-        with (
-            httpx.Client(timeout=request.timeout or self.timeout) as client,
-            client.stream(
-                "POST",
-                self._chat_url(),
-                headers=self._headers(),
-                json=payload,
-            ) as resp,
-        ):
-            if resp.status_code != 200:
-                try:
-                    text = resp.read().decode("utf-8", errors="replace")[:200]
-                except Exception:
-                    text = ""
-                # Keep the headers: a 429 mid-stream carries Retry-After too.
-                fake = httpx.Response(resp.status_code, headers=resp.headers, text=text)
-                self._classify_status(fake, model)
-                return
-
-            for raw_line in resp.iter_lines():
-                line = raw_line.strip() if isinstance(raw_line, str) else raw_line
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                data_str = line[len("data:") :].strip()
-                if data_str == "[DONE]":
-                    yield SommChunk(text="", done=True, model=model)
+        t0 = time.monotonic()
+        while True:
+            payload = self._build_payload(request, model)
+            payload["stream"] = True
+            if self.stream_include_usage:
+                payload["stream_options"] = {"include_usage": True}
+            try:
+                with shared_client(self).stream(
+                    "POST",
+                    self._chat_url(),
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=request_timeout(request.timeout or self.timeout),
+                ) as resp:
+                    if resp.status_code != 200:
+                        try:
+                            text = resp.read().decode("utf-8", errors="replace")[:200]
+                        except Exception:
+                            text = ""
+                        # Keep the headers: a 429 mid-stream carries Retry-After too.
+                        fake = httpx.Response(resp.status_code, headers=resp.headers, text=text)
+                        try:
+                            self._classify_status(fake, model)
+                        except SommBadRequest as exc:
+                            if self.stream_include_usage and "stream_options" in str(exc).lower():
+                                self.stream_include_usage = False
+                                continue
+                            if self._downgrade_structured_mode(request, exc):
+                                continue
+                            raise
+                        return
+                    yield from self._read_sse(resp.iter_lines(), model, payload, t0)
                     return
-                try:
-                    event = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                choices = event.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                piece = delta.get("content") or ""
-                if piece:
-                    yield SommChunk(text=piece, done=False)
-            yield SommChunk(text="", done=True, model=model)
+            except httpx.TimeoutException as e:
+                raise SommTimeout(f"{self.name} stream timeout on {model}: {e}",
+                                  cooldown_s=60.0) from e
+            except httpx.RequestError as e:
+                raise SommTransientError(
+                    f"{self.name} stream network error on {model}: {e}", cooldown_s=30.0
+                ) from e
+
+    def _read_sse(self, lines, model: str, payload: dict, t0: float) -> Iterator[SommChunk]:
+        """``data: {...}`` frames to chunks; the final one carries the answer."""
+        import json
+
+        content: list[str] = []
+        reasoning: dict[str, list[str]] = {}
+        calls: dict[int, dict] = {}
+        top: dict = {}
+        usage: dict = {}
+        finish: str | None = None
+        for raw_line in lines:
+            line = raw_line.strip() if isinstance(raw_line, str) else raw_line
+            if not line or not line.startswith("data:"):
+                continue
+            data_str = line[len("data:") :].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                event = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("error"):
+                self._raise_body_error(event["error"], model)
+            top.update({k: v for k, v in event.items() if k not in ("choices", "usage")})
+            if isinstance(event.get("usage"), dict):
+                usage = event["usage"]
+            choices = event.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            delta = choice.get("delta") or {}
+            finish = choice.get("finish_reason") or finish
+            piece = delta.get("content") or ""
+            thought = ""
+            for key in ("reasoning_content", "reasoning"):
+                if isinstance(delta.get(key), str) and delta[key]:
+                    thought = delta[key]
+                    reasoning.setdefault(key, []).append(thought)
+            fragments = []
+            for tc in delta.get("tool_calls") or []:
+                index = tc.get("index")
+                if not isinstance(index, int):
+                    # No index: a fragment with an id starts a call, one
+                    # without continues the last.
+                    index = len(calls) if tc.get("id") else max(calls, default=0)
+                fn = tc.get("function") or {}
+                slot = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                slot["id"] = slot["id"] or str(tc.get("id") or "")
+                slot["name"] = slot["name"] or str(fn.get("name") or "")
+                slot["arguments"] += fn.get("arguments") or ""
+                fragments.append(ToolCallDelta(
+                    index, id=str(tc.get("id") or ""), name=str(fn.get("name") or ""),
+                    arguments=fn.get("arguments") or "",
+                ))
+            if piece:
+                content.append(piece)
+            if piece or thought or fragments:
+                yield SommChunk(text=piece, reasoning=thought, tool_calls=fragments)
+        else:
+            if finish is None:
+                raise SommTransientError(
+                    f"{self.name} stream on {model} ended before [DONE]", cooldown_s=15.0
+                )
+
+        message: dict = {"role": "assistant", "content": "".join(content)}
+        for key, parts in reasoning.items():
+            message[key] = "".join(parts)
+        if calls:
+            message["tool_calls"] = [
+                {"id": c["id"], "type": "function",
+                 "function": {"name": c["name"], "arguments": c["arguments"]}}
+                for _, c in sorted(calls.items())
+            ]
+        raw = {**top, "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+               "usage": usage}
+        response = SommResponse(
+            text=strip_think_block(message["content"]),
+            model=model,
+            tokens_in=int(usage.get("prompt_tokens", 0) or 0),
+            tokens_out=int(usage.get("completion_tokens", 0) or 0),
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            raw=raw,
+            tool_calls=_parse_openai_tool_calls(message.get("tool_calls") or []),
+            stop_reason=_normalize_finish_reason(finish),
+            reasoning_content=message.get("reasoning_content") or "",
+            reasoning_tokens=reasoning_tokens_from_usage(usage),
+            cost_usd=extract_reported_cost(raw),
+            max_tokens_sent=payload.get("max_tokens", payload.get("max_completion_tokens")),
+        )
+        yield SommChunk(text="", done=True, model=model, response=response)
 
     def health(self) -> ProviderHealth:
         try:

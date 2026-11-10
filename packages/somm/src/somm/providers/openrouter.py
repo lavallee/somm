@@ -39,9 +39,11 @@ from typing import TYPE_CHECKING
 
 from somm.errors import SommModelNotFound, SommTransientError
 from somm.providers._openai_compat import OpenAICompatProvider
-from somm.providers.base import SommModel, SommRequest, SommResponse
+from somm.providers.base import SommChunk, SommModel, SommRequest, SommResponse
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from somm.routing import ProviderHealthTracker
 
 
@@ -213,6 +215,74 @@ class OpenRouterProvider(OpenAICompatProvider):
             _record_health(self.tracker.mark_ok, self.name, model)
         return resp
 
+    def stream(self, request: SommRequest) -> Iterator[SommChunk]:
+        """Stream as :meth:`generate` answers: an explicit model as-is,
+        otherwise the roster walk, moving past a model that fails or is
+        withdrawn before its first chunk (once a chunk is out, a failure is
+        raised). Under a strict boundary each model is pinned to its
+        qualifying upstreams exactly as generate pins it."""
+        if request.model:
+            yield from self._stream_single(request, request.model)
+            return
+        last_exc: Exception | None = None
+        tried_any = False
+        for model in _admissible_roster(self, request):
+            if self.tracker and self.tracker.get(self.name, model).is_cooling():
+                continue
+            tried_any = True
+            chunks = self._stream_single(request, model)
+            try:
+                first = next(chunks, None)
+            except (SommTransientError, SommModelNotFound) as e:
+                if self.tracker:
+                    self.tracker.mark_failure(self.name, model, cooldown_s=e.cooldown_s)
+                last_exc = e
+                continue
+            if first is not None:
+                yield first
+                yield from chunks
+            return
+        if not tried_any:
+            raise SommTransientError(
+                "all openrouter roster models in cooldown",
+                cooldown_s=_estimated_roster_cooldown(self, default=120.0),
+            )
+        raise SommTransientError(
+            f"all openrouter roster models failed this round (last: {last_exc})",
+            cooldown_s=120.0,
+        )
+
+    def _stream_single(self, request: SommRequest, model: str) -> Iterator[SommChunk]:
+        pinned = replace(request, model=model)
+        only: list[str] = []
+        if request.data_boundary:
+            from somm.boundary import ResolvedBoundary, admit, evidence_route, parse_tier, refuse
+
+            route, only = evidence_route(self, model, request.data_boundary)
+            if not admit(route, request.data_boundary):
+                raise refuse(
+                    workload=(request.metadata or {}).get("somm_workload"),
+                    boundary=ResolvedBoundary(parse_tier(request.data_boundary), "request"),
+                    refused=[route],
+                    context=f"openrouter model {model!r}",
+                )
+            if only:
+                pinned = replace(pinned, metadata={**(request.metadata or {}), _PIN_KEY: only})
+        for chunk in super().stream(pinned):
+            if chunk.done and chunk.response is not None:
+                if only:
+                    raw = chunk.response.raw or {}
+                    served = raw.get("provider")
+                    chunk.response.raw = {**raw, "somm_route": {
+                        "data_tier": "zdr", "only": only,
+                        "served_by": served if isinstance(served, str) else None,
+                    }}
+                if self.tracker:
+                    from somm.routing import _record_health
+
+                    _record_health(self.tracker.mark_ok, self.name, model)
+            yield chunk
+
     def models(self):
         # /models unreachable → the roster is still the honest answer.
         return super().models() or [SommModel(name=m) for m in self.roster]
@@ -239,3 +309,23 @@ def _estimated_roster_cooldown(provider: OpenRouterProvider, default: float) -> 
             if remaining > 0 and remaining < soonest:
                 soonest = remaining
     return max(5.0, soonest)
+
+
+def _admissible_roster(provider: OpenRouterProvider, request: SommRequest) -> list[str]:
+    """The roster a stream may walk: every roster model inside the request's
+    boundary, checked per model (a :free model and a paid one can sit in
+    different tiers). Refuses when none is admissible."""
+    if not request.data_boundary:
+        return provider.roster
+    from somm.boundary import ResolvedBoundary, admit, parse_tier, provider_routes, refuse
+
+    routes = provider_routes(provider, boundary=request.data_boundary)
+    roster = [r.model for r in routes if admit(r, request.data_boundary)]
+    if not roster:
+        raise refuse(
+            workload=None,
+            boundary=ResolvedBoundary(parse_tier(request.data_boundary), "request"),
+            refused=routes,
+            context="the openrouter roster",
+        )
+    return roster

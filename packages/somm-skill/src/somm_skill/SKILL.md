@@ -214,11 +214,15 @@ with cross-project decision memory.
   for call in result.tool_calls: ...       # result.stop_reason == "tool_use"
   ```
 
-- `llm.stream(prompt, workload=...)` for streamed responses. An unpinned
-  stream falls back until its first visible chunk; a failure after that
+- `llm.stream(prompt, workload=...)` for streamed responses (`<think>`
+  blocks stripped). It is `generate`'s call path — same policy, pins,
+  boundary, budget and arguments (`messages=`, `tools=`, …). An attempt
+  falls back until its first chunk; a failure after that is recorded and
   raises, so callers that need an answer on a mid-stream failure must retry
-  the whole stream themselves.
-  (`<think>` blocks stripped).
+  the whole stream themselves. `events=True` yields `somm.events`
+  (`StreamStart`, `TextDelta`, `ToolCallDelta`, `ReasoningDelta`, and a final
+  `StreamDone` with the recorded result and real usage when the provider
+  reports it).
 - `llm.embed(text, workload=...)` for embeddings (telemetry row like
   any call).
 - **Structured output** is `llm.generate_structured(...)` (rule 5).

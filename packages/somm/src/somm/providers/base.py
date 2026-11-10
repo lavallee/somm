@@ -114,6 +114,22 @@ class SommResponse:
     max_tokens_sent: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ToolCallDelta:
+    """One fragment of a streamed tool call.
+
+    ``index`` is the tool call's position in the turn (0 for the first);
+    ``id`` and ``name`` arrive on its first fragment and are "" after;
+    ``arguments`` is the next piece of the JSON argument string. Joining the
+    fragments of one index gives the whole call.
+    """
+
+    index: int
+    id: str = ""
+    name: str = ""
+    arguments: str = ""
+
+
 @dataclass(slots=True)
 class SommChunk:
     text: str
@@ -121,6 +137,16 @@ class SommChunk:
     # The model that served the stream, on the final chunk, as
     # SommResponse.model does for generate. "" when the adapter does not say.
     model: str = ""
+    # Chain-of-thought delta, for adapters whose wire format streams it, and
+    # the provider's signature closing a reasoning block (Anthropic).
+    reasoning: str = ""
+    reasoning_signature: str = ""
+    # Tool-call fragments carried by this chunk.
+    tool_calls: list[ToolCallDelta] = field(default_factory=list)
+    # On the final chunk: the whole answer as generate would have returned
+    # it (usage, tool calls, stop reason, raw body). The client records from
+    # it; None means the adapter has no usage and the client estimates.
+    response: SommResponse | None = None
 
 
 @dataclass(slots=True)
