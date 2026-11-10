@@ -147,7 +147,7 @@ class AnthropicProvider:
         model = request.model or self.default_model
         t0 = time.monotonic()
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            with httpx.Client(timeout=request.timeout or self.timeout) as client:
                 resp = client.post(
                     self.API_URL,
                     headers=self._headers(),

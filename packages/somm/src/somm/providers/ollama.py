@@ -68,8 +68,8 @@ class OllamaProvider:
         # Use "0" to opt out, or e.g. "1h" for long-running batches.
         self.keep_alive = keep_alive
 
-    def _client(self) -> httpx.Client:
-        return httpx.Client(timeout=self.timeout)
+    def _client(self, timeout: float | None = None) -> httpx.Client:
+        return httpx.Client(timeout=timeout or self.timeout)
 
     def _post(self, client: httpx.Client, path: str, payload: dict, model: str) -> dict:
         """POST and classify. A local daemon fails in a few ways — not running
@@ -150,7 +150,7 @@ class OllamaProvider:
                 payload["format"] = ollama_format
 
         t0 = time.monotonic()
-        with self._client() as client:
+        with self._client(request.timeout) as client:
             data = self._post(client, "/api/chat", payload, model)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
@@ -205,7 +205,7 @@ class OllamaProvider:
             payload["messages"].append({"role": "system", "content": request.system})
         payload["messages"].append(_to_ollama_message({"role": "user", "content": request.prompt}))
 
-        with httpx.Client(timeout=self.timeout) as client:
+        with httpx.Client(timeout=request.timeout or self.timeout) as client:
             with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
                 if resp.status_code != 200:
                     body = resp.read().decode("utf-8", errors="replace")

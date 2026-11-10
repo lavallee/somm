@@ -806,7 +806,7 @@ provider is opt-in via its own env var.
 | `SOMM_OPENAI_BASE_URL` | `https://api.openai.com/v1` | for OpenAI-compatible gateways |
 | `PERPLEXITY_API_KEY` | — | enables Perplexity (meant to be pinned for grounded answers; with a key set it also joins the default chain, after OpenAI) |
 | `SOMM_PERPLEXITY_MODEL` | `sonar` | |
-| `SOMM_HTTP_TIMEOUT` | `180` | seconds, OpenAI-compat providers |
+| `SOMM_HTTP_TIMEOUT` | `180` | seconds, every HTTP provider; `timeout=` overrides it per call |
 | `SOMM_BUDGET_FAIL_CLOSED` | `0` | `1` blocks calls once a workload's daily cap is reached |
 | `SOMM_BUDGET_DEFAULT_CAP_USD_DAILY` | — | daily cap for workloads without an explicit one (fail-closed mode) |
 | `SOMM_INPROCESS_WORKERS` | `0` | `1` runs the intelligence-loop scheduler inside a long-lived process; short-lived ones use `somm loop install` |

@@ -59,6 +59,7 @@ def _ollama(config: Config, tracker: Any) -> SommProvider | None:
     return OllamaProvider(
         base_url=config.ollama_url,
         default_model=config.ollama_model,
+        timeout=config.http_timeout,
         enable_think=config.ollama_think,
         keep_alive=config.ollama_keep_alive,
     )
@@ -128,6 +129,7 @@ def _openrouter(config: Config, tracker: Any) -> SommProvider | None:
         api_key=config.openrouter_api_key,
         roster=config.openrouter_roster,
         tracker=tracker,
+        timeout=config.http_timeout,
     )
 
 
@@ -157,6 +159,7 @@ def _anthropic(config: Config, tracker: Any) -> SommProvider | None:
     return AnthropicProvider(
         api_key=config.anthropic_api_key,
         default_model=config.anthropic_model,
+        timeout=config.http_timeout,
         auto_cache=config.anthropic_auto_cache,
     )
 
@@ -178,6 +181,7 @@ def _gemini(config: Config, tracker: Any) -> SommProvider | None:
     return GeminiProvider(
         api_key=config.gemini_api_key,
         default_model=config.gemini_model,
+        timeout=config.http_timeout,
     )
 
 
