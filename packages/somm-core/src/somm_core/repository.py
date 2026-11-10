@@ -1856,10 +1856,11 @@ class Repository:
                     cost_accuracy, cost_source, pricing_version, observation_role,
                     source_call_id, eval_result_id, provider_request_id, billing_id,
                     origin, budget_eligible, call_site, reasoning_tokens, client_version, routing_json,
-                    data_tier
+                    data_tier, kind, label, p_top, abstained, result_json
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -1907,6 +1908,11 @@ class Repository:
                     call.client_version,
                     call.routing_json,
                     call.data_tier,
+                    call.kind,
+                    call.label,
+                    call.p_top,
+                    None if call.abstained is None else int(call.abstained),
+                    call.result_json,
                 ),
             )
 
@@ -1930,10 +1936,11 @@ class Repository:
                         cost_accuracy, cost_source, pricing_version, observation_role,
                         source_call_id, eval_result_id, provider_request_id, billing_id,
                         origin, budget_eligible, call_site, reasoning_tokens, client_version, routing_json,
-                        data_tier
+                        data_tier, kind, label, p_top, abstained, result_json
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?
                     )
                     """,
                     [
@@ -1982,6 +1989,11 @@ class Repository:
                             c.client_version,
                             c.routing_json,
                             c.data_tier,
+                            c.kind,
+                            c.label,
+                            c.p_top,
+                            None if c.abstained is None else int(c.abstained),
+                            c.result_json,
                         )
                         for c in calls
                     ],
@@ -2002,7 +2014,8 @@ class Repository:
                 "citations_json, cost_basis, cost_kind, cost_accuracy, cost_source, "
                 "pricing_version, observation_role, source_call_id, eval_result_id, "
                 "provider_request_id, billing_id, origin, budget_eligible, "
-                "call_site, reasoning_tokens, client_version, routing_json, data_tier "
+                "call_site, reasoning_tokens, client_version, routing_json, data_tier, "
+                "kind, label, p_top, abstained, result_json "
                 "FROM calls WHERE id = ?",
                 (call_id,),
             ).fetchone()
@@ -2053,6 +2066,11 @@ class Repository:
             client_version=row[41],
             routing_json=row[42],
             data_tier=row[43],
+            kind=row[44],
+            label=row[45],
+            p_top=row[46],
+            abstained=None if row[47] is None else bool(row[47]),
+            result_json=row[48],
         )
 
     def prune_calls(self, *, older_than_days: int, dry_run: bool = False) -> dict:

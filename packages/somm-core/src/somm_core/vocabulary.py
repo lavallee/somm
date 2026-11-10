@@ -46,6 +46,10 @@ def vocabulary() -> dict:
                 {"EmptyResponse", "SommStructuredError", REFUSAL_ERROR_KIND, "SommProvidersExhausted"}
             ),
         },
+        # calls.kind: closed. NULL is an ordinary call (generate, stream,
+        # structured, embed); "decide" is a decision-model call (0030) whose
+        # label, p_top, abstained and result_json columns are set.
+        "call_kinds": ["decide"],
         # calls.data_tier, strictest first: closed.
         "data_tiers": list(TIER_NAMES),
         # routing_json.route_source -> True when somm's evidence chose the route.
