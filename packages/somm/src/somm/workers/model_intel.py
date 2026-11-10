@@ -156,6 +156,8 @@ class ModelIntelWorker:
                     context_window=int(limit["context"]) if isinstance(limit.get("context"), int) else None,
                     capabilities=caps,
                     source="models_dev",
+                    cache_read_per_1m=_number(cost.get("cache_read")),
+                    cache_write_per_1m=_number(cost.get("cache_write")),
                 )
                 n += 1
         return n

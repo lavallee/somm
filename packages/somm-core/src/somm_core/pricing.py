@@ -5,7 +5,8 @@ after each LLM call. If (provider, model) is in `model_intel`, returns the
 computed USD cost. If not, returns 0.0 — graceful degradation; the agent
 or user can refresh intel later.
 
-Prices in `model_intel` are per 1M tokens, stored as input/output pair.
+Prices in `model_intel` are per 1M tokens: input, output, and the
+prompt-cache read and write rates where the source publishes them.
 Local / free models have price=0 and cost_usd stays 0.0.
 """
 
@@ -31,7 +32,7 @@ _warned_missing_pricing: set[tuple[str, str]] = set()
 
 _PRICE_CACHE_TTL_SECONDS = 600.0
 _price_cache_lock = threading.Lock()
-_price_cache: dict[tuple[str, str, str], tuple[float, tuple[float, float] | None]] = {}
+_price_cache: dict[tuple[str, str, str], tuple[float, tuple | None]] = {}
 
 
 def _price_cache_key(repo: Repository, provider: str, model: str) -> tuple[str, str, str]:
@@ -123,6 +124,8 @@ def sync_bundled_pricing(repo: Repository) -> int:
                 context_window=m.get("context_window"),
                 capabilities=m.get("capabilities"),
                 source="litellm_bundle",
+                cache_read_per_1m=m.get("cache_read_per_1m"),
+                cache_write_per_1m=m.get("cache_write_per_1m"),
             )
             written += 1
 
@@ -131,6 +134,18 @@ def sync_bundled_pricing(repo: Repository) -> int:
         return written
     except Exception:
         return 0
+
+
+def _cost_sql(c: str) -> str:
+    """``price_tokens`` as SQL over a calls alias joined to ``model_intel mi``."""
+    read = f"MAX(COALESCE({c}.cache_tokens_in, 0), 0)"
+    write = f"MAX(COALESCE({c}.cache_tokens_out, 0), 0)"
+    return (
+        f"(MAX({c}.tokens_in - {read} - {write}, 0) * COALESCE(mi.price_in_per_1m, 0)"
+        f" + {read} * COALESCE(mi.price_cache_read_per_1m, mi.price_in_per_1m, 0)"
+        f" + {write} * COALESCE(mi.price_cache_write_per_1m, mi.price_in_per_1m, 0)"
+        f" + {c}.tokens_out * COALESCE(mi.price_out_per_1m, 0)) / 1000000.0"
+    )
 
 
 def backfill_costs(
@@ -159,8 +174,7 @@ def backfill_costs(
 
     select_sql = f"""
         SELECT COUNT(*),
-               COALESCE(SUM((c.tokens_in * mi.price_in_per_1m
-                             + c.tokens_out * mi.price_out_per_1m) / 1000000.0), 0)
+               COALESCE(SUM({_cost_sql("c")}), 0)
         FROM calls c
         JOIN model_intel mi ON mi.provider = c.provider AND mi.model = c.model
         WHERE (c.cost_usd IS NULL OR c.cost_usd = 0)
@@ -176,9 +190,7 @@ def backfill_costs(
         conn.execute(
             f"""
             UPDATE calls SET
-                cost_usd = ROUND(
-                    (calls.tokens_in * mi.price_in_per_1m
-                     + calls.tokens_out * mi.price_out_per_1m) / 1000000.0, 8),
+                cost_usd = ROUND({_cost_sql("calls")}, 8),
                 cost_basis = 'computed',
                 cost_accuracy = 'estimated',
                 cost_source = 'somm:model_intel',
@@ -197,12 +209,73 @@ def backfill_costs(
     return (n, round(total or 0.0, 6))
 
 
+# (input, output, cache read, cache write) per 1M tokens; None = not published.
+Prices = tuple[float | None, float | None, float | None, float | None]
+
+
+def model_prices(repo: Repository, provider: str, model: str) -> Prices | None:
+    """The ``model_intel`` prices for (provider, model), or None with no row.
+
+    Cached per database for ten minutes; ``write_intel`` invalidates.
+    """
+    key = _price_cache_key(repo, provider, model)
+    now = time.monotonic()
+    with _price_cache_lock:
+        cached = _price_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+    with repo._open() as conn:
+        row = conn.execute(
+            "SELECT price_in_per_1m, price_out_per_1m, "
+            "price_cache_read_per_1m, price_cache_write_per_1m "
+            "FROM model_intel WHERE provider = ? AND model = ?",
+            (provider, model),
+        ).fetchone()
+    prices: Prices | None = tuple(row) if row else None  # type: ignore[assignment]
+    with _price_cache_lock:
+        _price_cache[key] = (now + _PRICE_CACHE_TTL_SECONDS, prices)
+    return prices
+
+
+def price_tokens(
+    prices: Prices,
+    tokens_in: int,
+    tokens_out: int,
+    cache_read_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+) -> float:
+    """USD for one call at ``prices``.
+
+    ``tokens_in`` is the whole prompt, cache reads and writes included, as
+    every adapter records it. Cached slices are priced at their own rates;
+    a model whose source publishes no cache rate falls back to the full
+    input rate, which is what the provider charges when it does no caching
+    and never understates spend.
+    """
+    price_in, price_out, cache_read, cache_write = prices
+    price_in = price_in or 0.0
+    price_out = price_out or 0.0
+    read = max(int(cache_read_tokens or 0), 0)
+    write = max(int(cache_write_tokens or 0), 0)
+    uncached = max(int(tokens_in) - read - write, 0)
+    cost = (
+        uncached * price_in
+        + read * (price_in if cache_read is None else cache_read)
+        + write * (price_in if cache_write is None else cache_write)
+        + int(tokens_out) * price_out
+    ) / 1_000_000.0
+    return round(cost, 8)
+
+
 def cost_for_call(
     repo: Repository,
     provider: str,
     model: str,
     tokens_in: int,
     tokens_out: int,
+    *,
+    cache_read_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
 ) -> float:
     """Return USD cost for a single call.
 
@@ -214,25 +287,8 @@ def cost_for_call(
     """
     if not provider or not model:
         return 0.0
-    key = _price_cache_key(repo, provider, model)
-    now = time.monotonic()
-    with _price_cache_lock:
-        cached = _price_cache.get(key)
-        if cached and cached[0] > now:
-            prices = cached[1]
-            if prices is None:
-                return 0.0
-            price_in, price_out = prices
-            return round((tokens_in * price_in + tokens_out * price_out) / 1_000_000.0, 8)
-    with repo._open() as conn:
-        row = conn.execute(
-            "SELECT price_in_per_1m, price_out_per_1m "
-            "FROM model_intel WHERE provider = ? AND model = ?",
-            (provider, model),
-        ).fetchone()
-    if not row:
-        with _price_cache_lock:
-            _price_cache[key] = (now + _PRICE_CACHE_TTL_SECONDS, None)
+    prices = model_prices(repo, provider, model)
+    if prices is None:
         if provider in _PAID_PROVIDERS:
             key = (provider, model)
             if key not in _warned_missing_pricing:
@@ -244,11 +300,7 @@ def cost_for_call(
                     file=sys.stderr,
                 )
         return 0.0
-    price_in, price_out = row[0] or 0.0, row[1] or 0.0
-    with _price_cache_lock:
-        _price_cache[key] = (now + _PRICE_CACHE_TTL_SECONDS, (price_in, price_out))
-    cost = (tokens_in * price_in + tokens_out * price_out) / 1_000_000.0
-    return round(cost, 8)
+    return price_tokens(prices, tokens_in, tokens_out, cache_read_tokens, cache_write_tokens)
 
 
 def write_intel(
@@ -260,8 +312,14 @@ def write_intel(
     context_window: int | None,
     capabilities: dict | list | None,
     source: str,
+    *,
+    cache_read_per_1m: float | None = None,
+    cache_write_per_1m: float | None = None,
 ) -> None:
     """Upsert a row into `model_intel`.
+
+    The cache rates are replaced with the rest of the row: a source that
+    publishes none leaves them NULL, and cost falls back to the input rate.
 
     ``last_seen`` is refreshed on every write; ``first_seen`` is set on the
     first and kept, so "did this land after the model I use?" has an answer.
@@ -274,18 +332,31 @@ def write_intel(
             """
             INSERT INTO model_intel
                 (provider, model, price_in_per_1m, price_out_per_1m,
+                 price_cache_read_per_1m, price_cache_write_per_1m,
                  context_window, capabilities_json, source, last_seen, first_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(provider, model) DO UPDATE SET
                 price_in_per_1m = excluded.price_in_per_1m,
                 price_out_per_1m = excluded.price_out_per_1m,
+                price_cache_read_per_1m = excluded.price_cache_read_per_1m,
+                price_cache_write_per_1m = excluded.price_cache_write_per_1m,
                 context_window = excluded.context_window,
                 capabilities_json = excluded.capabilities_json,
                 source = excluded.source,
                 last_seen = CURRENT_TIMESTAMP,
                 first_seen = COALESCE(model_intel.first_seen, excluded.first_seen)
             """,
-            (provider, model, price_in_per_1m, price_out_per_1m, context_window, caps_json, source),
+            (
+                provider,
+                model,
+                price_in_per_1m,
+                price_out_per_1m,
+                cache_read_per_1m,
+                cache_write_per_1m,
+                context_window,
+                caps_json,
+                source,
+            ),
         )
     _clear_price_cache(repo.db_path)
 
@@ -352,14 +423,16 @@ def list_intel(repo: Repository, provider: str | None = None) -> list[dict]:
         if provider:
             rows = conn.execute(
                 "SELECT provider, model, price_in_per_1m, price_out_per_1m, "
-                "context_window, capabilities_json, source, last_seen "
+                "context_window, capabilities_json, source, last_seen, "
+                "price_cache_read_per_1m, price_cache_write_per_1m "
                 "FROM model_intel WHERE provider = ? ORDER BY model",
                 (provider,),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT provider, model, price_in_per_1m, price_out_per_1m, "
-                "context_window, capabilities_json, source, last_seen "
+                "context_window, capabilities_json, source, last_seen, "
+                "price_cache_read_per_1m, price_cache_write_per_1m "
                 "FROM model_intel ORDER BY provider, model"
             ).fetchall()
     return [
@@ -372,6 +445,8 @@ def list_intel(repo: Repository, provider: str | None = None) -> list[dict]:
             "capabilities": json.loads(r[5]) if r[5] else None,
             "source": r[6],
             "last_seen": r[7],
+            "price_cache_read_per_1m": r[8],
+            "price_cache_write_per_1m": r[9],
         }
         for r in rows
     ]

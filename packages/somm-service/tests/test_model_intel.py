@@ -317,6 +317,10 @@ def test_models_dev_source_writes_first_party_rows_and_canonical_ids(tmp_path, m
         ).fetchone()
     assert row[0] == 0.1 and row[1] == 0.5 and row[2] == 1000000 and row[3] == "models_dev"
     assert '"cache_read": 0.01' in row[4]
+    cache = next(
+        r for r in list_intel(repo, provider="anthropic") if r["model"] == "claude-haiku-5-5"
+    )
+    assert (cache["price_cache_read_per_1m"], cache["price_cache_write_per_1m"]) == (0.01, 0.125)
     assert gem[0] == "gemini"  # google → somm's provider name
 
     # The catalog's canonical id seeds the alias table, with provenance.

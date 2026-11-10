@@ -47,7 +47,7 @@ from somm_core.graders import (
     parse_binary_judge_response,
 )
 from somm_core.models import Call, Outcome
-from somm_core.parse import stable_hash
+from somm_core.parse import extract_cache_tokens, stable_hash
 from somm_core.pricing import cost_for_call
 from somm_core.repository import Repository
 
@@ -694,8 +694,12 @@ class ShadowEvalWorker:
         tokens_in = int(response.tokens_in) if response is not None else 0
         tokens_out = int(response.tokens_out) if response is not None else 0
         reported_cost = _reported_cost(raw)
+        cache_read, cache_write = extract_cache_tokens(raw)
         if reported_cost is None:
-            cost_usd = cost_for_call(self.repo, provider, actual_model, tokens_in, tokens_out)
+            cost_usd = cost_for_call(
+                self.repo, provider, actual_model, tokens_in, tokens_out,
+                cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+            )
             cost_basis = "computed"
             cost_accuracy = "estimated"
             cost_source = "somm:model_intel"
@@ -731,6 +735,8 @@ class ShadowEvalWorker:
                 )
             ),
             parent_call_id=call_row["call_id"],
+            cache_tokens_in=cache_read,
+            cache_tokens_out=cache_write,
             cost_basis=cost_basis,
             cost_kind=_cost_kind(provider),
             cost_accuracy=cost_accuracy,

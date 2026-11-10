@@ -93,6 +93,15 @@ def build_bundle(raw: dict) -> dict:
             "price_out_per_1m": round(price_out, 6),
             "context_window": spec.get("max_input_tokens"),
         }
+        # Prompt-cache rates, only where LiteLLM lists them: a missing rate
+        # stays missing so cost_for_call can say which fallback it used.
+        for src_key, out_key in (
+            ("cache_read_input_token_cost", "cache_read_per_1m"),
+            ("cache_creation_input_token_cost", "cache_write_per_1m"),
+        ):
+            rate = spec.get(src_key)
+            if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+                entry[out_key] = round(float(rate) * 1_000_000, 6)
         if caps:
             entry["capabilities"] = caps
         models.append(entry)
