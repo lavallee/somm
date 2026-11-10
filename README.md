@@ -28,16 +28,19 @@ including what is not yet proven.
 
 - 🟢 **Works offline** with just `ollama` running locally
 - 🟢 **No phone-home**, no cloud account, no hosted service
-- 🟢 **One-line drop-in** for codebases with an existing LLM wrapper
+- 🟢 **One-line drop-in** for codebases with an existing LLM wrapper, and
+  an HTTP proxy for programs you cannot edit
 - 🟢 **Eleven built-in providers** — eight APIs (ollama, OpenRouter,
   DeepSeek, Minimax, Anthropic, Gemini, OpenAI, Perplexity) and three
   subscription seats (`claude-cli`, `codex-cli`, `chatgpt`), plus any
-  OpenAI-compatible gateway; see the capability matrix below for what each
+  OpenAI-compatible server (`SOMM_OPENAI_BASE_URL`, or several by name in
+  `SOMM_OPENAI_ENDPOINTS`); see the capability matrix below for what each
   one honors
 - 🟢 **Tool calling** on every API provider — neutral schema in, native
   format out, `ToolCall`s back
-- 🟢 **Streaming, embeddings, multimodal** — image prompts routed only
-  to capable models
+- 🟢 **Streaming, embeddings, multimodal, decisions** — typed stream
+  events, image prompts routed only to capable models, and `decide()` for
+  classification-shaped questions
 - 🟢 **Coding-agent harnesses** — one normalized attempt for Claude Code,
   Codex, OpenCode, and Pi, recorded in the same ledger as every API call
 - 🟢 **Sommelier** — cross-project model memory: pick once, remember
@@ -114,13 +117,14 @@ metered coding-plan quotas. The router uses those limits before calling a
 provider.
 
 **L3 — online evaluation.** Enable sample capture and shadow eval on
-non-private workloads, then run `somm-serve admin run-shadow`. Graded
+non-private workloads, then run `somm loop run` (or `somm loop install` for a
+timer). Graded
 samples feed `somm frontier`, recommendations, and eval datasets. Each actual
 gold and judge provider request is a first-class `calls` row linked by
 `source_call_id` and `eval_result_id`; shadow budgets sum those rows directly.
 
-**L4 — agent loop.** Install `somm-mcp`, point your coding agent at it,
-and use `somm_advise` / `somm_record_decision` / `somm_inbox` so model
+**L4 — agent loop.** Install `somm-mcp` and `somm-skill`, run `somm mcp
+install` and `somm skill install`, and use `somm_advise` / `somm_record_decision` / `somm_inbox` so model
 choices and recommendations become cross-project memory.
 
 ## Why somm
@@ -139,14 +143,9 @@ LLM-using Python projects all grow along the same axes. You end up with:
 
 ### What's NOT here
 
-The LLM-tooling field moves quickly. Checked on 2026-11-09 against each
-project's own pages: Langfuse joined ClickHouse in January 2026 (both say
-the MIT core and self-hosting are unchanged); Traceloop joined ServiceNow
-in March; promptfoo joined OpenAI in March and says it stays MIT;
-TensorZero archived its repository on 12 June; OpenAI Evals shuts down on
-30 November. None of that makes those tools bad, but a single developer
-cannot re-platform every year. somm is structured so the data and the
-code stay yours (sources: [why build this](https://lavallee.github.io/somm/why.html)):
+The field moves quickly: in 2026 several LLM tools were acquired or archived
+([why build this](https://lavallee.github.io/somm/why.html) has the dated
+sources). somm is structured so the data and the code stay yours:
 
 - **No `ee/` directory.** Every feature in this repo is MIT, forever.
 - **No license keys, no feature flags tied to a vendor account.**
@@ -181,8 +180,10 @@ shim that mirrors `openai.OpenAI().chat.completions.create()`.
 - Every route has a data tier (`local` < `zdr` < `subscribed` < `unvetted`)
   and a workload can declare a **data boundary**: routes outside it are
   refused before any request leaves the process, on every path (router,
-  pins, streams, proxy, MCP compare, shadow eval, harnesses). See
-  [`docs/data-boundary.md`](./docs/data-boundary.md) and `somm boundary audit`.
+  pins, streams, proxy, MCP compare, shadow eval, harnesses).
+  `somm boundary routes` lists every route's tier and why, `somm boundary
+  audit` the loosest tier that served each workload, and `somm boundary set
+  <workload> <tier>` sets one. See [`docs/data-boundary.md`](./docs/data-boundary.md).
 - `privacy_class=PRIVATE` workloads are bounded to `local` routes, are never
   sample-captured, and are excluded from online eval by the worker and a SQL
   view (defense in depth).
@@ -458,37 +459,12 @@ provider sends none they are estimated from the text, and the row's
 
 ### Async callers
 
-Async applications use the same router, fallback chain, plan governor, hooks,
-budgets, and telemetry ledger without blocking their event loop:
-
-```python
-result = await llm.agenerate(
-    "Reply with exactly: pong",
-    workload="ping",
-    provider="ollama",       # optional pin; sticky, exactly as in generate()
-)
-
-obj, result = await llm.agenerate_structured(
-    "Extract the vintage",
-    schema={"type": "object", "required": ["vintage"]},
-    workload="wine_extract",
-)
-
-async for chunk in llm.astream("Tell me a story", workload="narrate"):
-    print(chunk, end="", flush=True)
-
-vec = await llm.aembed(
-    "the quick brown fox",
-    workload="search_index",
-    model="nomic-embed-text",  # explicit model pins are preserved
-)
-```
-
-`aextract_structured()` is also available for the permissive structured-output
-contract. `aembed()` shares the synchronous embedding and telemetry path. Since
-that path currently supports Ollama only, a non-Ollama-first configured provider
-raises clearly rather than being silently replaced. The synchronous API remains
-the documented default.
+`agenerate`, `agenerate_structured`, `aextract_structured`, `astream` and
+`aembed` are native async versions with the same router, fallback, plan
+governor, hooks, budgets and ledger; do not wrap the sync calls in
+`asyncio.to_thread`. `aembed()` shares the embedding path, which supports
+Ollama only, so a chain whose first configured provider is not Ollama raises
+rather than being silently replaced.
 
 ### Multimodal prompts, capability-aware routing
 
@@ -514,6 +490,32 @@ surfaces upfront if no provider in the chain can serve the request —
 with the list of (provider, model, reason) triples it skipped. More:
 [`docs/multimodal.md`](./docs/multimodal.md).
 
+### Decisions — a label and a probability, not text
+
+When the answer is yes/no, one of a fixed set of labels, or a level on a
+scale, ask a decision model instead of prompting an LLM and parsing its text:
+
+```python
+r = llm.decide(ticket, ask="Which team owns this?", labels=["billing", "auth", "other"],
+               workload="ticket_route", min_p=0.8)
+r.label, r.p, r.abstained          # abstained: no label reached min_p; escalate yourself
+r.verdict("auth")                  # the right answer, once known; feeds calibration
+
+out = llm.decide_many(ticket, questions={      # several questions, one request, one row
+    "billing": {"ask": "Is this about billing?"},
+    "urgency": {"ask": "How urgent?", "scale": ["Can wait", "This week", "Today"]},
+}, workload="ticket_triage")
+```
+
+Each request is one ledger row (`kind = 'decide'`) that passes the data
+boundary and budget gates and is priced like any call.
+`somm_core.read.decision_calibration` reports how well the probabilities
+match your verdicts, `somm.decide.grade_decisions` has an LLM answer the same
+questions for comparison, and `somm_core.read.decision_economics` puts the two
+side by side in cost per 1,000 inputs. The one provider is TypeSafe System One
+(`TYPESAFE_API_KEY`); the adapter is built from its documentation and has not
+been verified against the live API. See [`docs/decisions.md`](./docs/decisions.md).
+
 ### Sommelier — cross-project model memory
 
 Ask the sommelier in your MCP-capable agent: _"Best free vision models
@@ -524,7 +526,10 @@ across every project on your machine. Decisions are the one signal
 that always crosses project boundaries.
 
 Three MCP tools (`somm_advise`, `somm_record_decision`,
-`somm_search_decisions`) wrap the recall → advise → record loop. See
+`somm_search_decisions`) wrap the recall → advise → record loop. When a
+choice follows a prior decision, the agent passes that decision's id as
+`recalled_from`; that is the recall `somm doctor` counts toward the
+north-star number. See
 [`SOMMELIER.md`](./packages/somm-skill/src/somm_skill/SOMMELIER.md).
 
 ### Online evaluation — builds its own eval dataset
@@ -542,7 +547,9 @@ illustration of the shape (the numbers are invented, not from a ledger):
 > (score 0.4, 500ms). Shadow evals show ollama/gemma3:27b scoring 0.85
 > at 100ms — +45% quality, -80% latency, same cost. Try it?
 
-Budget-capped per workload. Skipped entirely on private workloads. The
+Budget-capped per workload. Skipped entirely on private workloads. A
+`switch_model` needs 20 grades per model within 30 days and a 95% interval
+that excludes zero, and an open recommendation expires after 30 days. The
 workers run with `somm loop run` (one pass) or `somm loop install` (a
 systemd user timer); see [`docs/intelligence-loop.md`](./docs/intelligence-loop.md).
 
@@ -678,59 +685,56 @@ installed in the same environment. For Cursor, Windsurf and others, paste:
 ## CLI
 
 ```bash
-somm status [--project P] [--since N] [--global] [--json]
-                                                    # rollup (per-project / cross-project)
-somm cache-advice [--json]                         # prefix-cache reuse opportunities
-somm bench latency|throughput <prompt> [--json]    # instrumented serving probes
-somm generate <prompt> [--workload W] [--json]      # one-shot LLM call through somm
-    # --json prints one object: ok, text, provider, model, tokens_*, latency_ms, cost_usd,
-    # call_id, outcome; on failure also error_kind, error_message (the reason, <=400 chars)
-    # and error_detail (the ledger's bounded operator string). Exit 1 on a failed call.
-    # Usage errors go to stderr as {"ok": false, "error": {type, message, exit_code}}.
-somm tail [--workload NAME] [--poll-interval S]    # live call stream
-somm compare <prompt> --models p/m,p/m             # side-by-side N-model comparison
-somm frontier --workload NAME [--since N]          # adequacy frontier per (provider, model)
+somm status [--since N] [--global] [--json]        # rollup (per-project / cross-project)
+somm generate <prompt> [--workload W] [--image P] [--json]   # one call through somm; exit 1 on failure
+somm compare <prompt> --models p/m,p/m [--json]    # side-by-side N-model comparison
+somm frontier --workload NAME [--json]             # graded models for one workload
+somm tail | spend | cache-advice | bench           # live calls, today's spend vs caps, cache reuse, probes
+somm doctor [--global] [--max-exhausted-rate F]    # health: config, ledger, intel, loop, cooldowns, fleet
 somm loop run|install|status|uninstall             # the intelligence loop, one pass or a timer
 somm inbox list|show|apply|dismiss                 # recommendations and their evidence
-somm plugin ...                                    # list and inspect plugins, hooks, and providers
-somm chatgpt ...                                   # somm-owned ChatGPT subscription connection
-somm spend [--json]                                # today's spend vs daily budget cap
-somm plans [--json] [--project-only]               # metered-plan quota usage + pacing (fleet-wide)
-somm boundary routes [--json]                      # every route's data tier and why
-somm boundary audit [--since 30d] [--json]         # worst tier that served each workload vs its boundary
-somm boundary set <workload> <tier>                # local | zdr | subscribed | unvetted | none
-somm backfill-costs [--since N] [--dry-run]        # recompute $0 calls that now have pricing
-somm drain-spool                                   # replay spooled telemetry into the DB
-somm prune --older-than DAYS [--dry-run] [--vacuum] # retention: delete old calls + their samples/evals
-somm alias list|seed|set                           # canonical model identities across routes
-somm workload add/list/show/set-constraints        # register and inspect workloads
-somm prompt list/show/register/fork/diff/label     # immutable prompt versions + mutable labels
-somm eval promote-call/import/run                  # durable datasets + synchronous eval gates
-somm optimize --workload NAME                      # propose a prompt fork from failing graded calls
-somm campaign run --workload NAME --dataset NAME   # repeated eval campaign with keep/revert log
-somm doctor [--global]                             # health: config, ollama, db, intel, loop, fleet
-somm serve [--host H] [--port N]                   # web admin + scheduler + workers
+somm workload add|list|show|set-constraints        # register and inspect workloads
+somm prompt list|show|register|fork|diff|label|…   # immutable prompt versions + mutable labels
+somm eval promote-call|import|run; somm optimize; somm campaign run   # datasets, gates, experiments
+somm boundary routes|audit|set                     # data tiers per route; boundary per workload
+somm plans [--catalog] [--learn]                   # metered-plan quota usage + pacing (fleet-wide)
+somm ledgers [--scan DIR] [forget|adopt]           # every ledger on this machine and the mirror gap
+somm fleet status                                  # one line per registered project, problems first
+somm mirror sync [--project X] [--dry-run]         # copy call rows the mirror lacks
+somm climb [--workload W]                          # what a workload answers before any model (receipts)
+somm gpu spend [--since N]                         # rented-GPU spend from gipper receipts (read-only)
+somm mcp|skill install|uninstall|status            # connect coding agents
+somm alias | backfill-costs | drain-spool | prune  # model identities, cost backfill, spool replay, retention
+somm serve [--host H] [--port N]                   # web admin + read API + proxy + scheduler
 ```
 
-JSON-mode command failures use a stable stderr envelope:
+`--project` goes before or after any subcommand (default `$SOMM_PROJECT`, then
+this directory's project). Exit codes: `0` success, `1` the command ran and
+failed (or a prerequisite is missing), `2` bad usage or a named thing that does
+not exist; with `--json`, failures print `{"ok": false, "error": {...}}` on
+stderr. [`docs/cli.md`](./docs/cli.md) has the full contract and which
+commands take `--json`; [`docs/ledgers.md`](./docs/ledgers.md) covers
+`ledgers`, `fleet` and `mirror`.
 
-```json
-{"ok": false, "error": {"type": "ValueError", "message": "...", "exit_code": 2}}
-```
+## Reading the ledger and the service
 
-Exit codes are stable: `0` success, `1` the command ran and failed (or a
-prerequisite such as the ledger is missing), `2` usage error or a named
-thing that does not exist, and, in JSON mode, `66` missing input file and
-`77` permission error. See [`docs/cli.md`](./docs/cli.md) for the full
-contract, `--project` placement and which commands take `--json`.
+**From Python**, read through `somm_core.read` instead of writing SQL against
+the ledger: `search_calls`, `get_calls`, `rollup`, `provider_health`,
+`spend_today`, `fleet_summary`, `north_star`, `schema_status`,
+`across_ledgers` (any read over every registered ledger) and the decision
+reads. Result fields are only ever added, and a read on an older ledger returns
+`None` for a column it predates. `somm_core.vocabulary.vocabulary()` returns
+the outcome, tier, route-source, cost-source and meter-unit sets with a version
+stamp, so a downstream mapping can be checked at start-up. See
+[`docs/read-api.md`](./docs/read-api.md), which has a "replace this SQL with
+that call" table.
 
-### Stable local read API and OTLP ingest
-
-With `somm-service` installed, the dashboard also exposes supported JSON
-read endpoints. They require the service bearer token, or the dashboard's
-same-origin local header path on a loopback `Host`; set
-`SOMM_SERVICE_PUBLIC_READ=1` only for deployments that deliberately expose
-read-only telemetry.
+**Over HTTP**, `somm serve` (from `somm-service`) exposes JSON read
+endpoints. They require `Authorization: Bearer <token>` (`SOMM_SERVICE_TOKEN`,
+else `.somm/service_token`, created on first start); the bundled dashboard may instead use
+a same-origin header from a loopback connection, never through a forwarding
+proxy. Set `SOMM_SERVICE_PUBLIC_READ=1` only for deployments that deliberately
+expose read-only telemetry.
 
 ```text
 GET /api/status
@@ -783,8 +787,12 @@ are accepted, not applied, and listed in an `x-somm-ignored` response header. A
 field that would change what comes back in kind (`n` > 1, logprobs, server tools,
 `previous_response_id`, reasoning input items) is refused with a 400 naming it.
 
-Polyglot apps can send OpenTelemetry JSON traces without importing the
-Python SDK:
+**OpenTelemetry, both ways.** With `somm[otel]` installed and
+`SOMM_OTEL_ENDPOINT` set, somm exports a GenAI-convention span per call and an
+`invoke_agent` span per recorded harness attempt
+([`docs/otel.md`](./docs/otel.md)). In the other direction, apps in any
+language can send OTLP traces to the service, as JSON, or as protobuf once the
+`somm-service[otlp]` extra is installed (gzip-encoded bodies are not accepted):
 
 ```bash
 curl -H "Authorization: Bearer $SOMM_SERVICE_TOKEN" \
@@ -813,28 +821,11 @@ this ledger, not every agent or provider account on the machine. Cross-source
 historical reconciliation and cost-per-outcome belong to Milton. Somm remains
 independently usable and never imports Milton on its routing path.
 
-For bounded retrospective comparison, Somm can validate a versioned Milton
-`(implementation, profile, served model, harness)` snapshot as evidence:
-
-```python
-from somm import assess_outcome_snapshot
-
-assessment = assess_outcome_snapshot(
-    snapshot,
-    expected_tuple={
-        "implementation": git_sha,
-        "profile": workload_id,
-        "served_model": model,
-        "harness": "codex",
-    },
-)
-```
-
-The assessment is fail-safe for unavailable, stale, sparse, confounded,
-invalid, or tuple-mismatched input. Even `ready` means only
-`eligible_for_review=True`: `policy_changed` is always false and
-`policy_action` is always null. Per-call evals, plan pacing, budget gates, and
-bounded routing recommendations remain Somm-owned.
+`somm.assess_outcome_snapshot(snapshot, expected_tuple={...})` validates a
+versioned Milton `(implementation, profile, served model, harness)` snapshot
+as retrospective evidence. It fails safe on unavailable, stale, sparse,
+confounded, invalid or mismatched input, and even a `ready` result only marks
+it eligible for review: it never changes policy.
 
 With `somm-service` installed:
 
@@ -904,26 +895,12 @@ PAYG providers can carry limits too — there they're **self-imposed
 budgets** (a max spend over a window, LiteLLM-style), paced with the
 same math but in real dollars.
 
-Then:
-
-- **`somm plans`** shows every limit's usage in its current window —
-  across all your projects (each `somm.llm()` registers its DB in
-  `~/.somm/registry.json`) — with pace ratio and straight-line
-  projection: are you on track to blow the quota before it resets?
-  Plus **payg burn rates** (1d/7d/30d spend, $/day, projected month),
-  a **value multiple** for metered plans (`price = 50.0` → "consumed
-  $260 of list-price tokens on a $50/mo plan, ≈5.2x"), and **quota
-  drift warnings** when your own telemetry contradicts a declared
-  limit (usage past quota with calls still succeeding, or recent 429
-  ceilings far from the declared number — vendors reset limits
-  without notice).
-- **The router paces automatically**: a provider past its soft target
-  and burning faster than the window passes is deprioritized (tried
-  only after in-pace providers fail); an exhausted limit with
-  `enforce = true` is skipped outright.
-- **The sommelier knows the difference**: `somm_advise` annotates
-  metered candidates with plan headroom and pace, so "cheap but
-  scarce" ranks differently from "cheap".
+`somm plans` then shows every limit's usage in its current window across all
+your projects, with pace and a projection to the reset, PAYG burn rates, a value
+multiple for metered plans, and a warning when your own telemetry contradicts a
+declared limit. The router tries a provider that is ahead of pace only after
+the others, and skips an exhausted limit when `enforce = true`; `somm_advise`
+notes plan headroom when it ranks a metered model.
 
 You don't have to transcribe vendor limits by hand: somm ships a
 curated **plan catalog** (`somm plans --catalog` lists it, with source
@@ -986,11 +963,15 @@ provider is opt-in via its own env var.
 | `SOMM_BUDGET_DEFAULT_CAP_USD_DAILY` | — | daily cap for workloads without an explicit one (fail-closed mode) |
 | `SOMM_INPROCESS_WORKERS` | `0` | `1` runs the intelligence-loop scheduler inside a long-lived process; short-lived ones use `somm loop install` |
 | `SOMM_WAIT_ON_EXHAUSTED` | — | default seconds to wait when every routed provider is cooling, instead of failing fast |
-| `SOMM_CLAUDE_CLI_MODEL` / `SOMM_CLAUDE_CLI_ARGS` | — | seat model and extra flags (shell-split) for the `claude-cli` provider |
+| `SOMM_CLAUDE_CLI_MODEL` / `SOMM_CLAUDE_CLI_ARGS` | `claude-haiku-5-5` / — | seat model and extra flags (shell-split) for the `claude-cli` provider |
 | `SOMM_CLAUDE_BIN` / `SOMM_CODEX_BIN` | — | explicit path to the `claude` / `codex` binary; otherwise PATH, then `~/.local/bin`, `~/.npm-global/bin`, `~/.volta/bin`, `/usr/local/bin`, `/opt/homebrew/bin` |
+| `TYPESAFE_API_KEY` | — | enables `decide()` / `decide_many()` |
+| `SOMM_DATA_BOUNDARY` | — | the project's default data boundary (`local`, `zdr`, `subscribed`, `unvetted`) |
+| `SOMM_BOUNDARY_PATH` | `~/.somm/boundary.toml` | your route-tier overrides and boundaries |
 | `SOMM_PLANS_PATH` | `~/.somm/plans.toml` | billing-plan declarations |
 | `SOMM_REGISTRY_PATH` | `~/.somm/registry.json` | fleet registry of project ledgers (`SOMM_REGISTRY_ALLOW_TMP=1` lets tests register under a temp dir) |
 | `SOMM_DB_DIR` | `./.somm` | where this project's ledger lives |
+| `SOMM_SERVICE_TOKEN` | `.somm/service_token` | bearer token for the service; set it to inject a secret |
 | `SOMM_SERVICE_PUBLIC_READ` | `0` | `1` exposes the read API without a token (deliberate deployments only) |
 | `SOMM_SERVICE_PROXY_MAX_BODY_BYTES` | `1048576` | proxy request body cap |
 | `SOMM_SERVICE_OTLP_MAX_BODY_BYTES` / `_MAX_SPANS` / `_MAX_ATTR_CHARS` | `1048576` / `1000` / `2048` | OTLP ingest caps |
@@ -999,6 +980,9 @@ provider is opt-in via its own env var.
 | `SOMM_GLOBAL_PATH` | `~/.somm/global.sqlite` | mirror file location |
 | `SOMM_KEY_PROFILE` | — | named key profile; see below |
 | `SOMM_ENABLE_HF_INTEL` | `0` | `1` enables the opt-in HuggingFace intel worker |
+| `SOMM_OTEL_ENDPOINT` | — | OTLP HTTP traces endpoint; turns on span export (needs `somm[otel]`) |
+| `SOMM_CLIMB_RECEIPTS` / `SOMM_GIPPER_RECEIPTS` | — / `~/.local/share/gipper/receipts` | receipts for `somm climb` / `somm gpu spend` |
+| `SOMM_CHATGPT_AUTH_FILE` | `~/.config/somm/chatgpt.json` | somm's own ChatGPT OAuth file ([adaptive routing](docs/adaptive-routing.md)) |
 
 **Named key profiles.** Set `key_profile = "research"` in a repo's
 `[tool.somm]` (or `SOMM_KEY_PROFILE=research`) and every provider key
@@ -1054,8 +1038,8 @@ Six packages:
 - **`somm-core`** — schema, migrations, repository, config, parse
   helpers (incl. multimodal content-block + capability helpers)
 - **`somm`** — `SommLLM`, providers, routing, streaming, embeddings,
-  tool calling, one-attempt coding-agent harnesses, the three loop workers
-  and `somm loop`, sommelier, compat shims, hooks, CLI
+  tool calling, decision calls, one-attempt coding-agent harnesses, the three
+  loop workers and `somm loop`, sommelier, compat shims, hooks, CLI
 - **`somm-service`** — starlette web admin + HTTP read API + provider proxy +
   OTLP ingest; hosts the scheduler beside the dashboard
 - **`somm-mcp`** — stdio MCP server with 14 tools
@@ -1071,28 +1055,39 @@ model-intel worker then refreshes live from [models.dev](https://models.dev)
 
 ## Docs
 
-- 📐 [**BLUEPRINT.md**](./docs/BLUEPRINT.md) — the design doc: six
-  load-bearing forces + the data model
-- 🗺️ [**ROADMAP.md**](./ROADMAP.md) — what's next, what's deferred, what's not planned
-- 📜 [**CHANGELOG.md**](./CHANGELOG.md) — release log
-- 🔁 [**The intelligence loop**](./docs/intelligence-loop.md) — what the
-  workers do and how to run them
-- 📖 [**Reading the ledger**](./docs/read-api.md) — the supported read
-  API and column-stability contract
-- [**Ledgers on this machine**](./docs/ledgers.md) — `somm ledgers`,
-  `somm fleet status`, `somm mirror sync`, and retention
-- 🧱 [**Data boundary**](./docs/data-boundary.md) — route tiers and per-workload limits on where data may go
-- 🔀 [**Adaptive routing**](./docs/adaptive-routing.md) — `somm/auto` and subscription conservation
-- 🔧 [**Tool calling**](./docs/tool-calling.md) — neutral schema + per-provider adapters
-- 🤖 [**Coding-agent harnesses**](./docs/agent-harnesses.md) — one-attempt Claude Code, Codex, OpenCode, and Pi execution, recorded in the ledger
-- [**Plugins and hooks**](./docs/plugins.md) — hook phases, reference plugins, and provider entry points
-- 🖼️ [**Multimodal prompts**](./docs/multimodal.md) — image blocks +
-  capability-aware routing
-- 🍷 [**Sommelier skill**](./packages/somm-skill/src/somm_skill/SOMMELIER.md) —
-  cross-project model advisor for coding agents
-- 🚢 [**RELEASING.md**](./RELEASING.md) — canonical release checklist
-- 🔥 [**Error reference**](./docs/errors/) — canonical `SOMM_*` codes
-- 🧪 [**Examples**](./examples/) — drop-in, OpenAI swap, private workloads
+The project:
+[VISION.md](./VISION.md) (what somm is for and how it is measured),
+[ROADMAP.md](./ROADMAP.md) (what shipped in each phase and what remains),
+[CHANGELOG.md](./CHANGELOG.md) (release log),
+[RELEASING.md](./RELEASING.md) (release checklist).
+The site explains [the components](https://lavallee.github.io/somm/components.html)
+and [the terms](https://lavallee.github.io/somm/glossary.html).
+
+Every page in `docs/`, one line each:
+
+- [BLUEPRINT.md](./docs/BLUEPRINT.md): the design document, its forces and data model, for anyone rebuilding somm
+- [threat-model.md](./docs/threat-model.md): assets, trust boundaries, mitigations and accepted risks
+- [cli.md](./docs/cli.md): `--project`, `--json` and the exit-code contract
+- [data-boundary.md](./docs/data-boundary.md): route tiers, per-workload boundaries, `boundary.toml`, the audit
+- [adaptive-routing.md](./docs/adaptive-routing.md): `somm/auto` and conserving a ChatGPT subscription
+- [tool-calling.md](./docs/tool-calling.md): the neutral tool schema and per-provider adapters
+- [multimodal.md](./docs/multimodal.md): image prompts and capability-aware routing
+- [decisions.md](./docs/decisions.md): `decide`, `decide_many`, calibration, grading against an LLM
+- [agent-harnesses.md](./docs/agent-harnesses.md): one Claude Code, Codex, OpenCode or Pi attempt, recorded
+- [workload-handlers.md](./docs/workload-handlers.md): serving a workload with a rule or other component
+- [the-climb.md](./docs/the-climb.md): `somm climb`, what a workload answers before any model
+- [rented-gpus.md](./docs/rented-gpus.md): `somm gpu spend` and calling a model on a rented box
+- [intelligence-loop.md](./docs/intelligence-loop.md): the workers, how to run them, the north-star numbers
+- [read-api.md](./docs/read-api.md): `somm_core.read`, `vocabulary()`, and the column-stability contract
+- [ledgers.md](./docs/ledgers.md): `somm ledgers`, `somm fleet status`, `somm mirror sync`, retention
+- [otel.md](./docs/otel.md): OpenTelemetry export and ingest
+- [plugins.md](./docs/plugins.md): hook phases, reference plugins, provider entry points
+- [intel-sources.md](./docs/intel-sources.md): candidate model-intel sources (a scratchpad, not a plan)
+- [errors/](./docs/errors/): one page per canonical `SOMM_*` error code
+- [incidents/](./docs/incidents/): written-up incidents
+
+Also: the [sommelier skill](./packages/somm-skill/src/somm_skill/SOMMELIER.md)
+and [examples](./examples/) (drop-in wrapper, OpenAI swap-in, private workload).
 
 ## Contributing
 
@@ -1114,5 +1109,7 @@ internal names or personal paths.
 
 **v0.25.0 beta / pre-1.0.** somm is published for real-world dogfooding, but
 the public API, MCP tools, service contracts, and migration semantics are not
-yet declared stable. See [CHANGELOG](./CHANGELOG.md) for the release log and
-[ROADMAP.md](./ROADMAP.md) for where things are headed.
+yet declared stable. Most of what shipped since 0.20 has not yet been
+verified in sustained use; [ROADMAP.md](./ROADMAP.md) says what shipped in
+each phase, what remains and which graduation tests are open, and
+[CHANGELOG](./CHANGELOG.md) is the release log.
