@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -230,7 +231,9 @@ class CampaignEvent:
 
 @dataclass(slots=True)
 class Call:
-    """A row in `calls`. Immutable after insert — late data goes in `call_updates`."""
+    """A row in `calls`. Late data goes in `call_updates`; the one exception is
+    a later outcome mark, which also corrects `outcome` (and the error columns)
+    so rollups see it."""
 
     id: str  # UUID4
     ts: datetime
@@ -291,7 +294,11 @@ class Call:
     # reports them; and the somm version that wrote the row.
     reasoning_tokens: int | None = None
     client_version: str | None = None
-    routing_json: str | None = None  # Requested alias, selected tier/reason and quota snapshot; no prompt text.
+    # How the call was routed; never prompt text. Every SommLLM row carries a
+    # "route" object: mode, first choice, served route, fallback depth, the
+    # candidates skipped and why, and the max_tokens sent. Adaptive calls add
+    # the tier decision and quota snapshot beside it.
+    routing_json: str | None = None
     # 0027: data tier of the route that served (or was attempted). None on
     # rows written before the column existed and on boundary refusals, which
     # reached no route; the audit classifies those from provider/model.
@@ -391,10 +398,22 @@ class SommResult:
     # included in tokens_out.
     reasoning_tokens: int | None = None
     citations: list | None = None
+    # Set by the client that recorded this call so mark() reaches its row.
+    _on_mark: Callable[[SommResult], None] | None = field(default=None, repr=False, compare=False)
 
     def mark(self, outcome: Outcome) -> SommResult:
-        """Post-tag a call's outcome. Returns self for chaining."""
+        """Post-tag a call's outcome. Returns self for chaining.
+
+        On a result returned by ``SommLLM`` the mark also updates the call's
+        stored row (and appends it to ``call_updates``). A ledger error is
+        swallowed: tagging a result never breaks the caller.
+        """
         self.outcome = outcome
+        if self._on_mark is not None:
+            try:
+                self._on_mark(self)
+            except Exception:  # noqa: BLE001
+                pass
         return self
 
 

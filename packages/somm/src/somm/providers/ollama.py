@@ -176,6 +176,7 @@ class OllamaProvider:
             raw=data,
             tool_calls=tool_calls,
             stop_reason=stop_reason,
+            max_tokens_sent=payload["options"]["num_predict"],
         )
 
     def stream(self, request: SommRequest) -> Iterator[SommChunk]:
