@@ -296,7 +296,7 @@ def test_loop_output_prints_shadow_warnings(tmp_path, capsys, monkeypatch):
                 "errors": [],
             }
 
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     monkeypatch.setattr(loop, "build_workers_factory", lambda c, r: lambda n: _Shadow())
     assert main(["loop", "run", "--only", "shadow_eval"]) == 0
     out = capsys.readouterr().out
@@ -493,7 +493,7 @@ def test_open_recommendations_expire_closed_not_applied(tmp_path, capsys, monkey
     cfg = Config()
     cfg.project = project
     cfg.db_dir = repo.db_path.parent
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     assert main(["inbox", "list", "--all"]) == 0
     assert "expired" in capsys.readouterr().out
 

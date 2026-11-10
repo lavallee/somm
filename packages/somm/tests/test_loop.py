@@ -107,7 +107,7 @@ def test_run_once_registers_the_ledger_it_ran_against(tmp_path, monkeypatch):
 def test_loop_cli_run_and_status(tmp_path, capsys, monkeypatch):
     cfg = _cfg(tmp_path)
     Repository(cfg.db_path)
-    monkeypatch.setattr("somm.cli.load_config", lambda project=None: cfg)
+    monkeypatch.setattr("somm.cli._common.load_config", lambda project=None: cfg)
     log: list[str] = []
     monkeypatch.setattr(loop, "build_workers_factory", lambda c, r: (lambda n: _Worker(n, log)))
     monkeypatch.setattr(loop, "_systemctl", lambda args, capture=False: "inactive\n")
@@ -131,7 +131,7 @@ def test_loop_cli_accepts_project_after_the_subcommand(tmp_path, capsys, monkeyp
         cfg.project = project or cfg.project
         return cfg
 
-    monkeypatch.setattr("somm.cli.load_config", fake_load)
+    monkeypatch.setattr("somm.cli._common.load_config", fake_load)
     monkeypatch.setattr(loop, "_systemctl", lambda args, capture=False: "inactive\n")
     Repository(_cfg(tmp_path).db_path)
 
