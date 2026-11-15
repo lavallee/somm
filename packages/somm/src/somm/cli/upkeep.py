@@ -180,7 +180,10 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             }
             for b in payg_burn_rates(dbs, plans)
         ]
-        print(json.dumps({"scope": scope, "limits": out, "payg_burn": burn}, indent=1))
+        from somm.vendor_usage import vendor_readings
+
+        print(json.dumps({"scope": scope, "limits": out, "payg_burn": burn,
+                          "vendor": vendor_readings()}, indent=1))
         return 0
 
     print(f"Plan usage — {scope}\n")
@@ -223,18 +226,16 @@ def _cmd_plans(args: argparse.Namespace) -> int:
         for line in value_lines:
             print(line)
 
-    if "minimax" in plans and plans["minimax"].mode == "metered":
-        import os
+    from somm.vendor_usage import vendor_readings
 
-        from somm.providers.minimax import plan_remains
-
-        key = os.environ.get("MINIMAX_API_KEY")
-        live = plan_remains(key) if key else None
-        if live:
-            print(
-                f"\nvendor-reported: minimax {live['interval_used_pct']}% of this 5h window, "
-                f"{live['weekly_used_pct']}% of this week"
-            )
+    vendor = vendor_readings()
+    if vendor:
+        print("\nvendor-reported (the authority; metered rows above only see somm's calls):")
+        for v in vendor:
+            plan = f" {v['plan']}" if v.get("plan") else ""
+            resets = f", resets {v['resets_at'][:16]}" if v.get("resets_at") else ""
+            print(f"  {v['provider']:<12}{plan} {v['window']:<4} {v['used_pct']:5.1f}% used"
+                  f"{resets} (as of {str(v['observed_at'])[:16]}, {v['source']})")
 
     metered_no_limits = [p for p, pl in plans.items() if pl.mode == "metered" and not pl.limits]
     if metered_no_limits:

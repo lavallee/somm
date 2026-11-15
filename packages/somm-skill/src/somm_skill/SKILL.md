@@ -194,7 +194,11 @@ Providers bill in two shapes, and somm models both (`somm plans`):
 **PAYG** (per-token dollars — the constraint is spend rate) and
 **metered** (subscription quota — the constraint is window headroom;
 `cost_usd` is notional). Candidate reasons include plan headroom and
-pace ("metered plan 62% used, pace 1.3x"). Don't aim a new high-volume
+pace ("metered plan 62% used, pace 1.3x"). Metered rows only count calls
+made through somm; a subscription shared with interactive use can be fuller
+than they show. `somm plans` also prints the vendor's own percentage where one
+can be read (MiniMax's plan endpoint; Codex's session logs), and
+`somm plans --json` carries it under `vendor`. Trust the vendor figure. Don't aim a new high-volume
 workload at a metered provider that's already over pace — the router
 will deprioritize it anyway. The `claude-cli`/`codex-cli` seat providers
 are deliberately **pinned-only**: excellent for gold grading and

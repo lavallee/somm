@@ -5,6 +5,26 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.27.0] — 2026-11-15
+
+### Added
+- **Vendor-reported plan usage in `somm plans --json`.** A new `vendor` list
+  carries each window the vendor itself reports, as `{provider, plan, window,
+  used_pct, resets_at, observed_at, source}`. Metered rows only count calls made
+  through somm, so a plan shared with interactive use can be much fuller than they
+  show; on the day this shipped, MiniMax reported 90% of the week used against 46%
+  metered. Readers never spend quota and never touch credentials beyond an API
+  key already in the environment:
+  - **minimax**: the existing `token_plan/remains` reader, now in JSON too.
+  - **codex-cli**: the newest `rate_limits` event in Codex's own session logs
+    (`$CODEX_HOME/sessions`), with plan type, window, reset time and credit
+    balance. It is as fresh as the last Codex turn on the host; `observed_at`
+    says when.
+- `somm plans` prints every vendor reading, not only MiniMax's.
+
+### Security
+- Lock `opentelemetry-api` 1.45.2 (CVE-2026-126360 in 1.45.1).
+
 ## [0.26.2] — 2026-11-10
 
 ### Added
