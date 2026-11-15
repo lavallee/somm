@@ -95,3 +95,24 @@ def test_failed_balance_read_is_reported_not_hidden(monkeypatch):
     monkeypatch.setattr(V, "_request", boom)
     out = V.balances({"DEEPSEEK_API_KEY": "k"})
     assert out == [{"provider": "deepseek", "error": "OSError: HTTP 401", "observed_at": out[0]["observed_at"]}]
+
+
+def test_plans_json_without_declared_plans_still_reports_vendor_and_balances(tmp_path, monkeypatch, capsys):
+    import json as _json
+
+    from somm.cli import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    for k in ("MINIMAX_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "RUNPOD_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    _write(tmp_path / "codex/sessions/a.jsonl", [_event("2026-11-13T09:49:18Z", 4.0)])
+    monkeypatch.chdir(tmp_path)
+    try:
+        main(["plans", "--json"])
+    except SystemExit as e:
+        assert e.code in (0, None)
+    out = _json.loads(capsys.readouterr().out)
+    assert out["limits"] == [] and out["balances"] == []
+    assert out["vendor"][0]["provider"] == "codex-cli"

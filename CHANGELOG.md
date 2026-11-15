@@ -18,6 +18,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   A metered budget only sees somm's own spend; the balance is what actually
   stops calls. On release day DeepSeek and OpenRouter were both below zero.
 
+### Fixed
+- **`somm plans --json` printed setup prose on a host with no plans declared.**
+  It now prints JSON with empty `limits` and the vendor readings and balances,
+  which need no declared plan.
+
 ## [0.27.0] — 2026-11-15
 
 ### Added
