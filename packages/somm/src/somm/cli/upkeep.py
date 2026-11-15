@@ -180,10 +180,10 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             }
             for b in payg_burn_rates(dbs, plans)
         ]
-        from somm.vendor_usage import vendor_readings
+        from somm.vendor_usage import balances, vendor_readings
 
         print(json.dumps({"scope": scope, "limits": out, "payg_burn": burn,
-                          "vendor": vendor_readings()}, indent=1))
+                          "vendor": vendor_readings(), "balances": balances()}, indent=1))
         return 0
 
     print(f"Plan usage — {scope}\n")
@@ -236,6 +236,18 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             resets = f", resets {v['resets_at'][:16]}" if v.get("resets_at") else ""
             print(f"  {v['provider']:<12}{plan} {v['window']:<4} {v['used_pct']:5.1f}% used"
                   f"{resets} (as of {str(v['observed_at'])[:16]}, {v['source']})")
+
+    from somm.vendor_usage import balances
+
+    bal = balances()
+    if bal:
+        print("\nprepaid balances (vendor-reported):")
+        for b in bal:
+            if b.get("error"):
+                print(f"  {b['provider']:<12} unreadable: {b['error']}")
+                continue
+            extra = f", spending ${b['spend_per_hr']:.2f}/h" if b.get("spend_per_hr") else ""
+            print(f"  {b['provider']:<12} {b['balance']:,.2f} {b.get('currency') or ''}{extra}")
 
     metered_no_limits = [p for p, pl in plans.items() if pl.mode == "metered" and not pl.limits]
     if metered_no_limits:

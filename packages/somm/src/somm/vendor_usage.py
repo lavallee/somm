@@ -13,6 +13,9 @@ quota, and never refresh or rewrite anyone's credentials:
 
 Each reading is ``{provider, plan, window, used_pct, resets_at, observed_at,
 source}`` plus provider extras. A reader that cannot see anything returns ``[]``.
+
+``balances()`` reads prepaid pay-as-you-go accounts (DeepSeek, OpenRouter,
+RunPod) with each account's own API key, read-only.
 """
 from __future__ import annotations
 
@@ -114,6 +117,89 @@ def codex_readings(codex_home: str | os.PathLike | None = None) -> list[dict]:
             })
         return out
     return []
+
+
+# --- prepaid balances ---------------------------------------------------------------
+# Pay-as-you-go accounts stop when the balance hits zero, which no metered
+# budget sees coming. Each reader is one read-only GET/POST with the account's own
+# API key from the environment, and returns [] when the key is absent.
+
+def _request(url: str, key: str, *, body: dict | None = None, timeout: float = 10.0) -> dict:
+    import urllib.request
+
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {key}", "Accept": "application/json",
+                 "Content-Type": "application/json", "User-Agent": "somm"},
+        method="POST" if body is not None else "GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed https URLs
+        return json.loads(resp.read(1024 * 1024))
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def deepseek_balance(env: dict) -> list[dict]:
+    key = env.get("DEEPSEEK_API_KEY")
+    if not key:
+        return []
+    data = _request("https://api.deepseek.com/user/balance", key)
+    out = []
+    for info in data.get("balance_infos") or []:
+        out.append({
+            "provider": "deepseek", "currency": info.get("currency"),
+            "balance": float(info.get("total_balance") or 0),
+            "granted": float(info.get("granted_balance") or 0),
+            "topped_up": float(info.get("topped_up_balance") or 0),
+            "available": bool(data.get("is_available")),
+            "observed_at": _now(), "source": "deepseek /user/balance"})
+    return out
+
+
+def openrouter_balance(env: dict) -> list[dict]:
+    key = env.get("OPENROUTER_API_KEY")
+    if not key:
+        return []
+    data = (_request("https://openrouter.ai/api/v1/credits", key).get("data") or {})
+    total, used = float(data.get("total_credits") or 0), float(data.get("total_usage") or 0)
+    return [{"provider": "openrouter", "currency": "USD", "balance": round(total - used, 4),
+             "purchased": total, "used": used, "observed_at": _now(),
+             "source": "openrouter /api/v1/credits"}]
+
+
+RUNPOD_QUERY = "query { myself { clientBalance currentSpendPerHr spendLimit } }"
+
+
+def runpod_balance(env: dict) -> list[dict]:
+    key = env.get("RUNPOD_API_KEY")
+    if not key:
+        return []
+    me = ((_request("https://api.runpod.io/graphql", key, body={"query": RUNPOD_QUERY})
+           .get("data") or {}).get("myself") or {})
+    if "clientBalance" not in me:
+        raise ValueError("runpod: no balance in response")
+    return [{"provider": "runpod", "currency": "USD", "balance": float(me["clientBalance"] or 0),
+             "spend_per_hr": float(me.get("currentSpendPerHr") or 0),
+             "spend_limit": me.get("spendLimit"), "observed_at": _now(),
+             "source": "runpod graphql myself"}]
+
+
+BALANCE_READERS = (deepseek_balance, openrouter_balance, runpod_balance)
+
+
+def balances(env: dict | None = None) -> list[dict]:
+    """Every prepaid balance this host has a key for. A failed read is reported,
+    not hidden, so "no key" and "the API changed" stay distinguishable."""
+    env = env if env is not None else dict(os.environ)
+    out: list[dict] = []
+    for reader in BALANCE_READERS:
+        try:
+            out += reader(env)
+        except Exception as e:  # noqa: BLE001 - one account's failure must not hide the others
+            out.append({"provider": reader.__name__.removesuffix("_balance"),
+                        "error": f"{type(e).__name__}: {e}"[:200], "observed_at": _now()})
+    return out
 
 
 def vendor_readings(env: dict | None = None) -> list[dict]:
