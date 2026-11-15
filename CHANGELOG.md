@@ -22,6 +22,9 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
     says when.
 - `somm plans` prints every vendor reading, not only MiniMax's.
 
+### Security
+- Lock `opentelemetry-api` 1.45.2 (CVE-2026-126360 in 1.45.1).
+
 ## [0.26.2] — 2026-11-10
 
 ### Added
