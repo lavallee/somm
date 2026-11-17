@@ -129,9 +129,9 @@ def _cmd_plans(args: argparse.Namespace) -> int:
 
     if not plans and args.json:
         # Vendor readings and balances need no declared plan; a monitor still wants them.
-        from somm.vendor_usage import balances, vendor_readings
-
         from somm_core.plans import credit_refusals
+
+        from somm.vendor_usage import balances, vendor_readings
 
         print(json.dumps({"scope": "no plans declared", "limits": [], "payg_burn": [],
                           "vendor": vendor_readings(), "balances": balances(),
@@ -190,9 +190,9 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             }
             for b in payg_burn_rates(dbs, plans)
         ]
-        from somm.vendor_usage import balances, vendor_readings
-
         from somm_core.plans import credit_refusals
+
+        from somm.vendor_usage import balances, vendor_readings
 
         print(json.dumps({"scope": scope, "limits": out, "payg_burn": burn,
                           "vendor": vendor_readings(), "balances": balances(),
