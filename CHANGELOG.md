@@ -5,6 +5,24 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.28.0] — 2026-11-15
+
+### Added
+- **Prepaid balances in `somm plans`.** `--json` gains `balances`: what each
+  pay-as-you-go account has left, read-only, with that account's own key from the
+  environment. A missing key reads as nothing; a failed read is reported with its
+  error rather than hidden.
+  - **deepseek**: `GET /user/balance` (total, granted and topped-up, per currency).
+  - **openrouter**: `GET /api/v1/credits` (purchased minus used).
+  - **runpod**: GraphQL `myself { clientBalance currentSpendPerHr spendLimit }`.
+  A metered budget only sees somm's own spend; the balance is what actually
+  stops calls. On release day DeepSeek and OpenRouter were both below zero.
+
+### Fixed
+- **`somm plans --json` printed setup prose on a host with no plans declared.**
+  It now prints JSON with empty `limits` and the vendor readings and balances,
+  which need no declared plan.
+
 ## [0.27.0] — 2026-11-15
 
 ### Added

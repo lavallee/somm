@@ -59,3 +59,60 @@ def test_one_broken_reader_does_not_hide_the_others(monkeypatch, tmp_path):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write(tmp_path / "sessions/a.jsonl", [_event("2026-11-13T09:49:18Z", 4.0)])
     assert [r["provider"] for r in V.vendor_readings({})] == ["codex-cli"]
+
+
+def test_deepseek_balance_parses_each_currency(monkeypatch):
+    monkeypatch.setattr(V, "_request", lambda url, key, **k: {"is_available": True, "balance_infos": [
+        {"currency": "USD", "total_balance": "12.50", "granted_balance": "2.50", "topped_up_balance": "10.00"}]})
+    [b] = V.deepseek_balance({"DEEPSEEK_API_KEY": "k"})
+    assert (b["provider"], b["balance"], b["granted"], b["available"]) == ("deepseek", 12.5, 2.5, True)
+    assert V.deepseek_balance({}) == []
+
+
+def test_openrouter_balance_is_purchased_minus_used(monkeypatch):
+    monkeypatch.setattr(V, "_request", lambda url, key, **k: {"data": {"total_credits": 20, "total_usage": 7.25}})
+    [b] = V.openrouter_balance({"OPENROUTER_API_KEY": "k"})
+    assert b["balance"] == 12.75
+
+
+def test_runpod_balance_and_spend_rate(monkeypatch):
+    seen = {}
+
+    def fake(url, key, body=None, **k):
+        seen["body"] = body
+        return {"data": {"myself": {"clientBalance": 41.2, "currentSpendPerHr": 0.69, "spendLimit": 80}}}
+
+    monkeypatch.setattr(V, "_request", fake)
+    [b] = V.runpod_balance({"RUNPOD_API_KEY": "k"})
+    assert (b["balance"], b["spend_per_hr"]) == (41.2, 0.69)
+    assert "clientBalance" in seen["body"]["query"]
+
+
+def test_failed_balance_read_is_reported_not_hidden(monkeypatch):
+    def boom(url, key, **k):
+        raise OSError("HTTP 401")
+
+    monkeypatch.setattr(V, "_request", boom)
+    out = V.balances({"DEEPSEEK_API_KEY": "k"})
+    assert out == [{"provider": "deepseek", "error": "OSError: HTTP 401", "observed_at": out[0]["observed_at"]}]
+
+
+def test_plans_json_without_declared_plans_still_reports_vendor_and_balances(tmp_path, monkeypatch, capsys):
+    import json as _json
+
+    from somm.cli import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    for k in ("MINIMAX_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "RUNPOD_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    _write(tmp_path / "codex/sessions/a.jsonl", [_event("2026-11-13T09:49:18Z", 4.0)])
+    monkeypatch.chdir(tmp_path)
+    try:
+        main(["plans", "--json"])
+    except SystemExit as e:
+        assert e.code in (0, None)
+    out = _json.loads(capsys.readouterr().out)
+    assert out["limits"] == [] and out["balances"] == []
+    assert out["vendor"][0]["provider"] == "codex-cli"

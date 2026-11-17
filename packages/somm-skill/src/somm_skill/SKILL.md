@@ -198,7 +198,7 @@ pace ("metered plan 62% used, pace 1.3x"). Metered rows only count calls
 made through somm; a subscription shared with interactive use can be fuller
 than they show. `somm plans` also prints the vendor's own percentage where one
 can be read (MiniMax's plan endpoint; Codex's session logs), and
-`somm plans --json` carries it under `vendor`. Trust the vendor figure. Don't aim a new high-volume
+`somm plans --json` carries it under `vendor`, and prepaid pay-as-you-go balances (DeepSeek, OpenRouter, RunPod) under `balances`. Trust the vendor figure; a payg provider at or below zero balance will refuse calls whatever its budget says. Don't aim a new high-volume
 workload at a metered provider that's already over pace — the router
 will deprioritize it anyway. The `claude-cli`/`codex-cli` seat providers
 are deliberately **pinned-only**: excellent for gold grading and
