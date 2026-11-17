@@ -15,7 +15,10 @@ Each reading is ``{provider, plan, window, used_pct, resets_at, observed_at,
 source}`` plus provider extras. A reader that cannot see anything returns ``[]``.
 
 ``balances()`` reads prepaid pay-as-you-go accounts (DeepSeek, OpenRouter,
-RunPod) with each account's own API key, read-only.
+RunPod, Vast.ai) with each account's own API key, read-only. TypeSafe (Jev) and
+SubQ publish no balance API: for them it reports whether the key works
+(``balance`` is None, ``key_ok`` True), and ``somm_core.plans.credit_refusals``
+reports calls refused for lack of credit.
 """
 from __future__ import annotations
 
@@ -185,7 +188,46 @@ def runpod_balance(env: dict) -> list[dict]:
              "source": "runpod graphql myself"}]
 
 
-BALANCE_READERS = (deepseek_balance, openrouter_balance, runpod_balance)
+def vast_balance(env: dict) -> list[dict]:
+    key = env.get("VAST_API_KEY")
+    if not key:
+        return []
+    user = _request("https://console.vast.ai/api/v0/users/current", key)
+    # The response also carries the account's email and ssh key: keep only money.
+    if "balance" not in user and "credit" not in user:
+        raise ValueError("vast: no balance in response")
+    balance = user.get("balance") if user.get("balance") is not None else user.get("credit")
+    return [{"provider": "vast", "currency": "USD", "balance": float(balance or 0),
+             "observed_at": _now(), "source": "vast /api/v0/users/current"}]
+
+
+# Vendors with no balance API. A free, authenticated `GET /v1/models` proves the
+# key works; credit exhaustion only shows up as refused calls (credit_refusals).
+ACCESS_ONLY = {
+    "typesafe": ("TYPESAFE_API_KEY", "https://api.typesafe.ai/v1/models"),
+    "subq": ("SUBQ_API_KEY", "https://api.subq.ai/v1/models"),
+}
+
+
+def _access_reader(provider: str):
+    env_key, url = ACCESS_ONLY[provider]
+
+    def read(env: dict) -> list[dict]:
+        key = env.get(env_key)
+        if not key:
+            return []
+        data = _request(url, key)
+        models = [m.get("id") for m in data.get("data") or [] if isinstance(m, dict)]
+        return [{"provider": provider, "currency": None, "balance": None, "key_ok": True,
+                 "models": [m for m in models if m][:20], "observed_at": _now(),
+                 "source": f"{provider} GET /v1/models (no balance API)"}]
+
+    read.__name__ = f"{provider}_balance"
+    return read
+
+
+BALANCE_READERS = (deepseek_balance, openrouter_balance, runpod_balance, vast_balance,
+                   _access_reader("typesafe"), _access_reader("subq"))
 
 
 def balances(env: dict | None = None) -> list[dict]:

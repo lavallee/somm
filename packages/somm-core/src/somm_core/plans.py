@@ -482,6 +482,45 @@ def recent_ok_calls(
     return total
 
 
+CREDIT_REFUSAL_KINDS = ("SommInsufficientCredit",)
+
+
+def credit_refusals(
+    db_paths: list[Path],
+    days: float = 30.0,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Calls a provider refused for lack of credit, per provider, from telemetry.
+
+    For accounts whose vendor publishes no balance API (TypeSafe, for one), the
+    only evidence that credit ran out is the refusal itself: HTTP 402 or a
+    "credit balance is too low" body, recorded as ``SommInsufficientCredit``.
+    Returns ``[{provider, count, last_at}]`` for the trailing ``days``."""
+    now = now or datetime.now(UTC)
+    since = (now - timedelta(days=days)).isoformat()
+    marks = ",".join("?" for _ in CREDIT_REFUSAL_KINDS)
+    totals: dict[str, dict] = {}
+    for db in db_paths:
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+            try:
+                rows = conn.execute(
+                    f"SELECT provider, COUNT(*), MAX(ts) FROM calls WHERE ts >= ? "
+                    f"AND error_kind IN ({marks}) GROUP BY provider",
+                    (since, *CREDIT_REFUSAL_KINDS),
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            continue
+        for provider, count, last in rows:
+            t = totals.setdefault(provider, {"provider": provider, "count": 0, "last_at": None})
+            t["count"] += int(count or 0)
+            if last and (t["last_at"] is None or str(last) > t["last_at"]):
+                t["last_at"] = str(last)
+    return sorted(totals.values(), key=lambda t: t["provider"])
+
+
 @dataclass(slots=True)
 class ObservedCeiling:
     """A quota estimate inferred from your own telemetry.

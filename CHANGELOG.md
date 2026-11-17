@@ -5,6 +5,21 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [0.29.0] — 2026-11-17
+
+### Added
+- **Vast.ai balance** in `somm plans` balances, from `GET /api/v0/users/current`
+  with `VAST_API_KEY`. Only the balance is kept; the response's email and SSH
+  key are dropped.
+- **TypeSafe (Jev) and SubQ access checks.** Neither vendor publishes a balance
+  API. With `TYPESAFE_API_KEY` or `SUBQ_API_KEY` set, `balances` reports whether
+  the key works (a free `GET /v1/models`) with `balance: null`.
+- **`credit_refusals` in `somm plans --json`**: calls refused for lack of credit
+  (`SommInsufficientCredit`: HTTP 402 or a "credit balance too low" body) per
+  provider over 30 days, with the latest time. For a vendor without a balance
+  API this is the only sign that credit ran out. On release day it showed 18
+  Perplexity refusals whose somm budget read $0 spent.
+
 ## [0.28.0] — 2026-11-15
 
 ### Added
