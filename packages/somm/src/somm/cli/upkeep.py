@@ -129,10 +129,13 @@ def _cmd_plans(args: argparse.Namespace) -> int:
 
     if not plans and args.json:
         # Vendor readings and balances need no declared plan; a monitor still wants them.
+        from somm_core.plans import credit_refusals
+
         from somm.vendor_usage import balances, vendor_readings
 
         print(json.dumps({"scope": "no plans declared", "limits": [], "payg_burn": [],
-                          "vendor": vendor_readings(), "balances": balances()}, indent=1))
+                          "vendor": vendor_readings(), "balances": balances(),
+                          "credit_refusals": credit_refusals(dbs)}, indent=1))
         return 0
     if not plans:
         print(f"No plans declared. Create {plans_path()} — example:")
@@ -187,10 +190,13 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             }
             for b in payg_burn_rates(dbs, plans)
         ]
+        from somm_core.plans import credit_refusals
+
         from somm.vendor_usage import balances, vendor_readings
 
         print(json.dumps({"scope": scope, "limits": out, "payg_burn": burn,
-                          "vendor": vendor_readings(), "balances": balances()}, indent=1))
+                          "vendor": vendor_readings(), "balances": balances(),
+                          "credit_refusals": credit_refusals(dbs)}, indent=1))
         return 0
 
     print(f"Plan usage — {scope}\n")
@@ -253,8 +259,19 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             if b.get("error"):
                 print(f"  {b['provider']:<12} unreadable: {b['error']}")
                 continue
+            if b.get("balance") is None:
+                print(f"  {b['provider']:<12} key ok; vendor publishes no balance")
+                continue
             extra = f", spending ${b['spend_per_hr']:.2f}/h" if b.get("spend_per_hr") else ""
             print(f"  {b['provider']:<12} {b['balance']:,.2f} {b.get('currency') or ''}{extra}")
+
+    from somm_core.plans import credit_refusals
+
+    refused = credit_refusals(dbs)
+    if refused:
+        print("\ncalls refused for lack of credit (30d):")
+        for r in refused:
+            print(f"  {r['provider']:<12} {r['count']} (last {str(r['last_at'])[:16]})")
 
     metered_no_limits = [p for p, pl in plans.items() if pl.mode == "metered" and not pl.limits]
     if metered_no_limits:

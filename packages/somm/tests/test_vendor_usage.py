@@ -116,3 +116,40 @@ def test_plans_json_without_declared_plans_still_reports_vendor_and_balances(tmp
     out = _json.loads(capsys.readouterr().out)
     assert out["limits"] == [] and out["balances"] == []
     assert out["vendor"][0]["provider"] == "codex-cli"
+
+
+def test_vast_balance_keeps_only_money(monkeypatch):
+    monkeypatch.setattr(V, "_request", lambda url, key, **k: {"id": 1, "email": "x@y", "balance": 17.5, "ssh_key": "k"})
+    [b] = V.vast_balance({"VAST_API_KEY": "k"})
+    assert b["balance"] == 17.5 and "email" not in json.dumps(b) and "x@y" not in json.dumps(b)
+    assert V.vast_balance({}) == []
+
+
+def test_access_only_providers_report_key_ok_without_balance(monkeypatch):
+    monkeypatch.setattr(V, "_request", lambda url, key, **k: {"data": [{"id": "jev-1.13.0"}, {"id": "jev-latest"}]})
+    out = {b["provider"]: b for b in V.balances({"TYPESAFE_API_KEY": "k", "SUBQ_API_KEY": "s"})}
+    assert out["typesafe"]["balance"] is None and out["typesafe"]["key_ok"] is True
+    assert out["typesafe"]["models"] == ["jev-1.13.0", "jev-latest"]
+    assert "subq" in out
+
+
+def test_credit_refusals_from_telemetry(tmp_path):
+    import sqlite3
+    from datetime import UTC, datetime, timedelta
+
+    from somm_core.plans import credit_refusals
+
+    now = datetime(2026, 11, 17, tzinfo=UTC)
+    db = tmp_path / "calls.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE calls (provider TEXT, ts TEXT, outcome TEXT, error_kind TEXT)")
+    rows = [("typesafe", (now - timedelta(days=1)).isoformat(), "error", "SommInsufficientCredit"),
+            ("typesafe", (now - timedelta(days=2)).isoformat(), "error", "SommInsufficientCredit"),
+            ("typesafe", (now - timedelta(days=40)).isoformat(), "error", "SommInsufficientCredit"),
+            ("minimax", (now - timedelta(days=1)).isoformat(), "error", "SommTimeout")]
+    conn.executemany("INSERT INTO calls VALUES (?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+    [r] = credit_refusals([db, tmp_path / "missing.sqlite"], now=now)
+    assert (r["provider"], r["count"]) == ("typesafe", 2)
+    assert r["last_at"].startswith("2026-11-16")
