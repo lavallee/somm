@@ -73,17 +73,20 @@ def _tokens(result: HarnessResult) -> tuple[int, int, int | None, int | None, in
 
     tokens_in = pick("prompt_tokens_total", "input_tokens", "input", "prompt_tokens") or 0
     tokens_out = pick("output_tokens", "output", "completion_tokens") or 0
-    cache_read = pick("cache_read_input_tokens", "cached_input_tokens")
+    cache_read = pick("cache_read_input_tokens", "cached_input_tokens", "cacheRead")
     if cache_read is None and isinstance(cache.get("read"), (int, float)):
         cache_read = int(cache["read"])
-    cache_write = pick("cache_creation_input_tokens", "cache_write_input_tokens")
+    cache_write = pick("cache_creation_input_tokens", "cache_write_input_tokens", "cacheWrite")
     if cache_write is None and isinstance(cache.get("write"), (int, float)):
         cache_write = int(cache["write"])
     reasoning = pick("reasoning_tokens", "reasoning_output_tokens", "reasoning")
-    # Codex and OpenCode report input exclusive of cache reads; the ledger's
-    # tokens_in is the whole prompt, as for every other provider.
-    if result.harness in ("codex", "opencode") and cache_read:
-        tokens_in += cache_read
+    # Codex input already includes cached reads. OpenCode and Pi report
+    # uncached input, cache reads and cache writes as separate quantities.
+    if result.harness in ("opencode", "pi"):
+        tokens_in += (cache_read or 0) + (cache_write or 0)
+    # OpenCode reports reasoning separately; the ledger counts all output.
+    if result.harness == "opencode":
+        tokens_out += reasoning or 0
     return tokens_in, tokens_out, cache_read, cache_write, reasoning
 
 
