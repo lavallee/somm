@@ -121,12 +121,14 @@ def run_dataset_eval(
     run_id = str(uuid.uuid4())
     results: list[EvalItemResult] = []
     for item in dataset_items:
+        recorded_call_id = None
         try:
             generated = generate(item)
             if not _wait_for_call(repo, generated.call_id, timeout_s=record_timeout_s):
                 raise RuntimeError(
                     f"generated call {generated.call_id!r} was not committed before timeout"
                 )
+            recorded_call_id = generated.call_id
             if generated.outcome != Outcome.OK:
                 eval_result_id = _record_dataset_eval(
                     repo,
@@ -194,7 +196,7 @@ def run_dataset_eval(
                 EvalItemResult(
                     item_id=item.id,
                     source_call_id=item.source_call_id,
-                    generated_call_id=None,
+                    generated_call_id=recorded_call_id,
                     eval_result_id=None,
                     score=0.0,
                     passed=False,
