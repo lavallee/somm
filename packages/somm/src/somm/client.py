@@ -37,6 +37,7 @@ from somm_core.parse import (
     extract_json,
     extract_reasoning_tokens,
     infer_capabilities,
+    provider_custody,
     stable_hash,
 )
 from somm_core.parse import (
@@ -508,29 +509,6 @@ def _call_event(
         "reasoning_tokens": reasoning_tokens,
         "ttft_ms": latency_ttft_ms,
     }
-
-
-def _provider_custody(raw: dict | None) -> tuple[str | None, str | None]:
-    """Recover stable provider request/billing ids only when explicitly present."""
-    if not isinstance(raw, dict):
-        return None, None
-    request_id = next(
-        (
-            str(raw[key])
-            for key in ("request_id", "requestId", "response_id", "id")
-            if raw.get(key) not in (None, "")
-        ),
-        None,
-    )
-    billing_id = next(
-        (
-            str(raw[key])
-            for key in ("billing_id", "billingId", "invoice_id")
-            if raw.get(key) not in (None, "")
-        ),
-        None,
-    )
-    return request_id, billing_id
 
 
 def _fire_call_hooks(event: dict) -> None:
@@ -2293,7 +2271,7 @@ class SommLLM:
         cache_tokens_in, cache_tokens_out = extract_cache_tokens(raw_out)
         reasoning_tokens = extract_reasoning_tokens(raw_out)
         citations = extract_citations(raw_out)
-        provider_request_id, billing_id = _provider_custody(raw_out)
+        provider_request_id, billing_id = provider_custody(raw_out)
         call_id = plan.call_id
         result = SommResult(
             text=text,
@@ -2667,7 +2645,7 @@ class SommLLM:
             cost_usd = cost_for_call(self.repo, "ollama", actual_model, tokens_in, 0)
         if short_circuit is not None:
             raw_out = short_circuit.raw
-        provider_request_id, billing_id = _provider_custody(raw_out)
+        provider_request_id, billing_id = provider_custody(raw_out)
 
         result = EmbedResult(
             embedding=embedding,

@@ -54,7 +54,7 @@ from somm_core.graders import (
     parse_binary_judge_response,
 )
 from somm_core.models import Call, Outcome
-from somm_core.parse import extract_cache_tokens, stable_hash
+from somm_core.parse import extract_cache_tokens, provider_custody, stable_hash
 from somm_core.pricing import cost_for_call, free_route, known_prices
 from somm_core.repository import Repository
 
@@ -794,7 +794,7 @@ class ShadowEvalWorker:
             return existing
 
         raw = response.raw if response is not None else None
-        request_id, billing_id = _provider_custody(raw)
+        request_id, billing_id = provider_custody(raw)
         actual_model = str(response.model) if response is not None else model
         tokens_in = int(response.tokens_in) if response is not None else 0
         tokens_out = int(response.tokens_out) if response is not None else 0
@@ -999,28 +999,6 @@ def _parse_ts(raw: str | None) -> datetime | None:
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
     except (ValueError, TypeError):
         return None
-
-
-def _provider_custody(raw: dict | None) -> tuple[str | None, str | None]:
-    if not isinstance(raw, dict):
-        return None, None
-    request_id = next(
-        (
-            str(raw[key])
-            for key in ("request_id", "requestId", "response_id", "id")
-            if raw.get(key) not in (None, "")
-        ),
-        None,
-    )
-    billing_id = next(
-        (
-            str(raw[key])
-            for key in ("billing_id", "billingId", "invoice_id")
-            if raw.get(key) not in (None, "")
-        ),
-        None,
-    )
-    return request_id, billing_id
 
 
 def _reported_cost(raw: dict | None) -> float | None:

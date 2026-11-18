@@ -19,6 +19,26 @@ _DOUBLE_QUOTE_RE = re.compile(r'""([^"]*)""')
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+def provider_custody(raw: dict | None) -> tuple[str | None, str | None]:
+    """Recover explicit request and billing identifiers from a provider response."""
+    if not isinstance(raw, dict):
+        return None, None
+
+    def first_id(keys: tuple[str, ...]) -> str | None:
+        for key in keys:
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+            if type(value) is int:
+                return str(value)
+        return None
+
+    return (
+        first_id(("request_id", "requestId", "response_id", "id")),
+        first_id(("billing_id", "billingId", "invoice_id")),
+    )
+
+
 def _strip_control_chars(text: str) -> str:
     """Replace C0 control chars with spaces, preserving \\n, \\r, \\t.
 
