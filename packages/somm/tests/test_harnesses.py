@@ -1136,3 +1136,25 @@ def test_capture_tail_preserves_character_and_newline_semantics(tmp_path, tail):
     path.write_bytes(("🪶é\r\n" * 800 + "done\r").encode() + b"\xff")
     full = path.read_text(errors="replace")
     assert read_capture(path, tail=tail) == (full if tail is None else full[-tail:])
+
+
+@pytest.mark.parametrize(("harness", "usage", "expected"), [
+    ("codex", {"input_tokens": 100, "cached_input_tokens": 80,
+               "output_tokens": 50, "reasoning_output_tokens": 5}, (100, 50, 80, None, 5)),
+    ("pi", {"input": 20, "output": 50, "cacheRead": 80, "cacheWrite": 10,
+            "reasoning": 5}, (110, 50, 80, 10, 5)),
+    ("opencode", {"input": 20, "output": 50, "reasoning": 5, "cache": {"read": 80, "write": 10}},
+     (110, 55, 80, 10, 5)),
+])
+def test_harness_ledger_uses_whole_prompt_once(tmp_path, harness, usage, expected):
+    from somm_core.config import Config
+
+    cfg = Config()
+    cfg.project = "token-categories"
+    cfg.db_dir = tmp_path / ".somm"
+    cfg.spool_dir = cfg.db_dir / "spool"
+    result = harnesses.HarnessResult(harness=harness, outcome=harnesses.HarnessOutcome.COMPLETED,
+                                     usage=usage)
+    call = harnesses.record_attempt(result, config=cfg)
+    assert (call.tokens_in, call.tokens_out, call.cache_tokens_in, call.cache_tokens_out,
+            call.reasoning_tokens) == expected
