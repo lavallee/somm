@@ -1037,14 +1037,16 @@ options:
   --dry-run          report without writing
 
 ===== somm plans =====
-usage: somm plans [-h] [--project PROJECT] [--project-only] [--json] [--catalog] [--learn]
-                  [--dry-run] [--min-events MIN_EVENTS]
+usage: somm plans [-h] [--project PROJECT] [--project-only] [--json] [--windows-only] [--catalog]
+                  [--learn] [--dry-run] [--min-events MIN_EVENTS]
 
 options:
   -h, --help            show this help message and exit
   --project PROJECT
   --project-only        count only this project's usage (default: whole fleet — quotas are shared)
   --json
+  --windows-only        emit JSON with metered and vendor windows; skip balances and spending
+                        reports
   --catalog             list known plans from the bundled catalog (with sources + verified dates)
   --learn               write observed quota ceilings from recent 429s into plans.toml
   --dry-run             show learned limits without writing
