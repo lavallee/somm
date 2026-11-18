@@ -294,3 +294,11 @@ def test_unusable_scores_and_unsuccessful_candidates_cannot_select_a_winner(tmp_
     assert bad.n_errors == 1
     assert bad.items[0].generated_call_id == generated.call_id
     assert not repo.eval_receipts(run_id=bad.run_id)
+
+
+def test_provider_ids_are_scalar_and_keep_alias_precedence():
+    from somm_core.parse import provider_custody
+
+    assert provider_custody({"request_id":"primary", "id":"secondary", "invoice_id":42}) == ("primary", "42")
+    assert provider_custody({"request_id":{"text":"private body"}, "requestId":" ", "id":"fallback",
+                             "billing_id":True, "billingId":["bad"]}) == ("fallback", None)
