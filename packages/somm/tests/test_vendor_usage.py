@@ -157,7 +157,6 @@ def test_credit_refusals_from_telemetry(tmp_path):
 
 def test_plans_windows_only_avoids_balance_and_spend_queries(tmp_path, monkeypatch, capsys):
     import pytest
-
     from somm.cli import main
 
     plans = tmp_path / "plans.toml"
