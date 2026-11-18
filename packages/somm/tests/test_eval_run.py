@@ -140,6 +140,27 @@ def test_run_dataset_eval_reports_generation_errors(tmp_path):
     assert result.passed is False
     assert result.n_errors == 1
     assert "provider down" in result.items[0].error
+    assert result.items[0].generated_call_id is None
+
+
+def test_judge_failure_keeps_the_recorded_generation(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl, _, _ = _seed_dataset(repo)
+    generated = _generated(repo, "eval-test", wl.id, "answer")
+
+    def fail_judge(_item, _generated):
+        raise RuntimeError("grader unavailable")
+
+    result = run_dataset_eval(
+        repo, project="eval-test", workload="qa", dataset="golden",
+        generate=lambda _item: generated, judge=fail_judge,
+    )
+
+    assert not result.passed
+    assert result.n_errors == 1
+    assert result.items[0].generated_call_id == generated.call_id
+    assert result.items[0].eval_result_id is None
+    assert "grader unavailable" in result.items[0].error
 
 
 def test_run_dataset_eval_uses_binary_judge_and_links_judge_calls(tmp_path):
