@@ -12,6 +12,8 @@ import os
 import sqlite3
 import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -1453,6 +1455,18 @@ class Repository:
             self._dataset_item_row(row) for row in item_rows
         ]
 
+    @contextmanager
+    def eval_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Publish one grade, its call links and its receipt as a unit.
+
+        Keep provider calls outside this short write transaction. The three
+        eval writers below also work independently in SQLite autocommit mode.
+        """
+        conn = self._open()
+        conn.execute("BEGIN IMMEDIATE")
+        with conn:
+            yield conn
+
     def link_call_to_eval(
         self,
         call_id: str,
@@ -1462,14 +1476,14 @@ class Repository:
         observation_role: str,
     ) -> None:
         """Attach an already-recorded auxiliary call to its eval result."""
-        with self._open() as conn:
-            cursor = conn.execute(
-                "UPDATE calls SET eval_result_id = ?, source_call_id = ?, "
-                "observation_role = ? WHERE id = ?",
-                (eval_result_id, source_call_id, observation_role, call_id),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError(f"call {call_id!r} not found")
+        conn = self._open()
+        cursor = conn.execute(
+            "UPDATE calls SET eval_result_id = ?, source_call_id = ?, "
+            "observation_role = ? WHERE id = ?",
+            (eval_result_id, source_call_id, observation_role, call_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"call {call_id!r} not found")
 
     def record_eval_result(
         self,
@@ -1484,25 +1498,25 @@ class Repository:
     ) -> int:
         """Append one eval_results row and return its integer id."""
 
-        with self._open() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO eval_results (
-                    call_id, gold_model, gold_response_hash, structural_score,
-                    embedding_score, judge_score, judge_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    call_id,
-                    gold_model,
-                    gold_response_hash,
-                    structural_score,
-                    embedding_score,
-                    judge_score,
-                    judge_reason,
-                ),
-            )
-            return int(cursor.lastrowid)
+        conn = self._open()
+        cursor = conn.execute(
+            """
+            INSERT INTO eval_results (
+                call_id, gold_model, gold_response_hash, structural_score,
+                embedding_score, judge_score, judge_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                call_id,
+                gold_model,
+                gold_response_hash,
+                structural_score,
+                embedding_score,
+                judge_score,
+                judge_reason,
+            ),
+        )
+        return int(cursor.lastrowid)
 
     @staticmethod
     def _eval_receipt_row(row) -> EvalReceipt:
@@ -1543,41 +1557,41 @@ class Repository:
     ) -> EvalReceipt:
         receipt_id = str(uuid.uuid4())
         payload_json = json.dumps(payload, sort_keys=True)
-        with self._open() as conn:
-            conn.execute(
-                """
-                INSERT INTO eval_receipts (
-                    id, eval_result_id, run_id, receipt_type, call_id,
-                    dataset_id, dataset_item_id, source_call_id,
-                    candidate_a_call_id, candidate_b_call_id,
-                    winner, score, threshold, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    receipt_id,
-                    eval_result_id,
-                    run_id,
-                    receipt_type,
-                    call_id,
-                    dataset_id,
-                    dataset_item_id,
-                    source_call_id,
-                    candidate_a_call_id,
-                    candidate_b_call_id,
-                    winner,
-                    score,
-                    threshold,
-                    payload_json,
-                ),
-            )
-            row = conn.execute(
-                "SELECT id, eval_result_id, run_id, receipt_type, call_id, "
-                "dataset_id, dataset_item_id, source_call_id, "
-                "candidate_a_call_id, candidate_b_call_id, winner, score, "
-                "threshold, payload_json, created_at "
-                "FROM eval_receipts WHERE id = ?",
-                (receipt_id,),
-            ).fetchone()
+        conn = self._open()
+        conn.execute(
+            """
+            INSERT INTO eval_receipts (
+                id, eval_result_id, run_id, receipt_type, call_id,
+                dataset_id, dataset_item_id, source_call_id,
+                candidate_a_call_id, candidate_b_call_id,
+                winner, score, threshold, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                receipt_id,
+                eval_result_id,
+                run_id,
+                receipt_type,
+                call_id,
+                dataset_id,
+                dataset_item_id,
+                source_call_id,
+                candidate_a_call_id,
+                candidate_b_call_id,
+                winner,
+                score,
+                threshold,
+                payload_json,
+            ),
+        )
+        row = conn.execute(
+            "SELECT id, eval_result_id, run_id, receipt_type, call_id, "
+            "dataset_id, dataset_item_id, source_call_id, "
+            "candidate_a_call_id, candidate_b_call_id, winner, score, "
+            "threshold, payload_json, created_at "
+            "FROM eval_receipts WHERE id = ?",
+            (receipt_id,),
+        ).fetchone()
         return self._eval_receipt_row(row)
 
     def eval_receipts(

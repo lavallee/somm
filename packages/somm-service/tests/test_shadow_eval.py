@@ -641,3 +641,58 @@ def test_failed_grade_releases_candidate_back_to_pool(tmp_path):
             "SELECT outcome FROM calls WHERE observation_role = 'shadow_gold' ORDER BY ts"
         ).fetchall()
     assert attempts == [("upstream_error",), ("ok",)]
+
+
+def test_late_grader_cannot_release_or_complete_a_replacement_lease(tmp_path):
+    from somm.workers.shadow_eval import EvalOutcome, ShadowConfig
+
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload("overlap", cfg.project)
+    call_id = _insert_call(repo, wl.id, cfg.project, "p", "r")
+    slow = ShadowEvalWorker(repo, providers=[])
+    successor = ShadowEvalWorker(Repository(cfg.db_path), providers=[])
+    first = slow._claim_lease(call_id)
+    assert first is not None
+    with repo._open() as conn:
+        conn.execute("UPDATE eval_results SET grading_started_at = '2000-01-01' WHERE id = ?", (first,))
+    assert successor._sweep_stale_leases() == 1
+    second = successor._claim_lease(call_id)
+    assert second is not None and second != first
+
+    slow._release_lease(call_id, first)
+    row = {"call_id": call_id}
+    config = ShadowConfig("gold", "gold-m")
+    outcome = EvalOutcome(call_id, 1.0, None, None, None)
+    with pytest.raises(RuntimeError, match="lease is no longer current"):
+        slow._write_result(row, config, outcome, first)
+    assert not repo.eval_receipts()
+    successor._write_result(row, config, outcome, second)
+    with pytest.raises(RuntimeError, match="lease is no longer current"):
+        successor._write_result(row, config, outcome, second)
+    assert [r.eval_result_id for r in repo.eval_receipts()] == [second]
+
+
+def test_shadow_receipt_failure_leaves_lease_pending(tmp_path, monkeypatch):
+    from somm.workers.shadow_eval import EvalOutcome, ShadowConfig
+
+    cfg, repo = _tmp_setup(tmp_path)
+    wl = repo.register_workload("retry", cfg.project)
+    call_id = _insert_call(repo, wl.id, cfg.project, "p", "r")
+    worker = ShadowEvalWorker(repo, providers=[])
+    lease = worker._claim_lease(call_id)
+    assert lease is not None
+
+    def fail_receipt(**_kwargs):
+        raise RuntimeError("receipt unavailable")
+
+    row = {"call_id": call_id}
+    config = ShadowConfig("gold", "gold-m")
+    outcome = EvalOutcome(call_id, 1.0, None, None, None)
+    with monkeypatch.context() as patch:
+        patch.setattr(repo, "record_eval_receipt", fail_receipt)
+        with pytest.raises(RuntimeError, match="receipt unavailable"):
+            worker._write_result(row, config, outcome, lease)
+    with repo._open() as conn:
+        assert conn.execute("SELECT gold_model FROM eval_results WHERE id = ?", (lease,)).fetchone() == ("pending",)
+    worker._write_result(row, config, outcome, lease)
+    assert [r.eval_result_id for r in repo.eval_receipts()] == [lease]
