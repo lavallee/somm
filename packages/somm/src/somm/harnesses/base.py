@@ -547,10 +547,28 @@ def iter_json_events(path: Path) -> Iterator[dict[str, Any]]:
     """Yield valid object events from a JSON object or NDJSON capture."""
 
     try:
-        text = path.read_text(errors="replace")
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            first = True
+            for line in stream:
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    # Older harnesses can write a single indented object. If
+                    # its opening line is an incomplete JSON prefix, parse the
+                    # document as before. Ordinary JSONL can yield immediately.
+                    if first and line.lstrip().startswith("{") and exc.pos >= len(line.rstrip()):
+                        yield from decode_json_events(line + stream.read())
+                        return
+                except ValueError:
+                    pass  # e.g. an oversized JSON integer
+                else:
+                    if isinstance(event, dict):
+                        yield event
+                first = False
     except OSError:
         return
-    yield from decode_json_events(text)
 
 
 _SIGNALS: tuple[tuple[HarnessOutcome, tuple[str, ...]], ...] = (
@@ -656,10 +674,19 @@ def retry_after_from_text(text: str, *, now: datetime | None = None) -> float | 
 
 def read_capture(path: Path, *, tail: int | None = None) -> str:
     try:
-        text = path.read_text(errors="replace")
+        if tail is None or tail <= 0:
+            text = path.read_text(errors="replace")
+            return text if tail is None else text[-tail:]
+        with path.open("rb") as stream:
+            end = stream.seek(0, os.SEEK_END)
+            # At most four UTF-8 bytes per character, including the existing
+            # universal-newline conversion. Read against a fixed end offset.
+            count = min(end, 4 * tail)
+            stream.seek(end - count)
+            text = stream.read(count).decode("utf-8", errors="replace")
+        return text.replace("\r\n", "\n").replace("\r", "\n")[-tail:]
     except OSError:
         return ""
-    return text[-tail:] if tail is not None else text
 
 
 def elapsed_ms(started_at: datetime | None) -> int | None:
