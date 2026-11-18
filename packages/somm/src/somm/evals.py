@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from collections.abc import Callable
@@ -103,7 +104,9 @@ def run_dataset_eval(
 ) -> EvalRunResult:
     """Run a workload against a durable dataset and persist eval_results rows."""
 
-    if threshold < 0 or threshold > 1:
+    if not math.isfinite(record_timeout_s):
+        raise ValueError("record_timeout_s must be finite")
+    if not 0 <= threshold <= 1:
         raise ValueError("threshold must be between 0 and 1")
     wl = repo.workload_by_name(workload, project)
     if wl is None:
@@ -124,10 +127,7 @@ def run_dataset_eval(
         recorded_call_id = None
         try:
             generated = generate(item)
-            if not _wait_for_call(repo, generated.call_id, timeout_s=record_timeout_s):
-                raise RuntimeError(
-                    f"generated call {generated.call_id!r} was not committed before timeout"
-                )
+            _await_recording(repo, (generated.call_id,), "generated", record_timeout_s)
             recorded_call_id = generated.call_id
             if generated.outcome != Outcome.OK:
                 eval_result_id = _record_dataset_eval(
@@ -160,8 +160,9 @@ def run_dataset_eval(
             scores = grade_response_pair(generated.text, item.expected_response_body)
             judge_grade = judge(item, generated) if judge is not None else None
             if judge_grade is not None:
-                if judge_grade.score < 0 or judge_grade.score > 1:
+                if not 0 <= judge_grade.score <= 1:
                     raise ValueError("judge score must be between 0 and 1")
+                _await_recording(repo, judge_grade.call_ids, "judge", record_timeout_s)
                 scores = replace(scores, judge_score=float(judge_grade.score))
             score = _combined_score(scores)
             passed = score >= threshold
@@ -238,11 +239,14 @@ def grade_pairwise_ab(
 ) -> PairwiseEvalResult:
     """Grade two candidates against one dataset item and record a receipt."""
 
-    if tie_margin < 0:
-        raise ValueError("tie_margin must be non-negative")
-    for call_id in (candidate_a.call_id, candidate_b.call_id):
-        if not _wait_for_call(repo, call_id, timeout_s=record_timeout_s):
-            raise RuntimeError(f"candidate call {call_id!r} was not committed before timeout")
+    if not math.isfinite(record_timeout_s):
+        raise ValueError("record_timeout_s must be finite")
+    if not math.isfinite(tie_margin) or tie_margin < 0:
+        raise ValueError("tie_margin must be finite and non-negative")
+    for candidate in (candidate_a, candidate_b):
+        if candidate.outcome != Outcome.OK:
+            raise ValueError(f"candidate {candidate.call_id!r} has outcome {candidate.outcome.value}")
+    _await_recording(repo, (candidate_a.call_id, candidate_b.call_id), "candidate", record_timeout_s)
 
     scores_a = grade_response_pair(candidate_a.text, item.expected_response_body)
     scores_b = grade_response_pair(candidate_b.text, item.expected_response_body)
@@ -295,14 +299,17 @@ def _combined_score(scores: GradeScores) -> float:
     return 0.0
 
 
-def _wait_for_call(repo: Repository, call_id: str, timeout_s: float) -> bool:
+def _await_recording(
+    repo: Repository, call_ids: tuple[str, ...], role: str, timeout_s: float,
+) -> None:
+    """Wait outside the grade transaction so asynchronous recorders can commit."""
     deadline = time.monotonic() + max(0.0, timeout_s)
-    while True:
-        if repo.get_call(call_id) is not None:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.01)
+    for call_id in dict.fromkeys(call_ids):
+        while repo.get_call(call_id) is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"{role} call {call_id!r} was not committed before timeout")
+            time.sleep(min(0.01, remaining))
 
 
 def _record_dataset_eval(
