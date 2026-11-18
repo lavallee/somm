@@ -1158,3 +1158,22 @@ def test_harness_ledger_uses_whole_prompt_once(tmp_path, harness, usage, expecte
     call = harnesses.record_attempt(result, config=cfg)
     assert (call.tokens_in, call.tokens_out, call.cache_tokens_in, call.cache_tokens_out,
             call.reasoning_tokens) == expected
+
+
+@pytest.mark.parametrize(("instant", "clock", "seconds"), [
+    ("2026-03-08T05:00:00Z", "3am", 2 * 3600 + 60),
+    ("2026-03-08T05:00:00Z", "2:30am", 3600),
+    ("2026-11-01T04:00:00Z", "3am", 4 * 3600 + 60),
+    ("2026-11-01T05:45:00Z", "1:30am", 45 * 60 + 60),
+    ("2026-11-01T06:30:00Z", "1:30am", 60),
+])
+def test_seat_reset_uses_elapsed_time_across_clock_changes(instant, clock, seconds):
+    from datetime import datetime
+
+    assert base_module.retry_after_from_text(
+        f"resets {clock} (America/New_York)", now=datetime.fromisoformat(instant),
+    ) == seconds
+
+
+def test_unrepresentable_retry_after_is_unavailable():
+    assert base_module.retry_after_from_text("retry-after: " + "9" * 500) is None
