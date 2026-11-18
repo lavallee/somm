@@ -226,3 +226,23 @@ def test_grade_pairwise_ab_records_receipt(tmp_path):
     assert receipts[0].candidate_a_call_id == candidate_a.call_id
     assert receipts[0].candidate_b_call_id == candidate_b.call_id
     assert receipts[0].payload["winner"] == "a"
+
+
+def test_missing_judge_call_rolls_back_the_entire_grade(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl, _, _ = _seed_dataset(repo)
+    judge = _generated(repo, "eval-test", wl.id, "grade")
+    generated = _generated(repo, "eval-test", wl.id, "answer")
+
+    result = run_dataset_eval(
+        repo, project="eval-test", workload="qa", dataset="golden",
+        generate=lambda _item: generated,
+        judge=lambda _item, _result: JudgeGrade(1.0, {}, (judge.call_id, "missing-call")),
+    )
+
+    assert result.n_errors == 1
+    assert result.items[0].generated_call_id == generated.call_id
+    assert not repo.eval_receipts(run_id=result.run_id)
+    with repo._open() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM eval_results").fetchone() == (0,)
+        assert conn.execute("SELECT eval_result_id FROM calls WHERE id = ?", (judge.call_id,)).fetchone() == (None,)

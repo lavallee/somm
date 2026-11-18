@@ -208,7 +208,7 @@ class ShadowEvalWorker:
                         # sample. The streak decides when it counts as broken.
                         _log.warning("shadow: grade failed for %s: %s", call_row["call_id"], e)
                         summary["errors"].append(f"{name}: {e}")
-                        self._release_lease(call_row["call_id"])
+                        self._release_lease(call_row["call_id"], eval_result_id)
                         broken = self._gold_streak(workload_id, cfg)
                         if broken is not None:
                             summary["shadow_broken"][name] = broken
@@ -381,7 +381,7 @@ class ShadowEvalWorker:
             )
             return int(cur.lastrowid) if cur.rowcount == 1 else None
 
-    def _release_lease(self, call_id: str) -> None:
+    def _release_lease(self, call_id: str, eval_result_id: int) -> None:
         """Delete the lease placeholder outright.
 
         The shadow_candidates view excludes calls with ANY eval_results
@@ -390,10 +390,10 @@ class ShadowEvalWorker:
         put the candidate back in the pool, not bury it."""
         with self.repo._open() as conn:
             conn.execute(
-                "DELETE FROM eval_results WHERE call_id = ? "
+                "DELETE FROM eval_results WHERE call_id = ? AND id = ? "
                 "AND gold_model = 'pending' AND structural_score IS NULL "
                 "AND judge_score IS NULL",
-                (call_id,),
+                (call_id, eval_result_id),
             )
 
     def _sweep_stale_leases(self) -> int:
@@ -420,7 +420,7 @@ class ShadowEvalWorker:
         # judge_reason remains a display projection. Monetary truth lives in
         # the linked shadow_gold/shadow_judge Call rows and is merely summed
         # here for compatibility with older consumers.
-        with self.repo._open() as conn:
+        with self.repo.eval_transaction() as conn:
             auxiliary_cost = float(
                 conn.execute(
                     "SELECT COALESCE(SUM(cost_usd), 0) FROM calls "
@@ -430,12 +430,11 @@ class ShadowEvalWorker:
                 ).fetchone()[0]
                 or 0.0
             )
-        notes = [{"cost_usd": auxiliary_cost, "cost_projection": "linked_calls"}]
-        notes.extend({"note": n} for n in outcome.notes)
-        if outcome.judge_reason is not None:
-            notes.append({"judge": outcome.judge_reason})
-        with self.repo._open() as conn:
-            conn.execute(
+            notes = [{"cost_usd": auxiliary_cost, "cost_projection": "linked_calls"}]
+            notes.extend({"note": n} for n in outcome.notes)
+            if outcome.judge_reason is not None:
+                notes.append({"judge": outcome.judge_reason})
+            updated = conn.execute(
                 """
                 UPDATE eval_results SET
                     gold_model = ?,
@@ -446,7 +445,7 @@ class ShadowEvalWorker:
                     judge_reason = ?,
                     grading_started_at = NULL,
                     ts = CURRENT_TIMESTAMP
-                WHERE id = ? AND call_id = ?
+                WHERE id = ? AND call_id = ? AND gold_model = 'pending' AND grading_started_at IS NOT NULL
                 """,
                 (
                     cfg.gold_model,
@@ -459,7 +458,8 @@ class ShadowEvalWorker:
                     call_row["call_id"],
                 ),
             )
-        if eval_result_id is not None:
+            if updated.rowcount != 1:
+                raise RuntimeError("shadow grading lease is no longer current")
             score = (
                 outcome.judge_score
                 if outcome.judge_score is not None

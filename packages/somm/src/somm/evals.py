@@ -319,55 +319,53 @@ def _record_dataset_eval(
     judge_grade: JudgeGrade | None = None,
     implementation: str | None = None,
 ) -> int:
-    reason = [
-        {
-            "source": "somm eval run",
-            "dataset_id": item.dataset_id,
-            "dataset_item_id": item.id,
-            "source_call_id": item.source_call_id,
-            "score": score,
-            "passed": passed,
-            "error": error,
-            "implementation": implementation,
-        }
-    ]
-    reason_payload: list[dict] = list(reason)
+    summary = {
+        "source": "somm eval run",
+        "dataset_id": item.dataset_id,
+        "dataset_item_id": item.id,
+        "source_call_id": item.source_call_id,
+        "score": score,
+        "passed": passed,
+        "error": error,
+        "implementation": implementation,
+    }
+    reason_payload = [summary]
     if judge_grade is not None:
         reason_payload.append({"binary_judge": judge_grade.reason})
-    eval_result_id = repo.record_eval_result(
-        call_id=generated.call_id,
-        gold_model=f"dataset:{item.dataset_id}",
-        gold_response_hash=stable_hash(item.expected_response_body),
-        structural_score=scores.structural_score if scores else None,
-        embedding_score=scores.text_similarity_score if scores else None,
-        judge_score=scores.judge_score if scores else None,
-        judge_reason=json.dumps(reason_payload, sort_keys=True),
-    )
-    if judge_grade is not None:
-        for judge_call_id in judge_grade.call_ids:
-            repo.link_call_to_eval(
-                judge_call_id,
-                eval_result_id=eval_result_id,
-                source_call_id=generated.call_id,
-                observation_role="dataset_judge",
-            )
-    repo.record_eval_receipt(
-        receipt_type="dataset_run",
-        payload={
-            **reason[0],
-            "judge": judge_grade.reason if judge_grade is not None else None,
-            "judge_call_ids": list(judge_grade.call_ids) if judge_grade is not None else [],
-            "implementation": implementation,
-        },
-        eval_result_id=eval_result_id,
-        run_id=run_id,
-        call_id=generated.call_id,
-        dataset_id=item.dataset_id,
-        dataset_item_id=item.id,
-        source_call_id=item.source_call_id,
-        score=score,
-        threshold=threshold,
-    )
+    with repo.eval_transaction():
+        eval_result_id = repo.record_eval_result(
+            call_id=generated.call_id,
+            gold_model=f"dataset:{item.dataset_id}",
+            gold_response_hash=stable_hash(item.expected_response_body),
+            structural_score=scores.structural_score if scores else None,
+            embedding_score=scores.text_similarity_score if scores else None,
+            judge_score=scores.judge_score if scores else None,
+            judge_reason=json.dumps(reason_payload, sort_keys=True),
+        )
+        if judge_grade is not None:
+            for judge_call_id in judge_grade.call_ids:
+                repo.link_call_to_eval(
+                    judge_call_id,
+                    eval_result_id=eval_result_id,
+                    source_call_id=generated.call_id,
+                    observation_role="dataset_judge",
+                )
+        repo.record_eval_receipt(
+            receipt_type="dataset_run",
+            payload={
+                **summary,
+                "judge": judge_grade.reason if judge_grade is not None else None,
+                "judge_call_ids": list(judge_grade.call_ids) if judge_grade is not None else [],
+            },
+            eval_result_id=eval_result_id,
+            run_id=run_id,
+            call_id=generated.call_id,
+            dataset_id=item.dataset_id,
+            dataset_item_id=item.id,
+            source_call_id=item.source_call_id,
+            score=score,
+            threshold=threshold,
+        )
     return eval_result_id
 
 
