@@ -1097,3 +1097,42 @@ def test_cli_providers_send_a_flag_like_prompt_on_stdin(monkeypatch) -> None:
     for cmd, stdin in seen:
         assert _FLAG_PROMPT not in cmd
         assert stdin is not None and stdin.endswith(_FLAG_PROMPT)
+
+
+def test_jsonl_reader_yields_before_consuming_the_capture(monkeypatch):
+    from io import StringIO
+
+    from somm.harnesses.base import iter_json_events
+
+    stream = StringIO('\n{"type":"first"}\n{"type":"second"}\nnoise\n')
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: stream)
+    events = iter_json_events(Path("capture"))
+    assert next(events) == {"type": "first"}
+    assert stream.tell() == len('\n{"type":"first"}\n')
+    assert list(events) == [{"type": "second"}]
+    assert stream.closed
+
+
+@pytest.mark.parametrize("body,expected", [
+    ('\n{"outer": {}\n}', [{"outer": {}}]),
+    ('{\n  "message": "ok"\n}\n', [{"message": "ok"}]),
+    ('not json\n{"ok":true}\n42\n', [{"ok": True}]),
+    ('{\nbroken\n{"ok":true}\n', [{"ok": True}]),
+    ('', []),
+])
+def test_json_event_capture_shapes(tmp_path, body, expected):
+    from somm.harnesses.base import iter_json_events
+
+    path = tmp_path / "stdout"
+    path.write_text(body)
+    assert list(iter_json_events(path)) == expected
+
+
+@pytest.mark.parametrize("tail", [1, 5, 100, 0, -3, None])
+def test_capture_tail_preserves_character_and_newline_semantics(tmp_path, tail):
+    from somm.harnesses.base import read_capture
+
+    path = tmp_path / "stdout"
+    path.write_bytes(("🪶é\r\n" * 800 + "done\r").encode() + b"\xff")
+    full = path.read_text(errors="replace")
+    assert read_capture(path, tail=tail) == (full if tail is None else full[-tail:])
