@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import re
 import shutil
@@ -646,7 +647,9 @@ def retry_after_from_text(text: str, *, now: datetime | None = None) -> float | 
     match = _RETRY_AFTER_RE.search(text)
     if match:
         try:
-            return float(match.group(1))
+            seconds = float(match.group(1))
+            if math.isfinite(seconds):
+                return seconds
         except ValueError:
             pass
     if not re.search(r"\bresets?\b", text, re.IGNORECASE):
@@ -665,10 +668,22 @@ def retry_after_from_text(text: str, *, now: datetime | None = None) -> float | 
             second=0,
             microsecond=0,
         )
-        if target <= local:
-            target += timedelta(days=1)
-        return (target - local).total_seconds() + 60
-    except (ValueError, ZoneInfoNotFoundError):
+        instant = local.astimezone(UTC)
+        for day in (target, target + timedelta(days=1)):
+            # A repeated local hour has two real instants. A skipped hour has
+            # none; probe in an hour rather than manufacturing a reset time.
+            candidates = sorted({day.replace(fold=fold).astimezone(UTC) for fold in (0, 1)})
+            real = [candidate for candidate in candidates
+                    if candidate.astimezone(local.tzinfo).replace(tzinfo=None) == day.replace(tzinfo=None)]
+            if not real:
+                if day.replace(tzinfo=None) >= local.replace(tzinfo=None):
+                    return 3600.0
+                continue
+            for reset in real:
+                if reset >= instant:
+                    return (reset - instant).total_seconds() + 60
+        return 3600.0
+    except (ValueError, OverflowError, ZoneInfoNotFoundError):
         return 3600.0
 
 
