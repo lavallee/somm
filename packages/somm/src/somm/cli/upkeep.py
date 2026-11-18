@@ -64,7 +64,6 @@ def _cmd_plans(args: argparse.Namespace) -> int:
                 print(f"    source: {e.source}")
         return 0
 
-    cfg = _common.load_config(project=args.project)
     try:
         plans = load_plans(catalog=catalog)
     except Exception as exc:
@@ -127,17 +126,8 @@ def _cmd_plans(args: argparse.Namespace) -> int:
                 print(f"plans.toml is invalid after learning: {exc}")
                 return 1
 
-    if not plans and args.json:
-        # Vendor readings and balances need no declared plan; a monitor still wants them.
-        from somm_core.plans import credit_refusals
-
-        from somm.vendor_usage import balances, vendor_readings
-
-        print(json.dumps({"scope": "no plans declared", "limits": [], "payg_burn": [],
-                          "vendor": vendor_readings(), "balances": balances(),
-                          "credit_refusals": credit_refusals(dbs)}, indent=1))
-        return 0
-    if not plans:
+    json_output = args.json or args.windows_only
+    if not plans and not json_output:
         print(f"No plans declared. Create {plans_path()} — example:")
         print(
             "\n  [minimax]"
@@ -157,7 +147,9 @@ def _cmd_plans(args: argparse.Namespace) -> int:
     statuses = limit_statuses(dbs, plans)
     scope = "this project only" if args.project_only else f"fleet ({len(dbs)} project DBs)"
 
-    if args.json:
+    if json_output:
+        from somm.vendor_usage import vendor_readings
+
         out = []
         for st in statuses:
             out.append(
@@ -177,7 +169,14 @@ def _cmd_plans(args: argparse.Namespace) -> int:
                     "mode": st.mode,
                 }
             )
-        from somm_core.plans import payg_burn_rates
+        payload = {"scope": scope if plans else "no plans declared", "limits": out,
+                   "vendor": vendor_readings()}
+        if args.windows_only:
+            print(json.dumps(payload, indent=1))
+            return 0
+        from somm_core.plans import credit_refusals, payg_burn_rates
+
+        from somm.vendor_usage import balances
 
         burn = [
             {
@@ -190,13 +189,8 @@ def _cmd_plans(args: argparse.Namespace) -> int:
             }
             for b in payg_burn_rates(dbs, plans)
         ]
-        from somm_core.plans import credit_refusals
-
-        from somm.vendor_usage import balances, vendor_readings
-
-        print(json.dumps({"scope": scope, "limits": out, "payg_burn": burn,
-                          "vendor": vendor_readings(), "balances": balances(),
-                          "credit_refusals": credit_refusals(dbs)}, indent=1))
+        payload.update(payg_burn=burn, balances=balances(), credit_refusals=credit_refusals(dbs))
+        print(json.dumps(payload, indent=1))
         return 0
 
     print(f"Plan usage — {scope}\n")
@@ -418,6 +412,8 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         help="count only this project's usage (default: whole fleet — quotas are shared)",
     )
     ppl.add_argument("--json", action="store_true")
+    ppl.add_argument("--windows-only", action="store_true",
+                     help="emit JSON with metered and vendor windows; skip balances and spending reports")
     ppl.add_argument(
         "--catalog",
         action="store_true",

@@ -153,3 +153,26 @@ def test_credit_refusals_from_telemetry(tmp_path):
     [r] = credit_refusals([db, tmp_path / "missing.sqlite"], now=now)
     assert (r["provider"], r["count"]) == ("typesafe", 2)
     assert r["last_at"].startswith("2026-11-16")
+
+
+def test_plans_windows_only_avoids_balance_and_spend_queries(tmp_path, monkeypatch, capsys):
+    import pytest
+    from somm.cli import main
+
+    plans = tmp_path / "plans.toml"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SOMM_PLANS_PATH", str(plans))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(V, "vendor_readings", lambda: [{"provider":"example", "window":"7d"}])
+    def forbidden(*_, **__):
+        pytest.fail("the window projection queried balances or spending")
+    monkeypatch.setattr(V, "balances", forbidden)
+    monkeypatch.setattr("somm_core.plans.payg_burn_rates", forbidden)
+    monkeypatch.setattr("somm_core.plans.credit_refusals", forbidden)
+    for state in ("", '[example]\nmode="metered"\n[[example.limits]]\nwindow="7d"\nquota=10'):
+        plans.write_text(state)
+        assert main(["plans", "--windows-only"]) in (0, None)
+        out = json.loads(capsys.readouterr().out)
+        assert set(out) == {"scope", "limits", "vendor"}
+        assert out["vendor"][0]["provider"] == "example"
+        assert bool(out["limits"]) == bool(state)
