@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 
+import pytest
 from somm.evals import JudgeGrade, grade_pairwise_ab, run_dataset_eval
 from somm_core.models import Call, Outcome, SommResult
 from somm_core.repository import Repository
@@ -238,6 +240,7 @@ def test_missing_judge_call_rolls_back_the_entire_grade(tmp_path):
         repo, project="eval-test", workload="qa", dataset="golden",
         generate=lambda _item: generated,
         judge=lambda _item, _result: JudgeGrade(1.0, {}, (judge.call_id, "missing-call")),
+        record_timeout_s=0,
     )
 
     assert result.n_errors == 1
@@ -246,3 +249,48 @@ def test_missing_judge_call_rolls_back_the_entire_grade(tmp_path):
     with repo._open() as conn:
         assert conn.execute("SELECT COUNT(*) FROM eval_results").fetchone() == (0,)
         assert conn.execute("SELECT eval_result_id FROM calls WHERE id = ?", (judge.call_id,)).fetchone() == (None,)
+
+
+def test_grade_waits_for_judge_recorder_before_starting_transaction(tmp_path, monkeypatch):
+    from somm import evals
+
+    path = tmp_path / "calls.sqlite"
+    repo, recorder = Repository(path), Repository(path)
+    wl, _, _ = _seed_dataset(repo)
+    generated = _generated(repo, "eval-test", wl.id, "answer")
+    pending = replace(repo.get_call(generated.call_id), id="pending-judge")
+    waits = []
+
+    def publish(_delay):
+        waits.append(True)
+        recorder.write_call(pending)
+
+    monkeypatch.setattr(evals.time, "sleep", publish)
+    result = run_dataset_eval(
+        repo, project="eval-test", workload="qa", dataset="golden",
+        generate=lambda _: generated, judge=lambda *_: JudgeGrade(1.0, {}, (pending.id,)),
+    )
+    assert waits == [True]
+    assert result.passed
+    assert repo.get_call(pending.id).eval_result_id == result.items[0].eval_result_id
+
+
+def test_unusable_scores_and_unsuccessful_candidates_cannot_select_a_winner(tmp_path):
+    repo = Repository(tmp_path / "calls.sqlite")
+    wl, _, item = _seed_dataset(repo)
+    generated = _generated(repo, "eval-test", wl.id, "gold response")
+    pair = dict(item=item, candidate_a=generated, candidate_b=generated)
+    with pytest.raises(ValueError, match="tie_margin"):
+        grade_pairwise_ab(repo, **pair, tie_margin=float("nan"))
+    with pytest.raises(ValueError, match="timeout"):
+        grade_pairwise_ab(repo, **{**pair, "candidate_b": replace(generated, outcome=Outcome.TIMEOUT)})
+    assert not repo.eval_receipts(receipt_type="pairwise_ab")
+    args = dict(project="eval-test", workload="qa", dataset="golden", generate=lambda _: generated)
+    with pytest.raises(ValueError, match="threshold"):
+        run_dataset_eval(repo, **args, threshold=float("nan"))
+    with pytest.raises(ValueError, match="record_timeout"):
+        run_dataset_eval(repo, **args, record_timeout_s=float("inf"))
+    bad = run_dataset_eval(repo, **args, judge=lambda *_: JudgeGrade(float("nan"), {}))
+    assert bad.n_errors == 1
+    assert bad.items[0].generated_call_id == generated.call_id
+    assert not repo.eval_receipts(run_id=bad.run_id)
