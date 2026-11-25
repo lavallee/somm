@@ -1,5 +1,5 @@
 {
- "generated_on": "2026-11-09",
+ "generated_on": "2026-11-25",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "license": "MIT (LiteLLM); see source",
  "models": [
@@ -102,6 +102,19 @@
    "context_window": 1000000,
    "cache_read_per_1m": 0.25,
    "cache_write_per_1m": 12.5,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-mythos-5-2",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": 1000000,
+   "cache_read_per_1m": 0.2,
+   "cache_write_per_1m": 10.0,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -707,6 +720,42 @@
   },
   {
    "provider": "gemini",
+   "model": "gemini-4-carbon",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": 1048576,
+   "cache_read_per_1m": 0.1,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
+   "model": "gemini-4-hydrogen",
+   "price_in_per_1m": 1.5,
+   "price_out_per_1m": 7.5,
+   "context_window": 1048576,
+   "cache_read_per_1m": 0.075,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
+   "model": "gemini-4-neon",
+   "price_in_per_1m": 3.0,
+   "price_out_per_1m": 15.0,
+   "context_window": 1048576,
+   "cache_read_per_1m": 0.15,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
    "model": "gemini-embedding-001",
    "price_in_per_1m": 0.15,
    "price_out_per_1m": 0.0,
@@ -948,6 +997,16 @@
   },
   {
    "provider": "gemini",
+   "model": "genie-4",
+   "price_in_per_1m": 1.5,
+   "price_out_per_1m": 9.0,
+   "context_window": 1048576,
+   "capabilities": {
+    "vision": true
+   }
+  },
+  {
+   "provider": "gemini",
    "model": "learnlm-1.5-pro-experimental",
    "price_in_per_1m": 0.0,
    "price_out_per_1m": 0.0,
@@ -1098,7 +1157,7 @@
    "model": "chat-latest",
    "price_in_per_1m": 5.0,
    "price_out_per_1m": 30.0,
-   "context_window": 400000,
+   "context_window": 272000,
    "cache_read_per_1m": 0.5,
    "capabilities": {
     "tools": true,
@@ -2141,6 +2200,18 @@
   },
   {
    "provider": "openai",
+   "model": "gpt-6-astra-healthcare",
+   "price_in_per_1m": 10.0,
+   "price_out_per_1m": 50.0,
+   "context_window": 922000,
+   "cache_read_per_1m": 1.0,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
    "model": "gpt-6-astra-law",
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
@@ -2180,11 +2251,11 @@
   {
    "provider": "openai",
    "model": "gpt-6-rosalind",
-   "price_in_per_1m": 15.0,
-   "price_out_per_1m": 75.0,
+   "price_in_per_1m": 10.0,
+   "price_out_per_1m": 50.0,
    "context_window": 922000,
-   "cache_read_per_1m": 1.5,
-   "cache_write_per_1m": 18.75,
+   "cache_read_per_1m": 1.0,
+   "cache_write_per_1m": 12.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2218,12 +2289,89 @@
   },
   {
    "provider": "openai",
+   "model": "gpt-6.1-sol-healthcare",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": 922000,
+   "cache_read_per_1m": 0.1,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
    "model": "gpt-6.1-terra",
    "price_in_per_1m": 1.0,
    "price_out_per_1m": 5.0,
    "context_window": 922000,
    "cache_read_per_1m": 0.05,
    "cache_write_per_1m": 1.25,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.2-astra",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": 922000,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 10.0,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.2-astra-healthcare",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": 922000,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 10.0,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.2-astra-law",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": 922000,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 10.0,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.2-sol",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": 922000,
+   "cache_read_per_1m": 0.1,
+   "cache_write_per_1m": 2.5,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.2-sol-healthcare",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": 922000,
+   "cache_read_per_1m": 0.1,
+   "cache_write_per_1m": 2.5,
    "capabilities": {
     "tools": true,
     "vision": true
@@ -2542,6 +2690,80 @@
    "context_window": 8191
   },
   {
+   "provider": "openrouter",
+   "model": "anthropic/claude-fable-5.2",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": 1000000,
+   "cache_read_per_1m": 0.2,
+   "cache_write_per_1m": 10.0,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openrouter",
+   "model": "deepseek/deepseek-v4-flash",
+   "price_in_per_1m": 0.09,
+   "price_out_per_1m": 0.18,
+   "context_window": 1048576,
+   "cache_read_per_1m": 0.018,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "openrouter",
+   "model": "deepseek/deepseek-v4-pro",
+   "price_in_per_1m": 0.9,
+   "price_out_per_1m": 1.5,
+   "context_window": 1048576,
+   "cache_read_per_1m": 0.2,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "openrouter",
+   "model": "google/gemini-4-hydrogen",
+   "price_in_per_1m": 1.5,
+   "price_out_per_1m": 7.5,
+   "context_window": 1048576,
+   "cache_read_per_1m": 0.075,
+   "cache_write_per_1m": 0.083333,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openrouter",
+   "model": "openai/gpt-6.2-astra",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": 1050000,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 10.0,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
+   "provider": "openrouter",
+   "model": "openai/gpt-6.2-sol",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": 1050000,
+   "cache_read_per_1m": 0.1,
+   "cache_write_per_1m": 2.5,
+   "capabilities": {
+    "tools": true,
+    "vision": true
+   }
+  },
+  {
    "provider": "perplexity",
    "model": "anthropic/claude-fable-5",
    "price_in_per_1m": 10.0,
@@ -2558,7 +2780,21 @@
    "price_in_per_1m": 10.0,
    "price_out_per_1m": 50.0,
    "context_window": null,
-   "cache_read_per_1m": 0.25
+   "cache_read_per_1m": 0.25,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "perplexity",
+   "model": "anthropic/claude-fable-5-2",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": null,
+   "cache_read_per_1m": 0.2,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -2643,7 +2879,10 @@
    "price_in_per_1m": 4.0,
    "price_out_per_1m": 20.0,
    "context_window": null,
-   "cache_read_per_1m": 0.2
+   "cache_read_per_1m": 0.2,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -2816,7 +3055,10 @@
    "price_in_per_1m": 0.75,
    "price_out_per_1m": 3.75,
    "context_window": null,
-   "cache_read_per_1m": 0.075
+   "cache_read_per_1m": 0.075,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -2824,7 +3066,32 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": null,
-   "cache_read_per_1m": 0.1
+   "cache_read_per_1m": 0.1,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "perplexity",
+   "model": "google/gemini-4-carbon",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": null,
+   "cache_read_per_1m": 0.1,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "perplexity",
+   "model": "google/gemini-4-hydrogen",
+   "price_in_per_1m": 1.5,
+   "price_out_per_1m": 7.5,
+   "context_window": null,
+   "cache_read_per_1m": 0.075,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -2889,7 +3156,10 @@
    "price_in_per_1m": 0.05,
    "price_out_per_1m": 0.4,
    "context_window": null,
-   "cache_read_per_1m": 0.005
+   "cache_read_per_1m": 0.005,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -2919,7 +3189,10 @@
    "price_in_per_1m": 3.5,
    "price_out_per_1m": 28.0,
    "context_window": null,
-   "cache_read_per_1m": 0.35
+   "cache_read_per_1m": 0.35,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -3005,7 +3278,10 @@
    "price_out_per_1m": 50.0,
    "context_window": null,
    "cache_read_per_1m": 1.0,
-   "cache_write_per_1m": 12.5
+   "cache_write_per_1m": 12.5,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -3013,7 +3289,10 @@
    "price_in_per_1m": 0.1,
    "price_out_per_1m": 0.5,
    "context_window": null,
-   "cache_read_per_1m": 0.01
+   "cache_read_per_1m": 0.01,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -3021,7 +3300,10 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": null,
-   "cache_read_per_1m": 0.2
+   "cache_read_per_1m": 0.2,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -3029,7 +3311,46 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 10.0,
    "context_window": null,
-   "cache_read_per_1m": 0.1
+   "cache_read_per_1m": 0.1,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "perplexity",
+   "model": "openai/gpt-6.1-terra",
+   "price_in_per_1m": 1.0,
+   "price_out_per_1m": 5.0,
+   "context_window": null,
+   "cache_read_per_1m": 0.05,
+   "cache_write_per_1m": 1.25,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "perplexity",
+   "model": "openai/gpt-6.2-astra",
+   "price_in_per_1m": 8.0,
+   "price_out_per_1m": 40.0,
+   "context_window": null,
+   "cache_read_per_1m": 0.4,
+   "cache_write_per_1m": 10.0,
+   "capabilities": {
+    "tools": true
+   }
+  },
+  {
+   "provider": "perplexity",
+   "model": "openai/gpt-6.2-sol",
+   "price_in_per_1m": 2.0,
+   "price_out_per_1m": 10.0,
+   "context_window": null,
+   "cache_read_per_1m": 0.1,
+   "cache_write_per_1m": 2.5,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -3048,7 +3369,10 @@
    "price_in_per_1m": 1.32,
    "price_out_per_1m": 3.96,
    "context_window": null,
-   "cache_read_per_1m": 0.044
+   "cache_read_per_1m": 0.044,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -3133,7 +3457,10 @@
    "price_in_per_1m": 0.2,
    "price_out_per_1m": 0.5,
    "context_window": null,
-   "cache_read_per_1m": 0.04
+   "cache_read_per_1m": 0.04,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "perplexity",
@@ -3201,6 +3528,20 @@
    "price_in_per_1m": 0.03,
    "price_out_per_1m": 0.0,
    "context_window": 32768
+  },
+  {
+   "provider": "perplexity",
+   "model": "pplx-embed-v2-context-0.6b",
+   "price_in_per_1m": 0.02,
+   "price_out_per_1m": 0.0,
+   "context_window": null
+  },
+  {
+   "provider": "perplexity",
+   "model": "pplx-embed-v2-context-9b",
+   "price_in_per_1m": 0.12,
+   "price_out_per_1m": 0.0,
+   "context_window": null
   },
   {
    "provider": "perplexity",
@@ -3387,7 +3728,10 @@
    "price_in_per_1m": 2.0,
    "price_out_per_1m": 6.0,
    "context_window": null,
-   "cache_read_per_1m": 0.5
+   "cache_read_per_1m": 0.5,
+   "capabilities": {
+    "tools": true
+   }
   },
   {
    "provider": "typesafe",

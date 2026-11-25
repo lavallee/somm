@@ -7,7 +7,19 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-11-25
+
+### Added
+- A lightweight plan-window projection for routing and shared recovery of typed
+  provider request and billing IDs.
+
 ### Fixed
+- Ollama can now continue a conversation after a tool call using the standard
+  Somm message format. Parallel results retain their originating function names.
+- Harness accounting preserves whole-prompt totals and quota reset calculations
+  use elapsed time across daylight-saving changes.
+- Evaluation runs retain complete evidence and protect completed work from late
+  shadow workers. Asynchronous judges finish before dataset grades are saved.
 - Streaming input estimates now include offered tool schemas when the provider
   omits token usage. Previously, adding tools could leave the recorded estimate
   unchanged even for a large catalog.
