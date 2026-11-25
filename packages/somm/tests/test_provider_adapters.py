@@ -842,8 +842,7 @@ def test_openai_translates_multi_turn_messages(monkeypatch):
 
     assert _json.loads(tc["function"]["arguments"]) == {"location": "SF"}
     # tool_result becomes role:tool with tool_call_id
-    assert msgs[1]["tool_calls"][0]["function"]["arguments"] == {"location": "SF"}
-    assert msgs[2] == {"role": "tool", "tool_name": "get_weather", "tool_call_id": "tu_01", "content": "62F sunny"}
+    assert msgs[2] == {"role": "tool", "tool_call_id": "tu_01", "content": "62F sunny"}
 
 
 def test_openai_assistant_only_tool_calls_no_content(monkeypatch):
