@@ -7,6 +7,7 @@ Native ``/api/chat`` (generate, streaming, tools, structured ``format``) and
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
 
@@ -135,21 +136,9 @@ class OllamaProvider:
                 "provider that does (anthropic, openai-compat)"
             )
 
-        # Multi-turn `messages` overrides single-turn `prompt`. Ollama's
-        # /api/chat mirrors OpenAI's message shape (assistant `tool_calls`,
-        # `role:tool` results), so the OpenAI translator applies unchanged.
-        messages: list[dict] = []
-        if request.system:
-            messages.append({"role": "system", "content": request.system})
-        if request.messages is not None:
-            messages.extend(_translate_messages_to_openai(request.messages))
-        else:
-            messages.append({"role": "user", "content": request.prompt})
-        messages = [_to_ollama_message(m) for m in messages]
-
         payload: dict = {
             "model": model,
-            "messages": messages,
+            "messages": _ollama_messages(request),
             "stream": False,
             "options": {
                 "temperature": request.temperature,
@@ -218,7 +207,6 @@ class OllamaProvider:
         ollama's own token counts. A stream that ends without it was cut off
         and raises. ``<think>`` stripping is the library's concern.
         """
-        import json
 
         model = request.model or self.default_model
         if request.tool_choice is not None:
@@ -226,16 +214,9 @@ class OllamaProvider:
                 "ollama does not support tool_choice; omit it or route to a "
                 "provider that does (anthropic, openai-compat)"
             )
-        messages: list[dict] = []
-        if request.system:
-            messages.append({"role": "system", "content": request.system})
-        if request.messages is not None:
-            messages.extend(_translate_messages_to_openai(request.messages))
-        else:
-            messages.append({"role": "user", "content": request.prompt})
         payload: dict = {
             "model": model,
-            "messages": [_to_ollama_message(m) for m in messages],
+            "messages": _ollama_messages(request),
             "stream": True,
             "options": {
                 "temperature": request.temperature,
@@ -431,6 +412,33 @@ def _normalize_ollama_done_reason(reason: str | None, *, has_tool_calls: bool) -
     if not reason:
         return ""
     return _OLLAMA_DONE_REASON_TO_SOMM.get(reason, reason)
+
+
+def _ollama_messages(request: SommRequest) -> list[dict]:
+    history = request.messages if request.messages is not None else [{"role": "user", "content": request.prompt}]
+    result = [{"role": "system", "content": request.system}] if request.system else []
+    names = {}
+    for message in _translate_messages_to_openai(history):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            calls = []
+            for call in message["tool_calls"]:
+                function = call["function"]
+                arguments = function.get("arguments", {})
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except ValueError as exc:
+                        raise SommBadRequest("Ollama tool arguments must be a JSON object") from exc
+                if not isinstance(arguments, dict):
+                    raise SommBadRequest("Ollama tool arguments must be a JSON object")
+                calls.append({**call, "function": {**function, "arguments": arguments}})
+                if call.get("id"):
+                    names[call["id"]] = function["name"]
+            message = {**message, "tool_calls": calls}
+        elif message.get("role") == "tool" and message.get("tool_call_id") in names:
+            message = {**message, "tool_name": names[message["tool_call_id"]]}
+        result.append(_to_ollama_message(message))
+    return result
 
 
 def _to_ollama_message(msg: dict) -> dict:
