@@ -5,6 +5,13 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 (`somm`, `somm-core`, `somm-service`, `somm-mcp`, `somm-langchain`,
 `somm-skill`).
 
+## [Unreleased]
+
+### Fixed
+- Streaming input estimates now include offered tool schemas when the provider
+  omits token usage. Previously, adding tools could leave the recorded estimate
+  unchanged even for a large catalog.
+
 ## [0.29.0] — 2026-11-17
 
 ### Added
