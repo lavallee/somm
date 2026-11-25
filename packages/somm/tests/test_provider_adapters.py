@@ -842,7 +842,8 @@ def test_openai_translates_multi_turn_messages(monkeypatch):
 
     assert _json.loads(tc["function"]["arguments"]) == {"location": "SF"}
     # tool_result becomes role:tool with tool_call_id
-    assert msgs[2] == {"role": "tool", "tool_call_id": "tu_01", "content": "62F sunny"}
+    assert msgs[1]["tool_calls"][0]["function"]["arguments"] == {"location": "SF"}
+    assert msgs[2] == {"role": "tool", "tool_name": "get_weather", "tool_call_id": "tu_01", "content": "62F sunny"}
 
 
 def test_openai_assistant_only_tool_calls_no_content(monkeypatch):
@@ -1217,7 +1218,8 @@ def test_ollama_translates_multi_turn_messages(monkeypatch):
     assert msgs[0] == {"role": "user", "content": "weather in SF?"}
     assert msgs[1]["role"] == "assistant"
     assert msgs[1]["tool_calls"][0]["function"]["name"] == "get_weather"
-    assert msgs[2] == {"role": "tool", "tool_call_id": "tu_01", "content": "62F sunny"}
+    assert msgs[1]["tool_calls"][0]["function"]["arguments"] == {"location": "SF"}
+    assert msgs[2] == {"role": "tool", "tool_name": "get_weather", "tool_call_id": "tu_01", "content": "62F sunny"}
 
 
 # ---------------------------------------------------------------------------
@@ -1652,3 +1654,32 @@ def test_plan_remains_reads_percentages_and_survives_a_bad_response(monkeypatch)
     assert plan_remains("k") == {"interval_used_pct": 10, "weekly_used_pct": 32}
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"{}"))
     assert plan_remains("k") is None
+
+
+def test_ollama_replays_tool_arguments_and_correlates_parallel_results(monkeypatch):
+    from somm.providers.ollama import OllamaProvider
+
+    def handler(request):
+        import json
+
+        messages = json.loads(request.content)["messages"]
+        assert [call["function"]["arguments"] for call in messages[0]["tool_calls"]] == [
+            {"count": 2}, {},
+        ]
+        assert [msg["tool_name"] for msg in messages[1:]] == ["second", "first"]
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    monkeypatch.setattr(httpx, "Client", _patch_client(handler))
+    history = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "first", "input": {"count": 2}},
+            {"type": "tool_use", "id": "b", "name": "second", "input": {}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "b", "content": "blue"},
+            {"type": "tool_result", "tool_use_id": "a", "content": "green"},
+        ]},
+    ]
+    OllamaProvider().generate(SommRequest(
+        prompt="", messages=history, system="", model="local", temperature=0, max_tokens=10,
+    ))
