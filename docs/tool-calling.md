@@ -118,6 +118,12 @@ fragment, then pieces of its JSON argument string. The final `StreamDone.result`
 carries the assembled `tool_calls`, exactly as `generate` returns them. Adapters
 that answer in one piece still emit one fragment per call.
 
+When the stream supplies usage counts, Somm records those counts. When
+`StreamDone.usage` is `"estimate"`, the input estimate includes the offered
+tool declarations, even if the model calls none of them. Somm passes their
+compact JSON representation to the serving adapter's token estimator. This
+approximates the schema overhead before provider-specific formatting and caching.
+
 ## Telemetry
 
 Tool calls live on `SommResult.tool_calls` and inside `raw_json`; the `calls`

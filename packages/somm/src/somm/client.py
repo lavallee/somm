@@ -931,6 +931,10 @@ class _StreamStart:
         else:
             tokens_in = p.estimate_tokens(plan.req.prompt, model)
         tokens_in += p.estimate_tokens(plan.req.system, model) if plan.req.system else 0
+        if self.request.tools:
+            # Estimate the declarations on the served request, before provider-specific framing.
+            schemas = json.dumps(self.request.tools, ensure_ascii=False, separators=(",", ":"))
+            tokens_in += p.estimate_tokens(schemas, model)
         return SommResponse(
             text=text,
             model=(final.model if final else "") or model,

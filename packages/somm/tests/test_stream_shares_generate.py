@@ -215,6 +215,30 @@ def test_usage_is_an_estimate_when_the_provider_reports_none(tmp_path):
     assert row["model"] == "a-m"  # the provider's model, not its name
 
 
+def test_stream_estimates_tools_only_when_provider_usage_is_missing(tmp_path):
+    from somm_core.parse import estimate_prompt_tokens
+
+    class EstimatingStreamer(Streamer):
+        def estimate_tokens(self, text, model):
+            return estimate_prompt_tokens(text)
+
+    tools = [{"name": "lookup", "description": "Find café", "parameters": {"type": "object"}}]
+    provider = EstimatingStreamer("a")
+    llm = _llm(tmp_path, provider)
+
+    def stream_with(declarations):
+        *_, done = llm.stream("lookup", events=True, workload="w", tools=declarations)
+        assert _rows(llm)[-1]["tokens_in"] == done.result.tokens_in
+        return done.usage, done.result.tokens_in
+
+    plain = estimate_prompt_tokens("lookup")
+    schemas = json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+    assert stream_with([]) == ("estimate", plain)
+    assert stream_with(tools) == ("estimate", plain + estimate_prompt_tokens(schemas))
+    provider.final = SommResponse(text="ok", model="a-m", tokens_in=43, tokens_out=2, latency_ms=1)
+    assert stream_with(tools) == ("provider", 43)
+
+
 def test_plain_stream_still_yields_only_strings(tmp_path):
     final = SommResponse(text="ok", model="a-m", tokens_in=1, tokens_out=1, latency_ms=1)
     llm = _llm(tmp_path, Streamer("a", ["ok"], reasoning=["x"],
